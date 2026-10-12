@@ -2309,6 +2309,9 @@ once in core terms, then per adapter.
 
 ## Success Criteria
 
+- The scope covers the ten originally requested capabilities plus
+  seven found in the 2026-10-12 docs review (CAP-12 to CAP-18), with
+  out-of-scope features listed explicitly under Non-goals.
 - Every capability has a row in the support matrix with one honest
   status per provider: native (adapter maps it), recipe (documented,
   example-tested, builder-owned), or unsupported (fails fast at wiring
@@ -2362,7 +2365,7 @@ and authenticators (needed by Passkey/WebAuthn), backed by
 `aj-verification-tokens` and `aj-authenticators`. Only verification
 round-trips and authenticator cascade-delete are tested. `@auth/core`
 ships Email providers (Nodemailer, Resend, SendGrid, Postmark,
-ForwardEmail), an experimental Passkey/WebAuthn provider (behind
+ForwardEmail), a Passkey/WebAuthn provider (behind
 `experimental.enableWebAuthn`), and 100+ OAuth/OIDC providers.
 
 **Gate interaction (SEC-2).** The plugin only links a Payload user
@@ -2383,6 +2386,32 @@ shows:
   _target_ user with that user's rights, and `impersonatedBy` never
   reaches Payload, so actions can't be audited. Plugin logout doesn't
   clear BA's `admin_session` cookie.
+
+### Provider landscape (verified 2026-10-12)
+
+Both statements below were read on the providers' own sites, not
+inferred:
+
+- **Auth.js is now part of Better Auth.** authjs.dev states "The
+  Auth.js project is now part of Better Auth" (footer: "© Better Auth
+  Inc. - 2026"). Security fixes ship for the latest release only, and
+  the `@auth/*` packages other than adapters are described as "not
+  considered ready for production yet". No roadmap is published.
+- **Auth.js WebAuthn is not production-ready upstream:** "The
+  WebAuthn / Passkeys provider is experimental and not recommended for
+  production use". It is supported only with `next-auth` ≥ 5.0.0-beta.8
+  and `@auth/prisma-adapter` ≥ 1.3.0. Neither is our stack (we use
+  `@auth/core` with a Payload adapter).
+- **Consequence (D7):** Better Auth is the primary provider for new
+  capabilities. Auth.js keeps parity for what it does well natively
+  (email sign-in, OAuth/OIDC) plus correctness and security fixes; it
+  gets no experimental features.
+
+**Already in our favour:** the BA port reads sessions with
+`disableCookieCache: true` (`port.ts`), so BA's documented caveat that
+"revoked sessions may remain active … until the cookie cache expires"
+does not apply to Payload: server-side revocation is immediate. Only
+BA's own client-side reads can lag behind the cache.
 
 ## Approach
 
@@ -2446,6 +2475,8 @@ Additive, versioned, and the same for every provider.
      readonly actor: { readonly providerUserId: string } | null
      /** Provider-native active tenant, if any (D1 decides its use). */
      readonly organizationId: string | null
+     /** How the credential was presented (CAP-13). */
+     readonly channel: 'cookie' | 'bearer' | 'api-key' | 'device'
    }
    ```
 
@@ -2490,20 +2521,27 @@ mechanism), **recipe** (builder-owned, documented, and exercised by an
 example plus e2e), **—** (unsupported; fails fast if a policy needs
 it).
 
-| Capability    | Better Auth                                            | Auth.js                                                               | Core / plugin work                                                      |
-| ------------- | ------------------------------------------------------ | --------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| magic link    | native (`magicLink`)                                   | native (Email provider)                                               | `assurance.methods`                                                     |
-| email OTP     | native (`emailOTP`)                                    | recipe (Email provider with a short-code `generateVerificationToken`) | rate-limit guidance (codes are brute-forceable)                         |
-| OAuth / OIDC  | native (`genericOAuth`)                                | native (providers), plus a **verified-email trust policy** (gap fix)  | D6 trust policy, mock-IdP e2e                                           |
-| One Tap       | native (`oneTap`)                                      | recipe (Credentials provider verifying the Google ID token)           | none                                                                    |
-| passkey       | native (`@better-auth/passkey`)                        | native, experimental (Passkey provider, `enableWebAuthn`)             | `methods: ['passkey']`                                                  |
-| 2FA / MFA     | native (`twoFactor`)                                   | — in v1 (D4: recipe later)                                            | `assurance.mfa`, `requireMfaForRoles` policy                            |
-| phone number  | native (`phoneNumber`)                                 | — in v1 (D4)                                                          | `identity.phone`, phone link policy (D2)                                |
-| anonymous     | native (`anonymous`)                                   | — in v1 (D4)                                                          | guest principal, never a Payload user (D3)                              |
-| ban / suspend | via Payload (the plugin owns it)                       | via Payload                                                           | Payload `suspendedUntil`, enforced at verify, plus `revokeUserSessions` |
-| impersonation | native (`admin`), surfaced as `actor`                  | — in v1 (D4)                                                          | `actor` on Session, audit log, access restriction (D5)                  |
-| roles         | Payload `roles` (BA `admin.role` is not authoritative) | Payload `roles`                                                       | docs: one role system                                                   |
-| organizations | D1                                                     | D1                                                                    | D1                                                                      |
+| Capability           | Better Auth                                                                                 | Auth.js                                                               | Core / plugin work                                                      |
+| -------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| magic link           | native (`magicLink`)                                                                        | native (Email provider)                                               | `assurance.methods`                                                     |
+| email OTP            | native (`emailOTP`)                                                                         | recipe (Email provider with a short-code `generateVerificationToken`) | rate-limit guidance (codes are brute-forceable)                         |
+| OAuth / OIDC         | native (`genericOAuth`)                                                                     | native (providers), plus a **verified-email trust policy** (gap fix)  | D6 trust policy, mock-IdP e2e                                           |
+| One Tap              | native (`oneTap`)                                                                           | recipe (Credentials provider verifying the Google ID token)           | none                                                                    |
+| passkey              | native (`@better-auth/passkey`)                                                             | — (D7: upstream says not for production; Prisma-only)                 | `methods: ['passkey']`                                                  |
+| 2FA / MFA            | native (`twoFactor`)                                                                        | — in v1 (D4: recipe later)                                            | `assurance.mfa`, `requireMfaForRoles` policy                            |
+| phone number         | native (`phoneNumber`)                                                                      | — in v1 (D4)                                                          | `identity.phone`, phone link policy (D2)                                |
+| anonymous            | native (`anonymous`)                                                                        | — in v1 (D4)                                                          | guest principal, never a Payload user (D3)                              |
+| ban / suspend        | via Payload (the plugin owns it)                                                            | via Payload                                                           | Payload `suspendedUntil`, enforced at verify, plus `revokeUserSessions` |
+| impersonation        | native (`admin`), surfaced as `actor`                                                       | — in v1 (D4)                                                          | `actor` on Session, audit log, access restriction (D5)                  |
+| roles                | Payload `roles` (BA `admin.role` is not authoritative)                                      | Payload `roles`                                                       | docs: one role system                                                   |
+| organizations        | D1                                                                                          | D1                                                                    | D1                                                                      |
+| trust & linking      | config validated (`trustedProviders`, `requireEmailVerification`, `disableImplicitLinking`) | config validated (`allowDangerousEmailAccountLinking`)                | CAP-12: the gate holds whatever the provider config says                |
+| non-browser sessions | multi-session, bearer, API key, device authorization                                        | bearer via `getToken` only                                            | CAP-13: `channel` on sessions, per-channel policy (D8)                  |
+| identity lifecycle   | database hooks (email change, delete, verify)                                               | events (`updateUser`, `linkAccount`, `signOut`)                       | CAP-14: sync to Payload through `UserRepository` (D9)                   |
+| enterprise SSO       | native (`@better-auth/sso`, SAML/OIDC, domain verification)                                 | via OAuth path (BoxyHQ SAML)                                          | CAP-15: domain-verified linking only, org-scoped (D1)                   |
+| username             | native (`username`)                                                                         | —                                                                     | CAP-16: optional identifier; Payload `loginWithUsername`                |
+| wallet (SIWE)        | native (`siwe`)                                                                             | —                                                                     | CAP-17: never links (placeholder emails), guest at most                 |
+| abuse protection     | captcha, HIBP, rate limit (DB/secondary storage)                                            | builder-owned                                                         | CAP-18: declarations, trusted-proxy IP, guides                          |
 
 ## Per-capability design
 
@@ -2576,10 +2614,12 @@ security notes, and the proof.
 
 - **BA:** `passkey()` from `@better-auth/passkey` (a new optional
   dependency of the BA adapter), with a declared `passkey` model.
-- **Auth.js:** the Passkey provider with
-  `experimental.enableWebAuthn`, using our adapter's existing
-  authenticator methods. The plan must track Auth.js's experimental
-  status (risk R2).
+- **Auth.js:** unsupported (D7). Upstream calls its WebAuthn provider
+  "experimental and not recommended for production use" and supports
+  it only with `next-auth` and the Prisma adapter. Our adapter's
+  authenticator methods stay (they're tested and harmless), but no
+  passkey support ships for Auth.js until upstream declares it stable
+  (risk R2).
 - **Proof:** Playwright's **virtual authenticator** (CDP
   `WebAuthn.addVirtualAuthenticator`, Chromium only) covers register
   then sign in, with `methods: ['passkey']` on the session. Firefox
@@ -2687,6 +2727,154 @@ security notes, and the proof.
   disconnected from Payload access. That stays documented as
   "provider feature, not Payload authorization" under either option.
 
+### CAP-12 Trust & linking policy (cross-provider, security)
+
+Both providers can link accounts by email on their own, and each has
+settings that loosen it:
+
+- **BA** links same-email OAuth sign-ins automatically when the
+  provider says the email is verified **or** the provider is in
+  `trustedProviders`. The docs warn this "may increase the risk of
+  account takeover". Related settings: `allowDifferentEmails`,
+  per-provider `requireEmailVerification` (off by default), and
+  `disableImplicitLinking`.
+- **Auth.js** links automatically only when the user is already
+  signed in, unless `allowDangerousEmailAccountLinking` is set per
+  provider. The docs say "Automatic account linking on sign in is not
+  secure between arbitrary providers".
+
+**Design:** the plugin's verified-email gate is the only authority for
+_Payload_ linking, whatever the provider links internally. Both
+engines validate their own config at wiring:
+
+- Combinations that let an unverified email reach a session trip a
+  loud `LoggerPort` warning naming the setting. Examples: BA
+  `trustedProviders` without per-provider `requireEmailVerification`,
+  and Auth.js `allowDangerousEmailAccountLinking`.
+- An opt-in `strictLinking: true` turns those warnings into
+  `InvalidConfigError`.
+- BA's `updateUserInfoOnLink` never changes `email` or
+  `emailVerified` (documented), so our gate keeps reading the true
+  value.
+
+**Proof:** engine unit tests per risky setting (warn by default, throw
+under `strictLinking`), and an integration test where a
+trusted-but-unverified provider session still 401s at the Payload
+session endpoint.
+
+### CAP-13 Sessions without a browser (channels)
+
+Several provider features produce sessions that aren't a first-party
+browser cookie:
+
+- **BA multi-session:** several accounts per browser, with one
+  `session_token_multi-*` cookie per login.
+- **Bearer tokens:** BA `bearer`, Auth.js `getToken` on a Bearer
+  header.
+- **BA API-key mock sessions** (`enableSessionForAPIKeys`, user-owned
+  keys only).
+- **BA device-authorization tokens** (CLI or TV).
+- **One-time tokens** (cross-domain hand-off).
+
+Each breaks an assumption: CSRF-by-origin doesn't apply to bearer,
+the "one session per browser" logout sweep misses multi-session
+cookies, and an API key isn't a person.
+
+**Design:**
+
+- Adapters report the presentation as `channel` on `ProviderSession`.
+- The plugin admits channels by policy:
+  `admitChannels: ['cookie']` is the default. Opting in to `bearer` or
+  `device` is explicit; `api-key` stays off unless D8 changes.
+- BA multi-session: the logout sweep revokes every multi-session token
+  presented (BA `revoke` per token) and expires its cookies. Precedence
+  stays "the active session".
+
+**Proof:** integration tests per channel (default-denied, then admitted
+by policy), a multi-session logout test (every token revoked, every
+cookie expired), and a CSRF unit test showing bearer requests skip the
+origin check only when the channel is admitted.
+
+### CAP-14 Identity lifecycle sync
+
+Provider-side identity changes must reach Payload, or Payload drifts:
+
+- **BA:** `changeEmail` (verification goes to the new address),
+  `deleteUser`, and `emailVerified` flips. Since 1.7, a magic-link or
+  OTP sign-in on an account whose email was never verified **deletes
+  the unproven password and linked accounts and revokes sessions**.
+  The password-reset default does _not_ revoke sessions
+  (`revokeSessionsOnPasswordReset`).
+- **Auth.js:** `updateUser` and `linkAccount` events. `unlinkAccount`
+  and `deleteUser` are documented as "not invoked yet".
+
+**Design:**
+
+- Adapters translate provider hooks into one core
+  **`IdentityEvent`** stream (`email-changed`, `email-verified`,
+  `identity-unlinked`, `user-deleted`): BA `databaseHooks`,
+  Auth.js `events`.
+- The plugin applies events through `UserRepository` (`setEmail`
+  already exists), so Payload stays the single user store
+  (invariant 1).
+- A deleted provider user unlinks the identity row. The Payload user
+  remains, because Payload owns it (D9).
+- The engines default `revokeSessionsOnPasswordReset: true` (BA),
+  overridable and documented.
+
+**Proof:** integration tests per event on real Payload, plus e2e for a
+change of email (new address verified, then the Payload email
+updated).
+
+### CAP-15 Enterprise SSO (SAML / OIDC)
+
+- **BA:** `@better-auth/sso` adds an `ssoProvider` table, plus domain
+  verification. A provider is "trusted for automatic account linking"
+  for its verified domain. With the organization plugin, org owners
+  and admins can register IdPs at runtime. IdP-initiated SAML is off
+  by default in 1.7.
+- **Auth.js:** SAML only as OAuth via BoxyHQ, through the CAP-3 path.
+- **Security:** a tenant-registered IdP can assert verified emails for
+  anyone. **The plugin links SSO identities only for the IdP's
+  verified domain**, and SSO registration is scoped to the D1
+  Payload organization that owns the domain.
+- **Proof:** the mock OIDC provider (CAP-3) registered as an SSO
+  provider. A matching verified domain links; any other domain 401s.
+- **Phase:** with tenancy (Phase 7), because it depends on D1.
+
+### CAP-16 Username
+
+- **BA:** `username` adds `user.username` and `user.displayUsername`
+  (declared), and sign-in by username. Sign-up still requires an
+  email, so the verified-email gate is unaffected.
+- **Plugin:** an optional mapping to Payload's `loginWithUsername`,
+  keeping one username source of truth (Payload), synced via CAP-14.
+  Auth.js: unsupported.
+
+### CAP-17 Wallet sign-in (SIWE)
+
+- **BA:** `siwe` adds `walletAddress`. Users are anonymous by default
+  with placeholder emails (`…@siwe.placeholder.invalid`), and a
+  user-supplied email is stored **unverified**.
+- **Plugin:** these sessions never link (the existing gate). The BA
+  adapter also recognizes the placeholder domain and reports
+  `identity.email: null`, so they are treated like anonymous
+  (D3: a guest principal). Linking a wallet to an existing verified
+  user waits for demand.
+
+### CAP-18 Abuse protection
+
+- **BA:** `captcha` (email/password routes unless more are listed),
+  `haveIBeenPwned`, and built-in rate limiting with database-backed
+  counters (a `rateLimit` table, which the adapter already supports) or
+  secondary storage. IP comes from `X-Forwarded-For` unless
+  `ipAddressHeaders` or `trustedProxies` is set (spoofable otherwise).
+- **Auth.js:** no rate-limiting guidance in its docs. Builder-owned
+  (SEC-13 precedent).
+- **Plugin:** the examples' limiter and BA config share one
+  trusted-proxy rule. The guides state the spoofing risk. The OTP and
+  magic-link verify routes get per-identifier attempt caps.
+
 ## Steps
 
 Each phase leaves `bun run check`, `release:check`, and all six e2e
@@ -2696,17 +2884,21 @@ needs, then capabilities by user value.
 
 ### Phase 0: Decisions + spikes
 
-- Resolve D1–D6 below (the builder's call).
+- ~~Resolve D1–D6~~ ✅ accepted 2026-10-12 (see Decisions).
 - Spikes, each a throwaway branch with written findings:
   - S1: Auth.js Email provider under the engine's JWT rule.
   - S2: Auth.js email OTP via `generateVerificationToken` and
     `/callback/email`.
   - S3: how BA marks 2FA trusted-device sessions.
   - S4: whether BA exposes the sign-in method on a session.
-  - S5: Auth.js Passkey provider on our adapter (experimental flag,
-    authenticator round-trip).
-- Exit: decisions recorded here; spike findings appended under
-  Evidence.
+  - ~~S5: Auth.js Passkey provider~~ dropped: upstream marks it not
+    for production (see Provider landscape and D7).
+  - S6: BA multi-session cookie names and per-token revoke from our
+    logout path.
+  - S7: whether the official Auth.js adapter test suite
+    (`packages/utils/adapter.ts` in the next-auth repo) runs against
+    our Payload adapter, and what fails.
+- Exit: spike findings appended under Current state.
 
 ### Phase 1: Security gaps first
 
@@ -2715,9 +2907,14 @@ needs, then capabilities by user value.
   is the minimal `actor` field and the audit log.
 - **CAP-3 Auth.js trust policy:** fixes the Auth.js OAuth refusal
   (correctness, not just a feature).
-- **Commit the schema probe as a test:** all 10 BA plugins'
-  declarations are generated from `getAuthTables` and booted. A BA
-  upgrade that changes any plugin schema fails CI.
+- **Commit the schema probe as a test:** every BA plugin in this plan
+  (now including `username`, `siwe`, `sso`, `api-key`, `multi-session`
+  and teams) has its declarations generated from `getAuthTables` and
+  booted. A BA upgrade that changes any plugin schema fails CI.
+- **CAP-12 trust & linking validation:** warnings, `strictLinking`,
+  and the trusted-but-unverified 401 test.
+- **Adapter conformance:** run the official Auth.js adapter suite
+  (S7) and fix what it finds.
 
 ### Phase 2: Core vocabulary + conformance kit
 
@@ -2726,13 +2923,23 @@ needs, then capabilities by user value.
 - The conformance kit, adopted by both adapters (existing behavior
   only).
 - Wire contract: optional `assurance` / `actor` on `SessionUser`.
+- `channel` with `admitChannels: ['cookie']` (CAP-13). Existing
+  behaviour is unchanged, because both adapters already report only
+  cookies.
 - Exit: both adapters pass the kit; minor-version changeset; upgrade
   note.
+
+### Phase 2b: Identity lifecycle (CAP-14)
+
+- The `IdentityEvent` stream, BA `databaseHooks` and Auth.js `events`
+  mapped, applied through `UserRepository`, and the
+  `revokeSessionsOnPasswordReset` default.
 
 ### Phase 3: Passwordless (both providers)
 
 - CAP-1 magic link and CAP-2 email OTP, with the dev mailbox and
-  e2e on both frameworks.
+  e2e on both frameworks, plus CAP-18 attempt caps on their verify
+  routes.
 
 ### Phase 4: Federation
 
@@ -2741,16 +2948,20 @@ needs, then capabilities by user value.
 
 ### Phase 5: Strong auth + governance
 
-- CAP-5 passkeys (virtual authenticator), CAP-6 2FA with the
-  `requireMfaForRoles` policy, and CAP-7 ban/suspend.
+- CAP-5 passkeys (BA; virtual authenticator), CAP-6 2FA with the
+  `requireMfaForRoles` policy, CAP-7 ban/suspend, and CAP-13
+  non-browser channels (multi-session logout, bearer and device
+  opt-in).
 
 ### Phase 6: Identity extensions (decision-gated)
 
-- CAP-9 phone (D2) and CAP-10 anonymous (D3).
+- CAP-9 phone (D2), CAP-10 anonymous (D3), CAP-16 username, and
+  CAP-17 SIWE as a guest principal.
 
 ### Phase 7: Tenancy (D1)
 
-- CAP-11 per the chosen option.
+- CAP-11 Payload-owned organizations (D1), then CAP-15 enterprise SSO
+  scoped to verified org domains.
 
 ## Validation Plan
 
@@ -2770,25 +2981,41 @@ needs, then capabilities by user value.
   `verify:published --expect-provenance` on the minor that ships the
   vocabulary.
 
-## Decisions needed
+## Decisions (accepted 2026-10-12)
 
-| ID  | Question                                                | Options                                                                               | Recommendation                                                                                                                                                            |
-| --- | ------------------------------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1  | Who owns organizations?                                 | A: Payload collections (both providers) · B: BA plugin + `OrganizationPort` (BA only) | **A**: Payload owns users, so it owns membership; one authorization source                                                                                                |
-| D2  | Can phone-only identities become Payload users?         | Yes (Payload users without email) · No (phone links to existing users only)           | **No** in v1: keeps Payload's auth collection valid; revisit with `loginWithUsername`                                                                                     |
-| D3  | What is an anonymous session in Payload?                | A guest principal (no Payload user) · A real Payload user                             | **Guest principal**: no unverified identities in Payload                                                                                                                  |
-| D4  | Auth.js parity for 2FA, phone, anonymous, impersonation | Native (build our own on Auth.js) · Recipe · Unsupported in v1                        | **Unsupported in v1** with fail-fast wiring; recipes later if demand appears. Auth.js has no primitives for these, and building them means owning security-critical state |
-| D5  | What may an impersonator do in Payload?                 | Everything (audited) · Read-mostly (deny admin panel and role changes) · Configurable | **Configurable, default read-mostly**                                                                                                                                     |
-| D6  | Trust identity-provider `email_verified` in Auth.js?    | Never · Per-provider allowlist · Always                                               | **Per-provider allowlist**: explicit, auditable, off by default                                                                                                           |
+The builder accepted every recommendation. These are now binding for
+the phases below; changing one means a new dated entry here, not a
+silent edit.
+
+| ID  | Question                                                | Decision                                                                                                                                                                                           |
+| --- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | Who owns organizations?                                 | **Payload collections** (`organizations`, `memberships`), working with both providers. One authorization source. BA's `organization` plugin stays a provider feature, never Payload authorization. |
+| D2  | Can phone-only identities become Payload users?         | **No, in v1.** A verified phone links to existing Payload users only; phone-only sign-ups are refused with `UnverifiedIdentityError`. Revisit with Payload `loginWithUsername`.                    |
+| D3  | What is an anonymous session in Payload?                | **A guest principal**, never a Payload user and never Payload access. It links normally once upgraded to a verified identity.                                                                      |
+| D4  | Auth.js parity for 2FA, phone, anonymous, impersonation | **Unsupported in v1.** A policy that needs one fails at wiring with `UnsupportedCapabilityError`. Recipes come later, only on demand.                                                              |
+| D5  | What may an impersonator do in Payload?                 | **Configurable, default read-mostly.** The admin panel and role changes are denied while an actor is present; every operation is audited.                                                          |
+| D6  | Trust identity-provider `email_verified` in Auth.js?    | **A per-provider allowlist**, off by default, explicit and auditable. An allow-listed provider asserting `email_verified: false` still 401s.                                                       |
+
+### Proposed (pending the builder)
+
+These are new from the 2026-10-12 docs review. Each carries a
+recommendation, and none is binding until accepted.
+
+| ID  | Question                                                                          | Options                                                    | Recommendation                                                                                                                                                                                                                                                      |
+| --- | --------------------------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D7  | How much to invest in the Auth.js adapter now that Auth.js is part of Better Auth | Full parity · Maintenance tier · Deprecate                 | **Maintenance tier**: keep email sign-in and OAuth/OIDC first-class with every correctness/security fix (CAP-3 trust policy, CAP-12, CAP-14 events); new and experimental capabilities (passkeys, …) are Better Auth-only. Revisit if upstream publishes a roadmap. |
+| D8  | Which non-browser channels may reach Payload                                      | Cookie only · Opt-in per channel · All                     | **Opt-in per channel**: `cookie` by default; `bearer` and `device` explicit; `api-key` stays off until there's an API-principal design (keys aren't people)                                                                                                         |
+| D9  | Who owns a user's email when the provider changes it                              | Provider (sync to Payload) · Payload (ignore the provider) | **The provider, for verified changes only**: a verified change syncs to Payload via CAP-14. Provider deletion unlinks the identity; it never deletes the Payload user.                                                                                              |
 
 ## Risks / Open Questions
 
 - **R1 · BA plugin drift:** plugin schemas change across BA minors.
   Mitigation: the committed probe test (Phase 1) plus the strict
   adapter.
-- **R2 · Auth.js WebAuthn is experimental:** the API may change.
-  Mitigation: pin, gate behind the flag, and keep passkeys documented
-  as experimental on Auth.js.
+- **R2 · Auth.js WebAuthn is experimental:** upstream says "not
+  recommended for production use", Prisma-only. Mitigation: no Auth.js
+  passkeys (D7). Re-check the status on each `@auth/core` bump; the
+  adapter's authenticator methods stay ready.
 - **R3 · Assurance accuracy:** neither provider reliably records the
   sign-in method on every session. Mitigation: `'unknown'` is a
   first-class value, and policies treat unknown as not satisfied
@@ -2804,6 +3031,21 @@ needs, then capabilities by user value.
   per-provider list, and a guide warning, plus a test where an
   allow-listed provider with `email_verified: false` still 401s.
 
+- **R7 · Auth.js upstream status:** Auth.js is now part of Better
+  Auth, with fixes on latest only and no published roadmap.
+  Mitigation: D7 maintenance tier, Better Auth as primary, pin
+  `@auth/core`, and watch for a deprecation notice.
+- **R8 · Better Auth minor-version behaviour changes:** 1.7 changed
+  magic-link/OTP behaviour on unverified accounts (deletes the
+  unproven password and accounts, revokes sessions). Some 1.7.0–1.7.2
+  databases also have an `account.issuer` column needing relaxation.
+  Mitigation: the committed schema probe, CAP-14 events, and reading
+  BA upgrade guides before each bump.
+- **R9 · Email-scanner prefetch of magic links:** Auth.js docs say
+  nothing about link prefetching by mail scanners. Mitigation: a
+  confirm-page pattern (GET shows a button, POST consumes the token),
+  tested in CAP-1.
+
 ## Non-goals
 
 - Building auth primitives the chosen provider lacks (no homemade
@@ -2814,6 +3056,17 @@ needs, then capabilities by user value.
   use dev sinks.
 - WorkOS / Clerk adapters: their ids stay reserved, and they adopt the
   same vocabulary when they land.
+- **Better Auth as an identity provider:** OAuth 2.1 Provider, MCP,
+  CIMD, and Agent Auth make the _app_ an IdP for others. That's a
+  different product.
+- **SCIM directory provisioning:** it writes users from a directory,
+  which conflicts with "Payload owns the users" unless it is
+  re-designed to write through Payload.
+- **Payments and infrastructure plugins** (Stripe, Polar, Autumn,
+  Dodo, Creem, Chargebee, Commet, Dub, `@better-auth/infra`), i18n,
+  OpenAPI, and telemetry: no identity impact.
+- **BA `test-utils` in production:** test-only privileged helpers.
+  They may be useful in our own suites, never shipped.
 
 ## Sources
 
@@ -2829,6 +3082,24 @@ false`, `isAnonymous`), `plugins/phone-number/routes`
   (Email sign-in stamps `emailVerified`; new OAuth users get `null`),
   `providers/` (Email family, `passkey`, `webauthn`, OIDC),
   `lib/utils/assert.js` (`enableWebAuthn`).
+- Docs review 2026-10-12, Better Auth: concepts/users-accounts
+  (account linking, `trustedProviders`), concepts/oauth
+  (`requireEmailVerification`), concepts/session-management (cookie
+  cache, `freshAge`), concepts/email, plugins/{multi-session, bearer,
+  api-key, sso, username, siwe, jwt, one-time-token,
+  device-authorization, captcha, have-i-been-pwned,
+  last-login-method}, concepts/rate-limit, reference/security,
+  guides/1-7-upgrade-guide.
+- Docs review 2026-10-12, Auth.js: authjs.dev (home: "now part of
+  Better Auth"), getting-started/authentication/webauthn
+  ("experimental and not recommended for production use"),
+  concepts/session-strategies, concepts/database-models (account
+  linking), reference/core (callbacks, events), reference/core/providers
+  (`checks`, `profile()`, `allowDangerousEmailAccountLinking`),
+  reference/core/providers/email, guides/creating-a-database-adapter
+  (adapter test suite), guides/refresh-token-rotation,
+  guides/edge-compatibility, guides/debugging, guides/testing,
+  getting-started/deployment (`trustHost`, `AUTH_SECRET` rotation).
 - In-repo: `packages/provider-better-auth/src/adapter.ts`
   (`validateSchema`), `packages/provider-authjs/src/adapter.ts`
   (verification tokens, authenticators), `packages/core/src/ports.ts`
