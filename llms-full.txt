@@ -2398,18 +2398,27 @@ anything — DNA invariants are binding.
 
 Releases ride changesets on `main` (`.github/workflows/release.yml`):
 
-1. Land PRs with changesets; the release workflow opens a
-   "Version Packages" PR.
-2. Merging it publishes to npm with provenance attestations via
-   trusted publishing — configure the npm org as a trusted
-   publisher before the first release; no long-lived token.
-3. Before approving a Version Packages PR, run the packaging gate
-   locally: `bun run release:check` (`publint` + `attw` over every
-   package; all packages are ESM-only by decision).
+1. Land PRs with changesets. The release workflow then opens (or
+   updates) a "Version Packages" PR.
+2. **Run CI on the Version Packages PR before merging.** GitHub does
+   not trigger workflows for PRs opened by the workflow's own
+   `GITHUB_TOKEN`, so the PR arrives with no checks. Close and
+   reopen it (`gh pr close <n> && gh pr reopen <n>`) to start CI, and
+   merge only when every check is green.
+3. Merging it makes CI publish every unpublished version through
+   `scripts/publish.mjs`. Tarballs are packed by Bun (real dependency
+   versions, never `workspace:`) and published by npm through trusted
+   publishing with provenance, so no npm token exists anywhere. All 8
+   packages trust `jellologic/payload-auth-link` → `release.yml`.
+4. Prove the release from the outside:
+   `bun run verify:published <version> --expect-provenance`. It checks
+   the registry manifests, provenance, `npm audit signatures`, every
+   entry point importing in a clean consumer, and a consumer
+   type-check.
 
-First-publish checklist: npm trusted publisher for the
-`@payload-auth-link` org, `NPM_CONFIG_PROVENANCE` unset (per-package
-`provenance: true` already set).
+`bun run release:check` gates every PR on the packed tarballs: `publint`
+and `attw`, no undeclared imports, no shipped test files, no
+`workspace:` ranges, and a README per package.
 
 ---
 

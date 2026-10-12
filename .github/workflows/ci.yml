@@ -21,9 +21,10 @@ jobs:
       - run: bun run check
 
   # Every user-facing PR carries a changeset (see CONTRIBUTING.md);
-  # internal-only PRs add an empty one (`bunx changeset --empty`).
+  # internal-only PRs add an empty one (`bunx changeset --empty`). The
+  # Version Packages PR is exempt: it consumes the changesets by design.
   changeset:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.head_ref != 'changeset-release/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
