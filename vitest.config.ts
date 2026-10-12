@@ -9,6 +9,8 @@ export default defineConfig({
       // deterministic tests; coverage stays packages-only below.
       'examples/basic/lib/**/*.test.ts',
       'examples/tanstack-start/src/lib/**/*.test.ts',
+      // Release tooling contracts (publish output, tagging).
+      'scripts/**/*.test.mjs',
     ],
     coverage: {
       provider: 'v8',
