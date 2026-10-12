@@ -1,5 +1,5 @@
 import { decideAuthRedirect, type AuthRedirectOptions } from '@payload-auth-link/web'
-import { NextResponse, type NextRequest } from 'next/server'
+import { NextResponse, type NextRequest } from 'next/server.js'
 
 /** Optimistic Edge middleware wiring; see {@link createAuthMiddleware}. */
 export type AuthMiddlewareOptions = AuthRedirectOptions

@@ -192,6 +192,14 @@ export default tseslint.config(
               group: ['@payload-auth-link/plugin'],
               message: 'adapters sit beside the plugin, never above it.',
             },
+            {
+              // Next ships no `exports` map: an extension-less subpath
+              // resolves under bundlers but crashes plain Node ESM
+              // (ERR_MODULE_NOT_FOUND) for every consumer of `dist`.
+              regex: '^next/(?!.*\\.js$).+',
+              message:
+                "import Next subpaths with '.js' (e.g. 'next/headers.js') so dist runs under plain Node.",
+            },
           ],
         },
       ],
