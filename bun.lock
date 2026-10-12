@@ -90,7 +90,7 @@
     },
     "packages/core": {
       "name": "@payload-auth-link/core",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "neverthrow": "^8.2.0",
         "zod": "^4.0.0",
@@ -98,7 +98,7 @@
     },
     "packages/next": {
       "name": "@payload-auth-link/next",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
         "@payload-auth-link/react": "workspace:*",
@@ -114,7 +114,7 @@
     },
     "packages/plugin": {
       "name": "@payload-auth-link/plugin",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
         "neverthrow": "^8.2.0",
@@ -136,7 +136,7 @@
     },
     "packages/provider-authjs": {
       "name": "@payload-auth-link/provider-authjs",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@auth/core": "^0.41.0",
         "@payload-auth-link/core": "workspace:*",
@@ -153,7 +153,7 @@
     },
     "packages/provider-better-auth": {
       "name": "@payload-auth-link/provider-better-auth",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
         "better-auth": "^1.0.0",
@@ -170,7 +170,7 @@
     },
     "packages/react": {
       "name": "@payload-auth-link/react",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
       },
@@ -183,7 +183,7 @@
     },
     "packages/tanstack-start": {
       "name": "@payload-auth-link/tanstack-start",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
         "@payload-auth-link/react": "workspace:*",
@@ -201,7 +201,7 @@
     },
     "packages/web": {
       "name": "@payload-auth-link/web",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
       },

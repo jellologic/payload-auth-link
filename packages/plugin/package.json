@@ -1,6 +1,6 @@
 {
   "name": "@payload-auth-link/plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "payload-auth-link for Payload CMS: collections, auth strategy, endpoints, hooks, admin.",
   "license": "MIT",
   "type": "module",
