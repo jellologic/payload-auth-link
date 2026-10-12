@@ -1,6 +1,6 @@
 {
   "name": "@payload-auth-link/react",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "payload-auth-link React UI: provider-agnostic sign-in components and user menu.",
   "license": "MIT",
   "type": "module",
