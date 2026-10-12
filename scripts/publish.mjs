@@ -9,16 +9,22 @@
  * very first publish, before a trusted publisher can be attached —
  * provenance is off (it requires a CI identity).
  *
- * Afterwards `changeset tag` creates the git tags; its `New tag:` lines
- * let changesets/action push them and create GitHub releases.
+ * Tags: for every published version whose `<name>@<version>` tag is
+ * missing on origin (just published, or published by an earlier run that
+ * died before tagging), the script creates the local tag and appends a
+ * `{"type":"git-tag",…}` event to `$CHANGESETS_OUTPUT`. That file is
+ * changesets/action's contract: it pushes those tags and creates the
+ * GitHub releases. (The CLI's deprecated `changeset tag` no longer
+ * writes it, so the script owns the contract.)
  *
  * Run: `bun run release` (CI) · `bun scripts/publish.mjs --dry-run`.
  */
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { gitTagEvent } from './changesets-output.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const dryRun = process.argv.includes('--dry-run')
@@ -54,8 +60,17 @@ function isPublished(name, version) {
   }
 }
 
+function tagOnOrigin(tag) {
+  const out = execFileSync('git', ['ls-remote', '--tags', 'origin', `refs/tags/${tag}`], {
+    cwd: root,
+    encoding: 'utf8',
+  })
+  return out.trim() !== ''
+}
+
 const work = mkdtempSync(join(tmpdir(), 'pal-publish-'))
 let published = 0
+const live = []
 try {
   for (const name of order) {
     const dir = join(root, 'packages', name)
@@ -66,6 +81,7 @@ try {
     const id = `${manifest.name}@${manifest.version}`
     if (isPublished(manifest.name, manifest.version)) {
       process.stdout.write(`skip ${id} (already on npm)\n`)
+      live.push(manifest)
       continue
     }
     const dest = join(work, name)
@@ -87,13 +103,29 @@ try {
     }
     execFileSync('npm', args, { stdio: 'inherit' })
     published += 1
+    live.push(manifest)
     process.stdout.write(`${dryRun ? 'would publish' : 'published'} ${id}\n`)
   }
 } finally {
   rmSync(work, { recursive: true, force: true })
 }
 
-if (!dryRun && published > 0) {
-  execFileSync('bunx', ['changeset', 'tag'], { cwd: root, stdio: 'inherit' })
+if (!dryRun) {
+  const outputPath = process.env.CHANGESETS_OUTPUT
+  for (const manifest of live) {
+    const tag = `${manifest.name}@${manifest.version}`
+    if (tagOnOrigin(tag)) {
+      continue
+    }
+    try {
+      execFileSync('git', ['tag', tag], { cwd: root, stdio: 'ignore' })
+    } catch {
+      // Already exists locally (an earlier interrupted run): reuse it.
+    }
+    if (outputPath !== undefined && outputPath !== '') {
+      appendFileSync(outputPath, gitTagEvent(manifest.name, manifest.version))
+    }
+    process.stdout.write(`New tag: ${tag}\n`)
+  }
 }
 process.stdout.write(`${published} package(s) ${dryRun ? 'checked' : 'published'}\n`)
