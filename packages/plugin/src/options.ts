@@ -22,8 +22,13 @@ import { InvalidConfigError } from '@payload-auth-link/core'
 export type AuthLinkPluginOptions = {
   /** Public origin of the site, e.g. `https://example.com`. */
   readonly baseUrl: string
-  /** Long random secret for signing. Never commit or log it. */
-  readonly secret: string
+  /**
+   * @deprecated Ignored — nothing in the plugin signs or encrypts: session
+   * integrity belongs to the identity provider (its own secret) and
+   * Payload auth to Payload's `secret`. Kept optional so existing configs
+   * still compile; remove it from your config.
+   */
+  readonly secret?: string | undefined
   /** All roles the site uses. */
   readonly roles: readonly string[]
   /** Role for newly created users. Must be one of `roles`. */
@@ -69,7 +74,6 @@ export type WiredOptions = {
 export function wireOptions(raw: AuthLinkPluginOptions): WiredOptions {
   const validated = validateStartupConfig({
     baseUrl: raw.baseUrl,
-    secret: raw.secret,
     roles: [...raw.roles],
     defaultRole: raw.defaultRole,
     providers: raw.providers.map((provider) => provider.id),

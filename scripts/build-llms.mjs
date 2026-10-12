@@ -16,7 +16,7 @@ Identity providers (Better Auth, Auth.js) are swappable adapters behind
 IdentityProviderPort; users stay first-class Payload documents. First-class
 Next.js (Payload v3) and TanStack Start (Payload v4) adapters share one
 framework-free web core. ESM-only, strict TypeScript, Result-based errors.
-Example apps at examples/basic and examples/tanstack-start; 23 Playwright
+Example apps at examples/basic and examples/tanstack-start; 24 Playwright
 specs green per suite across SQLite, Postgres, and Mongo on both frameworks
 (SQLite suites in Chromium, Firefox, and WebKit).`
 

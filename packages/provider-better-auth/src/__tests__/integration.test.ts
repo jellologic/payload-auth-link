@@ -14,7 +14,7 @@ import {
   type Payload,
   type SanitizedConfig,
 } from 'payload'
-import { beforeAll, describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { createBetterAuthEngine } from '../engine.js'
 
 const ORIGIN = 'http://auth-link.test'
@@ -148,7 +148,6 @@ beforeAll(async () => {
     plugins: [
       authLink({
         baseUrl: ORIGIN,
-        secret: SECRET,
         roles: ['admin', 'user'],
         defaultRole: 'user',
         providers: [engine.provider],
@@ -338,6 +337,38 @@ describe('adapter operations', () => {
     })
     expect(removed).toBe(2)
     expect(await ctx.adapter.count({ model: 'verification' })).toBe(0)
+  })
+
+  it('throws AdapterOperationError on storage drift instead of returning a malformed row (TYP-9)', async () => {
+    const ctx = await engine.auth.$context
+    await ctx.adapter.create({
+      model: 'verification',
+      data: { identifier: 'drift', value: 'v', expiresAt: new Date('2026-01-01T00:00:00.000Z') },
+    })
+    const lookup = () =>
+      ctx.adapter.findOne({
+        model: 'verification',
+        where: [{ field: 'identifier', value: 'drift' }],
+      })
+    // Raw database write (bypasses field validation, like real drift):
+    // the row loses its Better Auth id.
+    await payload.db.updateOne({
+      collection: 'ba-verifications',
+      where: { identifier: { equals: 'drift' } },
+      data: { baId: '' },
+    })
+    await expect(lookup()).rejects.toThrow(/missing baId/)
+    // SQL adapters cannot even hold an unparseable date (Drizzle formats
+    // on read), but document stores can: serve one such row, once.
+    const find = vi.spyOn(payload, 'find').mockResolvedValueOnce({
+      docs: [{ id: 1, baId: 'v-drift', identifier: 'drift', value: 'v', expiresAt: 'not-a-date' }],
+    } as unknown as Awaited<ReturnType<Payload['find']>>)
+    await expect(lookup()).rejects.toThrow(/expiresAt is not a valid date/)
+    find.mockRestore()
+    await payload.db.deleteMany({
+      collection: 'ba-verifications',
+      where: { identifier: { equals: 'drift' } },
+    })
   })
 
   it('round-trips rate limits with update and updateMany', async () => {

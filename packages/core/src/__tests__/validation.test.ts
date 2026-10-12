@@ -12,7 +12,6 @@ const validMap: CollectionMap = {
 function validConfig() {
   return {
     baseUrl: 'http://localhost:3100',
-    secret: 'x'.repeat(32),
     roles: ['admin', 'user'],
     defaultRole: 'user',
     providers: ['better-auth'],
@@ -56,9 +55,10 @@ describe('validateStartupConfig', () => {
     }
   })
 
-  it('rejects bad urls, short secrets, and empty lists', () => {
+  it('rejects bad urls, unknown keys (the removed secret), and empty lists', () => {
     expect(validateStartupConfig({ ...validConfig(), baseUrl: 'nope' }).isErr()).toBe(true)
-    expect(validateStartupConfig({ ...validConfig(), secret: 'short' }).isErr()).toBe(true)
+    // ARCH-11: the dead secret is gone from the contract (strict schema).
+    expect(validateStartupConfig({ ...validConfig(), secret: 'x'.repeat(32) }).isErr()).toBe(true)
     expect(validateStartupConfig({ ...validConfig(), roles: [] }).isErr()).toBe(true)
     expect(validateStartupConfig({ ...validConfig(), providers: [] }).isErr()).toBe(true)
   })

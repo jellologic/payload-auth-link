@@ -141,6 +141,44 @@ describe('authorize', () => {
     await expect(authorize({ email: '', password: 'sekret!!' })).resolves.toBeNull()
   })
 
+  it('normalizes the email before lookup (SEC-11)', async () => {
+    const { payload, find } = fakePayload({
+      'user@x.com': {
+        auId: 'au-2',
+        email: 'user@x.com',
+        passwordHash: hashCredentialsPassword('sekret!!'),
+      },
+    })
+    const { authorize } = createAuthJsCredentials({ getPayload: () => Promise.resolve(payload) })
+    const user = await authorize({ email: 'User@X.com', password: 'sekret!!' })
+    expect(user).toMatchObject({ id: 'au-2', email: 'user@x.com' })
+    expect(find.mock.calls[0]?.[0].where?.email?.equals).toBe('user@x.com')
+  })
+
+  it('fails malformed emails closed through the dummy verification', async () => {
+    const { payload, find } = fakePayload()
+    const { authorize } = createAuthJsCredentials({ getPayload: () => Promise.resolve(payload) })
+    const before = scryptCalls()
+    await expect(authorize({ email: 'not-an-email', password: 'sekret!!' })).resolves.toBeNull()
+    expect(scryptCalls() - before).toBe(1)
+    expect(find).not.toHaveBeenCalled()
+  })
+
+  it('throws AdapterMappingError on a corrupt emailVerified stamp (TYP-5)', async () => {
+    const { payload } = fakePayload({
+      'a@b.co': {
+        auId: 'au-1',
+        email: 'a@b.co',
+        passwordHash: hashCredentialsPassword('sekret!!'),
+        emailVerified: 'not-a-date',
+      },
+    })
+    const { authorize } = createAuthJsCredentials({ getPayload: () => Promise.resolve(payload) })
+    await expect(authorize({ email: 'a@b.co', password: 'sekret!!' })).rejects.toThrow(
+      /emailVerified is not a valid date/
+    )
+  })
+
   it('throws loudly on corrupt rows and wraps infra failures', async () => {
     const corrupt = fakePayload({ 'a@b.co': { email: 'a@b.co' } })
     const broken = createAuthJsCredentials({ getPayload: () => Promise.resolve(corrupt.payload) })

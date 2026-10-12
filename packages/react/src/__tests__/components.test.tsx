@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -47,6 +47,21 @@ function withinProvider(
     return
   }
   render(<AuthLinkProvider fetchImpl={fetchImpl}>{children}</AuthLinkProvider>)
+}
+
+/**
+ * Deterministic settling for negative assertions: await every response
+ * the stub handed out, then drain the microtask queue (bounded) inside
+ * `act` so React flushes whatever those resolutions scheduled. No
+ * wall-clock sleep, so the test cannot pass or fail on machine load.
+ */
+async function settle(fetchImpl: ReturnType<typeof stubFetch>): Promise<void> {
+  await act(async () => {
+    await Promise.allSettled(fetchImpl.mock.results.map((result) => result.value as unknown))
+    for (let tick = 0; tick < 50; tick += 1) {
+      await Promise.resolve()
+    }
+  })
 }
 
 describe('SignInButton', () => {
@@ -98,10 +113,32 @@ describe('SignOutButton', () => {
     await waitFor(() => {
       expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(true)
     })
-    // Let the rejected promise settle; nothing must happen afterwards.
-    await new Promise((resolve) => setTimeout(resolve, 10))
+    // Let the failed DELETE settle; nothing must happen afterwards.
+    await settle(fetchImpl)
     expect(onSignedOut).not.toHaveBeenCalled()
     expect(navigate).not.toHaveBeenCalled()
+  })
+})
+
+describe('SignOutButton redirect safety (SEC-12)', () => {
+  it.each([
+    ['https://evil.example/phish', '/'],
+    ['//evil.example', '/'],
+    ['/api/users', '/'],
+    ['/sign-in', '/sign-in'],
+    ['/goodbye?x=1', '/goodbye?x=1'],
+  ])('navigates %s as %s', async (redirectTo, expected) => {
+    const fetchImpl = stubFetch(() => jsonResponse({ ok: true }))
+    const navigate = vi.fn()
+    withinProvider(<SignOutButton redirectTo={redirectTo} navigate={navigate} />, {
+      fetchImpl,
+      initialUser: user,
+    })
+    fireEvent.click(screen.getByText('Sign out'))
+    await waitFor(() => {
+      expect(navigate).toHaveBeenCalledTimes(1)
+    })
+    expect(navigate).toHaveBeenCalledWith(expected)
   })
 })
 

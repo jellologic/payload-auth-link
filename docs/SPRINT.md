@@ -361,9 +361,80 @@ interrupted by another navigation` when a page bounces to sign-in
 
 ## Status
 
-Batch 1 (13 items) and Batch 2 (29 items) are complete. Each item has
-its implementation plus the proving test or recorded evidence above.
-Low-severity items stay in the Backlog by design.
+Batch 1 (13 items), Batch 2 (29 items) and the Low backlog (21
+items) are complete: **0 items remain**. Each has its implementation
+plus the proving test or the recorded evidence above. CI is green on
+PR #1 for every job, including `e2e` and `e2e-tanstack`, which run
+all three engines.
+
+### Backlog close-out notes (deviations with evidence)
+
+- **TYP-7 was already satisfied by ARCH-9.** The shared
+  `parseSessionResponse` narrows with `isRecord`, and the web
+  verifier suite already feeds an array body (`jsonResponse([user])`)
+  and asserts it fails closed. No code change was needed.
+- **PAR-9 takes the "stated hard requirement" branch, not a
+  leeway.** A leeway would accept sessions the provider already
+  considers expired. Synchronized clocks are documented in
+  `docs/concepts.md` and `session.ts`, and a boundary test pins
+  `expiresAt == now` as expired.
+- **PAR-10 syncs during render, not in an effect.** It uses React's
+  "adjust state when a prop changes" pattern: no stale frame, and it
+  satisfies `react-hooks/set-state-in-effect`. Snapshots are compared
+  by value, so a parent re-rendering with an equal fresh object never
+  undoes a client sign-out (tested).
+- **PAR-11 adds `{ signInPath: null }`.** Landing on sign-in after
+  sign-out is legitimate, so `SignOutButton` (SEC-12) disables that
+  one rule. `safeRedirectPath` moved to core so `react` can use it
+  without a `web` dependency; `web` re-exports it unchanged.
+- **PAR-12's proof is a decision-helper test.** The fix is
+  `isAuthJsFailureLanding` (path-based), wired into both example
+  forms. Its unit tests include a destination carrying `error=` that
+  reports success. A full form render would need a live Auth.js
+  round-trip, which the e2e suites cover.
+- **SEC-9 returns a uniform `{ ok: true }` 200** for new and existing
+  emails through `lib/signup-response.ts` in both examples, unit
+  tested for identical status and body, with a `notifyExisting`
+  out-of-band hook. A duplicate signup with another password now fails
+  generically at sign-in and changes nothing; the e2e spec asserts
+  both. The rate-limit spec now expects ten uniform 200s → 429.
+- **ARCH-10 uses `export * from '@payload-auth-link/web'`** in both
+  adapters. The adapter's local `packageName` takes precedence. The
+  barrel tests assert every web runtime export is the identical
+  binding. This already fixed a real drift: `SafeRedirectOptions` was
+  missing from both adapters.
+- **ARCH-11 drops the requirement.** `secret` is optional,
+  `@deprecated` and ignored; core's strict schema rejects it. The
+  examples, getting-started and tests no longer pass it. Migration
+  note: `docs/upgrading.md`.
+- **TYP-8 throws at registration.** Illegal names throw
+  `InvalidConfigError` from `registry.register` (config errors throw
+  by convention), checked with the same RFC 6265 token rule as
+  serialization (`isCookieName`).
+- **TYP-9's date drift is proven with a one-call `find` stub.**
+  Drizzle cannot even hold an unparseable date, but document stores
+  can. The `baId` drift is proven with a raw `payload.db.updateOne`
+  on real SQLite.
+- **TYP-10 also rejects an empty role list** (`InvalidConfigError`):
+  `requireRoles({ roles: [] })` would otherwise grant every signed-in
+  user.
+- **TST-9 snapshots the full admin page per Payload major.** The
+  snapshot pins axe rule id → maximum node count across engines.
+  Per-row upstream chrome (row checkboxes, the v4 `.id-label`) is
+  excluded so counts don't scale with rows. Gecko flags 8 v4
+  contrast nodes that Chromium and WebKit don't, so the snapshot
+  keeps the max. An injected `<img>` without `alt` failed the gate
+  on both frameworks; the injection was then reverted. Configs
+  declare `metadata.payloadMajor`.
+- **TST-10 waits for the work, not the clock.** `settle()` awaits
+  every stubbed response, then drains microtasks inside `act`. No
+  wall-clock sleep remains.
+- **TST-11's proof:** with the new `beforeEach` removed, the added
+  second test failed ("starts from clean mocks"); restored, both
+  pass.
+- **TST-12:** each package keeps at most one entrypoint smoke, and
+  it calls a real contract through the barrel. No `typeof`
+  assertions remain.
 
 ## Verified strengths
 

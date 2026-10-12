@@ -1,5 +1,6 @@
 'use client'
 
+import { safeRedirectPath } from '@payload-auth-link/core'
 import type { ReactNode } from 'react'
 import { useAuthLink, useHasRoles } from './provider.js'
 
@@ -28,7 +29,12 @@ export function SignInButton({
 export type SignOutButtonProps = {
   readonly className?: string | undefined
   readonly children?: ReactNode | undefined
-  /** Where to go after a successful sign-out. Stays put by default. */
+  /**
+   * Where to go after a successful sign-out. Stays put by default.
+   * Narrowed by `safeRedirectPath` (an off-origin or API destination
+   * falls back to `/`), so a prop fed from a query param cannot turn
+   * sign-out into an open redirect.
+   */
   readonly redirectTo?: string | undefined
   /** Navigation injection for tests; defaults to a full page load. */
   readonly navigate?: ((url: string) => void) | undefined
@@ -60,7 +66,9 @@ export function SignOutButton({
           if (await signOut()) {
             onSignedOut?.()
             if (redirectTo !== undefined) {
-              navigate(redirectTo)
+              // Sign-in is a fine post-sign-out destination: disable
+              // that rule, keep the off-origin and API ones.
+              navigate(safeRedirectPath(redirectTo, '/', { signInPath: null }))
             }
           }
         })()

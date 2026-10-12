@@ -7,37 +7,10 @@
  */
 import { parseCookieHeader } from '@payload-auth-link/core'
 
-/**
- * Narrow a post-login destination to a safe in-app path. Returns `value`
- * only when it is a relative path (single leading slash, no scheme, no
- * backslashes, no control characters); anything else yields `fallback`.
- * Absolute URLs, protocol-relative URLs (`//evil`), and values with
- * surrounding whitespace (header/parsing differentials) all fall back.
- */
-export function safeRedirectPath(
-  value: string | null | undefined,
-  fallback: string = '/account'
-): string {
-  if (typeof value !== 'string' || value === '') {
-    return fallback
-  }
-  if (!value.startsWith('/') || value.startsWith('//')) {
-    return fallback
-  }
-  if (value.includes('\\')) {
-    return fallback
-  }
-  if (value.trim() !== value) {
-    return fallback
-  }
-  for (const char of value) {
-    const code = char.charCodeAt(0)
-    if (code <= 0x1f || code === 0x7f) {
-      return fallback
-    }
-  }
-  return value
-}
+// Pure policy lives in core (UI packages need it without a web
+// dependency); re-exported here so the web API is unchanged.
+export { safeRedirectPath } from '@payload-auth-link/core'
+export type { SafeRedirectOptions } from '@payload-auth-link/core'
 
 /** Optimistic bounce wiring; see {@link decideAuthRedirect}. */
 export type AuthRedirectOptions = {

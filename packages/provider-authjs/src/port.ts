@@ -40,7 +40,10 @@ export type AuthJsProviderDeps = {
 /**
  * Extract the presented session token: the base cookie when whole, else
  * the chunk slots joined in order (Auth.js reassembles the same way).
- * Returns null when no session cookie is present at all.
+ * Returns null when no session cookie is present at all. A gapped chunk
+ * set (`.0` and `.2` without `.1`) is malformed: joining it would hand a
+ * garbage token to revocation, so it throws `ProviderError` (logged by
+ * the session service as a failed read) instead.
  */
 function extractSessionId(headers: Headers, cookieNames: readonly string[]): string | null {
   const header = headers.get('cookie')
@@ -55,7 +58,22 @@ function extractSessionId(headers: Headers, cookieNames: readonly string[]): str
       return direct
     }
   }
-  const joined = chunks.map((name) => pairs.get(name) ?? '').join('')
+  const present = chunks.map((name) => pairs.get(name))
+  const lastPresent = present.reduce<number>(
+    (last, value, index) => (value === undefined ? last : index),
+    -1
+  )
+  if (lastPresent === -1) {
+    return null
+  }
+  const contiguous = present.slice(0, lastPresent + 1)
+  if (contiguous.some((value) => value === undefined)) {
+    throw new ProviderError(
+      wellKnownProviderIds.authjs,
+      'getSession: non-contiguous session cookie chunks (missing middle slot)'
+    )
+  }
+  const joined = contiguous.join('')
   return joined === '' ? null : joined
 }
 

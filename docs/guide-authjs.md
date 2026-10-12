@@ -94,21 +94,27 @@ const result = await credentials.register({
 if (result.isErr()) {
   const error = result.error
   if (error instanceof UserExistsError) {
-    return Response.json({ error: 'that email is already registered' }, { status: 409 })
+    // No enumeration oracle: answer exactly like a new signup, and tell
+    // the address owner out-of-band ("someone tried to register").
+    await notifyAccountOwner(email)
+    return Response.json({ ok: true })
   }
   if (error instanceof WeakPasswordError || error instanceof InvalidEmailError) {
     return Response.json({ error: error.message }, { status: 400 })
   }
   return Response.json({ error: 'registration failed, try again later' }, { status: 500 })
 }
-const user = result.value
+return Response.json({ ok: true })
 ```
 
 Registration flows through the core `registerWithStore` use-case over
 an `aj-users` store and never throws: errors arrive as values
-(`UserExistsError` → 409, `WeakPasswordError` / `InvalidEmailError`
-→ 400, `AdapterOperationError` → 500 with its cause kept
-server-side).
+(`UserExistsError`, `WeakPasswordError` / `InvalidEmailError`,
+`AdapterOperationError` with its cause kept server-side). Map
+`UserExistsError` to the **same** response as success: a distinct
+409 tells anyone probing the route which emails have accounts. The
+examples do this through `lib/signup-response.ts` (unit-tested for
+identical status and body).
 
 Passwords hash with scrypt (random salt, constant-time verify);
 Auth.js never sees them — `authorize` reads the `aj-users` row and
@@ -228,7 +234,7 @@ pattern — copy it, then harden it:
 - The builder signup route throttles per email (10 per 10 minutes):
   legit signups use each address once, so abuse of one address can
   never lock out another. Proven by `e2e/rate-limit.spec.ts`, which
-  asserts 200 → 409s → 429 + `Retry-After`.
+  asserts ten uniform 200s → 429 + `Retry-After`.
 - The `/api/authjs/*` catch-all (the authorize path) throttles per
   client IP at a generous ceiling (100 per 10 minutes).
 - Better Auth paths use Better Auth's own `rateLimit` option (see

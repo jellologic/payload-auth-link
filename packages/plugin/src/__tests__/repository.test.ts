@@ -56,7 +56,6 @@ type PayloadStub = {
 function repository(stub: PayloadStub): UserRepository {
   const wired = wireOptions({
     baseUrl: 'http://auth-link.test',
-    secret: 'unit-test-secret-32-chars-minimum!!',
     roles: ['user', 'admin'],
     defaultRole: 'user',
     providers: [createStubProvider().provider],

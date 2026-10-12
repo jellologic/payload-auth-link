@@ -7,7 +7,6 @@ function options(overrides?: Partial<AuthLinkPluginOptions>): AuthLinkPluginOpti
   const { provider } = createStubProvider()
   return {
     baseUrl: 'http://auth-link.test',
-    secret: 'x'.repeat(32),
     roles: ['admin', 'user'],
     defaultRole: 'user',
     providers: [provider],
@@ -44,7 +43,9 @@ describe('wireOptions', () => {
 
   it('fails fast on invalid config', () => {
     expect(() => wireOptions(options({ baseUrl: 'nope' }))).toThrow(InvalidConfigError)
-    expect(() => wireOptions(options({ secret: 'short' }))).toThrow(InvalidConfigError)
+    // ARCH-11: the deprecated secret is accepted and ignored, never validated.
+    expect(() => wireOptions(options({ secret: 'short' }))).not.toThrow()
+    expect(wireOptions(options({ secret: 'short' })).config).not.toHaveProperty('secret')
     expect(() => wireOptions(options({ defaultRole: 'ghost' }))).toThrow(InvalidConfigError)
     expect(() => wireOptions(options({ providers: [] }))).toThrow(InvalidConfigError)
     expect(() => wireOptions(options({ queryDepth: -1 }))).toThrow(InvalidConfigError)

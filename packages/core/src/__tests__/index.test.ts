@@ -1,35 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import {
-  defineProviderId,
-  defineSessionId,
-  defineUserId,
-  parseCollectionMap,
-  parseEmail,
-  parseRole,
-  registerUser,
-  registerWithStore,
-  validateStartupConfig,
-  wellKnownProviderIds,
-} from '../index.js'
+import { parseRole, wellKnownProviderIds } from '../index.js'
 
 describe('core entrypoint', () => {
-  it('exposes the public API', () => {
-    for (const fn of [
-      defineProviderId,
-      defineSessionId,
-      defineUserId,
-      parseCollectionMap,
-      parseEmail,
-      parseRole,
-      registerUser,
-      registerWithStore,
-      validateStartupConfig,
-    ]) {
-      expect(fn).toBeTypeOf('function')
-    }
-    expect(wellKnownProviderIds.betterAuth).toBe('better-auth')
-    expect(wellKnownProviderIds.authjs).toBe('authjs')
-    expect(wellKnownProviderIds.workos).toBe('workos')
-    expect(wellKnownProviderIds.clerk).toBe('clerk')
+  it('serves the canonical role constructor and the reserved provider ids', () => {
+    expect(parseRole('admin').isOk()).toBe(true)
+    expect(parseRole('Admin').isErr()).toBe(true)
+    expect(wellKnownProviderIds).toEqual({
+      betterAuth: 'better-auth',
+      authjs: 'authjs',
+      workos: 'workos',
+      clerk: 'clerk',
+    })
   })
 })

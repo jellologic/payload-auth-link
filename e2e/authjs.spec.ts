@@ -76,16 +76,30 @@ test('auth.js sign-up with a crafted redirect lands in-app', async ({ page }) =>
   await expect(page).toHaveURL(/\/account/)
 })
 
-test('auth.js duplicate sign-ups are rejected with the form error', async ({ page }) => {
+test('auth.js duplicate sign-ups reveal nothing and cannot take the account over', async ({
+  page,
+}) => {
   const email = uniqueEmail()
   await signUp(page, email)
   await page.getByRole('button', { name: /^sign out$/i }).click()
   await expect(page).toHaveURL(/\/$/)
 
+  // No enumeration oracle: a duplicate answers exactly like a new signup.
+  const fresh = await page.request.post('/api/authjs-signup', {
+    data: { email: uniqueEmail(), password },
+  })
+  const duplicate = await page.request.post('/api/authjs-signup', {
+    data: { email, password: 'a-different-password-1' },
+  })
+  expect(duplicate.status()).toBe(fresh.status())
+  expect(await duplicate.json()).toEqual(await fresh.json())
+
+  // Through the form, a duplicate with another password changes nothing
+  // and fails at sign-in with the generic message.
   await gotoOwn(page, '/sign-in-authjs')
   await toggleToSignUp(page)
   await page.getByLabel(/email/i).fill(email)
-  await page.getByLabel(/password/i).fill(password)
+  await page.getByLabel(/password/i).fill('a-different-password-1')
   await page.getByRole('button', { name: /create account/i }).click()
-  await expect(page.locator('p[role="alert"]')).toContainText(/already registered/i)
+  await expect(page.locator('p[role="alert"]')).toContainText(/sign-in failed/i)
 })

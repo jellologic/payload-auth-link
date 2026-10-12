@@ -32,7 +32,6 @@ async function logoutCookies(
 ): Promise<readonly string[]> {
   const wired = wireOptions({
     baseUrl: 'http://auth-link.test',
-    secret: 'unit-test-secret-32-chars-minimum!!',
     roles: ['user'],
     defaultRole: 'user',
     providers,
@@ -133,7 +132,6 @@ function sessionHandler(
 ): (request: PayloadRequest) => Response | Promise<Response> {
   const wired = wireOptions({
     baseUrl: 'http://auth-link.test',
-    secret: 'unit-test-secret-32-chars-minimum!!',
     roles: ['user'],
     defaultRole: 'user',
     providers,

@@ -421,3 +421,27 @@ describe('session revoke', () => {
     expect(revoked._unsafeUnwrapErr()).toBeInstanceOf(UnknownProviderError)
   })
 })
+
+describe('session verify boundaries', () => {
+  it('returns SessionInvalidError (not a throw) for an empty provider session id (TYP-6)', async () => {
+    const empty = countingProvider('empty', sessionFor('u-empty', { sessionId: '' }))
+    const sessions = createSessionService(depsFor(empty.provider))
+    const result = await sessions.verify(new Headers())
+    expect(result._unsafeUnwrapErr()).toBeInstanceOf(SessionInvalidError)
+  })
+
+  it('expires exactly at expiresAt with no skew leeway (PAR-9)', async () => {
+    const now = new Date('2026-10-12T12:00:00.000Z')
+    const clock = { now: () => now }
+    const at = (offsetMs: number) =>
+      countingProvider(
+        'edge',
+        sessionFor('u-edge', { expiresAt: new Date(now.getTime() + offsetMs) })
+      )
+    const verifyWith = async (offsetMs: number) =>
+      createSessionService({ ...depsFor(at(offsetMs).provider), clock }).verify(new Headers())
+    expect((await verifyWith(0))._unsafeUnwrapErr()).toBeInstanceOf(SessionExpiredError)
+    expect((await verifyWith(-1))._unsafeUnwrapErr()).toBeInstanceOf(SessionExpiredError)
+    expect((await verifyWith(1)).isOk()).toBe(true)
+  })
+})

@@ -1,6 +1,6 @@
 # payload-auth-link (full)
 
-> payload-auth-link: a hexagonal ports/adapters Payload CMS auth plugin. Identity providers (Better Auth, Auth.js) are swappable adapters behind IdentityProviderPort; users stay first-class Payload documents. First-class Next.js (Payload v3) and TanStack Start (Payload v4) adapters share one framework-free web core. ESM-only, strict TypeScript, Result-based errors. Example apps at examples/basic and examples/tanstack-start; 23 Playwright specs green per suite across SQLite, Postgres, and Mongo on both frameworks (SQLite suites in Chromium, Firefox, and WebKit).
+> payload-auth-link: a hexagonal ports/adapters Payload CMS auth plugin. Identity providers (Better Auth, Auth.js) are swappable adapters behind IdentityProviderPort; users stay first-class Payload documents. First-class Next.js (Payload v3) and TanStack Start (Payload v4) adapters share one framework-free web core. ESM-only, strict TypeScript, Result-based errors. Example apps at examples/basic and examples/tanstack-start; 24 Playwright specs green per suite across SQLite, Postgres, and Mongo on both frameworks (SQLite suites in Chromium, Firefox, and WebKit).
 
 ---
 
@@ -101,7 +101,6 @@ export default buildConfig({
   plugins: [
     authLink({
       baseUrl: process.env.EXAMPLE_BASE_URL ?? 'http://localhost:3100',
-      secret: process.env.PAYLOAD_SECRET ?? 'local-dev-only-secret-32-chars-min!',
       roles: ['admin', 'user'],
       defaultRole: 'user',
       providers: [betterAuthProvider],
@@ -379,7 +378,9 @@ Mounts the Auth.js engine's `handleRequest` at the engine's default
 
 Auth.js credentials store nothing themselves, so signup is an
 explicit service call. This route wraps `registerAuthJsUser`,
-mapping `UserExistsError` → 409 and weak-password/bad-email → 400.
+answering new and already-registered emails identically (no
+enumeration oracle; duplicates are an out-of-band notice) and
+weak-password/bad-email → 400.
 It stamps `emailVerified` immediately — **local example only** (no
 email delivery); production builders verify out-of-band first.
 
@@ -450,9 +451,9 @@ guide](guide-tanstack-start.md)):
 ## Test layout
 
 - `packages/*/src/__tests__/` — unit + SQLite-memory integration
-  next to the code (457 tests).
+  next to the code (490 tests).
 - `e2e/` — one Playwright suite against both examples: auth
-  flows, session lifecycle, admin inspection, a11y, smoke (23
+  flows, session lifecycle, admin inspection, a11y, smoke (24
   specs × 3 databases × 2 frameworks, with the SQLite suites run
   in Chromium, Firefox, and WebKit; `helpers.ts` holds the shared hydration and
   Payload-version locators).
@@ -531,7 +532,12 @@ There are no webhooks and no background sync. Every read is live:
 3. The first live session wins — precedence is the order of the
    `providers` array, so a browser signed in through two providers
    resolves to the first registered one. Expiry is checked against
-   the injected clock.
+   the injected clock with **no skew leeway**: a session expires
+   exactly at `expiresAt`. Keep the plugin host and the provider's
+   session store on synchronized clocks (NTP) — a hard requirement,
+   since a leeway would accept sessions the provider already
+   considers expired. A provider reporting an empty session id is a
+   port-contract violation and resolves to 401, never a 500.
 4. The linked Payload user is resolved (or JIT-provisioned), then
    reloaded fresh — role changes apply to the very next request.
 5. The endpoint/strategy returns `{ user: { id, collection, email,
@@ -888,21 +894,27 @@ const result = await credentials.register({
 if (result.isErr()) {
   const error = result.error
   if (error instanceof UserExistsError) {
-    return Response.json({ error: 'that email is already registered' }, { status: 409 })
+    // No enumeration oracle: answer exactly like a new signup, and tell
+    // the address owner out-of-band ("someone tried to register").
+    await notifyAccountOwner(email)
+    return Response.json({ ok: true })
   }
   if (error instanceof WeakPasswordError || error instanceof InvalidEmailError) {
     return Response.json({ error: error.message }, { status: 400 })
   }
   return Response.json({ error: 'registration failed, try again later' }, { status: 500 })
 }
-const user = result.value
+return Response.json({ ok: true })
 ```
 
 Registration flows through the core `registerWithStore` use-case over
 an `aj-users` store and never throws: errors arrive as values
-(`UserExistsError` → 409, `WeakPasswordError` / `InvalidEmailError`
-→ 400, `AdapterOperationError` → 500 with its cause kept
-server-side).
+(`UserExistsError`, `WeakPasswordError` / `InvalidEmailError`,
+`AdapterOperationError` with its cause kept server-side). Map
+`UserExistsError` to the **same** response as success: a distinct
+409 tells anyone probing the route which emails have accounts. The
+examples do this through `lib/signup-response.ts` (unit-tested for
+identical status and body).
 
 Passwords hash with scrypt (random salt, constant-time verify);
 Auth.js never sees them — `authorize` reads the `aj-users` row and
@@ -1022,7 +1034,7 @@ pattern — copy it, then harden it:
 - The builder signup route throttles per email (10 per 10 minutes):
   legit signups use each address once, so abuse of one address can
   never lock out another. Proven by `e2e/rate-limit.spec.ts`, which
-  asserts 200 → 409s → 429 + `Retry-After`.
+  asserts ten uniform 200s → 429 + `Retry-After`.
 - The `/api/authjs/*` catch-all (the authorize path) throttles per
   client IP at a generous ceiling (100 per 10 minutes).
 - Better Auth paths use Better Auth's own `rateLimit` option (see
@@ -1259,7 +1271,7 @@ absent from denied responses, and both examples render the same
 
 ```bash
 cd examples/tanstack-start && bun run dev        # :3200
-bun run e2e:tanstack                             # SQLite, 23 specs × 3 engines
+bun run e2e:tanstack                             # SQLite, 24 specs × 3 engines
 bun run e2e:tanstack-postgres                    # per-run database
 bun run e2e:tanstack-mongo                       # memory replset
 ```
@@ -1314,7 +1326,7 @@ under bundler resolution for the same reason.
 
 Product code issues only single-document Local API calls, so the
 parity risk sits in Where translation, date serialization, and id
-types — all six suites assert identical behavior (23 specs each:
+types — all six suites assert identical behavior (24 specs each:
 `e2e`, `e2e:postgres`, `e2e:mongo` on Next; `e2e:tanstack`,
 `e2e:tanstack-postgres`, `e2e:tanstack-mongo` on Start). Each
 example's mongo branch disables Payload transactions: several
@@ -1479,6 +1491,40 @@ First published line. No migration — but confirm before adopting:
   (`ba-*`, `aj-*`); the `users` extension adds `roles` +
   `identities` fields. No host migrations ship — your migration
   tooling owns schema changes (host-owned migrations only, per DNA).
+
+## Hardening in the first release line (review backlog)
+
+Behavior that tightened before first publish. Each change fails
+closed, and none needs a data migration:
+
+- **`authLink({ secret })` is deprecated and ignored.** Nothing in
+  the plugin signs or encrypts: provider sessions are protected by
+  the provider's own secret, and Payload auth by Payload's `secret`.
+  The option stays optional so existing configs compile; delete it.
+  `validateStartupConfig` (core) no longer accepts a `secret` key.
+- **`safeRedirectPath` refuses sign-in and API destinations.** It
+  falls back when the destination is the sign-in page (default
+  `/sign-in`) or sits under `/api`. Pass
+  `{ signInPath, apiPrefix }` to match custom mounts, or
+  `{ signInPath: null }` where landing on sign-in is legitimate. It
+  moved to core; `web`, `next` and `tanstack-start` re-export it
+  unchanged.
+- **`SignOutButton` narrows `redirectTo`** through
+  `safeRedirectPath`. Off-origin and API destinations go to `/`.
+- **`requireRoles` validates its role list first.** An invalid role
+  (e.g. `'Admin'`) throws `InvalidRoleError`, and an empty list
+  throws `InvalidConfigError`. Use `requireSessionUser` for "any
+  signed-in user".
+- **Wiring rejects illegal cookie attributes.** Provider session
+  cookie names must be RFC 6265 tokens (checked at registration).
+  Cookie `Domain`/`Path` values containing `;`, `,`, whitespace or
+  control characters throw at serialization.
+- **Auth.js `authorize` lowercases the email** exactly like
+  registration, so `User@X.com` signs in. A corrupt stored
+  `emailVerified` throws `AdapterMappingError`, and a gapped session
+  chunk set is a failed read, never a joined token.
+- **Clocks must be synchronized.** Session expiry has no skew
+  leeway (see concepts).
 
 ## Future: WorkOS / Clerk adapters (post-v1)
 

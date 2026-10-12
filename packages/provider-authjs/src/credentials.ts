@@ -2,6 +2,7 @@ import {
   InvalidConfigError,
   isRecord,
   nullLogger,
+  parseEmail,
   registerWithStore,
   RepositoryError,
   resolveSlugs,
@@ -125,11 +126,21 @@ export function createAuthJsCredentials(deps: AuthJsCredentialsDeps): AuthJsCred
   }
 
   const authorize: AuthJsCredentials['authorize'] = async (credentials) => {
-    const email = credentials?.email
+    const rawEmail = credentials?.email
     const password = credentials?.password
-    if (typeof email !== 'string' || typeof password !== 'string' || email === '') {
+    if (typeof rawEmail !== 'string' || typeof password !== 'string' || rawEmail === '') {
       return null
     }
+    // Normalize exactly like registration (lowercased via the core
+    // Email brand) so `User@X.com` finds the row stored as `user@x.com`.
+    // Malformed input fails closed, through the same dummy verification
+    // as an unknown user (no timing oracle on the parse branch either).
+    const parsedEmail = parseEmail(rawEmail)
+    if (parsedEmail.isErr()) {
+      verifyCredentialsPassword(password, dummyPasswordHash)
+      return null
+    }
+    const email = parsedEmail.value
     let payload: Payload
     try {
       payload = await deps.getPayload()
@@ -171,11 +182,20 @@ export function createAuthJsCredentials(deps: AuthJsCredentialsDeps): AuthJsCred
     }
     // Built as a variable: `User` carries no verification field, and the
     // jwt callback picks the smuggled claim up for the session body.
+    let emailVerified: Date | null = null
+    if (typeof doc.emailVerified === 'string') {
+      emailVerified = new Date(doc.emailVerified)
+      // A corrupt stamp must fail loudly here, not as a RangeError when
+      // Auth.js serializes the session later.
+      if (Number.isNaN(emailVerified.getTime())) {
+        throw new AdapterMappingError('credentials authorize: emailVerified is not a valid date')
+      }
+    }
     const user = {
       id: doc.auId,
       email: doc.email,
       ...(typeof doc.name === 'string' ? { name: doc.name } : {}),
-      emailVerified: typeof doc.emailVerified === 'string' ? new Date(doc.emailVerified) : null,
+      emailVerified,
     }
     return user
   }

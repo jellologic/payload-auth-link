@@ -1,8 +1,18 @@
+import * as web from '@payload-auth-link/web'
 import { describe, expect, it } from 'vitest'
-import { packageName } from '../index.js'
+import * as adapter from '../index.js'
 
 describe('next entrypoint', () => {
-  it('identifies the package', () => {
-    expect(packageName).toBe('@payload-auth-link/next')
+  it('re-exports the whole web surface as the same bindings (ARCH-10)', () => {
+    const webRuntime = Object.keys(web).filter((name) => name !== 'packageName')
+    for (const name of webRuntime) {
+      expect(adapter, name).toHaveProperty(name)
+      expect((adapter as Record<string, unknown>)[name], name).toBe(
+        (web as Record<string, unknown>)[name]
+      )
+    }
+    // Its own identity wins over web's, and the shared surface is live.
+    expect(adapter.packageName).toBe('@payload-auth-link/next')
+    expect(adapter.safeRedirectPath('//evil.example')).toBe('/account')
   })
 })

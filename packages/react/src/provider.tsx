@@ -50,9 +50,29 @@ export type AuthLinkProviderProps = {
   readonly initialUser?: SessionUser | null | undefined
 }
 
+/** Value identity for hydration snapshots (fresh objects, same user). */
+function snapshotKey(user: SessionUser | null | undefined): string {
+  if (user === undefined) {
+    return 'undefined'
+  }
+  if (user === null) {
+    return 'null'
+  }
+  return JSON.stringify([user.id, user.collection, user.email, [...user.roles].sort()])
+}
+
+function statusFor(user: SessionUser | null): AuthLinkStatus {
+  return user === null ? 'anonymous' : 'authenticated'
+}
+
 /**
  * Client session provider: loads once on mount (unless hydrated),
  * exposes refresh/sign-out. Fail-closed — fetch errors mean anonymous.
+ *
+ * A later `initialUser` (a re-run server loader, a new RSC payload) is
+ * synced into context when its value changes; re-renders passing the
+ * same user as a fresh object change nothing, so a client-side sign-out
+ * is never undone by a stale snapshot. Refresh stays explicit.
  */
 export function AuthLinkProvider({
   children,
@@ -62,8 +82,19 @@ export function AuthLinkProvider({
 }: AuthLinkProviderProps): ReactNode {
   const [user, setUser] = useState<SessionUser | null>(initialUser ?? null)
   const [status, setStatus] = useState<AuthLinkStatus>(
-    initialUser === undefined ? 'loading' : initialUser === null ? 'anonymous' : 'authenticated'
+    initialUser === undefined ? 'loading' : statusFor(initialUser)
   )
+  // React's "adjust state when a prop changes" pattern (during render,
+  // not in an effect): no stale frame, no set-state-in-effect.
+  const [syncedKey, setSyncedKey] = useState(() => snapshotKey(initialUser))
+  const incomingKey = snapshotKey(initialUser)
+  if (incomingKey !== syncedKey) {
+    setSyncedKey(incomingKey)
+    if (initialUser !== undefined) {
+      setUser(initialUser)
+      setStatus(statusFor(initialUser))
+    }
+  }
 
   const loadSession = useCallback(
     () => fetchSessionUser(sessionEndpoint, fetchImpl),

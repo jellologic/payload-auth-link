@@ -93,7 +93,6 @@ export default buildConfig({
   plugins: [
     authLink({
       baseUrl: process.env.EXAMPLE_BASE_URL ?? 'http://localhost:3100',
-      secret: process.env.PAYLOAD_SECRET ?? 'local-dev-only-secret-32-chars-min!',
       roles: ['admin', 'user'],
       defaultRole: 'user',
       providers: [betterAuthProvider],

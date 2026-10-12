@@ -97,6 +97,63 @@ describe('AuthLinkProvider', () => {
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
+  it('syncs a later initialUser into context (PAR-10)', () => {
+    const fetchImpl = stubFetch(() => jsonResponse({ user }))
+    const other: SessionUser = { ...user, id: 'user-2', email: 'other@example.com' }
+    const { rerender } = render(
+      <AuthLinkProvider fetchImpl={fetchImpl} initialUser={null}>
+        <StatusProbe />
+      </AuthLinkProvider>
+    )
+    expect(screen.getByTestId('status').textContent).toBe('anonymous')
+    rerender(
+      <AuthLinkProvider fetchImpl={fetchImpl} initialUser={user}>
+        <StatusProbe />
+      </AuthLinkProvider>
+    )
+    expect(screen.getByTestId('email').textContent).toBe('user@example.com')
+    expect(screen.getByTestId('status').textContent).toBe('authenticated')
+    rerender(
+      <AuthLinkProvider fetchImpl={fetchImpl} initialUser={other}>
+        <StatusProbe />
+      </AuthLinkProvider>
+    )
+    expect(screen.getByTestId('email').textContent).toBe('other@example.com')
+    rerender(
+      <AuthLinkProvider fetchImpl={fetchImpl} initialUser={null}>
+        <StatusProbe />
+      </AuthLinkProvider>
+    )
+    expect(screen.getByTestId('status').textContent).toBe('anonymous')
+    // Refresh stays explicit: syncing a snapshot never fetches.
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('keeps a client sign-out when re-rendered with an equal fresh snapshot', async () => {
+    const fetchImpl = stubFetch(() => jsonResponse({ ok: true }))
+    function SignOutProbe(): ReactNode {
+      const { signOut } = useAuthLink()
+      return (
+        <button type="button" onClick={() => void signOut()}>
+          out
+        </button>
+      )
+    }
+    const tree = (snapshot: SessionUser) => (
+      <AuthLinkProvider fetchImpl={fetchImpl} initialUser={snapshot}>
+        <StatusProbe />
+        <SignOutProbe />
+      </AuthLinkProvider>
+    )
+    const { rerender } = render(tree(user))
+    fireEvent.click(screen.getByText('out'))
+    await waitFor(() => {
+      expect(screen.getByTestId('status').textContent).toBe('anonymous')
+    })
+    rerender(tree({ ...user, roles: [...user.roles] }))
+    expect(screen.getByTestId('status').textContent).toBe('anonymous')
+  })
+
   it('refreshes on demand', async () => {
     let current: SessionUser | null = null
     const fetchImpl = stubFetch(() =>

@@ -1,8 +1,26 @@
 import type { CookieOptions, SameSite } from './ports.js'
 
+/** RFC 6265 cookie-name token check, shared by serialization and wiring. */
+export function isCookieName(name: string): boolean {
+  return /^[!#$%&'*+\-.0-9A-Z^_`a-z|~]+$/.test(name)
+}
+
 function assertCookieName(name: string): void {
-  if (!/^[!#$%&'*+\-.0-9A-Z^_`a-z|~]+$/.test(name)) {
+  if (!isCookieName(name)) {
     throw new Error(`Invalid cookie name: ${name}`)
+  }
+}
+
+/**
+ * `Domain` / `Path` values are written into the header verbatim, so a
+ * `;` (attribute injection), `,` (header folding), whitespace, or a
+ * control character (CRLF header splitting) must never reach it. Fail
+ * at the call site like `assertCookieName`, never emit a forged header.
+ */
+function assertCookieAttribute(attribute: 'Domain' | 'Path', value: string): void {
+  // eslint-disable-next-line no-control-regex -- rejecting controls is the point
+  if (value === '' || /[;,\s\x00-\x1f\x7f]/.test(value)) {
+    throw new Error(`Invalid cookie ${attribute}: ${JSON.stringify(value)}`)
   }
 }
 
@@ -17,9 +35,11 @@ export function serializeCookie(name: string, value: string, options?: CookieOpt
     parts.push(`Max-Age=${Math.trunc(options.maxAge)}`)
   }
   if (options?.domain !== undefined) {
+    assertCookieAttribute('Domain', options.domain)
     parts.push(`Domain=${options.domain}`)
   }
   if (options?.path !== undefined) {
+    assertCookieAttribute('Path', options.path)
     parts.push(`Path=${options.path}`)
   }
   if (options?.httpOnly === true) {

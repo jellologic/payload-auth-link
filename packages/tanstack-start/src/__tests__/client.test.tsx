@@ -1,11 +1,16 @@
 // @vitest-environment happy-dom
 import { act, cleanup, render } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthLinkProvider } from '@payload-auth-link/react'
 import { useAuthLinkRefreshStart } from '../client.js'
 
 afterEach(() => {
   cleanup()
+})
+
+// Module-level mocks are cleared per test: call counts never leak.
+beforeEach(() => {
+  vi.clearAllMocks()
 })
 
 const routerInvalidate = vi.fn((): Promise<void> => Promise.resolve())
@@ -45,6 +50,24 @@ describe('useAuthLinkRefreshStart', () => {
       await refreshAll?.()
     })
     expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(routerInvalidate).toHaveBeenCalledTimes(1)
+  })
+  it('starts from clean mocks in a second render (no inherited calls)', async () => {
+    const fetchImpl = vi.fn((): Promise<Response> => Promise.resolve(jsonResponse({ user: null })))
+    let refreshAll: (() => Promise<void>) | undefined
+    function Probe(): null {
+      refreshAll = useAuthLinkRefreshStart()
+      return null
+    }
+    render(
+      <AuthLinkProvider fetchImpl={fetchImpl} initialUser={null}>
+        <Probe />
+      </AuthLinkProvider>
+    )
+    expect(routerInvalidate).not.toHaveBeenCalled()
+    await act(async () => {
+      await refreshAll?.()
+    })
     expect(routerInvalidate).toHaveBeenCalledTimes(1)
   })
 })

@@ -89,7 +89,9 @@ Mounts the Auth.js engine's `handleRequest` at the engine's default
 
 Auth.js credentials store nothing themselves, so signup is an
 explicit service call. This route wraps `registerAuthJsUser`,
-mapping `UserExistsError` → 409 and weak-password/bad-email → 400.
+answering new and already-registered emails identically (no
+enumeration oracle; duplicates are an out-of-band notice) and
+weak-password/bad-email → 400.
 It stamps `emailVerified` immediately — **local example only** (no
 email delivery); production builders verify out-of-band first.
 
@@ -160,9 +162,9 @@ guide](guide-tanstack-start.md)):
 ## Test layout
 
 - `packages/*/src/__tests__/` — unit + SQLite-memory integration
-  next to the code (457 tests).
+  next to the code (490 tests).
 - `e2e/` — one Playwright suite against both examples: auth
-  flows, session lifecycle, admin inspection, a11y, smoke (23
+  flows, session lifecycle, admin inspection, a11y, smoke (24
   specs × 3 databases × 2 frameworks, with the SQLite suites run
   in Chromium, Firefox, and WebKit; `helpers.ts` holds the shared hydration and
   Payload-version locators).

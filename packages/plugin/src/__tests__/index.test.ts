@@ -9,7 +9,6 @@ function options(overrides?: Partial<AuthLinkPluginOptions>): AuthLinkPluginOpti
   const { provider } = createStubProvider()
   return {
     baseUrl: 'http://auth-link.test',
-    secret: 'x'.repeat(32),
     roles: ['admin', 'user'],
     defaultRole: 'user',
     providers: [provider],
@@ -18,15 +17,10 @@ function options(overrides?: Partial<AuthLinkPluginOptions>): AuthLinkPluginOpti
 }
 
 describe('plugin entrypoint', () => {
-  it('exposes the plugin factory and names', () => {
-    expect(pluginSlug).toBe('payload-auth-link')
-    expect(strategyName).toBe('auth-link')
-    expect(authLink).toBeTypeOf('function')
-  })
-
   it('returns a plain version-agnostic Plugin function with slug and options', () => {
     const plugin = authLink(options())
-    expect(plugin).toBeTypeOf('function')
+    expect(pluginSlug).toBe('payload-auth-link')
+    expect(strategyName).toBe('auth-link')
     expect(plugin.slug).toBe(pluginSlug)
     expect(plugin.options).toMatchObject({ baseUrl: 'http://auth-link.test' })
   })

@@ -11,6 +11,7 @@ export type { DenyAllAccess } from './collections.js'
 export {
   expiringCookieOptions,
   hostCookiePrefix,
+  isCookieName,
   parseCookieHeader,
   resolveSecureCookies,
   secureCookiePrefix,
@@ -79,6 +80,8 @@ export type {
   UserRecord,
   UserRepository,
 } from './ports.js'
+export { safeRedirectPath } from './redirect.js'
+export type { SafeRedirectOptions } from './redirect.js'
 export { createProviderRegistry } from './registry.js'
 export type { ProviderRegistry } from './registry.js'
 export { parseRole, roleSchema } from './roles.js'

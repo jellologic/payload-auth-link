@@ -27,6 +27,40 @@ First published line. No migration — but confirm before adopting:
   `identities` fields. No host migrations ship — your migration
   tooling owns schema changes (host-owned migrations only, per DNA).
 
+## Hardening in the first release line (review backlog)
+
+Behavior that tightened before first publish. Each change fails
+closed, and none needs a data migration:
+
+- **`authLink({ secret })` is deprecated and ignored.** Nothing in
+  the plugin signs or encrypts: provider sessions are protected by
+  the provider's own secret, and Payload auth by Payload's `secret`.
+  The option stays optional so existing configs compile; delete it.
+  `validateStartupConfig` (core) no longer accepts a `secret` key.
+- **`safeRedirectPath` refuses sign-in and API destinations.** It
+  falls back when the destination is the sign-in page (default
+  `/sign-in`) or sits under `/api`. Pass
+  `{ signInPath, apiPrefix }` to match custom mounts, or
+  `{ signInPath: null }` where landing on sign-in is legitimate. It
+  moved to core; `web`, `next` and `tanstack-start` re-export it
+  unchanged.
+- **`SignOutButton` narrows `redirectTo`** through
+  `safeRedirectPath`. Off-origin and API destinations go to `/`.
+- **`requireRoles` validates its role list first.** An invalid role
+  (e.g. `'Admin'`) throws `InvalidRoleError`, and an empty list
+  throws `InvalidConfigError`. Use `requireSessionUser` for "any
+  signed-in user".
+- **Wiring rejects illegal cookie attributes.** Provider session
+  cookie names must be RFC 6265 tokens (checked at registration).
+  Cookie `Domain`/`Path` values containing `;`, `,`, whitespace or
+  control characters throw at serialization.
+- **Auth.js `authorize` lowercases the email** exactly like
+  registration, so `User@X.com` signs in. A corrupt stored
+  `emailVerified` throws `AdapterMappingError`, and a gapped session
+  chunk set is a failed read, never a joined token.
+- **Clocks must be synchronized.** Session expiry has no skew
+  leeway (see concepts).
+
 ## Future: WorkOS / Clerk adapters (post-v1)
 
 Reserved registry ids, no packages yet. When they land they will be

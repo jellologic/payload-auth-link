@@ -80,6 +80,27 @@ describe('createAuthJsProvider', () => {
     }
   })
 
+  it('rejects a gapped chunk set instead of joining a garbage token (PAR-8)', async () => {
+    const sessions = stubSessions({
+      readSession: vi.fn((): Promise<unknown> => Promise.resolve(validSessionBody())),
+    })
+    const provider = createAuthJsProvider({
+      sessions,
+      sessionCookieNames: [...cookieNames, 'authjs.session-token.2'],
+    })
+    const gapped = await provider.getSession(
+      new Headers({ cookie: 'authjs.session-token.0=aaa; authjs.session-token.2=ccc' })
+    )
+    expect(gapped.isErr()).toBe(true)
+    if (gapped.isErr()) {
+      expect(gapped.error).toBeInstanceOf(ProviderError)
+      const cause: unknown = gapped.error.cause
+      expect(String(cause instanceof Error ? cause.message : gapped.error.message)).toMatch(
+        /non-contiguous/
+      )
+    }
+  })
+
   it('joins chunk slots in order and prefers the whole base cookie', async () => {
     const sessions = stubSessions({
       readSession: vi.fn((): Promise<unknown> => Promise.resolve(validSessionBody())),

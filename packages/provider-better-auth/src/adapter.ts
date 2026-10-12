@@ -241,7 +241,9 @@ function readPayloadId(doc: Record<string, unknown>, operation: string): string 
  * Map a Payload document to a Better Auth row: `baId` becomes `id`, the
  * numeric Payload `id` is dropped, and `date` fields become `Date`
  * instances (matching the memory adapter's in-memory semantics). With
- * `select`, only the selected physical fields are kept.
+ * `select`, only the selected physical fields are kept. Storage drift (a
+ * row without `baId`, an unparseable date) throws `AdapterOperationError`
+ * here instead of reaching Better Auth as a malformed row.
  */
 function toBaRow(
   dates: ReadonlySet<string>,
@@ -252,13 +254,24 @@ function toBaRow(
   const include = (field: string): boolean => select === undefined || select.includes(field)
   const row: Record<string, unknown> = {}
   if (include('id')) {
+    if (typeof doc.baId !== 'string' || doc.baId === '') {
+      throw new AdapterOperationError(`${model} row: missing baId`)
+    }
     row.id = doc.baId
   }
   for (const [key, value] of Object.entries(doc)) {
     if (key === 'id' || key === 'baId' || !include(key)) {
       continue
     }
-    row[key] = isDateField(dates, model, key) && typeof value === 'string' ? new Date(value) : value
+    if (isDateField(dates, model, key) && typeof value === 'string') {
+      const date = new Date(value)
+      if (Number.isNaN(date.getTime())) {
+        throw new AdapterOperationError(`${model} row: ${key} is not a valid date`)
+      }
+      row[key] = date
+      continue
+    }
+    row[key] = value
   }
   return row
 }
@@ -338,10 +351,16 @@ async function applyJoin(
 /**
  * Re-type a built row as the caller-declared model type. `T` is
  * instantiated by Better Auth core with the row type of the queried model;
- * rows are built field-by-field to match, and integration tests prove each
- * model round-trips.
+ * rows are built field-by-field by `toBaRow` (which asserts `id` and date
+ * fields), and integration tests prove each model round-trips. The shape
+ * is still asserted here — a record, `null`, or an array of records — so
+ * no non-row value is ever re-typed as one.
  */
 function asModelRow<T>(row: unknown): T {
+  const isRow = (value: unknown): boolean => isRecord(value) && !Array.isArray(value)
+  if (row !== null && !isRow(row) && !(Array.isArray(row) && row.every(isRow))) {
+    throw new AdapterOperationError('model row: expected a row object, null, or a row array')
+  }
   return row as T
 }
 

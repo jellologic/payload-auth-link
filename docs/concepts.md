@@ -65,7 +65,12 @@ There are no webhooks and no background sync. Every read is live:
 3. The first live session wins — precedence is the order of the
    `providers` array, so a browser signed in through two providers
    resolves to the first registered one. Expiry is checked against
-   the injected clock.
+   the injected clock with **no skew leeway**: a session expires
+   exactly at `expiresAt`. Keep the plugin host and the provider's
+   session store on synchronized clocks (NTP) — a hard requirement,
+   since a leeway would accept sessions the provider already
+   considers expired. A provider reporting an empty session id is a
+   port-contract violation and resolves to 401, never a 500.
 4. The linked Payload user is resolved (or JIT-provisioned), then
    reloaded fresh — role changes apply to the very next request.
 5. The endpoint/strategy returns `{ user: { id, collection, email,

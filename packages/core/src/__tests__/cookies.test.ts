@@ -37,6 +37,25 @@ describe('serializeCookie', () => {
     expect(() => serializeCookie('has space', 'x')).toThrow('Invalid cookie name')
   })
 
+  it('rejects Domain and Path values that would inject attributes or split headers', () => {
+    const forged = [
+      'example.com; HttpOnly',
+      'a.com,b.com',
+      'example .com',
+      'example.com\r\nSet-Cookie: x=1',
+      'tab\there',
+      '\u0000',
+      '',
+    ]
+    for (const value of forged) {
+      expect(() => serializeCookie('a', 'b', { domain: value })).toThrow(/Invalid cookie Domain/)
+      expect(() => serializeCookie('a', 'b', { path: value })).toThrow(/Invalid cookie Path/)
+    }
+    expect(serializeCookie('a', 'b', { domain: '.example.com', path: '/api/v1' })).toBe(
+      'a=b; Domain=.example.com; Path=/api/v1'
+    )
+  })
+
   it('renders Partitioned when asked', () => {
     expect(serializeCookie('a', 'b', { partitioned: true, secure: true })).toContain('Partitioned')
   })

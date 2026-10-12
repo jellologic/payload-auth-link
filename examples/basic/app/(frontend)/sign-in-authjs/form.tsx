@@ -3,6 +3,7 @@
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useState, type FormEvent } from 'react'
 import { safeRedirectPath, useAuthLinkRefresh } from '@payload-auth-link/next'
+import { isAuthJsFailureLanding } from '../../../lib/authjs-callback'
 
 type Mode = 'sign-in' | 'sign-up'
 
@@ -78,7 +79,7 @@ export function AuthJsSignInForm() {
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: params,
       })
-      if (!callback.ok || callback.url.includes('error=')) {
+      if (!callback.ok || isAuthJsFailureLanding(callback.url)) {
         setError('Sign-in failed')
         return
       }

@@ -21,7 +21,6 @@ function ctx(): MappingContext {
   const { provider } = createStubProvider()
   const wired = wireOptions({
     baseUrl: 'http://auth-link.test',
-    secret: 'x'.repeat(32),
     roles: ['admin', 'user'],
     defaultRole: 'user',
     providers: [provider],

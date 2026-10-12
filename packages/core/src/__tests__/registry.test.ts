@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { DuplicateProviderError, InvalidProviderIdError, UnknownProviderError } from '../errors.js'
+import {
+  DuplicateProviderError,
+  InvalidConfigError,
+  InvalidProviderIdError,
+  UnknownProviderError,
+} from '../errors.js'
 import {
   defineProviderId,
   defineSessionId,
@@ -9,10 +14,13 @@ import {
 import { createProviderRegistry } from '../registry.js'
 import { okAsync } from 'neverthrow'
 
-function stubProvider(id: string): IdentityProviderPort {
+function stubProvider(
+  id: string,
+  sessionCookieNames: readonly string[] = []
+): IdentityProviderPort {
   return {
     id: defineProviderId(id),
-    sessionCookieNames: [],
+    sessionCookieNames,
     getSession: () => okAsync(null),
     revokeSession: () => okAsync(undefined),
   }
@@ -58,6 +66,18 @@ describe('createProviderRegistry', () => {
     if (result.isErr()) {
       expect(result.error).toBeInstanceOf(DuplicateProviderError)
     }
+  })
+
+  it('fails fast at wiring on illegal session cookie names (TYP-8)', () => {
+    for (const bad of ['', 'has space', 'semi;colon', 'a=b', 'crlf\r\n']) {
+      const registry = createProviderRegistry()
+      expect(() => registry.register(stubProvider('bad', ['ok_name', bad]))).toThrow(
+        InvalidConfigError
+      )
+      expect(registry.ids()).toEqual([])
+    }
+    const registry = createProviderRegistry()
+    expect(registry.register(stubProvider('good', ['__Secure-a.session_token'])).isOk()).toBe(true)
   })
 
   it('reports unknown providers', () => {

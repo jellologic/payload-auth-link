@@ -13,20 +13,8 @@ export { createAuthMiddleware } from './middleware.js'
 export type { AuthMiddlewareOptions } from './middleware.js'
 export { AuthLinkServerProvider } from './server-provider.js'
 export type { AuthLinkServerProviderProps } from './server-provider.js'
-export {
-  createRouteHandlers,
-  createSessionVerifier,
-  decideAuthRedirect,
-  requireRoles,
-  requireSessionUser,
-  resolveSessionUrl,
-  safeRedirectPath,
-} from '@payload-auth-link/web'
-export type {
-  AuthRedirectOptions,
-  RequireRolesOptions,
-  RouteHandler,
-  RouteHandlersOptions,
-  SessionVerifier,
-  SessionVerifierOptions,
-} from '@payload-auth-link/web'
+// The whole framework-free web surface, in ONE statement shared verbatim
+// by both adapters: a new web export reaches every adapter automatically
+// and the adapters cannot drift apart (barrel tests pin the sets). The
+// local `packageName` above takes precedence over web's.
+export * from '@payload-auth-link/web'

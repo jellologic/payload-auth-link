@@ -16,6 +16,8 @@ export default defineConfig({
   testMatch: '*.spec.ts',
   // One seeded-admin login per run (concurrent logins race).
   globalSetup: './admin-session.ts',
+  // Payload line under test: keys the a11y upstream snapshot (a11y.spec.ts).
+  metadata: { payloadMajor: 4 },
   fullyParallel: false,
   // Postgres + cold Vite SSR: schema push on first hit, so the first
   // tests pay extra.

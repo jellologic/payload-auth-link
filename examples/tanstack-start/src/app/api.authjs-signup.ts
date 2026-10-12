@@ -1,8 +1,7 @@
-import { InvalidEmailError, UserExistsError } from '@payload-auth-link/core'
-import { WeakPasswordError } from '@payload-auth-link/provider-authjs'
 import { createFileRoute } from '@tanstack/react-router'
 import { registerAuthJsUser } from '../lib/authjs.js'
 import { createRateLimiter, rateLimited } from '../lib/rate-limit.js'
+import { signupResponse } from '../lib/signup-response.js'
 
 // Builder-owned throttle (in-memory, dev-scale — see lib/rate-limit.ts).
 // Per-email: legit signups use each address once, so abuse of one address
@@ -43,19 +42,11 @@ export const Route = createFileRoute('/api/authjs-signup')({
           name: body.email,
           emailVerified: new Date(),
         })
-        if (result.isErr()) {
-          const error = result.error
-          if (error instanceof UserExistsError) {
-            return Response.json({ error: 'that email is already registered' }, { status: 409 })
-          }
-          if (error instanceof WeakPasswordError || error instanceof InvalidEmailError) {
-            return Response.json({ error: error.message }, { status: 400 })
-          }
-          // AdapterOperationError: storage failure. Generic message — the
-          // cause may carry database internals that must not leak to clients.
-          return Response.json({ error: 'registration failed, try again later' }, { status: 500 })
-        }
-        return Response.json({ email: result.value.email })
+        // Uniform response for new and existing emails (no enumeration
+        // oracle); duplicates are reported out-of-band. This local example
+        // has no email delivery, so the notice is a deliberate no-op —
+        // production builders email the address owner here.
+        return signupResponse(result.isErr() ? result.error : null, body.email, () => {})
       },
     },
   },

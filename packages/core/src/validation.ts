@@ -46,7 +46,6 @@ export function parseCollectionMap(
 export const startupConfigSchema = z
   .object({
     baseUrl: z.url('must be a valid URL'),
-    secret: z.string().min(32, 'secret must be at least 32 characters'),
     roles: z.array(roleSchema).min(1, 'at least one role is required'),
     defaultRole: roleSchema,
     providers: z.array(providerIdSchema).min(1, 'at least one provider is required'),
@@ -63,7 +62,7 @@ export type StartupConfig = z.output<typeof startupConfigSchema>
 
 /**
  * Validate startup config once at wiring time. Fails fast on bad
- * secrets, empty roles, default-role-not-in-roles, or zero providers.
+ * URLs, empty roles, default-role-not-in-roles, or zero providers.
  */
 export function validateStartupConfig(value: unknown): Result<StartupConfig, InvalidConfigError> {
   const parsed = startupConfigSchema.safeParse(value)

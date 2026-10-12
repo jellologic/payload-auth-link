@@ -1,4 +1,10 @@
-import { ForbiddenError, SessionInvalidError, type SessionUser } from '@payload-auth-link/core'
+import {
+  ForbiddenError,
+  InvalidConfigError,
+  InvalidRoleError,
+  SessionInvalidError,
+  type SessionUser,
+} from '@payload-auth-link/core'
 import { describe, expect, it, vi } from 'vitest'
 import { requireRoles, requireSessionUser } from '../authz.js'
 import type { SessionVerifier } from '../verify.js'
@@ -74,5 +80,21 @@ describe('requireRoles', () => {
       requireRoles(new Headers(), stubVerify(member), { roles: ['admin'], onDenied })
     ).rejects.toThrow('not-found')
     expect(onDenied).toHaveBeenCalledWith(member)
+  })
+})
+
+describe('requireRoles role validation (TYP-10)', () => {
+  it('throws InvalidRoleError on a typo-cased role before reading the session', async () => {
+    const verify = stubVerify(admin)
+    await expect(requireRoles(new Headers(), verify, { roles: ['Admin'] })).rejects.toBeInstanceOf(
+      InvalidRoleError
+    )
+    expect(verify).not.toHaveBeenCalled()
+  })
+
+  it('throws InvalidConfigError on an empty role list', async () => {
+    await expect(
+      requireRoles(new Headers(), stubVerify(admin), { roles: [] })
+    ).rejects.toBeInstanceOf(InvalidConfigError)
   })
 })

@@ -33,7 +33,6 @@ beforeAll(async () => {
     plugins: [
       authLink({
         baseUrl: ORIGIN,
-        secret: SECRET,
         roles: ['admin', 'user'],
         defaultRole: 'user',
         providers: [stub.provider],

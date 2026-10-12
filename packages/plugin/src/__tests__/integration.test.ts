@@ -85,7 +85,6 @@ beforeAll(async () => {
     plugins: [
       authLink({
         baseUrl: ORIGIN,
-        secret: SECRET,
         roles: ['admin', 'user'],
         defaultRole: 'user',
         providers: [stub.provider],
@@ -325,7 +324,6 @@ describe('failed logout', () => {
     // a real repository. Routing/CSRF are covered by the tests above.
     const wiredFailing = wireOptions({
       baseUrl: ORIGIN,
-      secret: SECRET,
       roles: ['admin', 'user'],
       defaultRole: 'user',
       providers: [failingProvider],
@@ -365,7 +363,6 @@ describe('payload user repository', () => {
   it('round-trips users through the Local API', async () => {
     const wired = wireOptions({
       baseUrl: ORIGIN,
-      secret: SECRET,
       roles: ['admin', 'user'],
       defaultRole: 'user',
       providers: [stub.provider],

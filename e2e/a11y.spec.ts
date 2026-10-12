@@ -1,5 +1,5 @@
 import { AxeBuilder } from '@axe-core/playwright'
-import { expect, test } from '@playwright/test'
+import { expect, test, type TestInfo } from '@playwright/test'
 import { adminContext } from './admin-session.js'
 import { gotoOwn, gotoSettled, seededAdminCell, toggleToSignUp } from './helpers.js'
 
@@ -51,4 +51,69 @@ test('admin users table body has zero axe violations', async ({ browser, baseURL
     .exclude('.id-label')
     .analyze()
   expect(results.violations).toEqual([])
+})
+
+/**
+ * Upstream snapshot for the FULL admin users page (Payload's own chrome):
+ * axe rule id → node count observed on 2026-10-12 (row-select
+ * checkboxes excluded, so counts do not scale with rows). The page must report
+ * no rule outside this set and no more nodes per rule, so a new upstream
+ * regression (or anything we add to the admin) fails here instead of
+ * hiding behind the `tbody` scoping above. Fixes upstream (fewer nodes,
+ * vanished rules) pass; shrink the snapshot when they land.
+ */
+const upstreamAdminViolations: Record<3 | 4, Readonly<Record<string, number>>> = {
+  // Payload v3: sort-label contrast per column, unlabeled select-all and
+  // search input, duplicated/missing landmarks.
+  3: {
+    'color-contrast': 4,
+    'label-title-only': 1,
+    label: 1,
+    'landmark-no-duplicate-banner': 1,
+    'landmark-one-main': 1,
+    'landmark-unique': 1,
+    region: 8,
+  },
+  // Payload v4 (4.0.0-beta line): Gecko flags contrast on fixed chrome
+  // (nav group label, Create New, column headers, pagination); Chromium
+  // and WebKit report none. Counts are the max across engines.
+  4: { 'color-contrast': 8 },
+}
+
+function payloadMajor(testInfo: TestInfo): 3 | 4 {
+  const major: unknown = testInfo.config.metadata['payloadMajor']
+  if (major !== 3 && major !== 4) {
+    throw new Error('playwright config must declare metadata.payloadMajor (3 or 4)')
+  }
+  return major
+}
+
+test('admin users page reports nothing beyond the upstream snapshot', async ({
+  browser,
+  baseURL,
+}, testInfo) => {
+  const allowed = upstreamAdminViolations[payloadMajor(testInfo)]
+  const admin = await adminContext(browser, baseURL)
+  const page = await admin.newPage()
+  await gotoSettled(page, '/admin/collections/users?sort=createdAt')
+  await expect(seededAdminCell(page)).toBeVisible()
+  // Per-row upstream chrome, triaged in the tbody test above, scales
+  // with the row count: unlabeled row-select checkboxes (v3) and the v4
+  // ID-cell `.id-label` contrast (flagged by Gecko, not Chromium).
+  // Excluding both keeps this snapshot independent of how many users
+  // exist and of the engine.
+  const results = await new AxeBuilder({ page })
+    .exclude('tbody input[type="checkbox"]')
+    .exclude('.id-label')
+    .analyze()
+  const beyond = results.violations
+    .filter((violation) => violation.nodes.length > (allowed[violation.id] ?? 0))
+    .map((violation) => ({
+      rule: violation.id,
+      nodes: violation.nodes.length,
+      allowed: allowed[violation.id] ?? 0,
+      targets: violation.nodes.map((node) => node.target.join(' ')),
+    }))
+  expect(beyond).toEqual([])
+  await admin.close()
 })

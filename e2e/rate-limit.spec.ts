@@ -17,10 +17,10 @@ test('builder signup throttles abusive repeats with 429', async ({ page }) => {
       retryAfter = response.headers()['retry-after'] ?? null
     }
   }
-  // First creates, the next nine are duplicate rejections, the eleventh
-  // trips the throttle (max 10 per 10 minutes per email).
-  expect(statuses[0]).toBe(200)
-  expect(statuses.slice(1, 10)).toEqual(Array(9).fill(409))
+  // First creates; the next nine are duplicates, answered exactly like
+  // a new signup (SEC-9: no enumeration oracle); the eleventh trips the
+  // throttle (max 10 per 10 minutes per email).
+  expect(statuses.slice(0, 10)).toEqual(Array(10).fill(200))
   expect(statuses[10]).toBe(429)
   expect(retryAfter).not.toBeNull()
 })

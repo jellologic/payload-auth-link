@@ -1,6 +1,7 @@
 import { safeRedirectPath, useAuthLinkRefreshStart } from '@payload-auth-link/tanstack-start'
 import { useRouter } from '@tanstack/react-router'
 import { useState, type FormEvent } from 'react'
+import { isAuthJsFailureLanding } from '../../lib/authjs-callback.js'
 
 type Mode = 'sign-in' | 'sign-up'
 
@@ -75,7 +76,7 @@ export function AuthJsSignInForm({ redirect }: { redirect?: string }) {
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: params,
       })
-      if (!callback.ok || callback.url.includes('error=')) {
+      if (!callback.ok || isAuthJsFailureLanding(callback.url)) {
         setError('Sign-in failed')
         return
       }

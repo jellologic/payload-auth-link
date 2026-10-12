@@ -69,7 +69,6 @@ export default buildConfig({
   plugins: [
     authLink({
       baseUrl,
-      secret: process.env.PAYLOAD_SECRET ?? 'local-dev-only-secret-32-chars-min!',
       roles: ['admin', 'user'],
       defaultRole: 'user',
       // Both providers live side by side: Better Auth at /api/auth,

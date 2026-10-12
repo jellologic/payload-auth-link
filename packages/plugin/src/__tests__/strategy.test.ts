@@ -56,7 +56,6 @@ async function authenticate(
 ): Promise<{ user: unknown }> {
   const wired = wireOptions({
     baseUrl: 'http://auth-link.test',
-    secret: 'unit-test-secret-32-chars-minimum!!',
     roles: ['admin', 'user'],
     defaultRole: 'user',
     providers: [provider],

@@ -86,6 +86,18 @@ export function createSessionService(deps: SessionServiceDeps): SessionPort {
         if (!found) {
           return err(new SessionInvalidError('no active provider session'))
         }
+        // Port contract violation (empty id): a 401, never a thrown 500
+        // from `defineSessionId` below.
+        if (found.providerSession.sessionId === '') {
+          deps.logger.warn('provider returned an empty session id', {
+            providerId: found.providerId,
+          })
+          return err(new SessionInvalidError('provider session has no id'))
+        }
+        // No clock-skew leeway, by design: a leeway would accept sessions
+        // the provider already considers expired. The plugin host and the
+        // provider's session store must keep synchronized clocks (NTP) —
+        // a documented hard requirement (docs/concepts.md).
         if (found.providerSession.expiresAt.getTime() <= deps.clock.now().getTime()) {
           return err(new SessionExpiredError())
         }

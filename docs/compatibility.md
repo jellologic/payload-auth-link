@@ -36,7 +36,7 @@ under bundler resolution for the same reason.
 
 Product code issues only single-document Local API calls, so the
 parity risk sits in Where translation, date serialization, and id
-types — all six suites assert identical behavior (23 specs each:
+types — all six suites assert identical behavior (24 specs each:
 `e2e`, `e2e:postgres`, `e2e:mongo` on Next; `e2e:tanstack`,
 `e2e:tanstack-postgres`, `e2e:tanstack-mongo` on Start). Each
 example's mongo branch disables Payload transactions: several
