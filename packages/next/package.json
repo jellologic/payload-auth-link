@@ -1,0 +1,46 @@
+{
+  "name": "@payload-auth-link/next",
+  "version": "0.0.1",
+  "description": "payload-auth-link Next.js adapter: route handlers, middleware, session and cookie helpers.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "!dist/*.tsbuildinfo",
+    "src",
+    "!src/**/__tests__"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@payload-auth-link/core": "workspace:*",
+    "@payload-auth-link/react": "workspace:*",
+    "@payload-auth-link/web": "workspace:*"
+  },
+  "peerDependencies": {
+    "next": ">=15.0.0",
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "next": "16.4.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  }
+}

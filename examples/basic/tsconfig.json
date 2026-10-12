@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    "incremental": true,
+    "allowJs": true,
+    // A Next.js app lives in the bundler world (and Next.js ships no
+    // `exports` map, so `next/*` only resolves here).
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "jsx": "preserve",
+    "plugins": [{ "name": "next" }],
+    "paths": {
+      "@/*": ["./src/*"],
+      "@payload-config": ["./payload.config.ts"]
+    }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules", ".next"]
+}

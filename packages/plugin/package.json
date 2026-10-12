@@ -1,0 +1,52 @@
+{
+  "name": "@payload-auth-link/plugin",
+  "version": "0.0.1",
+  "description": "payload-auth-link for Payload CMS: collections, auth strategy, endpoints, hooks, admin.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./admin": {
+      "types": "./dist/admin/index.d.ts",
+      "default": "./dist/admin/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "!dist/*.tsbuildinfo",
+    "src",
+    "!src/**/__tests__"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@payload-auth-link/core": "workspace:*",
+    "neverthrow": "^8.2.0"
+  },
+  "peerDependencies": {
+    "payload": "^3.0.0 || ^4.0.0-beta.0",
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "@payloadcms/db-sqlite": "3.90.2",
+    "@payloadcms/ui": "3.90.2",
+    "payload": "3.90.2",
+    "react": "19.2.6"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    // Tests run under Vite (bundler resolution), and Next.js ships no
+    // `exports` map, so `next/*` only resolves here. Shipped code keeps
+    // its per-package resolution; `tsc -b` in `build` guards that.
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "types": ["node"]
+  },
+  "include": ["packages/*/src", "e2e/**/*.ts", "vitest.config.ts"]
+}

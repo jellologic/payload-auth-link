@@ -1,0 +1,2395 @@
+# payload-auth-link (full)
+
+> payload-auth-link: a hexagonal ports/adapters Payload CMS auth plugin. Identity providers (Better Auth, Auth.js) are swappable adapters behind IdentityProviderPort; users stay first-class Payload documents. First-class Next.js (Payload v3) and TanStack Start (Payload v4) adapters share one framework-free web core. ESM-only, strict TypeScript, Result-based errors. Example apps at examples/basic and examples/tanstack-start; 23 Playwright specs green per suite across SQLite, Postgres, and Mongo on both frameworks (SQLite suites in Chromium, Firefox, and WebKit).
+
+---
+
+<!-- docs/getting-started.md -->
+
+# Getting started
+
+Four edits take a Payload CMS v3 + Next.js site from zero to signed-in
+users with Better Auth: install, engine, config, routes + UI. Every
+snippet below is copied from `examples/basic`, which the e2e suite
+exercises on SQLite, Postgres, and Mongo — if a snippet and the example
+disagree, the example wins (and please file an issue).
+
+Prerequisites: Bun 1.4+, a Payload 3 + Next.js 15+ app, React 19.
+All packages are ESM-only (`type: module`, `engines: node >= 20.9`).
+
+## Edit 1 — Install
+
+```bash
+bun add @payload-auth-link/core @payload-auth-link/plugin \
+  @payload-auth-link/react @payload-auth-link/next \
+  @payload-auth-link/provider-better-auth better-auth
+```
+
+(`better-auth` ships as a dependency of the provider, but you import
+it yourself for the `nextCookies()` framework plugin in Edit 2, so it
+is a direct dependency too.)
+
+## Edit 2 — The engine (`lib/auth.ts`)
+
+The engine composes Better Auth on Payload storage. `getPayload` is a
+thunk (cached here) so the engine never imports your Payload config
+statically — no import cycle.
+
+```ts
+import { createBetterAuthEngine } from '@payload-auth-link/provider-better-auth'
+import { nextCookies } from 'better-auth/next-js'
+import { getPayload, type Payload } from 'payload'
+
+let cachedPayload: Promise<Payload> | undefined
+
+function loadPayload(): Promise<Payload> {
+  cachedPayload ??= import('../payload.config').then((mod) => getPayload({ config: mod.default }))
+  return cachedPayload
+}
+
+export const engine = createBetterAuthEngine({
+  getPayload: loadPayload,
+  options: {
+    baseURL: process.env.EXAMPLE_BASE_URL ?? 'http://localhost:3100',
+    secret: process.env.PAYLOAD_SECRET ?? 'local-dev-only-secret-32-chars-min!',
+    // Framework cookie plugin, declared by you exactly as Better Auth
+    // documents: required for cookie handling in Next.js server
+    // actions. The engine never touches this list.
+    plugins: [nextCookies()],
+    emailAndPassword: {
+      enabled: true,
+      // Local example only: no email delivery here, so verification is
+      // off. The engine requires verification by default — production
+      // builders keep the default and configure an email sender.
+      requireEmailVerification: false,
+    },
+  },
+})
+
+export const { auth, provider: betterAuthProvider, collections: betterAuthCollections } = engine
+```
+
+Notes:
+
+- `options` is Better Auth's own options object, passed through
+  verbatim except `database` (wired to Payload here). Your plugins,
+  rate limits, and session settings keep working — and keep their
+  types, since the engine's return type is inferred.
+- With `emailAndPassword` present, the engine **requires email
+  verification by default**. The snippet above opts out only because
+  the example has no email delivery; production sites keep the
+  default and configure a sender. Unverified users can hold provider
+  sessions but the plugin refuses to link them to Payload users
+  (see [Concepts](concepts.md)).
+- Casing callout: the engine takes Better Auth's `baseURL` (capital
+  URL) while the plugin takes Payload-style `baseUrl` (Edit 3).
+  Each spelling belongs to its owner — do not "fix" either one.
+
+## Edit 3 — The plugin (`payload.config.ts`)
+
+```ts
+import { authLink } from '@payload-auth-link/plugin'
+import { betterAuthCollections, betterAuthProvider } from './lib/auth'
+
+export default buildConfig({
+  // …your db, secret, serverURL…
+  collections: [
+    { slug: 'users', auth: true, fields: [] },
+    // …your collections…
+    ...betterAuthCollections,
+  ],
+  plugins: [
+    authLink({
+      baseUrl: process.env.EXAMPLE_BASE_URL ?? 'http://localhost:3100',
+      secret: process.env.PAYLOAD_SECRET ?? 'local-dev-only-secret-32-chars-min!',
+      roles: ['admin', 'user'],
+      defaultRole: 'user',
+      providers: [betterAuthProvider],
+    }),
+  ],
+})
+```
+
+What this does:
+
+- Appends the Better Auth system collections (`ba-users`,
+  `ba-sessions`, `ba-accounts`, `ba-verifications`, `ba-rate-limits`,
+  deny-all access, hidden from the admin nav).
+- Extends your `users` collection with `roles` and `identities`
+  fields (customize via `usersCollection` / `emailField` /
+  `rolesField` / `identitiesField`), registers the `auth-link`
+  strategy, and mounts `GET` + `DELETE /api/auth-link/session`.
+- Validates everything fail-fast: bad secrets, unknown roles, or
+  zero providers throw at config time, not on first login.
+
+Users stay first-class Payload documents: the admin users list shows
+roles and linked identities, and opening a row shows each identity
+(`better-auth · user@example.com`).
+
+## Edit 4 — Routes, middleware, UI
+
+**Auth routes** (`app/api/auth/[...all]/route.ts`):
+
+```ts
+import { createRouteHandlers } from '@payload-auth-link/next'
+import { auth } from '../../../../lib/auth'
+
+export const { GET, POST } = createRouteHandlers((request) => auth.handler(request))
+```
+
+**Edge middleware** (`middleware.ts` + `lib/auth-cookie-names.ts`).
+The middleware only checks cookie _presence_ (optimistic UX, never
+authorization — real validation happens on Node). Cookie names come
+from the dependency-free `/cookies` subpath so the Edge bundle never
+imports server code:
+
+```ts
+// lib/auth-cookie-names.ts
+import { getBetterAuthSessionCookieNames } from '@payload-auth-link/provider-better-auth/cookies'
+
+export const exampleBaseURL = process.env.EXAMPLE_BASE_URL ?? 'http://localhost:3100'
+export const sessionCookieNames: readonly string[] = getBetterAuthSessionCookieNames({
+  baseURL: exampleBaseURL,
+})
+```
+
+```ts
+// middleware.ts
+import { createAuthMiddleware } from '@payload-auth-link/next'
+import { sessionCookieNames } from './lib/auth-cookie-names'
+
+export default createAuthMiddleware({
+  sessionCookieNames,
+  publicPaths: ['/', '/sign-in'],
+})
+
+export const config = {
+  // Segment-anchored: bare `api`/`admin` prefixes would also exempt
+  // frontend routes like `/admin-only` from the middleware.
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|api(?:/|$)|admin(?:/|$)).*)'],
+}
+```
+
+Mounting Auth.js alongside (as `examples/basic` does — see the
+[Auth.js guide](guide-authjs.md)) adds a second cookie-name source
+and a second public sign-in path:
+
+```ts
+// lib/auth-cookie-names.ts (dual-provider delta)
+import { getAuthJsSessionCookieNames } from '@payload-auth-link/provider-authjs/cookies'
+import { getBetterAuthSessionCookieNames } from '@payload-auth-link/provider-better-auth/cookies'
+
+export const exampleBaseURL = process.env.EXAMPLE_BASE_URL ?? 'http://localhost:3100'
+export const sessionCookieNames: readonly string[] = [
+  ...getBetterAuthSessionCookieNames({ baseURL: exampleBaseURL }),
+  ...getAuthJsSessionCookieNames({ baseURL: exampleBaseURL }),
+]
+
+// middleware.ts (dual-provider delta)
+export default createAuthMiddleware({
+  sessionCookieNames,
+  publicPaths: ['/', '/sign-in', '/sign-in-authjs'],
+})
+```
+
+**Server validation + hydration** (`lib/session.ts`, layout):
+
+```ts
+// lib/session.ts
+import { createSessionVerifier } from '@payload-auth-link/next'
+import { exampleBaseURL } from './auth-cookie-names'
+
+// Anchor to the canonical origin: host headers are client-spoofable
+// and the session cookie is forwarded to this origin, so the
+// header-derived fallback is local-development only.
+export const verifySession = createSessionVerifier({ baseUrl: exampleBaseURL })
+```
+
+```tsx
+// app/(frontend)/layout.tsx
+import type { ReactNode } from 'react'
+import { AuthLinkServerProvider } from '@payload-auth-link/next'
+import { verifySession } from '../../lib/session'
+
+export default function FrontendLayout({ children }: { children: ReactNode }) {
+  return (
+    <html lang="en">
+      <body>
+        <AuthLinkServerProvider verify={verifySession}>{children}</AuthLinkServerProvider>
+      </body>
+    </html>
+  )
+}
+```
+
+**A sign-in form.** POST to Better Auth's endpoints, then refresh both
+layers (`useAuthLinkRefresh` re-reads the session endpoint and
+revalidates server state):
+
+```tsx
+'use client'
+
+import { safeRedirectPath, useAuthLinkRefresh } from '@payload-auth-link/next'
+import { useRouter, useSearchParams } from 'next/navigation'
+
+const router = useRouter()
+const searchParams = useSearchParams()
+const refreshAuth = useAuthLinkRefresh()
+
+const response = await fetch('/api/auth/sign-up/email', {
+  method: 'POST',
+  credentials: 'same-origin',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ name: email, email, password }),
+})
+if (response.ok) {
+  await refreshAuth()
+  // The redirect param is attacker-controlled input: narrow it to an
+  // in-app path so a crafted link cannot bounce fresh logins off-site.
+  router.push(safeRedirectPath(searchParams.get('redirect')))
+}
+```
+
+The example's full form (`app/(frontend)/sign-in/form.tsx`) adds
+sign-in mode, error display, and the local-only dev verification
+stamp — copy it.
+
+## Run and verify
+
+```bash
+# Dev-only admin seed (explicit opt-in — nothing is seeded without it):
+ALLOW_DEV_ADMIN_SEED=true DEV_ADMIN_PASSWORD=choose-a-password bun run dev:example
+```
+
+1. Open `/sign-in`, create an account — you land on `/account` with
+   the `user` role.
+2. `GET /api/auth-link/session` returns
+   `{ user: { id, collection, email, roles } }`.
+3. Open `/admin` (seeded admin: `dev@payload-auth-link.test` with
+   your `DEV_ADMIN_PASSWORD`), browse Collections → Users: your user
+   is there with its role and 1 linked identity.
+4. Sign out via the user menu: the session is revoked, cookies are
+   expired, `/account` bounces back to sign-in.
+
+## Next steps
+
+- [TanStack Start guide](guide-tanstack-start.md): the same
+  integration on Start (Payload v4) — same calls, same behavior.
+- [Tour](tour.md): what every file in the example does.
+- [Concepts](concepts.md): ports, JIT linking, verification gating.
+- [Better Auth guide](guide-better-auth.md): verification, plugins,
+  custom cookie names, session tuning.
+- [Auth.js guide](guide-authjs.md): mount Auth.js alongside (or
+  instead) — credentials, builder signup, OAuth.
+- [Troubleshooting](troubleshooting.md): the failure modes we hit
+  building this, and their fixes.
+
+---
+
+<!-- docs/tour.md -->
+
+# Tour
+
+A file-by-file walkthrough of `examples/basic` — the reference
+integration every guide points back to, and the e2e target on all
+three databases. Read this after [Getting started](getting-started.md)
+to understand _why_ each piece exists.
+
+Screenshots (regenerate with `bun run docs:media`):
+
+![Home](media/01-home.png)
+![Better Auth sign-in](media/02-sign-in.png)
+![Auth.js sign-in](media/03-sign-in-authjs.png)
+![Account](media/04-account.png)
+![Admin users list with roles and linked identities](media/05-admin-users.png)
+
+## Packages (what you install)
+
+| Package                                   | Role                                                                                                                 | Imports                                                       |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `@payload-auth-link/core`                 | Domain: ports, `Role`, errors, wire contract. Framework-free — lint-proven zero framework imports.                   | `neverthrow`, `zod`                                           |
+| `@payload-auth-link/plugin`               | Payload citizen: users extension, strategy, session endpoints, admin UI.                                             | `core`, `neverthrow`, `payload` (+ `react` peer for `admin/`) |
+| `@payload-auth-link/react`                | Provider-agnostic UI: context, buttons, menu, role gates.                                                            | `core`, `react`                                               |
+| `@payload-auth-link/web`                  | Framework-free web: route handlers, verifier, authz, redirect safety. No framework imports.                          | `core`                                                        |
+| `@payload-auth-link/next`                 | Next adapter: Edge middleware, client refresh, server provider. Re-exports `web`. Only package importing `next/*`.   | `core`, `react`, `web`, `next`                                |
+| `@payload-auth-link/tanstack-start`       | Start adapter: route handlers, request middleware, loaders, refresh. Re-exports `web`. Only package importing Start. | `core`, `react`, `web`, Start                                 |
+| `@payload-auth-link/provider-better-auth` | Better Auth engine, Payload database adapter, port, collections.                                                     | `core`, `neverthrow`, `better-auth`, `payload`                |
+| `@payload-auth-link/provider-authjs`      | Auth.js engine, Payload database adapter, credentials service, port, collections.                                    | `core`, `neverthrow`, `@auth/core`, `payload`                 |
+
+Dependency rules (enforced by `no-restricted-imports`): `core`
+imports nothing internal; UI packages never import Payload; React
+never appears in the plugin outside `admin/`.
+
+## The example, file by file
+
+### `lib/auth.ts` — Better Auth engine
+
+Creates the engine and re-exports the three things the rest of the
+app needs: `auth` (the Better Auth instance for routes),
+`betterAuthProvider` (for the plugin registry),
+`betterAuthCollections` (for the Payload config). `loadPayload`
+breaks the config ↔ engine import cycle with a cached dynamic
+import.
+
+### `lib/authjs.ts` — Auth.js engine (coexistence proof)
+
+The same three exports for Auth.js: engine (JWT sessions, Credentials
+provider wired to the credentials service), `handleAuthJsRequest`
+for the catch-all route, `registerAuthJsUser` for the signup route.
+Both providers live in one app to prove the registry design — most
+sites pick one.
+
+### `lib/auth-cookie-names.ts` — Edge-safe names
+
+Computes both providers' session cookie names through the
+dependency-free `/cookies` subpaths. The middleware imports this —
+never the engines, which would drag `payload` and database code into
+the Edge bundle and fail the build.
+
+### `lib/session.ts` — Server verifier
+
+`createSessionVerifier({ baseUrl })`, anchored to the configured
+origin. The request-host fallback exists for local development only —
+in production the origin must be explicit, because host headers are
+client-spoofable and the session cookie is forwarded to that origin.
+`EXAMPLE_BASE_URL` matches the running port in every mode, so the
+example needs no per-mode configuration.
+
+### `payload.config.ts` — Plugin wiring
+
+SQLite file DB (switchable to Postgres/Mongo via `PAYLOAD_DB` for
+parity runs), `users` + `pages` collections, both providers'
+collections, the `authLink` plugin call, and an `onInit` seed for the
+local admin. Provider users are never seeded — they provision
+just-in-time at first session verification.
+
+### `app/api/auth/[...all]/route.ts` — Better Auth routes
+
+Mounts `auth.handler` with the uniform error envelope. All Better
+Auth paths (`/sign-up/email`, `/sign-in/email`, `/sign-out`, …)
+serve from here.
+
+### `app/api/authjs/[...authjs]/route.ts` — Auth.js routes
+
+Mounts the Auth.js engine's `handleRequest` at the engine's default
+`/api/authjs` basePath — chosen to coexist with Better Auth's
+`/api/auth`.
+
+### `app/api/authjs-signup/route.ts` — Builder signup
+
+Auth.js credentials store nothing themselves, so signup is an
+explicit service call. This route wraps `registerAuthJsUser`,
+mapping `UserExistsError` → 409 and weak-password/bad-email → 400.
+It stamps `emailVerified` immediately — **local example only** (no
+email delivery); production builders verify out-of-band first.
+
+### `middleware.ts` — Optimistic Edge check
+
+Presence of any session cookie lets the request through; absence
+redirects to `/sign-in?redirect=…`. UX only — route protection here
+bounces obvious anonymous traffic early; authorization always happens
+on Node (verifier, strategy) against live state.
+
+### `app/(frontend)/layout.tsx` — Hydration
+
+`AuthLinkServerProvider` validates the session on Node per request
+and hydrates the client provider, so first paint already knows the
+user — no loading flash, no client fetch waterfall.
+
+### `app/(frontend)/sign-in/` — Better Auth form
+
+Sign-in/sign-up modes POSTing JSON to `/api/auth/*`, then
+`useAuthLinkRefresh()` + `router.push(safeRedirectPath(redirect))` —
+the redirect param is attacker-controlled input, so it is narrowed to
+an in-app path before navigation (open-redirect e2e asserts this).
+Errors render in `role="alert"` (the e2e wrong-password spec asserts
+this).
+
+### `app/(frontend)/sign-in-authjs/` — Auth.js form
+
+Same UX over a different protocol: signup via the builder route,
+then CSRF token + form POST to `/api/authjs/callback/credentials`,
+follow the 302, and read success/failure from the final URL (Auth.js
+always redirects — see the [Auth.js guide](guide-authjs.md)).
+
+### `app/(frontend)/account/page.tsx` — Session consumer
+
+`useAuthLink()` for user/roles plus `UserMenu` (email + honest
+sign-out: revokes server-side, navigates home only on success).
+`data-testid` hooks serve the e2e specs.
+
+### `app/(frontend)/admin-only/page.tsx` — Server-enforced roles
+
+`requireRoles` on Node before anything renders: anonymous visitors
+bounce to sign-in, non-admins hit `notFound()`, and only admins ever
+receive the content (e2e asserts the secret is absent from denied
+responses). `RequireRoles` is UI-hiding only — it must never gate
+content, because server-rendered children ship in the RSC payload
+regardless.
+
+## `examples/tanstack-start` — Same app on Start
+
+The TanStack example mirrors `basic` file for file on Payload v4;
+only the framework surface differs (see the [TanStack Start
+guide](guide-tanstack-start.md)):
+
+- `src/lib/auth.ts` — engine with `tanstackStartCookies()` in the
+  builder's own `options.plugins` (never `nextCookies()` here).
+- `src/app/api.auth.$.ts`, `api.authjs.$.ts` — splat routes via
+  `createServerRouteHandlers`.
+- `src/start.ts` — `createAuthRequestMiddleware` (+ reinstalled
+  CSRF middleware); `/_serverFn/` stays public or RPC breaks.
+- `src/lib/session.ts` — shared verifier plus `getSessionUser` /
+  `requireAdminUser` server functions.
+- `src/app/_frontend.tsx` — `createSessionLoader` hydration into
+  `AuthLinkProvider initialUser`.
+- `src/app/_frontend/admin-only.tsx` — `beforeLoad` awaits the
+  server-function gate; same `admin-denied` marker as Next's
+  `not-found.tsx` so one e2e suite covers both.
+
+## Test layout
+
+- `packages/*/src/__tests__/` — unit + SQLite-memory integration
+  next to the code (457 tests).
+- `e2e/` — one Playwright suite against both examples: auth
+  flows, session lifecycle, admin inspection, a11y, smoke (23
+  specs × 3 databases × 2 frameworks, with the SQLite suites run
+  in Chromium, Firefox, and WebKit; `helpers.ts` holds the shared hydration and
+  Payload-version locators).
+- `e2e/run-{,tanstack-}mongo.mjs`,
+  `playwright.{,tanstack-}{postgres,mongo}.config.ts` — parity
+  harness: per-run databases, zero shared state.
+
+---
+
+<!-- docs/concepts.md -->
+
+# Concepts
+
+The mental model behind the packages. Read [Mission](MISSION.md) for
+_why_; this is _how it fits together_.
+
+## Hexagon: core ports, swappable adapters
+
+`@payload-auth-link/core` owns the domain and the ports; everything
+else is an adapter:
+
+- **`IdentityProviderPort`** — the seam. `getSession(headers)` narrows
+  whatever a provider knows into a `ProviderSession`
+  (`sessionId`, `providerUserId`, `email`, `emailVerified`,
+  `expiresAt`); `revokeSession(id)` undoes it. Better Auth and Auth.js
+  each implement it; WorkOS/Clerk will later. The port never exposes
+  provider SDKs to the plugin.
+- **`ProviderRegistry`** — id → port map, explicit at the composition
+  root. No discovery, no magic: `providers: [betterAuthProvider]`
+  in the plugin options _is_ the registry contents.
+- **`UserRepository`** — Payload users behind CRUD + identity-link
+  lookup. The plugin implements it over the Local API.
+- **`SessionPort`** — the bridge: ask each provider for a session,
+  JIT-provision the Payload user, return a provider-agnostic
+  `Session`. Implemented once in the plugin; providers never touch it.
+- **Leaf ports** (`LoggerPort`, `ClockPort`, `IdPort`, `TracerPort`,
+  `CookiePort`, `TransactionPort`) — injected everywhere time,
+  randomness, logs, or cookies are needed, so tests control them.
+
+```
+providers ──IdentityProviderPort──▶ registry ──▶ SessionPort ◀── UserRepository
+(Better Auth, Auth.js)                                  │              (Payload)
+                                                        ▼
+                                              strategy + endpoints
+                                    (Payload + web + Next/Start + React)
+```
+
+## Users are Payload documents
+
+There is exactly one user store: your Payload `users` collection.
+The plugin extends it with `roles` and `identities` (slugs
+configurable) and registers the `auth-link` strategy. Provider data
+(hashes, tokens, OAuth accounts) lives in the provider's own
+deny-all system collections (`ba-*`, `aj-*`) — never in `users`.
+
+**Just-in-time linking.** Nothing provisions a Payload user at
+provider signup. At the first session verification for an unknown
+provider identity, the session service creates the user (default
+role) and links the identity — idempotently, so no signup ordering
+or race can strand a provider user without its document.
+
+**Verification gating.** Linking requires a verified email. Better
+Auth enforces it via `requireEmailVerification` (defaulted on by the
+engine); Auth.js credentials carry a builder-stamped `emailVerified`
+through a JWT claim. An unverified identity resolves to 401 at the
+session endpoint — a provider session is not yet a Payload session.
+
+## Session flow (read-time, no webhooks)
+
+There are no webhooks and no background sync. Every read is live:
+
+1. Request carries provider cookies.
+2. The session service asks each registered provider in turn
+   (`getSession`). Provider failures are logged and skipped — one
+   provider down never breaks the others.
+3. The first live session wins — precedence is the order of the
+   `providers` array, so a browser signed in through two providers
+   resolves to the first registered one. Expiry is checked against
+   the injected clock.
+4. The linked Payload user is resolved (or JIT-provisioned), then
+   reloaded fresh — role changes apply to the very next request.
+5. The endpoint/strategy returns `{ user: { id, collection, email,
+roles } }` (`SessionUser` — the versioned wire contract in
+   `core/src/http.ts`).
+
+The Payload strategy is read-only: it never refreshes provider state,
+so login loops are impossible by construction. Failures at any step
+resolve to anonymous (`{ user: null }` / 401), loudly logged.
+
+## Two-layer validation (both frameworks)
+
+- **Optimistic bounce** (`createAuthMiddleware` on Next.js,
+  `createAuthRequestMiddleware` on TanStack Start) — cookie
+  _presence_ check. Bounces obvious anonymous traffic to sign-in
+  early. Cannot reach the database, so it never authorizes.
+- **Node validation** (`createSessionVerifier` in
+  `@payload-auth-link/web`, strategy, endpoints) — full
+  verification against live provider + Payload state. This is the
+  only authorization that counts. Both framework packages re-export
+  it, so one import covers either.
+
+Next hydrates via `AuthLinkServerProvider` (per-request Node
+validation into the React context); Start hydrates via a root
+`loader` (`createSessionLoader`) into `AuthLinkProvider
+initialUser`. Either way the client never fetches on mount unless
+unhydrated.
+
+## Server authorization vs UI hiding
+
+- **Enforcement** (`requireSessionUser`, `requireRoles` in
+  `@payload-auth-link/web`, re-exported by the Next and Start
+  adapters) runs on Node _before_ protected content renders or a
+  protected mutation executes. Anonymous callers bounce (default:
+  throw `SessionInvalidError`), role-missing callers are denied
+  (default: throw `ForbiddenError`) — pass your framework's
+  `redirect()` / `notFound()` as the handlers (thrown, not
+  returned), or catch in route handlers and map to 401 / 403.
+- **Hiding** (`RequireRoles`, `useHasRoles` in
+  `@payload-auth-link/react`) only controls what renders in the
+  browser. It must never gate content: server-rendered children ship
+  in the RSC payload regardless. Use it for menus and buttons, never
+  for secrets.
+
+## Logout semantics
+
+`DELETE /api/auth-link/session` (CSRF-guarded):
+
+1. Verifies the session to learn which provider owns it.
+2. Calls that provider's `revokeSession` (deletes database sessions;
+   a documented no-op for stateless JWT sessions), then best-effort
+   revokes every _other_ provider session the request presents —
+   verification stops at the first match, so a second sign-in would
+   otherwise outlive logout. Sweep failures are logged, never fatal;
+   the 401 path sweeps too (a provider session can be live behind a
+   failed verify).
+3. Expires **all registered providers' session cookies** (`Max-Age=0`),
+   even on the idempotent 401 path — logout never leaves a live
+   cookie behind, whichever provider issued it. The clearing write
+   carries each cookie's live attributes (`Secure`, `Domain`, `Path`)
+   reported by the provider, so `__Secure-` and custom-domain cookies
+   actually die; providers that predate that hook fall back to
+   prefix-derived attributes.
+
+## Errors
+
+Expected failures travel as `Result<T, E>` values with coded errors
+(`SESSION_INVALID`, `USER_EXISTS`, `PROVIDER_ERROR`, …); only
+programmer errors (bad config, corrupt storage rows) throw. Web
+adapters map codes to status codes; core never touches HTTP. Loud
+failures over silent fallbacks, always — a corrupt Auth.js row
+throws `AdapterMappingError` (Better Auth's schema fail-fast is
+`UnsupportedSchemaError`); it never becomes a quiet login failure.
+
+---
+
+<!-- docs/guide-better-auth.md -->
+
+# Better Auth guide
+
+`@payload-auth-link/provider-better-auth`: Better Auth with Payload
+as its database, behind `IdentityProviderPort`. This guide covers
+what the engine adds and constrains; Better Auth's own docs cover
+`BetterAuthOptions` in full.
+
+## Engine
+
+```ts
+import { nextCookies } from 'better-auth/next-js'
+
+const engine = createBetterAuthEngine({
+  getPayload: loadPayload, // cached getPayload thunk
+  slugs: { session: 'sessions' }, // optional per-model overrides
+  depth: 0, // Payload read depth for the adapter (default 0)
+  collectionsAccess: undefined, // deny-all by default
+  options: {
+    baseURL: 'https://app.example.com',
+    secret: process.env.PAYLOAD_SECRET!,
+    // Framework cookie plugin, declared by you exactly as Better Auth
+    // documents: `nextCookies()` on Next.js, `tanstackStartCookies()`
+    // on TanStack Start. The engine never touches this list.
+    plugins: [nextCookies()],
+    emailAndPassword: { enabled: true },
+    // …the rest is yours: rateLimit, session, advanced…
+  },
+})
+
+export const { auth, provider, collections } = engine
+```
+
+`auth` mounts at `/api/auth/[...all]`; `provider` registers with the
+plugin; `collections` spreads into `payload.config.ts`. The return
+type is inferred, so plugin endpoints and `$Infer` session types flow
+through untouched.
+
+## Secure defaults
+
+- **Verification required.** When `emailAndPassword` is present but
+  silent on `requireEmailVerification`, the engine sets it `true`.
+  Opt out explicitly only when you mean it (the example does — no
+  email delivery — and says so). Unverified users hold provider
+  sessions the plugin refuses to link (401 at the session endpoint).
+- **No plugin-list surgery.** Framework cookie plugins
+  (`nextCookies()`, `tanstackStartCookies()`, …) are declared in
+  your `options.plugins` exactly as Better Auth documents them;
+  the engine passes the list through verbatim. There is no second
+  engine-owned cookie API to misconfigure — see the [TanStack Start
+  guide](guide-tanstack-start.md) for the Start spelling.
+- **No `databaseHooks` needed.** The plugin provisions Payload users
+  lazily at session verification, so there is no signup hook to
+  keep in sync and no ordering that strands users.
+
+## Pass-through philosophy
+
+`options` is Better Auth's options minus `database` (wired to
+Payload here — it is omitted from the type, so passing it is a
+compile error). Everything else — `plugins`, `rateLimit`,
+`session`, `account`, `advanced` — passes through verbatim.
+
+## Custom fields and plugin models
+
+The adapter serves the five core models out of the box, and anything
+else you declare. `additionalFields`, plugin-added core fields (the
+organization plugin adds `session.activeOrganizationId`), and whole
+plugin models (the organization plugin's `organization`, `member`,
+`invitation`) all work the same way: declare them on the engine, and
+matching Payload columns are generated while the adapter allowlists
+exactly what you declared.
+
+```ts
+const engine = createBetterAuthEngine({
+  getPayload: loadPayload,
+  customFields: {
+    user: [{ name: 'favoriteColor', type: 'text' }],
+    session: [{ name: 'activeOrganizationId', type: 'text' }],
+  },
+  customModels: [
+    {
+      model: 'organization',
+      fields: [
+        { name: 'name', type: 'text', required: true },
+        { name: 'slug', type: 'text', required: true, unique: true },
+        { name: 'logo', type: 'text' },
+        { name: 'metadata', type: 'text' },
+      ],
+    },
+    // …member, invitation…
+  ],
+  options: {
+    user: { additionalFields: { favoriteColor: { type: 'string' } } },
+    plugins: [organization()],
+    // …
+  },
+})
+```
+
+Field types map to Payload columns: `text`, `number`, `boolean`
+(checkbox), `date`, `json`. Declarations are strict both directions
+at startup: an undeclared schema field, a declared-but-absent name
+(probably a typo), and an undeclared plugin model all throw
+`UnsupportedSchemaError` naming the offender. Payload owns the row
+timestamps — never declare `createdAt`/`updatedAt`. Custom models
+get their own `ba-*` collections (override the slug per model) with
+the same deny-all access and `baId` id column as core models.
+
+- **Cookie cache is off unless you enable it.** When Better Auth's
+  cookie cache is on, the port disables it per read
+  (`disableCookieCache`, `disableRefresh`) — session reads are
+  always live, never stale cache.
+
+## Cookie names (middleware + logout)
+
+Session cookie names derive from your options through
+`getBetterAuthSessionCookieNames` (the dependency-free `/cookies`
+subpath — import it in Edge middleware, never the engine):
+
+```ts
+import { getBetterAuthSessionCookieNames } from '@payload-auth-link/provider-better-auth/cookies'
+
+getBetterAuthSessionCookieNames({
+  baseURL,
+  advanced: options.advanced, // custom names must mirror here
+  session: options.session, // cookie-cache shape must mirror here
+})
+```
+
+It mirrors Better Auth's own getter exactly (the cookie-suite
+drift test asserts parity against the real getter, option for
+option). A mismatch fails closed — everyone bounces to
+sign-in — never open. Logout expires every registered name with
+its live attributes (`Secure`, `Domain`), so keep this call in
+sync with `options`. Deployments using `crossSubDomainCookies`
+should sign out through Better Auth's own sign-out for full
+cookie clearing — the plugin still revokes server-side, so any
+surviving cookie is dead.
+
+**Production needs a canonical https `baseURL`.** Secure-cookie
+names follow one rule shared by every provider: an explicit
+`useSecureCookies` wins, then the configured origin (https →
+secure), then `NODE_ENV=production`. The https origin is the
+only input on which both SDKs and the session layer's origin
+anchoring agree — without it, production falls back to
+`NODE_ENV` detection.
+
+## Sessions and revocation
+
+Database sessions: the port reads via `auth.api.getSession` (no
+hand-rolled anything) and revokes via the internal adapter's
+`deleteSession`. Sign-out through `DELETE /api/auth-link/session`
+revokes server-side _and_ expires cookies; direct
+`/api/auth/sign-out` calls revoke provider-side only (the plugin
+never sees them — prefer the plugin endpoint).
+
+## Rate limiting (builder-owned)
+
+Same rule as everywhere in this project: the library ships no
+throttles, so abuse control is builder-owned. Better Auth paths use
+Better Auth's own `rateLimit` option (passed through verbatim in
+`options` — the examples enable it at a generous dev-scale ceiling);
+the Auth.js authorize path and the builder signup route use the
+reference throttle in `lib/rate-limit.ts` — see [Rate limiting in
+the Auth.js guide](guide-authjs.md#rate-limiting-builder-owned) for
+the pattern. Note Better Auth's default special rules (3
+sign-ups/sign-ins per 10s per IP) apply on top of your `max`: the
+examples raise those two paths via `customRules` because shared-IP
+dev traffic would otherwise trip them constantly. Production
+deployments tune ceilings down, resolve real client IPs, and back
+them with shared storage.
+
+## Troubleshooting
+
+`UnsupportedSchemaError` names the offending field or model —
+inspect the `ba-*` row and your plugin's schema ask.
+`AdapterOperationError` wraps the storage `cause`. Both are loud by
+design: fix the row, don't retry blindly.
+
+---
+
+<!-- docs/guide-authjs.md -->
+
+# Auth.js guide
+
+`@payload-auth-link/provider-authjs`: Auth.js (@auth/core) with
+Payload as its database, behind `IdentityProviderPort`. Fully
+local: no SaaS, no webhooks — sessions verify read-time through
+Auth.js's own session action.
+
+## Install
+
+```bash
+bun add @payload-auth-link/provider-authjs @auth/core
+```
+
+(`@auth/core` ships as a dependency of the provider, but you import
+it yourself for providers like `Credentials` in the engine below, so
+it is a direct dependency too — same rule as `better-auth` in
+[getting-started](getting-started.md).)
+
+## Engine
+
+```ts
+import Credentials from '@auth/core/providers/credentials'
+import { createAuthJsCredentials, createAuthJsEngine } from '@payload-auth-link/provider-authjs'
+
+const credentials = createAuthJsCredentials({ getPayload: loadPayload })
+
+export const engine = createAuthJsEngine({
+  getPayload: loadPayload,
+  // Required in production: anchors the internal session read (the
+  // session cookie is forwarded there) and derives secure-cookie names.
+  // Falls back to AUTH_URL, then to request host headers (local dev only).
+  baseURL: 'https://app.example.com',
+  options: {
+    secret: process.env.AUTH_SECRET!,
+    session: { strategy: 'jwt', maxAge: 3600 },
+    providers: [
+      Credentials({
+        credentials: {
+          email: { label: 'Email', type: 'email' },
+          password: { label: 'Password', type: 'password' },
+        },
+        authorize: (candidate) => credentials.authorize(candidate),
+      }),
+    ],
+  },
+})
+
+export const { provider, collections, handleRequest } = engine
+```
+
+Mount `handleRequest` at `/api/authjs/[...authjs]` (the default
+`basePath`, chosen to coexist with Better Auth's `/api/auth`),
+spread `collections` (`aj-*`) into the Payload config, register
+`provider` with the plugin.
+
+Engine fail-fasts (all `InvalidConfigError`, all at wiring time):
+
+- **Credentials requires explicit `session: { strategy: 'jwt' }`.**
+  Auth.js rejects credentials + database sessions at config time
+  with loud 500s (`UnsupportedStrategy`); the engine fails faster
+  with the fix attached — including through factory-wrapped
+  providers, which it inspects the same way Auth.js normalizes
+  them (called with `{}`).
+- **Secret required** via `options.secret` or `AUTH_SECRET` — a
+  missing secret throws here instead of 500ing on first use.
+- `basePath` defaults to `/api/authjs`, `trustHost` to `true`;
+  builders override both. `true` is mandatory, not a choice: raw
+  `@auth/core` answers every request with `UntrustedHost` unless it
+  is truthy (framework adapters consult `AUTH_URL` for trust, but the
+  raw `Auth()` this engine calls never does — core-side, the env var
+  is inert; engine-side, `AUTH_URL` remains the `baseURL` fallback).
+  Host strictness comes from origin anchoring instead:
+  `handleRequest` rewrites the request origin to the configured
+  `baseURL` before core sees it, so forwarded host headers cannot
+  steer redirects or callback validation. Set `baseURL` to the
+  canonical origin in production; without it, requests pass through
+  on their arrival origin (local-dev convenience only).
+
+## Credentials: builder-owned signup
+
+Auth.js credentials store nothing — registration is an explicit
+service call, and **verification is your signup policy**: the plugin
+refuses to link unverified identities, so credentials users stay
+locked out until you stamp them.
+
+```ts
+// app/api/your-signup/route.ts
+const result = await credentials.register({
+  email,
+  password, // min 8 chars (floor; raise via minPasswordLength, never lower)
+  name,
+  emailVerified: new Date(), // ONLY after real verification (email link, admin approval…)
+})
+if (result.isErr()) {
+  const error = result.error
+  if (error instanceof UserExistsError) {
+    return Response.json({ error: 'that email is already registered' }, { status: 409 })
+  }
+  if (error instanceof WeakPasswordError || error instanceof InvalidEmailError) {
+    return Response.json({ error: error.message }, { status: 400 })
+  }
+  return Response.json({ error: 'registration failed, try again later' }, { status: 500 })
+}
+const user = result.value
+```
+
+Registration flows through the core `registerWithStore` use-case over
+an `aj-users` store and never throws: errors arrive as values
+(`UserExistsError` → 409, `WeakPasswordError` / `InvalidEmailError`
+→ 400, `AdapterOperationError` → 500 with its cause kept
+server-side).
+
+Passwords hash with scrypt (random salt, constant-time verify);
+Auth.js never sees them — `authorize` reads the `aj-users` row and
+returns the user (or `null` for unknown email / wrong password;
+corrupt rows throw `AdapterMappingError`, loudly). Unknown emails
+and hashless rows burn a dummy scrypt verification, so response
+timing reveals no account existence.
+
+**Why a separate credential store, not Payload's password auth?**
+Credentials live in the provider-owned `aj-users` collection rather
+than the Payload users collection's native `password` field.
+Provider secrets stay with the provider, just as Better Auth keeps
+its own accounts table, and Payload users stay identity documents
+that any provider can link to. The cost is a second credential
+pipeline to maintain. Moving to Payload-native password auth would
+be a breaking change and needs its own design pass. It is tracked as
+an accepted risk (ARCH-5), not a commitment.
+
+The example's signup route stamps every signup immediately **because
+it has no email delivery** — mirroring Better Auth's
+`requireEmailVerification: false`. Do not copy that stamp into
+production.
+
+## The credentials callback contract
+
+@auth/core's credentials callback **always answers 302** — to your
+`callbackUrl` on success (session cookie attached), to the Auth.js
+error page with `?error=…` when `authorize` rejects. There is no JSON
+mode (`json=true` is a next-auth v4 convention @auth/core ignores).
+Drive it like the example form does:
+
+1. `GET /api/authjs/csrf` → `{ csrfToken }` (sets the CSRF cookie).
+2. `POST /api/authjs/callback/credentials` (form body: `csrfToken`,
+   `email`, `password`, `callbackUrl`), follow the redirect.
+3. Read the final URL: `error=` means rejected — show the form error.
+4. On success the session cookie is jarred; `refreshAuth()` and go.
+
+## Sessions, claims, revocation
+
+### JWT post-logout replay window
+
+**Credentials are JWT-only** (Auth.js never touches the adapter for
+them): users come solely from `authorize`, sessions are encrypted
+JWTs. A copied token replays until `maxAge` — there is no
+server-side revocation for stateless JWTs, and no denylist is built
+(see `docs/SPRINT.md` Accepted risks for the deliberate deferral).
+Logout expires every registered cookie (even on the idempotent 401
+path), which stops the browser presenting the token but does not
+invalidate copies.
+
+The mitigation is a short window: credentials deployments default
+to `session.maxAge` of one hour (3600s) instead of Auth.js's thirty
+days, unless you set `maxAge` explicitly. Lower it further for
+sensitive deployments; the window is always exactly your `maxAge`.
+
+- The engine chains your `callbacks` with the claims the port needs
+  (subject + verification timestamp). Yours run first; the claims
+  layer wins on its own keys; a `null` jwt return (forced logout)
+  is respected.
+- The port reads sessions through Auth.js's own session action
+  (never a hand-rolled JWT decode) and needs a `host` header to
+  build the internal request — the plugin endpoints pass live
+  headers through, so this just works.
+- JWTs over ~4k chunk across `name.0`, `name.1`, …; the port joins
+  them and logout expires the listed slots (default `.0`–`.2`, ~12k
+  of token — ours measure ~550 bytes). Raise `chunkSlots` on the
+  engine (and mirror it in the middleware names) when custom claims
+  push past that; only tokens beyond the raised slots need Auth.js's
+  own signout action, which clears arbitrary chunks.
+
+## OAuth / database sessions
+
+Add OAuth providers to `providers` as usual; the Payload database
+adapter serves users, accounts, sessions, verification tokens, and
+authenticators (Auth.js ids live in `auId`; accounts carry a
+composite `key` since Payload has no compound unique indexes).
+Database sessions revoke server-side via `deleteSession`. Mixing
+OAuth (database) with credentials in one engine is impossible —
+Auth.js forbids it — so credentials deployments stay JWT while
+OAuth-only deployments may choose either strategy.
+
+## Cookie names (middleware + logout)
+
+```ts
+import { getAuthJsSessionCookieNames } from '@payload-auth-link/provider-authjs/cookies'
+
+getAuthJsSessionCookieNames({ baseURL }) // + useSecureCookies / sessionTokenName / chunkSlots mirrors
+```
+
+Concatenate with your other providers' names for the middleware
+presence check. Only session-indicating cookies are listed —
+csrf/callback cookies exist pre-login and never count as a session.
+
+**Production needs a canonical https `baseURL`.** Secure-cookie
+names follow one rule shared by every provider: an explicit
+`useSecureCookies` wins, then the configured origin (https →
+secure), then `NODE_ENV=production`. The https origin is the
+only input on which both SDKs and the session layer's origin
+anchoring agree — without it, production falls back to
+`NODE_ENV` detection, which matches Auth.js on https deployments
+but fails closed (session detection misses) on http ones.
+(`@auth/core` exposes no public cookie getter, so these names
+mirror its internal `defaultCookies` rule instead of deriving
+from it; the Auth.js e2e specs run real Auth.js cookies through
+this derivation and would catch upstream drift.)
+
+## Rate limiting (builder-owned)
+
+The library ships no throttles — core has no storage primitive for
+counters, so abuse control is builder-owned. Auth.js core itself
+ships none either, which is why the examples carry a reference
+pattern — copy it, then harden it:
+
+- `lib/rate-limit.ts`: a minimal in-memory sliding-window limiter
+  (`createRateLimiter`), a 429 + `Retry-After` responder, and a
+  forwarded-IP client key. Deterministic unit tests included.
+- The builder signup route throttles per email (10 per 10 minutes):
+  legit signups use each address once, so abuse of one address can
+  never lock out another. Proven by `e2e/rate-limit.spec.ts`, which
+  asserts 200 → 409s → 429 + `Retry-After`.
+- The `/api/authjs/*` catch-all (the authorize path) throttles per
+  client IP at a generous ceiling (100 per 10 minutes).
+- Better Auth paths use Better Auth's own `rateLimit` option (see
+  the [Better Auth guide](guide-better-auth.md)) — also configured
+  in the examples.
+
+In-memory state is dev-scale: it neither spans instances nor
+survives restarts. Production deployments keep the pattern (per-key
+windows, 429 + `Retry-After`) but back it with a shared store with
+TTLs (Redis, Upstash, Postgres counters) and tune ceilings down to
+real traffic. Skipping throttles entirely leaves signup, sign-in,
+and authorize open to brute-force and enumeration pressure.
+
+---
+
+<!-- docs/guide-tanstack-start.md -->
+
+# TanStack Start guide
+
+`@payload-auth-link/tanstack-start`: the same auth behavior as
+`@payload-auth-link/next`, on TanStack Start. The framework-free
+pieces (`createSessionVerifier`, `requireRoles`,
+`safeRedirectPath`, `createRouteHandlers`) live in
+`@payload-auth-link/web` and are shared verbatim — the Start
+package holds only Start imports, and re-exports the shared API so
+one import covers both. Day-one target is **Payload v4**
+(`@payloadcms/tanstack-start` exists only on the v4 line, beta).
+
+Every snippet below is copied from `examples/tanstack-start`,
+which the shared e2e suite exercises on SQLite, Postgres, and
+Mongo — if a snippet and the example disagree, the example wins
+(and please file an issue).
+
+Prerequisites: Bun 1.4+, a Payload 4 + Start 1 app, React 19.
+All packages are ESM-only.
+
+## Install
+
+```bash
+bun add @payload-auth-link/core @payload-auth-link/plugin \
+  @payload-auth-link/react @payload-auth-link/tanstack-start \
+  @payload-auth-link/provider-better-auth
+```
+
+(`@payload-auth-link/web` arrives as a dependency — install it
+directly only to import the shared API without a framework
+adapter.)
+
+## Engine: declare `tanstackStartCookies()`, not `nextCookies()`
+
+```ts
+import { tanstackStartCookies } from 'better-auth/tanstack-start'
+
+export const engine = createBetterAuthEngine({
+  getPayload: loadPayload,
+  options: {
+    baseURL: process.env.EXAMPLE_BASE_URL ?? 'http://localhost:3200',
+    secret: process.env.PAYLOAD_SECRET ?? 'local-dev-only-secret-32-chars-min!',
+    // Start owns cookie I/O here (not Next.js): declare Better Auth's
+    // Start cookie plugin in your own plugins list. The engine passes
+    // it through verbatim and never appends framework plugins itself.
+    plugins: [tanstackStartCookies()],
+    emailAndPassword: { enabled: true, requireEmailVerification: false },
+  },
+})
+```
+
+Pick the framework you mount on — each cookie plugin reads its own
+framework's cookie store. Auth.js needs nothing
+(`handleRequest` is already Request/Response). The plugin call in
+`payload.config.ts` is identical to Next (framework-free).
+
+## Mount provider routes (`server.handlers`)
+
+```ts
+// src/app/api.auth.$.ts
+import { createServerRouteHandlers } from '@payload-auth-link/tanstack-start'
+
+export const Route = createFileRoute('/api/auth/$')({
+  server: {
+    handlers: createServerRouteHandlers((request) => auth.handler(request)),
+  },
+})
+```
+
+Same envelope as Next's `createRouteHandlers`. Handlers receive
+`{ request }` context — `createServerRouteHandlers` adapts that to
+the shared implementation. Mount Auth.js the same way at
+`/api/authjs/$`.
+
+## Request middleware (`src/start.ts`)
+
+```ts
+import { createAuthRequestMiddleware } from '@payload-auth-link/tanstack-start'
+
+const authRequestMiddleware = createAuthRequestMiddleware({
+  sessionCookieNames, // from the /cookies subpaths, as on Next
+  publicPaths: [
+    '/',
+    '/sign-in',
+    '/sign-in-authjs',
+    '/favicon.ico',
+    /^\/api(\/|$)/,
+    /^\/admin(\/|$)/,
+    // …client asset prefixes (`/@`, `/_build`, `/src/`, …)
+    // (`/_serverFn/` needs no entry: the middleware exempts Start
+    // RPC by default — a redirect there corrupts the
+    // server-function protocol — and server functions authenticate
+    // themselves via the shared verifier. Set
+    // `bounceServerFunctions: true` to opt out.)
+  ],
+})
+
+// Defining start.ts disables Start's automatic CSRF middleware —
+// reinstall it explicitly for server functions.
+const csrfMiddleware = createCsrfMiddleware({
+  filter: (ctx) => ctx.handlerType === 'serverFn',
+})
+
+export const startInstance = createStart(() => ({
+  requestMiddleware: [csrfMiddleware, authRequestMiddleware],
+}))
+```
+
+Optimistic parity with Next: cookie _presence_ bounces obvious
+anonymous traffic early; real validation is always the verifier.
+Both middlewares share one framework-free bounce decision,
+`decideAuthRedirect` from `@payload-auth-link/web` (bounce matrix
+unit-tested there); the adapters only map its verdict onto their
+response types.
+
+## Session reads: server functions + shared verifier
+
+```ts
+// src/lib/session.ts
+import {
+  createSessionVerifier,
+  getSessionUserFromRequest,
+  requireRoles,
+} from '@payload-auth-link/tanstack-start'
+import { createServerFn } from '@tanstack/react-start'
+import { getRequest } from '@tanstack/react-start/server'
+import { exampleBaseURL } from './auth-base-url'
+
+export const verifySession = createSessionVerifier({ baseUrl: exampleBaseURL })
+
+export const getSessionUser = createServerFn({ method: 'GET' }).handler(() =>
+  getSessionUserFromRequest(getRequest(), verifySession)
+)
+```
+
+Anchor to the configured origin (`EXAMPLE_BASE_URL` matches the
+running port in every mode) — host headers are client-spoofable
+and the session cookie is forwarded to that origin. Export a
+helper, not a prebuilt server function, so bundler transforms
+never go stale.
+
+## Hydration: root loader + `initialUser`
+
+```tsx
+// src/app/_frontend.tsx
+// AuthLinkProvider is provider-agnostic UI: it comes from react, not
+// from the Start adapter (which re-exports web, not react).
+import { AuthLinkProvider } from '@payload-auth-link/react'
+import { createSessionLoader } from '@payload-auth-link/tanstack-start'
+import { createFileRoute, Outlet } from '@tanstack/react-router'
+import { getSessionUser } from '../lib/session.js'
+
+export const Route = createFileRoute('/_frontend')({
+  loader: createSessionLoader(() => getSessionUser()),
+  component: FrontendLayout,
+})
+
+function FrontendLayout() {
+  const { initialUser } = Route.useLoaderData()
+  return (
+    <AuthLinkProvider initialUser={initialUser}>
+      <main>
+        <Outlet />
+      </main>
+    </AuthLinkProvider>
+  )
+}
+```
+
+First paint already knows the user — no loading flash, no client
+fetch waterfall. After auth changes, `useAuthLinkRefreshStart()`
+re-reads the session endpoint and calls `router.invalidate()`.
+
+## Role enforcement: `beforeLoad` + a server-function gate
+
+`beforeLoad` runs client-side on navigation too, where
+`getRequest()` is out of scope — so the check lives in a server
+function (SSR and RPC alike), and `beforeLoad` just awaits it:
+
+```ts
+export const requireAdminUser = createServerFn({ method: 'GET' }).handler(() =>
+  requireRoles(getRequest().headers, verifySession, {
+    roles: ['admin'],
+    onAnonymous: () => {
+      throw redirect({ to: '/sign-in', search: { redirect: '/admin-only' } })
+    },
+    onDenied: () => {
+      throw notFound()
+    },
+  })
+)
+```
+
+`redirect()` / `notFound()` produce the router's control-flow
+signal — they must be **thrown**, not merely returned, or
+execution falls through to `requireRoles`' default errors. Denied
+callers never receive the content (e2e asserts the secret is
+absent from denied responses, and both examples render the same
+`admin-denied` marker so one suite covers both frameworks).
+
+## Payload v4 notes (all hit building the example)
+
+- `withPayload` callers must apply `rsc(pluginOptions.rsc)`, with
+  `@vitejs/plugin-rsc` + `react-server-dom-webpack` installed —
+  else SSR 500s.
+- `devServerExternalPackages: ['ajv']` — ajv's CJS breaks under
+  the RSC rewrite.
+- v4 flips the Local API access default: builder code (seeds,
+  scripts) must pass `overrideAccess: true`. Every shipped
+  plugin/provider call already does.
+- Run the real `payload generate:importmap` for admin components
+  (the example commits the generated map).
+- The v4 admin list renders as `grid`/`gridcell` (not
+  `table`/`cell`); the v4 login adds a show-password toggle. The
+  shared e2e suite locates both.
+
+## Run and verify
+
+```bash
+cd examples/tanstack-start && bun run dev        # :3200
+bun run e2e:tanstack                             # SQLite, 23 specs × 3 engines
+bun run e2e:tanstack-postgres                    # per-run database
+bun run e2e:tanstack-mongo                       # memory replset
+```
+
+## Next steps
+
+- [Getting started](getting-started.md): the Next path — same
+  calls, same behavior.
+- [Concepts](concepts.md): ports, JIT linking, verification
+  gating, two-layer validation on both frameworks.
+- [Troubleshooting](troubleshooting.md): failure modes and fixes.
+
+---
+
+<!-- docs/compatibility.md -->
+
+# Compatibility
+
+Pinned versions are the validated set; ranges are what the package
+manifests allow. CI runs the full matrix (unit + e2e on SQLite,
+Postgres service, and mongo memory replset).
+
+## Runtimes and frameworks
+
+| Dependency                               | Validated           | Range                       | Notes                                                                |
+| ---------------------------------------- | ------------------- | --------------------------- | -------------------------------------------------------------------- |
+| `payload`                                | 3.90.2              | `^3.0.0` (peer)             | v3 for Next; plugin also loads on v4 beta with zero changes          |
+| `payload` (Start)                        | 4.0.0-beta.0        | narrow beta pin (example)   | `@payloadcms/tanstack-start` exists only on the v4 line              |
+| `next`                                   | 16.4.0              | `>=15.0.0` (peer, next pkg) | App router; `middleware.ts` (proxy-safe)                             |
+| `@tanstack/react-start` / `react-router` | 1.168.61 / 1.170.41 | peer (start pkg)            | File routes, server functions, request middleware                    |
+| `vite` (Start)                           | 8.3.4               | dev (example)               | + `@vitejs/plugin-rsc`, `react-server-dom-webpack` for Payload admin |
+| `react` / `react-dom`                    | 19.2.6              | `^19.0.0` (peer, UI pkgs)   |                                                                      |
+| `better-auth`                            | 1.7.7               | provider dep                | Ships with the provider; install directly only to import it yourself |
+| `@auth/core`                             | 0.41.3              | provider dep                | Raw core, not the `next-auth` wrapper                                |
+| `neverthrow`                             | 8.2.0               | dep                         | `Result`/`ResultAsync` throughout                                    |
+| `zod`                                    | 4.6.5               | dep                         | Boundary schemas + branded types                                     |
+| `bun`                                    | 1.4.2               | `packageManager`            | CI pins the same                                                     |
+| `node`                                   | 20.9+ / 22          | `engines`                   | All packages ESM-only (`type: module`)                               |
+
+Module resolution: shipped code builds under `nodenext`, except
+`@payload-auth-link/next`, which uses `esnext`/`bundler` because
+Next.js ships no `exports` map for `next/*` subpaths. Tests run
+under bundler resolution for the same reason.
+
+## Databases
+
+| Adapter                   | Validated how                                                                         |
+| ------------------------- | ------------------------------------------------------------------------------------- |
+| `@payloadcms/db-sqlite`   | Unit integration (in-memory) + `bun run e2e`                                          |
+| `@payloadcms/db-postgres` | `bun run e2e:postgres` (per-run database, `push: true`), GH service in CI             |
+| `@payloadcms/db-mongodb`  | `bun run e2e:mongo` (per-run wiredTiger memory replset, transactions off — see below) |
+
+Product code issues only single-document Local API calls, so the
+parity risk sits in Where translation, date serialization, and id
+types — all six suites assert identical behavior (23 specs each:
+`e2e`, `e2e:postgres`, `e2e:mongo` on Next; `e2e:tanstack`,
+`e2e:tanstack-postgres`, `e2e:tanstack-mongo` on Start). Each
+example's mongo branch disables Payload transactions: several
+Payload instances (plugin + provider loaders) lock-fight on a
+single-node memory server. Production mongo deployments keep
+transactions on; nothing we ship depends on their absence.
+
+## Browsers
+
+The SQLite suites (`e2e`, `e2e:tanstack`) run in Chromium, Firefox,
+and WebKit (Playwright Desktop Chrome / Firefox / Safari profiles),
+one engine after another against the same server. Postgres and Mongo
+suites run Chromium only. Traces are kept on failure; CI retries
+exist as a backstop, but specs pass with retries off. The shipped UI
+is unstyled primitives with no browser-specific APIs beyond `fetch`
+and `location`.
+
+## Type surface
+
+`attw --profile esm-only` + `publint` gate every package
+(`bun run release:check`). Legacy node10/CJS resolution is the
+documented non-goal: ESM-only by decision.
+
+---
+
+<!-- docs/troubleshooting.md -->
+
+# Troubleshooting
+
+Every entry below is a failure mode hit while building this project,
+with the fix that resolved it. Symptoms first.
+
+## Everyone bounces to sign-in (including fresh logins)
+
+The middleware's cookie names don't match the engine's. The names in
+`lib/auth-cookie-names.ts` must mirror the engine options exactly —
+custom `advanced.cookies` names (Better Auth) or
+`cookies.sessionToken.name` (Auth.js) included. A mismatch fails closed by design. Compare the
+`set-cookie` response headers against your names list.
+
+## Auth.js sign-in shows the form error, or lands on the Auth.js error page
+
+The credentials callback always 302s; read the final URL (see the
+[Auth.js guide](guide-authjs.md)). If _every_ login fails, check the
+server log for `CredentialsSignin` (wrong password / unknown user —
+expected for bad credentials) versus `Configuration` (missing
+secret, untrusted host). If the user exists but login never sticks,
+the row is unverified — the plugin links verified identities only.
+
+## `UnsupportedStrategy` 500s on every Auth.js action
+
+Credentials + database session strategy. Auth.js rejects that
+combination at config time; the engine fail-fasts first — including
+through factory-wrapped providers, which it inspects by calling them
+with `{}` exactly as Auth.js does
+(`packages/provider-authjs/src/engine.ts`, covered by the engine
+suite's factory tests). A credentials provider in any form without
+explicit `session: { strategy: 'jwt' }` throws at wiring with the fix
+attached; a factory that throws on inspection fails at wiring as
+`provider factory threw` (Auth.js would throw identically on first
+request — the factory must tolerate `{}`).
+
+So a request-time 500 means a genuine problem, not an inspection
+miss: either the served config really lacks the jwt strategy (check
+that the route serves the engine's `config` — a hand-composed `Auth()`
+bypasses the fail-fast), or a factory threw (read the wiring error,
+not the 500 page). Fix: `Credentials(...)` — direct or via a
+`{}`-tolerant factory — with explicit `session: { strategy: 'jwt' }`.
+
+## `AdapterMappingError` / `UnsupportedSchemaError` on login
+
+A storage row is corrupt (missing id field, wrong date shape, account
+without `userId`). Auth.js throws `AdapterMappingError` naming the
+field — inspect the `aj-*` row directly. Better Auth's equivalent
+fail-fast is `UnsupportedSchemaError` on the `ba-*` row. Fix or
+delete the row; this never becomes a silent login failure — that is
+the point.
+
+## Edge build fails importing `payload` / database code
+
+Something in `middleware.ts`'s import graph reaches the engine or
+`payload.config`. Middleware must import _only_ the cookie-names
+module (which uses the `/cookies` subpaths). The classic trap: a
+shared `lib/auth.ts` exporting both the engine and the names —
+split them, as the example does.
+
+## Session endpoint 401s with a live provider session
+
+- **Unverified email.** Provider session exists, plugin linking
+  refused. Verify the user (Better Auth: complete verification;
+  Auth.js credentials: stamp `emailVerified`).
+- **Missing origin (Auth.js / verifier).** Without `baseURL`
+  (`AUTH_URL`) the internal session request falls back to the live
+  `host`/`x-forwarded-host` headers. Proxies that strip host break
+  it — and spoofed host headers would redirect the forwarded
+  session cookie, so set the canonical origin in production
+  instead of relying on the fallback.
+- **Clock skew.** Expiry checks run against the injected clock;
+  wild skew reads as expired.
+
+## Changes don't take effect locally
+
+Stale `dist` — cross-package workspace imports resolve `dist`, not
+`src` (same-package unit tests import `src` relatively and are
+unaffected). `bun run build` after cross-package core changes. (The
+`e2e` and `dev:example` scripts build first; ad-hoc `next dev` does
+not.)
+
+## Postgres parity run fails to boot
+
+`bun run e2e:postgres` expects Postgres at `localhost:5433`
+(`postgres` / `payload`): `docker run -d --name pal-pg -e
+POSTGRES_PASSWORD=payload -p 5433:5432 postgres:16`. Override with
+`PGHOST` / `PGPORT` / `PGUSER` / `PGPASSWORD` / `DATABASE_URL`.
+
+## Mongo parity run throws lock/write conflicts
+
+Single-node memory-server transients under concurrent transactions.
+The example's mongo branch already disables transactions and uses
+wiredTiger — if you re-enable transactions, expect `LockTimeout` /
+`WriteConflict` flakes. Never "fix" these with product-code retries;
+they are a test-environment artifact (real replica sets don't
+behave this way).
+
+## `attw` / `publint` failures on release
+
+Run `bun run release:check`. `attw` must use `--profile esm-only`
+(all packages are ESM-only by decision — legacy node10/CJS
+resolution failures are the documented tradeoff). If `publint`
+complains about missing files, check the package `files` list and
+the `exports` map agree.
+
+---
+
+<!-- docs/upgrading.md -->
+
+# Upgrading
+
+Versioning rides [changesets](https://github.com/changesets/changesets):
+every user-facing change ships a changeset, the release workflow
+opens Version Packages PRs, and each package CHANGELOG records what
+moved (starting at first publish — all packages are pre-release
+`0.0.1` today). This page covers the moves that need human attention.
+
+## Pre-1.0 policy
+
+Minor versions may break: the wire contract (`SessionUser`, endpoint
+paths, cookie semantics) is the stability anchor and changes only
+with a migration note here; option shapes and internal ports may
+evolve. Read the package CHANGELOGs on every bump once published.
+
+## 0.0.x → 0.1.0 (initial release)
+
+First published line. No migration — but confirm before adopting:
+
+- Packages are **ESM-only**. CJS `require()` of any entry (including
+  `/cookies` subpaths) is unsupported; use ESM or dynamic import.
+- The example's email-verification shortcuts
+  (`requireEmailVerification: false`, immediate `emailVerified`
+  stamps) are **local-dev-only**. Production must verify out-of-band.
+- `payload.config.ts` collections for both providers are additive
+  (`ba-*`, `aj-*`); the `users` extension adds `roles` +
+  `identities` fields. No host migrations ship — your migration
+  tooling owns schema changes (host-owned migrations only, per DNA).
+
+## Future: WorkOS / Clerk adapters (post-v1)
+
+Reserved registry ids, no packages yet. When they land they will be
+new optional dependencies (`provider-workos`, `provider-clerk`)
+following the same engine → port → collections shape — adopting one
+is additive to the plugin options, never a rewrite.
+
+---
+
+<!-- docs/MISSION.md -->
+
+# Mission
+
+## Problem
+
+`payload-auth/payload-auth` bolts Better Auth onto Payload CMS through
+monkey-patches, stringly-typed schema maps, framework leaks, and `any`-heavy
+plumbing. It fights Payload instead of extending it, so site builders inherit
+its coupling, its silent fallbacks, and its upgrade risk.
+
+## Mission
+
+Build the enterprise-grade, strictly-typed, hexagonal replacement:
+a Payload CMS v3 plugin that makes external identity providers
+(Better Auth, Auth.js/NextAuth, WorkOS, Clerk) feel like first-class
+Payload citizens — managed from Payload collections and the Payload admin —
+while keeping every provider behind a swappable port.
+
+## What "first-class Payload citizen" means
+
+- Users live in a Payload collection. Roles, access control, hooks,
+  validation, drafts, and versions behave exactly as in native Payload auth.
+- Admins manage identities, linked accounts, and sessions from the
+  Payload admin — no second dashboard, no out-of-band user store.
+- The plugin follows Payload's plugin contract (`definePlugin`, strategies,
+  endpoints, hooks, admin components, host-owned migrations) and never
+  reaches around it.
+
+## What "hexagonal" means here
+
+- `core` owns the domain and the port interfaces; it imports no framework.
+- Every external touchpoint — Payload storage, each identity provider,
+  cookies/session transport, logging, tracing, transactions — is an adapter
+  behind a port, registered explicitly at a composition root.
+- Adding a provider means writing one adapter package, not touching the core.
+
+## Provider roadmap
+
+Initial build: Better Auth first, then Auth.js/NextAuth — the two
+providers fully validatable with unit + e2e locally (self-hosted,
+no SaaS dependency). Auth.js shipped after its research spike
+(Phase 4): both adapters, integration tests, and e2e are green.
+
+Deferred post-v1: WorkOS and Clerk. Both are SaaS-backed and cannot
+be fully validated locally; their ports stay reserved in the design
+(`IdentityProviderPort` + registry keyed by id) but no adapter
+packages ship in the initial build.
+
+No provider ships without its adapter, its integration tests, and its e2e
+coverage.
+
+## Non-goals
+
+- No fork of, or compatibility layer for, `payload-auth` internals.
+- No second user store, shadow session table, or out-of-band auth cookie.
+- No framework code in `core`; no Payload imports in UI packages;
+  no React in the plugin outside `admin/`.
+- No `any` at module boundaries; no silent fallbacks; no `console.*`.
+
+## Quality bar
+
+Strict TypeScript, `neverthrow`-style `Result` errors at boundaries,
+Zod-validated inputs, lint-enforced package boundaries, and mandatory e2e:
+every auth flow (sign-in, callback, webhook sync, logout, session revoke)
+is proven against a real Payload app in Playwright before release.
+
+---
+
+<!-- docs/DNA.md -->
+
+# DNA — engineering constitution
+
+How this repo is built. Every decision below traces to the research
+synthesis (D1–D18) or to `payload-onpage` precedent. Violating these
+rules requires updating this file first.
+
+## 1. Architecture: ports and adapters
+
+- `core` owns the domain and all port interfaces (`core/src/ports.ts`).
+  It imports nothing framework-specific — no `payload`, no `next/*`,
+  no React, no provider SDK.
+- Adapters live at the leaves: one package per surface.
+- Wiring happens only at an explicit composition root
+  (factory functions like `nextSession()`, `payloadRest()`).
+  No DI container (awilix/tsyringe/inversify rejected: magic,
+  weak inference, worse tree-shaking).
+- Constructor injection everywhere: `RegisterUser(repo, ids, clock)`.
+- Public API is the explicit export list in each `index.ts`.
+  Exporting something new is a decision, not a side effect.
+
+### Package map (mirrors payload-onpage)
+
+- `@scope/core` — framework-free: ports, domain (roles, session
+  types, errors), provider-neutral orchestration. Depends on nothing.
+- `@scope/plugin` — Payload server: plugin fn, collections/globals
+  extension, AuthStrategy, endpoints, hooks, access, `admin/`.
+  Depends on core + payload.
+- `@scope/react` — provider-agnostic UI (sign-in buttons, user menu,
+  admin helpers). No Next, no Payload imports.
+- `@scope/next` — Next.js adapter: route handlers, middleware/proxy,
+  cookie/session helpers. Depends on core + react.
+- `@scope/provider-<id>` — one package per identity provider.
+  Initial build: `better-auth` first, `authjs` after its spike (both shipped, Phase 4).
+  `workos` and `clerk` deferred post-v1 (SaaS-backed, not locally
+  validatable); the registry reserves their ids.
+- `examples/basic` — reference integration and e2e target (SQLite,
+  self-seeding, like onpage's `:3100` example).
+
+### v1 ports
+
+- `UserRepository` — users via Payload Local API (never raw DB).
+- `SessionPort` — verify/create/revoke sessions; strategies delegate here.
+- `IdentityProviderPort` — per-IdP authorize/callback/webhook/profile
+  normalize; instances registered in an adapter registry keyed by id.
+- `CookiePort` — read/write/clear; implemented by the framework adapter.
+- `TransactionPort`, `LoggerPort`, `TracerPort` — storage transactions,
+  structured logs, spans. `ClockPort` + `IdPort` for determinism.
+
+### Dependency rules (lint-enforced via `no-restricted-imports`)
+
+- core imports no framework. react imports no Next/Payload.
+  plugin imports no React outside `admin/`.
+- Sources import siblings with `.ts`/`.tsx` extensions.
+- Cross-package imports use workspace package names, never deep paths
+  outside declared subpath exports.
+
+## 2. Payload contract
+
+- Plugin shape: `definePlugin<TOptions>({ slug, order, plugin })`;
+  `(options) => (incomingConfig) => Config`. Copy config, spread-append
+  collections/globals, merge hook objects (never overwrite), chain
+  `onInit`, return config. Lower `order` first; cross-plugin via `plugins` map.
+- Auth strategy: `{ name, authenticate({ headers, payload, req, ... }) }`
+  returning `{ user: { ...doc, collection } } | null`. Read-only session
+  checks use refresh-disabled reads (no login loops).
+- `auth.strategies[]` plus explicit cookies/token/api-key options.
+- Custom `endpoints[]` are unauthenticated by default: check `req.user`,
+  method lowercase, `handler(req: PayloadRequest) => Response`.
+  Every state-changing endpoint gets a CSRF guard + access check —
+  authorization goes through one `access.ts` using Payload's access ops.
+- Preserve existing hooks when extending (append, don't replace);
+  inject admin/meta fields as a group. Root/collection/global/field
+  hooks are awaited in series; `afterError` may transform.
+- Admin UI is React Server Components by default; `'use client'` only
+  where needed, registered as `{ path#Export, clientProps/serverProps }`.
+- Migrations are host-owned (`up`/`down`, `migrate:create/status/down`).
+  The plugin ships no migration mechanism.
+
+## 3. Coupling guardrails (the payload-auth anti-patterns, banned)
+
+- No double-pass init: resolve schemas once, before hooks/endpoints/
+  `useAsTitle` attach — never build-collections → sync → rebuild.
+- No monkey-patch contract: no `Object.defineProperty(payload, …)`,
+  no string flags on `config.custom`, no per-invocation client
+  re-entry from strategies/hooks/endpoints. Typed injected client
+  from the composition root instead.
+- No framework leak: no `next/headers` (or any framework import)
+  inside Payload hooks or core. Cookie/transport work lives in the
+  framework adapter (`toNextJsHandler`, `nextCookies()`).
+- No stringly schema map: typed slug/field maps with explicit errors.
+  No silent fallbacks, no "warns but uses wrong slug", no runtime
+  patching of provider internals.
+- No hand-rolled sessions: no admin-session hacks, manual `Set-Cookie`
+  concat, or fabricated endpoint contexts. Sessions go through
+  `SessionPort` + `CookiePort`.
+
+## 4. Type safety
+
+- `strict` plus `noUncheckedIndexedAccess`,
+  `exactOptionalPropertyTypes`, `verbatimModuleSyntax`, `noUnused*`.
+  Guard indexes; never assert (`!`). Options filled from other
+  optionals are typed `?: T | undefined`.
+- Zero-`any` boundary: no `: any`, no `as` casts at module edges,
+  no whole-instance erasure (`as unknown as …`). Sanitize by deep-copy,
+  never shallow-spread-then-deep-write the caller's options.
+- Generics survive: provider/plugin options preserve their type
+  parameters end to end (no hardcoded generated-types artifact that
+  silently drops endpoints when plugins change).
+- One canonical `Role` type with a smart constructor at the boundary.
+  No `array | string | comma-string` branching at every call site;
+  normalize once, use everywhere.
+- Make the compiler check it: discriminated unions + `assertNever`,
+  branded keys for document refs, readiness guards before reading
+  loaded state, typed message catalogs for UI strings.
+
+## 5. Errors and validation
+
+- Expected failures return `neverthrow` `Result<T, E>` /
+  `ResultAsync` (`ok`/`err`, `fromThrowable`, `combine`,
+  `fromPromise`/`fromSafePromise`). Throw only for the truly unexpected.
+- Domain errors vs application errors stay distinct
+  (`InvalidEmailError` vs `UserExistsError`); the web adapter maps
+  them to status codes. Never swallow (`null`/`[]`/`0` on failure),
+  never drop nulls, never leave endpoints unauthenticated by accident.
+- Validate at every untyped boundary with Zod
+  (`safeParse`/`safeParseAsync`, `z.infer`, `.strict()`).
+  Zod over TypeBox: distinct `z.input`/`z.output` and superior error
+  reporting matter more here than schema-reuse speed, and validation
+  sits off the session hot path.
+- Startup validation fails fast: baseURL/secret present, default role
+  inside roles, adapter-boundary schemas valid.
+
+## 6. Observability
+
+- Domain depends on `LoggerPort` + `TracerPort` only. Adapters use
+  pino (child loggers per module, `serializers.err`, never untrusted
+  keys) and OpenTelemetry spans, injected — never imported.
+- No `console.*` anywhere. Forward into Payload's pino instance and
+  the provider logger where supported.
+- No hardcoded query depth: depth is configurable per call site.
+- Transactions go through `TransactionPort` — no no-op stubs.
+
+## 7. Testing constitution (e2e is mandatory)
+
+- Unit tests live next to code in `src/__tests__/`.
+- Integration tests run real Payload on in-memory SQLite through
+  `handleEndpoints` (onpage precedent), or the Local API over a
+  memory DB with fixtures (`config`, `resetBetweenTests`).
+- Behavior change → test. Security change → an integration test
+  that fails without the fix.
+- Playwright e2e runs against `examples/basic` with a fresh DB:
+  sign-in, OAuth callback, webhook user-sync, logout, session
+  revoke from the admin, role-gated access. Chromium, retries on CI,
+  traces retained on failure, axe for admin UI regressions.
+- DB strategy: SQLite in-memory for local/unit, `mongodb-memory-server`
+  replica set for integration default, containerized Postgres for
+  parity in CI.
+- `bun run check` gates everything: format, lint, typecheck,
+  coverage thresholds, build, size budgets. No merge on red.
+
+## 8. Repo conventions
+
+- Bun monorepo: `packages/*` + `examples/*` workspaces, `tsc -b` build,
+  `publint` + `are-the-types-wrong` on publishable packages.
+- Prettier: single quotes, no semicolons, width 100.
+  typescript-eslint type-checked, react-hooks, jsx-a11y.
+- Changesets required for user-facing changes; provenance-enabled
+  publishes; `SECURITY.md` for private reports.
+- Public API → TSDoc plus `docs/` guides. Docs follow the onpage
+  system as they grow: tour, getting-started, concepts, guides,
+  compatibility, troubleshooting, upgrading — plus `llms.txt` and
+  `AGENTS.md` for agent consumers.
+- Never commit secrets, never log credentials, never ship a release
+  with debug output (release hygiene is a checklist item, not a hope).
+
+## 9. Security invariants
+
+- Never link a provider identity to an existing user, or reuse an
+  existing email for a provider login, unless the provider verified the
+  email (`emailVerified`). Unverified profiles must not take over
+  existing accounts; creation of a standalone user is the provider's
+  verification lifecycle to complete.
+- State-changing endpoints require CSRF proof: matching `Origin` or a
+  custom header a cross-site page cannot set. Redirect targets are
+  validated same-origin against `baseUrl` — never an open redirect.
+
+---
+
+<!-- docs/PLAN.md -->
+
+## Goal
+
+Replace `payload-auth/payload-auth` with a greenfield Payload CMS v3
+plugin: hexagonal ports/adapters, strict typesafe, enterprise grade,
+where Better Auth (first) and Auth.js/NextAuth integrate as swappable
+adapters while users stay first-class Payload documents managed from
+the Payload admin. WorkOS and Clerk are deferred post-v1 (SaaS-backed,
+not fully validatable locally). Research is done (9-agent workflow,
+synthesis `complete:true`); this plan turns decisions D1–D18 plus
+payload-onpage precedent into shippable phases.
+
+## Success Criteria
+
+- A site builder installs packages, adds one plugin call, and signs
+  in via Better Auth with users/roles/sessions in Payload collections.
+- Each provider is an isolated adapter package; core has zero
+  framework imports (lint-proven).
+- Zero `any` at boundaries; generic-preserving option types;
+  canonical `Role` type; `Result`-based errors; Zod boundaries.
+- Full e2e: sign-in, callback, webhook sync, logout, admin session
+  revoke — green in CI before any release.
+- Docs a builder can follow: tour, getting-started, guides, plus
+  `llms.txt`/`AGENTS.md` for agent consumers.
+
+## Approach
+
+Clone the proven payload-onpage monorepo shape (core ports,
+framework adapters, example app as e2e target, `check` pipeline),
+fill it with the auth domain from the synthesis, and ship the two
+locally-validatable providers behind `IdentityProviderPort`.
+Better Auth first (researched); Auth.js gated on a short research
+spike since only Better Auth bodies were inspected. WorkOS and Clerk
+stay out of the initial build; the registry reserves their ids.
+Re-verify every delegated-research claim against installed `payload`
+types and official docs at implementation start; unresolved items
+below stay open until then.
+
+## Steps
+
+### Phase 0 — Scaffold and tooling
+
+- Bun monorepo: `packages/{core,plugin,react,next}`,
+  `packages/provider-better-auth`, `examples/basic`, `e2e/`.
+- TS `strict` + `noUncheckedIndexedAccess` +
+  `exactOptionalPropertyTypes` + `verbatimModuleSyntax` + `noUnused*`;
+  eslint `no-restricted-imports` boundaries; Prettier; `tsc -b`.
+- `check` script: format, lint, typecheck, coverage gates, build,
+  size budgets. Changesets, `publint`, `are-the-types-wrong`.
+- `examples/basic`: SQLite, self-seeding, reference integration.
+- `docs/` skeleton, `AGENTS.md`, `SECURITY.md`, `CONTRIBUTING.md`.
+
+### Phase 1 — Core domain and ports
+
+- `ports.ts`: `UserRepository`, `SessionPort`,
+  `IdentityProviderPort` + registry, `CookiePort`, `TransactionPort`,
+  `LoggerPort`, `TracerPort`, `ClockPort`, `IdPort`.
+- Canonical `Role` + smart constructor; typed slug/field map;
+  `Result<T,E>` error taxonomy; Zod boundary schemas; startup
+  validation (baseURL/secret, default-role-in-roles).
+- Explicit composition-root factories. No DI container.
+- Unit tests next to code; public API = explicit `index.ts` lists.
+
+### Phase 2 — Payload plugin (first-class citizenship)
+
+- `definePlugin` shape: copy config, append collections/globals,
+  merge hooks, chain `onInit`.
+- Users collection extension (identities, roles, sessions views),
+  custom `AuthStrategy` delegating to `SessionPort`, unauthenticated-
+  by-default endpoints with CSRF guard + `access.ts`, hook appends,
+  RSC admin components (`path#Export`).
+- Correctness starters: `pagination:false` on logout finds,
+  forward+reverse joins, refresh-disabled session reads,
+  configurable query depth. Host-owned migrations only.
+
+### Phase 3 — Better Auth + Next.js adapters
+
+- `provider-better-auth`: `betterAuth({ database: payloadAdapter,
+plugins })`, session/cookie delegation, no `next/headers` outside
+  the Next adapter, no hand-rolled cookies.
+- `@scope/next`: route handlers (`/api/auth/[...all]`), proxy/
+  middleware, `nextCookies()` (Edge optimistic + Node full
+  validation), `<Provider />`, `useNextRefresh`-style renderer.
+- `@scope/react`: sign-in buttons, user menu, admin helpers.
+- Integration tests on SQLite-in-memory via `handleEndpoints`;
+  security tests that fail without each guard.
+
+### Phase 4 — Auth.js spike, then adapter ✅ DONE
+
+- Spike (`spike.test.ts`, 6/6): Credentials is JWT-only and ignores
+  the adapter; credentials + `database` strategy is rejected at
+  config time (`UnsupportedStrategy`); the jwt callback re-runs
+  without `user` on reads (guard claims); the port reads via Auth's
+  own session action (`skipCSRFCheck`, no hand JWT decode).
+- `packages/provider-authjs` behind `IdentityProviderPort` +
+  registry: engine (fail-fasts, `/api/authjs` basePath,
+  claims-callback chaining), Payload database adapter (users,
+  accounts, sessions, verification tokens, authenticators), scrypt
+  credentials service with builder-stamped verification, port with
+  chunk-joining session-id extraction, edge-safe `/cookies` subpath.
+- Example coexistence: Auth.js mounted alongside Better Auth
+  (`lib/authjs.ts`, `/api/authjs/[...authjs]`, builder-owned
+  `/api/authjs-signup`, `/sign-in-authjs` page, concatenated
+  middleware cookie names). E2E finding: @auth/core's credentials
+  callback always 302s (`json=true` is a v4 convention it ignores) —
+  the form follows the redirect and reads success/failure from the
+  final URL (`?error=…` on reject).
+- Validation: 67 provider tests (unit + SQLite adapter lifecycle +
+  error mapping), `bun run check` green, 3 Auth.js e2e specs green.
+- WorkOS and Clerk: no spike, no adapter in the initial build
+  (deferred post-v1; registry ids reserved).
+
+### Phase 5 — E2E, CI, release hygiene ✅ DONE
+
+- Playwright against `examples/basic` + fresh DB: sign-in,
+  callback, webhook sync, logout, admin revoke, role-gated access,
+  axe on admin UI. Chromium, CI retries, traces on failure.
+  ✅ Local e2e green: 10/10 (Better Auth sign-up/in/out + wrong
+  password + role gate + users-admin + smoke + 3 Auth.js specs).
+  Remaining: axe pass on admin UI, CI retries/traces already
+  configured in `playwright.config.ts`.
+- CI matrix: SQLite local, `mongodb-memory-server` replset,
+  containerized Postgres parity. Coverage gates enforced.
+  ✅ `ci.yml` (check + e2e + release-check jobs, trace artifacts).
+  ✅ Postgres: `e2e:postgres` + `dev:e2e-pg`, per-run database,
+  13/13 in 11 of 13 runs (two `users-admin` admin-list wait failures;
+  structural causes ruled out with DB evidence — no seed dupes,
+  no pagination, fresh DB per run — leaving transient slowness;
+  spec wait split for diagnosis, CI `retries: 2` covers the
+  class). No compose file — GH `services:` in CI, `docker run`
+  locally.
+  ✅ Mongo: `e2e:mongo` via `e2e/run-mongo.mjs` (per-run
+  wiredTiger replset, `transactionOptions: false` in the example's
+  mongo branch — three Payload instances lock-fight on one node,
+  and our adapters never use multi-doc transactions), 13/13 x3.
+  ✅ `ci.yml`: `e2e` (sqlite) + `e2e-postgres` (service) +
+  `e2e-mongo` (memory replset) + `check` + `release:check`.
+  Note: run parity suites separately, not chained — three
+  back-to-back suites saturate one box (mongo leg timed out
+  in-chain, 13/13 in 17s solo; CI isolates per job).
+- Release checklist: changesets, provenance, no debug output,
+  no logged credentials (anti-#154). ✅ Wired: `.changeset/`
+  config, `release`/`version-packages` scripts, `release.yml`
+  (trusted publishing, provenance), `CONTRIBUTING.md` release
+  section. `bun run release:check` (`publint` + `attw --profile
+esm-only`) green on all 6 packages as a pre-publish gate
+  (kept out of `check` for speed; runs in CI).
+
+### Phase 6 — Builder docs ✅ DONE
+
+- ✅ Tour, getting-started (four-edit drop-in: install, engine,
+  config, routes+UI), concepts, Better Auth + Auth.js guides,
+  compatibility, troubleshooting, upgrading — all in `docs/`.
+- ✅ `docs:api` (typedoc, 0 errors), `llms.txt`/`llms-full.txt`
+  (generated by `bun run docs:llms`, drift-proof), media from the
+  example app (`bun run docs:media`, 5 screenshots in
+  `docs/media/`). Every public API has TSDoc (audit clean).
+- ✅ Fresh-eyes validation: independent agent audit of every guide
+  snippet against source — 7 factual wrongs found and fixed
+  (route import depth, BA model/field constraints, error names,
+  measured JWT size, dep classification), plus nits.
+
+## Validation Plan
+
+- Phase 0: `bun run check` green on empty packages; example boots
+  and seeds (`bun run dev:example`).
+- Phase 1: `vitest run --coverage` passes gates; eslint proves
+  core imports no framework; type tests prove generics survive.
+- Phase 2: integration suite green on SQLite memory;
+  `pagination:false`/join/refresh-disabled behaviors covered;
+  admin renders users + identities + sessions.
+- Phase 3: Better Auth sign-in/callback/logout pass in
+  integration; route-handler + middleware tests green.
+- Phase 4: Auth.js integration suite green before merge. ✅
+  (67 tests + 3 e2e specs green, `check` green.)
+- Phase 5: `bun run e2e` green locally and in CI across DBs;
+  highest-risk gate — no release without it. ✅ Local: 16/16 on
+  sqlite + postgres + mongo; CI runs all three plus check and
+  release-check (first CI run happens on first push — no remote
+  yet).
+- Phase 6: fresh-clone walkthrough of getting-started by a
+  second person (or agent) with zero prior context. ✅ Proxy:
+  independent agent audit of all guides vs source; all findings
+  fixed and re-verified against source. True fresh-clone still
+  wants a human on first publish (no remote yet).
+
+## Known issues, resolved post-Phase 6
+
+- ✅ Auth.js factory-provider bypass: the engine now inspects
+  factories the way Auth.js normalizes them (called with `{}`),
+  so wrapped credentials fail fast; factories that throw on
+  inspection surface `InvalidConfigError` at wiring time.
+- ✅ Auth.js giant-claim chunks: `chunkSlots` on the engine input
+  (default 3) sizes the session-cookie slots; the middleware names
+  mirror it. Only tokens past the raised slots need Auth.js's own
+  signout action.
+- ✅ Better Auth custom fields + plugin models: `customFields` /
+  `customModels` engine options generate matching Payload columns
+  and extend the adapter allowlist; strict both directions
+  (undeclared extras, declared-but-absent names, and undeclared
+  plugin models all throw `UnsupportedSchemaError` at startup).
+- ✅ Enterprise review hardening (multi-agent review + fixes):
+  open-redirect guard (`safeRedirectPath`, both example forms, e2e);
+  logout clears with live cookie attributes (`Secure`/`Domain` via
+  `sessionCookieClearOptions`, prefix-derived fallback); server
+  authorization helpers (`requireSessionUser`/`requireRoles`,
+  example admin page enforced on Node, e2e proves the secret never
+  ships to denied callers); credentials dummy-hash anti-oracle;
+  `baseUrl`-anchored session reads (host fallback dev-only);
+  unified error taxonomy (BA `AdapterOperationError` under
+  `AuthLinkError`); Auth.js slug validation parity
+  (`resolveSlugs`/`assertUniqueSlugs`, custom-model collision
+  checks); shared core guards (`isRecord`/`toDate`,
+  `runProviderOperation`, `denyAllAccess`). 331 unit + 17×6 e2e
+  green (Next + TanStack × SQLite/Postgres/Mongo; see
+  PLAN-TANSTACK.md).
+  Proven by `custom-schema.test.ts` (additionalFields round-trip +
+  organization/member/invitation CRUD on SQLite memory).
+- ⏸️ Postgres `users-admin` intermittence (~2/13 runs): structural
+  causes ruled out with container evidence; split-wait added for
+  diagnosis; CI `retries: 2` covers. Revisit if it ever fails twice
+  in a row or appears on sqlite/mongo.
+- ⏸️ Next.js `middleware.ts` → `proxy.ts` rename (Next 16
+  deprecation warning, log noise only): staying on `middleware.ts`
+  deliberately — `proxy.ts` needs Next 16+ and the peer range is
+  `>=15`. Revisit when the floor rises.
+
+## Risks / Open Questions
+
+- ~~Only Better Auth integration bodies inspected; Auth.js needs
+  its spike (Phase 4).~~ RESOLVED in Phase 4: spike green, adapter
+  - port + engine shipped, session-verify sync proven by e2e.
+    (No webhooks in either provider path — sync is read-time via the
+    port, not webhook-to-users.) WorkOS/Clerk spikes explicitly out
+    of scope.
+- Access `Where` shape, full hook arg shapes, `templates/plugin`
+  3.x source not inspected — verify against installed types in
+  Phase 0/2, not from memory.
+- No official Payload testing docs (404) and no published
+  `@payloadcms/test` — harness follows onpage precedent
+  (SQLite memory + `handleEndpoints` + Playwright on example).
+- ~~Postgres parity mechanism (compose vs replset vs testcontainers)
+  undecided — spike in Phase 5, default to compose.~~ RESOLVED:
+  no compose file — GH `services: postgres:16` in CI, `docker run`
+  locally, per-run database names; mongo via in-process
+  `mongodb-memory-server` replset (wiredTiger, no transactions).
+- payload-auth issue bodies beyond titles and audit-rec landing
+  status unconfirmed — re-verify anti-patterns against its `main`
+  at Phase 1 start so guardrails track reality.
+
+## Sources
+
+- [payload-onpage repo](https://github.com/jellologic/payload-onpage)
+- [payload-onpage README](https://raw.githubusercontent.com/jellologic/payload-onpage/main/README.md)
+- [payload-onpage root package.json](https://raw.githubusercontent.com/jellologic/payload-onpage/main/package.json)
+- [payload-onpage architecture](https://raw.githubusercontent.com/jellologic/payload-onpage/main/docs/concepts/architecture.md)
+- [payload-onpage AGENTS.md](https://raw.githubusercontent.com/jellologic/payload-onpage/main/AGENTS.md)
+- [onpage core package.json](https://raw.githubusercontent.com/jellologic/payload-onpage/main/packages/core/package.json)
+- [onpage plugin package.json](https://raw.githubusercontent.com/jellologic/payload-onpage/main/packages/plugin/package.json)
+
+Payload/Better Auth contract details came from delegated workflow
+research (synthesis `complete:true` with gaps listed above); each is
+re-verified against installed types and official docs in Phases 0–2
+before it becomes load-bearing.
+
+---
+
+<!-- docs/PLAN-TANSTACK.md -->
+
+# TanStack Start support plan
+
+## Goal
+
+Make TanStack Start a first-class citizen alongside Next.js: a sibling
+framework adapter (`@payload-auth-link/tanstack-start`) built on the
+same hexagonal ports, so site builders get identical auth behavior on
+either framework with zero provider changes. Day-one target is
+Payload v4 (TanStack support ships in `v4.0.0-beta.0`, not v3).
+
+## Success Criteria
+
+- A builder wires Better Auth or Auth.js into a TanStack Start app
+  with the same calls as Next: engine, collections, provider
+  registration, route mounting, session verification, role
+  enforcement.
+- The Next and TanStack adapters share one implementation of every
+  framework-free behavior (no forked copies).
+- A TanStack example app runs both providers with 16/16 e2e green,
+  in CI, on SQLite at minimum.
+- `bun run check` and `bun run release:check` cover the new
+  package; guides document the Start path.
+
+## Approach
+
+Mirror Payload's own adapter pattern: thin framework package over
+shared UI. Payload renders one `@payloadcms/ui` behind
+`@payloadcms/next` and `@payloadcms/tanstack-start`; we render one
+`@payload-auth-link/react` behind `@payload-auth-link/next` and the
+new `@payload-auth-link/tanstack-start`.
+
+Four of the seven Next modules are already framework-free
+(`handlers`, `verify`, `authz`, `redirect` — pure
+Request/Response/Headers/fetch). They move to a new shared
+`@payload-auth-link/web` package; `next` re-exports them so existing
+imports keep working. Only `middleware`, `client`, and
+`server-provider` stay Next-only (`next/server`, `next/navigation`,
+`next/headers`). The Start package then holds only Start imports,
+per DNA §3 (no framework leak outside the adapter).
+
+Payload constraint: `@payloadcms/tanstack-start` exists only on the
+v4 line (beta, no stable). Our plugin peers `payload ^3.0.0` and the
+Next example runs 3.90.2, so Phase 0 is a go/no-go compat spike
+before any adapter code.
+
+## Capability mapping
+
+| Capability            | Next today                       | Start target                       |
+| --------------------- | -------------------------------- | ---------------------------------- |
+| Mount provider routes | `createRouteHandlers` → GET/POST | Same handlers in `server.handlers` |
+| Catch-all API shape   | `[...all]/route.ts`              | `api/auth/$.ts` splat route        |
+| Optimistic bounce     | `createAuthMiddleware`           | `createMiddleware().server()`      |
+| Server session read   | `createSessionVerifier`          | Shared; headers via `getRequest()` |
+| Role enforcement      | `requireRoles`                   | Shared; called from `beforeLoad`   |
+| Hydration             | `AuthLinkServerProvider`         | Root `loader` + `initialUser`      |
+| Post-auth refresh     | `router.refresh()`               | `router.invalidate()`              |
+| Redirect safety       | `safeRedirectPath`               | Shared unchanged                   |
+| BA framework plugin   | `nextCookies()`                  | `tanstackStartCookies()`           |
+
+## Steps
+
+### Phase 0 — v4-compat spike ✅ DONE — GO
+
+- Scaffolded `examples/tanstack-start` on `payload@4.0.0-beta.0` +
+  `@payloadcms/tanstack-start@4.0.0-beta.0` (file routes per PR
+  #16139: `__root.tsx` shell, `_payload` layout, `api.$.ts`).
+- Plugin loads under v4 beta with **zero changes**: collections
+  register, strategy + endpoints serve, onInit seeds.
+- Better Auth signup → session read (JIT user, `roles: [user]`) →
+  logout (both providers' cookies expired) verified over HTTP;
+  Auth.js mount verified (`/api/authjs/csrf` 200); admin renders.
+
+Findings (all recorded from the spike session):
+
+- **GO.** No plugin rewrite needed; both engines round-trip.
+- v4 flips the Local API access default: builder code (seeds,
+  scripts) must pass `overrideAccess: true`. Every shipped
+  plugin/provider Local API call already does (audited).
+- `withPayload` requires the caller to apply `rsc(pluginOptions.rsc)`
+  (else SSR 500s); `@vitejs/plugin-rsc` +
+  `react-server-dom-webpack` are required dev deps.
+- `devServerExternalPackages: ['ajv']` required — ajv's CJS breaks
+  under the RSC rewrite (frozen namespace hits `uri.code = ...`).
+- Server route handlers receive `{ request }` context, not a bare
+  `Request` — shapes the Phase 2 `createServerRouteHandlers` API.
+- Spike ran under node; `bun run dev` for this example is untested
+  (verify in Phase 3, fall back to node for the e2e webServer).
+- `importMap.js` stub suffices for page load; run the real
+  `payload generate:importmap` in Phase 3 for admin components.
+- Pinned: payload 4.0.0-beta.0, Start 1.168.61, Router 1.170.41,
+  vite 8.3.4, react 19.2.6.
+
+### Phase 1 — Extract `@payload-auth-link/web` ✅ DONE
+
+- Moved `handlers`, `verify`, `authz`, `redirect` + tests verbatim
+  to the new package; no behavior change.
+- `next` re-exports the moved API (back-compat); `next` depends on
+  `web`; build refs, typedoc extended (vitest + release-check
+  auto-discover).
+- Validation: `bun run check` green, 315 unit green,
+  `release:check` passes for all 7 packages, Next e2e 16/16 —
+  zero regression proven.
+
+### Phase 2 — `@payload-auth-link/tanstack-start` ✅ DONE
+
+- `createServerRouteHandlers(handle)` → `{ GET, POST }` for
+  `server.handlers` (uniform error envelope, same as Next).
+- `createAuthRequestMiddleware()` — optimistic cookie-presence
+  bounce to sign-in via `createMiddleware().server()` (parity
+  default; document live-verify as optional hardening).
+- Session server functions: `getSessionUser()` via `createServerFn`
+  - `getRequest()` headers into the shared verifier
+    (`baseUrl`-anchored, CSRF middleware per Start docs).
+- `createSessionLoader()` for root-route hydration into
+  `AuthLinkProvider initialUser`; `useAuthLinkRefreshStart()`
+  (refresh + `router.invalidate()`).
+- `beforeLoad` guard recipe using shared `requireRoles` (no new
+  authz code).
+- Better Auth engine gains a `tanstackStartCookies` plugin option
+  mirroring `nextCookies` (verified exported by the installed
+  better-auth 1.7.7 `better-auth/tanstack-start` subpath; Auth.js
+  needs nothing — `handleRequest` is already Request/Response).
+- Unit tests mirror the Next suite (middleware bounce matrix,
+  handler envelope, loader hydration, refresh).
+- Package re-exports the shared `web` API (same one-import DX as
+  `next`).
+- Validation: `bun run check` green, 331 unit green (16 new
+  - BA engine), `release:check` passes all 8 packages.
+
+### Phase 3 — `examples/tanstack-start` + e2e ✅ DONE
+
+- Example on Payload v4 beta: both providers, sign-in forms,
+  account page, server-guarded admin page, Payload admin.
+- The 16-spec e2e suite runs unchanged against it (one suite, two
+  frameworks — shared `admin-denied` marker, hydration-tolerant
+  `gotoOwn`/`toggleToSignUp`, v3/v4 `listTable`/`listCell`
+  locators); CI jobs `e2e-tanstack`, `e2e-tanstack-postgres`,
+  `e2e-tanstack-mongo`.
+- Postgres/Mongo matrix extension done in-phase: 16/16 on all six
+  suites (Next + Start × SQLite/Postgres/Mongo).
+
+Findings (all recorded from the Phase 3 session):
+
+- SSR streams before hydration: suite clicks that land in the
+  window are silently lost. Both examples render a
+  `HydratedMarker` (`html[data-hydrated]`) and the suite waits
+  for it (`gotoOwn`).
+- `/_serverFn/` must stay public in Start request middleware —
+  bouncing RPC corrupts the server-function protocol (redirect
+  followed with a JSON Accept → Start 406 → admin detail crash
+  on SPA navigation).
+- TanStack `redirect()` / `notFound()` must be **thrown** in
+  `requireRoles` handlers, not returned.
+- v4 admin list renders `grid`/`gridcell` (same `<table>` markup,
+  so tbody a11y scoping holds); v4 login adds a show-password
+  toggle; v4 ID cells carry an upstream `.id-label` contrast
+  failure (triaged exclusion, no-op on v3).
+- `bun run dev` verified for the example; no node fallback needed.
+- ⏸️ One transient (1/6 runs): post-login SSR to
+  `/admin/collections/users` 307-bounced with a valid
+  `payload-token` while a later `/me` succeeded — same class as
+  the known parallel-worker admin intermittence; CI `retries: 2`
+  covers. Revisit if it ever fails twice in a row.
+
+### Phase 4 — Docs + release ✅ DONE
+
+- `docs/guide-tanstack-start.md`, concepts/tour/compatibility
+  updates, getting-started + guide-better-auth pointers, PLAN
+  counts, llms regen, changesets (minor).
+- `release:check` green for all 8 packages; publish together.
+
+## Validation Plan
+
+- Phase 0: scratch app boots, plugin loads, one provider
+  round-trip each (manual + recorded findings doc).
+- Phase 1: `bun run check`, `bunx vitest run` (315 green),
+  `bun run e2e` (16/16, proves zero Next regression).
+- Phase 2: new package unit suite green; `bun run release:check`
+  covers it.
+- Phase 3: TanStack e2e 16/16 on SQLite locally + CI job green
+  (plus Postgres/Mongo matrix, done in-phase).
+- Highest-risk gate: Phase 0 v4-compat outcome — everything downstream
+  depends on the plugin loading under the v4 beta.
+
+## Risks / Open Questions
+
+- **v4 beta churn.** The adapter pins `4.0.0-beta.x`; beta API drift
+  may force re-spikes. Mitigation: narrow peer range, Phase 0 records
+  exact versions, CI pins lockfile.
+- **Should the Next example migrate to v4?** No — stays on v3 until
+  v4 stable. Separate work, tracked as a non-goal here.
+- **Start middleware runs server-side** (unlike Edge), so full live
+  verification is possible there; v1 ships optimistic parity and
+  documents the upgrade.
+- No Solid/Vue Start flavors in scope.
+
+## Non-goals
+
+- Payload v4 migration of the Next example or existing packages
+  beyond what Phase 0 requires.
+- TanStack Solid / Vue variants.
+- Depending on a future payloadcms.com beta TanStack wiring doc —
+  none was found; the PR and demo repo are the wiring reference.
+
+## Sources
+
+- https://github.com/payloadcms/payload/pull/16139
+- https://raw.githubusercontent.com/payloadcms/payload-tanstack-demo/HEAD/README.md
+- https://registry.npmjs.org/@payloadcms/tanstack-start
+- https://registry.npmjs.org/@payloadcms/next/latest
+- https://api.github.com/repos/payloadcms/payload/releases?per_page=5
+- https://tanstack.com/start/latest/docs/framework/react/guide/server-functions
+- https://tanstack.com/start/latest/docs/framework/react/guide/server-routes
+- https://tanstack.com/start/latest/docs/framework/react/guide/middleware
+- https://tanstack.com/router/latest/docs/framework/react/guide/data-loading
+
+---
+
+<!-- AGENTS.md -->
+
+# AGENTS.md
+
+Guidance for coding agents working **on this repository**. Start with
+[docs/MISSION.md](docs/MISSION.md), [docs/DNA.md](docs/DNA.md),
+[docs/PLAN.md](docs/PLAN.md), and [docs/PLAN-TANSTACK.md](docs/PLAN-TANSTACK.md)
+— they are the authority this file summarizes.
+
+## Commands (repo root, Bun)
+
+| Command                             | Does                                                         |
+| ----------------------------------- | ------------------------------------------------------------ |
+| `bun install`                       | Install (workspaces: `packages/*`, `examples/*`)             |
+| `bun run check`                     | Format, lint, typecheck, coverage, build, size budgets       |
+| `bun run test` / `bun run coverage` | Vitest (unit, component, Payload integration), on source     |
+| `bun run e2e`                       | Build, then Playwright on `examples/basic` (:3101, fresh DB) |
+| `bun run e2e:tanstack`              | Same suite on `examples/tanstack-start` (:3201, fresh DB)    |
+| `bun run build`                     | `tsc -b` → `packages/*/dist`                                 |
+| `bun run dev:example`               | Example site on :3100                                        |
+| `bunx changeset`                    | Describe a user-facing change (required for releases)        |
+
+## Layout
+
+- `packages/core`: framework-free. Ports (`ports.ts`), domain (roles,
+  errors, session types), Zod boundary schemas. No framework imports.
+- `packages/plugin`: Payload plugin. Plugin fn, collections, strategy,
+  `endpoints.ts`, `access.ts`, `hooks.ts`, `admin/`.
+- `packages/react`: provider-agnostic UI (sign-in, user menu). No Next,
+  no Payload imports.
+- `packages/web`: framework-free web (handlers, verifier, authz,
+  redirect). No framework imports.
+- `packages/next`: Next adapter. Edge middleware, client refresh,
+  server provider. Re-exports `web`.
+- `packages/tanstack-start`: Start adapter (Payload v4). Route
+  handlers, request middleware, loaders, refresh. Re-exports `web`.
+- `packages/provider-*`: one identity-provider adapter each
+  (`better-auth`, then `authjs`; `workos`/`clerk` ids reserved).
+- `examples/basic`: Next reference integration and e2e target.
+- `examples/tanstack-start`: Start reference integration and e2e target.
+
+## Invariants (don't break these)
+
+1. **Payload owns the users.** No second user store, shadow session
+   table, or out-of-band auth cookie. Storage goes through the Payload
+   Local API via `UserRepository`.
+2. **Core is framework-free.** No `payload`, `next/*`, React, or
+   provider-SDK imports in `packages/core` (lint-enforced).
+3. **No monkey-patches.** No `Object.defineProperty(payload, …)`, no
+   string flags on `config.custom`, no per-invocation client re-entry.
+   Typed injected clients from the composition root only.
+4. **No framework leaks.** No `next/headers` (or any framework import)
+   in Payload hooks or core. Transport lives in framework adapters.
+5. **Authorization goes through `plugin/src/access.ts`** (Payload's
+   access ops). Never add a state-changing endpoint without a CSRF
+   guard + an access check.
+6. **Package boundaries** (lint-enforced): core imports no framework;
+   react imports no Next/Payload; plugin imports no React outside
+   `admin/`; adapters sit beside the plugin, never above it.
+7. **Sources import siblings with `.ts`/`.tsx` extensions**
+   (rewritten to `.js`). Import Next modules as `next/headers.js`
+   etc. so `dist` runs under plain Node.
+8. **No `any` at boundaries, no silent fallbacks, no `console.*`.**
+   Expected failures are `Result<T, E>`; logs go through `LoggerPort`.
+
+## Conventions
+
+- Prettier (single quotes, no semicolons, width 100).
+  typescript-eslint type-checked, react-hooks, jsx-a11y.
+- TypeScript: `strict` plus `noUncheckedIndexedAccess`,
+  `exactOptionalPropertyTypes`, `verbatimModuleSyntax`, `noUnused*`.
+  Guard indexes instead of asserting (`!`).
+- Make the compiler check it: discriminated unions + `assertNever`,
+  branded keys, one canonical `Role` with a smart constructor.
+- Reuse before writing: Payload (`payload`, `payload/shared`),
+  core ports, neverthrow, Zod at untyped boundaries.
+- Core's public API is the explicit list in `core/src/index.ts`.
+- Tests: next to the code in `src/__tests__/`. Integration tests use
+  real Payload on SQLite in memory via `handleEndpoints`. Component
+  tests use Testing Library + happy-dom
+  (`// @vitest-environment happy-dom`).
+- Behavior change → test. Security change → an integration test that
+  would fail without it.
+- Public API → TSDoc, plus docs in `docs/`.
+
+---
+
+<!-- CONTRIBUTING.md -->
+
+# Contributing
+
+## Setup
+
+```bash
+bun install
+bun run check   # format, lint, typecheck, coverage, build, size
+bun run dev:example  # example site on :3100
+```
+
+Read [docs/MISSION.md](docs/MISSION.md), [docs/DNA.md](docs/DNA.md),
+[docs/PLAN.md](docs/PLAN.md), and [AGENTS.md](AGENTS.md) before changing
+anything — DNA invariants are binding.
+
+## Pull Requests
+
+- `bun run check` must be green; `bun run e2e` for auth-flow changes.
+- Behavior change → test. Security change → an integration test that
+  fails without the fix.
+- User-facing changes need a changeset (`bunx changeset`).
+- Public API needs TSDoc plus a `docs/` guide update.
+- Never commit secrets, never log credentials, never ship debug output.
+
+## Release
+
+Releases ride changesets on `main` (`.github/workflows/release.yml`):
+
+1. Land PRs with changesets; the release workflow opens a
+   "Version Packages" PR.
+2. Merging it publishes to npm with provenance attestations via
+   trusted publishing — configure the npm org as a trusted
+   publisher before the first release; no long-lived token.
+3. Before approving a Version Packages PR, run the packaging gate
+   locally: `bun run release:check` (`publint` + `attw` over every
+   package; all packages are ESM-only by decision).
+
+First-publish checklist: npm trusted publisher for the
+`@payload-auth-link` org, `NPM_CONFIG_PROVENANCE` unset (per-package
+`provenance: true` already set).
+
+---
+
+<!-- SECURITY.md -->
+
+# Security Policy
+
+## Supported Versions
+
+Pre-1.0: only the latest `0.x` release receives security fixes.
+
+## Reporting a Vulnerability
+
+Report security issues privately: open a private security advisory on
+the repository host (or email the maintainers) instead of filing a
+public issue. Include the affected package and version, reproduction
+steps, and impact.
+
+We aim to acknowledge within 72 hours and to ship a fix or mitigation
+before any public disclosure. Please do not disclose until a fix is
+released.
+
+## Scope Notes
+
+This project handles authentication sessions, cookies, and identity
+webhooks. Out of scope: vulnerabilities in Payload CMS itself, in
+identity providers (Better Auth, Auth.js, WorkOS, Clerk), or in host
+applications consuming this plugin — report those upstream.
+

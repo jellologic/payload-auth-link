@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.next/
+coverage/
+playwright-report/
+test-results/
+*.db
+*.db-journal
+**/importMap.js
+**/payload-types.ts
+**/next-env.d.ts
+.env
+.env*.local
+.DS_Store
+*.tsbuildinfo
+docs/api/
+**/routeTree.gen.ts

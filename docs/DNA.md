@@ -30,7 +30,7 @@ rules requires updating this file first.
 - `@scope/next` — Next.js adapter: route handlers, middleware/proxy,
   cookie/session helpers. Depends on core + react.
 - `@scope/provider-<id>` — one package per identity provider.
-  Initial build: `better-auth` first, `authjs` after its spike.
+  Initial build: `better-auth` first, `authjs` after its spike (both shipped, Phase 4).
   `workos` and `clerk` deferred post-v1 (SaaS-backed, not locally
   validatable); the registry reserves their ids.
 - `examples/basic` — reference integration and e2e target (SQLite,
@@ -172,3 +172,14 @@ rules requires updating this file first.
   `AGENTS.md` for agent consumers.
 - Never commit secrets, never log credentials, never ship a release
   with debug output (release hygiene is a checklist item, not a hope).
+
+## 9. Security invariants
+
+- Never link a provider identity to an existing user, or reuse an
+  existing email for a provider login, unless the provider verified the
+  email (`emailVerified`). Unverified profiles must not take over
+  existing accounts; creation of a standalone user is the provider's
+  verification lifecycle to complete.
+- State-changing endpoints require CSRF proof: matching `Origin` or a
+  custom header a cross-site page cannot set. Redirect targets are
+  validated same-origin against `baseUrl` — never an open redirect.

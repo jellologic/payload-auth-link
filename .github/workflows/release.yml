@@ -1,0 +1,39 @@
+# Release via changesets: pushes to main open a "Version Packages" PR;
+# merging it publishes to npm with provenance attestations (trusted
+# publishing — configure the npm org as a trusted publisher first; no
+# long-lived token).
+name: release
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - uses: changesets/action@v1
+        with:
+          version: bun run version-packages
+          publish: bun run release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
