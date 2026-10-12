@@ -33,6 +33,7 @@
     "docs:llms": "bun scripts/build-llms.mjs",
     "docs:check": "bun run build && bun scripts/check-docs.mjs && typedoc --treatWarningsAsErrors",
     "release": "bun scripts/publish.mjs",
+    "verify:published": "bun scripts/verify-published.mjs",
     "version-packages": "changeset version && bun install --lockfile-only"
   },
   "devDependencies": {

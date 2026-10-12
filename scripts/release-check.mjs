@@ -8,7 +8,8 @@
  * Run: `bun run release:check` (after `bun run build`).
  */
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { builtinModules } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -19,10 +20,10 @@ const packages = readdirSync(join(root, 'packages'), { withFileTypes: true })
   .map((entry) => entry.name)
   .sort()
 
-// Pack the way `scripts/publish.mjs` publishes (bun rewrites
-// `workspace:*` to real versions) and fail if any range survived:
-// a published `workspace:` dependency is uninstallable.
-function packedManifest(dir) {
+// Inspect exactly what consumers get: pack the way `scripts/publish.mjs`
+// publishes (bun rewrites `workspace:*` to real versions), extract, and
+// check the shipped files — not the local build output.
+function inspectPacked(dir) {
   const dest = mkdtempSync(join(tmpdir(), 'pal-release-check-'))
   try {
     execFileSync('bun', ['pm', 'pack', '--destination', dest, '--quiet'], { cwd: dir })
@@ -30,9 +31,51 @@ function packedManifest(dir) {
     if (tarball === undefined) {
       throw new Error('bun pm pack produced no tarball')
     }
-    return execFileSync('tar', ['-xzOf', join(dest, tarball), 'package/package.json'], {
-      encoding: 'utf8',
-    })
+    execFileSync('tar', ['-xzf', join(dest, tarball), '-C', dest])
+    const shipped = join(dest, 'package')
+    const manifestText = readFileSync(join(shipped, 'package.json'), 'utf8')
+    const manifest = JSON.parse(manifestText)
+    const declared = new Set([
+      manifest.name,
+      ...Object.keys(manifest.dependencies ?? {}),
+      ...Object.keys(manifest.peerDependencies ?? {}),
+    ])
+    const files = []
+    const imports = new Set()
+    const walk = (current) => {
+      for (const entry of readdirSync(current, { withFileTypes: true })) {
+        const path = join(current, entry.name)
+        if (entry.isDirectory()) {
+          walk(path)
+          continue
+        }
+        files.push(path.slice(shipped.length + 1))
+        if (!entry.name.endsWith('.js')) {
+          continue
+        }
+        // Strip comments first: TSDoc examples survive compilation and
+        // would read as imports.
+        const source = readFileSync(path, 'utf8')
+          .replace(/\/\*[\s\S]*?\*\//g, '')
+          .replace(/^\s*\/\/.*$/gm, '')
+        for (const match of source.matchAll(/(?:from|import\()\s*['"]([^'"./][^'"]*)['"]/g)) {
+          const specifier = match[1] ?? ''
+          if (specifier.startsWith('node:') || builtinModules.includes(specifier)) {
+            continue
+          }
+          const parts = specifier.split('/')
+          imports.add(specifier.startsWith('@') ? parts.slice(0, 2).join('/') : (parts[0] ?? ''))
+        }
+      }
+    }
+    walk(shipped)
+    return {
+      leaksWorkspace: manifestText.includes('workspace:'),
+      // Undeclared imports install fine here (hoisting) and crash for
+      // real consumers with ERR_MODULE_NOT_FOUND.
+      undeclared: [...imports].filter((name) => !declared.has(name)).sort(),
+      testFiles: files.filter((file) => /(^|\/)__(tests|fixtures)__\//.test(file)),
+    }
   } finally {
     rmSync(dest, { recursive: true, force: true })
   }
@@ -41,7 +84,25 @@ function packedManifest(dir) {
 let failed = false
 for (const name of packages) {
   const dir = join(root, 'packages', name)
-  if (packedManifest(dir).includes('workspace:')) {
+  const packed = inspectPacked(dir)
+  if (packed.undeclared.length > 0) {
+    console.error(
+      `release:check failed: ${name} ships imports of undeclared packages: ${packed.undeclared.join(', ')}`
+    )
+    failed = true
+  }
+  if (packed.testFiles.length > 0) {
+    console.error(
+      `release:check failed: ${name} ships ${packed.testFiles.length} test/fixture files`
+    )
+    failed = true
+  }
+  // The README is the npm landing page: never publish without one.
+  if (!existsSync(join(dir, 'README.md'))) {
+    console.error(`release:check failed: ${name} has no README.md (its npm page would be empty)`)
+    failed = true
+  }
+  if (packed.leaksWorkspace) {
     console.error(`release:check failed: ${name} packs a workspace: dependency range`)
     failed = true
   }

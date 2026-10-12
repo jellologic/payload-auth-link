@@ -1,4 +1,4 @@
-import { headers } from 'next/headers'
+import { headers } from 'next/headers.js'
 import type { JSX, ReactNode } from 'react'
 import { AuthLinkProvider } from '@payload-auth-link/react'
 import type { SessionVerifier } from '@payload-auth-link/web'
