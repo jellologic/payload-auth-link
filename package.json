@@ -17,7 +17,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
-    "check": "bun run format:check && bun run lint && bun run build && bun run typecheck && bun run coverage && bun run size",
+    "check": "bun run format:check && bun run build && bun run lint && bun run typecheck && bun run coverage && bun run size",
     "dev:example": "bun run build && cd examples/basic && bun run dev",
     "size": "size-limit",
     "e2e": "bun run build && playwright test -c e2e/playwright.config.ts",
@@ -31,7 +31,7 @@
     "docs:api": "typedoc",
     "docs:media": "bun run build && bun scripts/capture-media.mjs",
     "docs:llms": "bun scripts/build-llms.mjs",
-    "docs:check": "bun scripts/check-docs.mjs && typedoc --treatWarningsAsErrors",
+    "docs:check": "bun run build && bun scripts/check-docs.mjs && typedoc --treatWarningsAsErrors",
     "release": "changeset publish",
     "version-packages": "changeset version && bun install --lockfile-only"
   },

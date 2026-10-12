@@ -6,7 +6,6 @@ playwright-report/
 test-results/
 *.db
 *.db-journal
-**/importMap.js
 **/payload-types.ts
 **/next-env.d.ts
 .env
