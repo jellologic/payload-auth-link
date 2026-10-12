@@ -13,6 +13,8 @@ const databaseUrl =
 export default defineConfig({
   testDir: '.',
   testMatch: '*.spec.ts',
+  // One seeded-admin login per run (concurrent logins race).
+  globalSetup: './admin-session.ts',
   fullyParallel: false,
   // Postgres + cold Turbopack: migrations push on first hit, so the
   // first tests pay extra.

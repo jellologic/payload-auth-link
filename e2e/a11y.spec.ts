@@ -1,6 +1,6 @@
 import { AxeBuilder } from '@axe-core/playwright'
 import { expect, test } from '@playwright/test'
-import { DEV_ADMIN_EMAIL, DEV_ADMIN_PASSWORD } from './dev-admin.js'
+import { adminContext } from './admin-session.js'
 import { gotoOwn, gotoSettled, seededAdminCell, toggleToSignUp } from './helpers.js'
 
 /**
@@ -35,12 +35,10 @@ test('account page has zero axe violations when signed in', async ({ page }) => 
   expect(results.violations).toEqual([])
 })
 
-test('admin users table body has zero axe violations', async ({ page }) => {
-  await gotoSettled(page, '/admin/login')
-  await page.getByLabel(/email/i).fill(DEV_ADMIN_EMAIL)
-  await page.getByRole('textbox', { name: /password/i }).fill(DEV_ADMIN_PASSWORD)
-  await page.getByRole('button', { name: 'Login', exact: true }).click()
-  await page.waitForURL('**/admin', { timeout: 15000 })
+test('admin users table body has zero axe violations', async ({ browser, baseURL }) => {
+  // Shared run-level admin session (see admin-session.ts): no login here.
+  const admin = await adminContext(browser, baseURL)
+  const page = await admin.newPage()
   // Oldest first: the seeded admin stays on page one however many users
   // earlier specs (and earlier engines) provisioned.
   await gotoSettled(page, '/admin/collections/users?sort=createdAt')

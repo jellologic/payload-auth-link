@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { DEV_ADMIN_EMAIL, DEV_ADMIN_PASSWORD } from './dev-admin.js'
+import { adminContext } from './admin-session.js'
 import { gotoOwn, gotoSettled, toggleToSignUp } from './helpers.js'
 
 const password = 'e2e-test-password-1'
@@ -100,7 +100,11 @@ test('anonymous visitors bounce from /admin-only to sign-in', async ({ page }) =
   await expect(page).toHaveURL(/\/sign-in\?redirect=%2Fadmin-only/)
 })
 
-test('non-admin users get a 404 on /admin-only, admins see the content', async ({ page }) => {
+test('non-admin users get a 404 on /admin-only, admins see the content', async ({
+  page,
+  browser,
+  baseURL,
+}) => {
   const email = uniqueEmail()
   await signUp(page, email)
 
@@ -115,15 +119,14 @@ test('non-admin users get a 404 on /admin-only, admins see the content', async (
   // Escalate to admin through the Payload API as the seeded local admin.
   const session = await page.request.get('/api/auth-link/session')
   const { user } = (await session.json()) as { user: { id: string | number } }
-  await page.context().clearCookies()
-  await gotoSettled(page, '/admin/login')
-  await page.getByLabel(/email/i).fill(DEV_ADMIN_EMAIL)
-  await page.getByRole('textbox', { name: /password/i }).fill(DEV_ADMIN_PASSWORD)
-  await page.getByRole('button', { name: 'Login', exact: true }).click()
-  await page.waitForURL('**/admin', { timeout: 15000 })
+  // The shared run-level admin session (see admin-session.ts) lives in
+  // its own context; concurrent admin logins would race.
+  const admin = await adminContext(browser, baseURL)
+  const adminPage = await admin.newPage()
+  await gotoSettled(adminPage, '/admin')
   // Escalate through in-browser fetch: it carries the admin login
   // cookie exactly like the Payload admin UI does.
-  const patched = await page.evaluate(async (id: string) => {
+  const patched = await adminPage.evaluate(async (id: string) => {
     const response = await fetch(`/api/users/${id}`, {
       method: 'PATCH',
       credentials: 'same-origin',
@@ -133,6 +136,7 @@ test('non-admin users get a 404 on /admin-only, admins see the content', async (
     return { status: response.status, body: await response.text() }
   }, String(user.id))
   expect(patched.status).toBe(200)
+  await admin.close()
 
   // Back as the escalated user: granted, with the server-rendered content.
   await page.context().clearCookies()

@@ -8,6 +8,8 @@ import { DEV_ADMIN_SEED_ENV } from './dev-admin.js'
 export default defineConfig({
   testDir: '.',
   testMatch: '*.spec.ts',
+  // One seeded-admin login per run (concurrent logins race).
+  globalSetup: './admin-session.ts',
   fullyParallel: false,
   // Cold Vite SSR compiles (Payload admin, auth routes) are slow: the
   // server is warm after the first hits, but early tests pay for it.

@@ -335,6 +335,30 @@ interrupted by another navigation` when a page bounces to sign-in
   session-service test pins the unknown-provider revoke error behind
   the PAR-2 500 path.
 
+- **The first real CI run surfaced three issues that only a clean
+  checkout or CI concurrency could show.** All three are fixed.
+  - `importMap.js` (Payload) and `routeTree.gen.ts` (TanStack
+    Router) were gitignored, so example pages and type-aware lint
+    broke on a fresh clone. Both files are now tracked.
+  - `check` linted before `build`, and `docs:check` ran typedoc
+    without one. Type-aware tools resolve sibling packages through
+    `dist`, so both scripts now build first. This was proven in a
+    fresh `git clone` with `bun install --frozen-lockfile`: `check`
+    passed with 457 tests, and both frameworks' e2e passed 23/23.
+  - In CI, two retried flakes (an admin escalation 403 and an empty
+    admin list) traced to concurrent seeded-admin logins inside one
+    project. Payload's login read-modify-writes the user's `sessions`
+    array. `e2e/admin-session.ts` is now `globalSetup` for the six
+    matrix configs: it logs the admin in once per run and hands specs
+    pre-authenticated contexts. Only `users-admin.spec.ts` keeps the
+    real UI login, which is safe because nothing else logs in
+    concurrently. This closes TST-6's "no reliance on retries" for
+    real.
+
+  With `--retries=0`, both three-engine suites passed 69/69 twice
+  each in CI's Linux browsers, and all four Postgres and Mongo
+  suites passed 23/23.
+
 ## Status
 
 Batch 1 (13 items) and Batch 2 (29 items) are complete. Each item has
