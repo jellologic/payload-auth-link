@@ -97,6 +97,19 @@ for (const name of packages) {
     )
     failed = true
   }
+  // npm verifies provenance against `repository`: a missing or
+  // mismatched URL makes the trusted CI publish fail with E422.
+  const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
+  const repository = manifest.repository ?? {}
+  if (
+    repository.url !== 'git+https://github.com/jellologic/payload-auth-link.git' ||
+    repository.directory !== `packages/${name}`
+  ) {
+    console.error(
+      `release:check failed: ${name} repository must point at this repo and packages/${name}`
+    )
+    failed = true
+  }
   // The README is the npm landing page: never publish without one.
   if (!existsSync(join(dir, 'README.md'))) {
     console.error(`release:check failed: ${name} has no README.md (its npm page would be empty)`)

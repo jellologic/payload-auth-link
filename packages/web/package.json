@@ -3,6 +3,15 @@
   "version": "0.1.1",
   "description": "payload-auth-link framework-free web-adapter toolkit: route handlers, session verification, server authorization, redirect safety.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jellologic/payload-auth-link.git",
+    "directory": "packages/web"
+  },
+  "homepage": "https://github.com/jellologic/payload-auth-link/tree/main/packages/web#readme",
+  "bugs": {
+    "url": "https://github.com/jellologic/payload-auth-link/issues"
+  },
   "type": "module",
   "sideEffects": false,
   "exports": {

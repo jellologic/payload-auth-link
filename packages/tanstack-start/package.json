@@ -3,6 +3,15 @@
   "version": "0.1.1",
   "description": "payload-auth-link TanStack Start adapter: server routes, request middleware, session server functions, hydration.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jellologic/payload-auth-link.git",
+    "directory": "packages/tanstack-start"
+  },
+  "homepage": "https://github.com/jellologic/payload-auth-link/tree/main/packages/tanstack-start#readme",
+  "bugs": {
+    "url": "https://github.com/jellologic/payload-auth-link/issues"
+  },
   "type": "module",
   "sideEffects": false,
   "exports": {
