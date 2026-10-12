@@ -2416,6 +2416,13 @@ Releases ride changesets on `main` (`.github/workflows/release.yml`):
    entry point importing in a clean consumer, and a consumer
    type-check.
 
+Empty changesets (`bunx changeset --empty`) are for internal-only PRs.
+If **only** empty changesets are pending, `changesets/action` neither
+opens a Version PR nor publishes ("All changesets are empty; not
+creating PR"), and the release stalls until they're deleted. Don't
+use an empty changeset to ride metadata into an unpublished version:
+delete it once nothing else is pending.
+
 `bun run release:check` gates every PR on the packed tarballs: `publint`
 and `attw`, no undeclared imports, no shipped test files, no
 `workspace:` ranges, and a README per package.
