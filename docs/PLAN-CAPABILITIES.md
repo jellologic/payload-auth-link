@@ -116,7 +116,7 @@ inferred:
   production use". It is supported only with `next-auth` ≥ 5.0.0-beta.8
   and `@auth/prisma-adapter` ≥ 1.3.0. Neither is our stack (we use
   `@auth/core` with a Payload adapter).
-- **Consequence (D7):** Better Auth is the primary provider for new
+- **Consequence (D7, accepted):** Better Auth is the primary provider for new
   capabilities. Auth.js keeps parity for what it does well natively
   (email sign-in, OAuth/OIDC) plus correctness and security fixes; it
   gets no experimental features.
@@ -598,7 +598,7 @@ needs, then capabilities by user value.
 
 ### Phase 0: Decisions + spikes
 
-- ~~Resolve D1–D6~~ ✅ accepted 2026-10-12 (see Decisions).
+- ~~Resolve D1–D9~~ ✅ accepted 2026-10-12 (see Decisions).
 - Spikes, each a throwaway branch with written findings:
   - S1: Auth.js Email provider under the engine's JWT rule.
   - S2: Auth.js email OTP via `generateVerificationToken` and
@@ -697,29 +697,21 @@ needs, then capabilities by user value.
 
 ## Decisions (accepted 2026-10-12)
 
-The builder accepted every recommendation. These are now binding for
+The builder accepted every recommendation (D1–D6, then D7–D9 after the docs review). These are now binding for
 the phases below; changing one means a new dated entry here, not a
 silent edit.
 
-| ID  | Question                                                | Decision                                                                                                                                                                                           |
-| --- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1  | Who owns organizations?                                 | **Payload collections** (`organizations`, `memberships`), working with both providers. One authorization source. BA's `organization` plugin stays a provider feature, never Payload authorization. |
-| D2  | Can phone-only identities become Payload users?         | **No, in v1.** A verified phone links to existing Payload users only; phone-only sign-ups are refused with `UnverifiedIdentityError`. Revisit with Payload `loginWithUsername`.                    |
-| D3  | What is an anonymous session in Payload?                | **A guest principal**, never a Payload user and never Payload access. It links normally once upgraded to a verified identity.                                                                      |
-| D4  | Auth.js parity for 2FA, phone, anonymous, impersonation | **Unsupported in v1.** A policy that needs one fails at wiring with `UnsupportedCapabilityError`. Recipes come later, only on demand.                                                              |
-| D5  | What may an impersonator do in Payload?                 | **Configurable, default read-mostly.** The admin panel and role changes are denied while an actor is present; every operation is audited.                                                          |
-| D6  | Trust identity-provider `email_verified` in Auth.js?    | **A per-provider allowlist**, off by default, explicit and auditable. An allow-listed provider asserting `email_verified: false` still 401s.                                                       |
-
-### Proposed (pending the builder)
-
-These are new from the 2026-10-12 docs review. Each carries a
-recommendation, and none is binding until accepted.
-
-| ID  | Question                                                                          | Options                                                    | Recommendation                                                                                                                                                                                                                                                      |
-| --- | --------------------------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D7  | How much to invest in the Auth.js adapter now that Auth.js is part of Better Auth | Full parity · Maintenance tier · Deprecate                 | **Maintenance tier**: keep email sign-in and OAuth/OIDC first-class with every correctness/security fix (CAP-3 trust policy, CAP-12, CAP-14 events); new and experimental capabilities (passkeys, …) are Better Auth-only. Revisit if upstream publishes a roadmap. |
-| D8  | Which non-browser channels may reach Payload                                      | Cookie only · Opt-in per channel · All                     | **Opt-in per channel**: `cookie` by default; `bearer` and `device` explicit; `api-key` stays off until there's an API-principal design (keys aren't people)                                                                                                         |
-| D9  | Who owns a user's email when the provider changes it                              | Provider (sync to Payload) · Payload (ignore the provider) | **The provider, for verified changes only**: a verified change syncs to Payload via CAP-14. Provider deletion unlinks the identity; it never deletes the Payload user.                                                                                              |
+| ID  | Question                                                                          | Decision                                                                                                                                                                                                                                                                                                    |
+| --- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | Who owns organizations?                                                           | **Payload collections** (`organizations`, `memberships`), working with both providers. One authorization source. BA's `organization` plugin stays a provider feature, never Payload authorization.                                                                                                          |
+| D2  | Can phone-only identities become Payload users?                                   | **No, in v1.** A verified phone links to existing Payload users only; phone-only sign-ups are refused with `UnverifiedIdentityError`. Revisit with Payload `loginWithUsername`.                                                                                                                             |
+| D3  | What is an anonymous session in Payload?                                          | **A guest principal**, never a Payload user and never Payload access. It links normally once upgraded to a verified identity.                                                                                                                                                                               |
+| D4  | Auth.js parity for 2FA, phone, anonymous, impersonation                           | **Unsupported in v1.** A policy that needs one fails at wiring with `UnsupportedCapabilityError`. Recipes come later, only on demand.                                                                                                                                                                       |
+| D5  | What may an impersonator do in Payload?                                           | **Configurable, default read-mostly.** The admin panel and role changes are denied while an actor is present; every operation is audited.                                                                                                                                                                   |
+| D6  | Trust identity-provider `email_verified` in Auth.js?                              | **A per-provider allowlist**, off by default, explicit and auditable. An allow-listed provider asserting `email_verified: false` still 401s.                                                                                                                                                                |
+| D7  | How much to invest in the Auth.js adapter now that Auth.js is part of Better Auth | **Maintenance tier** (accepted with D8–D9 on 2026-10-12). Email sign-in and OAuth/OIDC stay first-class with every correctness and security fix (CAP-3 trust policy, CAP-12, CAP-14 events). New and experimental capabilities (passkeys, …) are Better Auth-only. Revisit if upstream publishes a roadmap. |
+| D8  | Which non-browser channels may reach Payload?                                     | **Opt-in per channel.** `cookie` by default; `bearer` and `device` explicit. `api-key` stays off until there's an API-principal design (keys aren't people).                                                                                                                                                |
+| D9  | Who owns a user's email when the provider changes it?                             | **The provider, for verified changes only.** A verified change syncs to Payload via CAP-14. Provider deletion unlinks the identity; it never deletes the Payload user.                                                                                                                                      |
 
 ## Risks / Open Questions
 
