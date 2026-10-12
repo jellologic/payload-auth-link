@@ -3,6 +3,15 @@
   "version": "0.1.1",
   "description": "payload-auth-link for Payload CMS: collections, auth strategy, endpoints, hooks, admin.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jellologic/payload-auth-link.git",
+    "directory": "packages/plugin"
+  },
+  "homepage": "https://github.com/jellologic/payload-auth-link/tree/main/packages/plugin#readme",
+  "bugs": {
+    "url": "https://github.com/jellologic/payload-auth-link/issues"
+  },
   "type": "module",
   "sideEffects": false,
   "exports": {

@@ -3,6 +3,15 @@
   "version": "0.1.1",
   "description": "payload-auth-link React UI: provider-agnostic sign-in components and user menu.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jellologic/payload-auth-link.git",
+    "directory": "packages/react"
+  },
+  "homepage": "https://github.com/jellologic/payload-auth-link/tree/main/packages/react#readme",
+  "bugs": {
+    "url": "https://github.com/jellologic/payload-auth-link/issues"
+  },
   "type": "module",
   "sideEffects": false,
   "exports": {

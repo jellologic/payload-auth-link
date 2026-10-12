@@ -3,6 +3,15 @@
   "version": "0.1.1",
   "description": "payload-auth-link Next.js adapter: route handlers, middleware, session and cookie helpers.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jellologic/payload-auth-link.git",
+    "directory": "packages/next"
+  },
+  "homepage": "https://github.com/jellologic/payload-auth-link/tree/main/packages/next#readme",
+  "bugs": {
+    "url": "https://github.com/jellologic/payload-auth-link/issues"
+  },
   "type": "module",
   "sideEffects": false,
   "exports": {

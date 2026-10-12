@@ -3,6 +3,15 @@
   "version": "0.1.1",
   "description": "payload-auth-link Better Auth provider adapter.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jellologic/payload-auth-link.git",
+    "directory": "packages/provider-better-auth"
+  },
+  "homepage": "https://github.com/jellologic/payload-auth-link/tree/main/packages/provider-better-auth#readme",
+  "bugs": {
+    "url": "https://github.com/jellologic/payload-auth-link/issues"
+  },
   "type": "module",
   "sideEffects": false,
   "exports": {
