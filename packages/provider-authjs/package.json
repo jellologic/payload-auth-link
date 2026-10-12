@@ -1,6 +1,6 @@
 {
   "name": "@payload-auth-link/provider-authjs",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "payload-auth-link Auth.js provider adapter.",
   "license": "MIT",
   "type": "module",
