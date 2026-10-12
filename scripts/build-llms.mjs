@@ -46,6 +46,10 @@ const guides = [
   ['docs/DNA.md', 'Engineering constitution: architecture, guardrails, testing, security.'],
   ['docs/PLAN.md', 'Implementation plan with phase evidence.'],
   ['docs/PLAN-TANSTACK.md', 'TanStack Start support plan with phase evidence.'],
+  [
+    'docs/PLAN-CAPABILITIES.md',
+    'Auth capabilities plan (MFA, passkeys, OAuth, magic link, orgs…) across both providers.',
+  ],
   ['AGENTS.md', 'Agent working agreement for this repo.'],
   ['CONTRIBUTING.md', 'Setup, PR rules, release process.'],
   ['SECURITY.md', 'Security policy.'],
