@@ -2,7 +2,8 @@
 
 Guidance for coding agents working **on this repository**. Start with
 [docs/MISSION.md](docs/MISSION.md), [docs/DNA.md](docs/DNA.md),
-[docs/PLAN.md](docs/PLAN.md), and [docs/PLAN-TANSTACK.md](docs/PLAN-TANSTACK.md)
+[docs/PLAN.md](docs/PLAN.md), [docs/PLAN-TANSTACK.md](docs/PLAN-TANSTACK.md), and
+[docs/PLAN-CAPABILITIES.md](docs/PLAN-CAPABILITIES.md)
 — they are the authority this file summarizes.
 
 ## Commands (repo root, Bun)
