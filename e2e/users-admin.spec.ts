@@ -55,6 +55,11 @@ test('admin users show roles and linked identities', async ({ page }) => {
   await expect(row).toBeVisible()
   await expect(listCell(row, 'user')).toBeVisible()
   await expect(listCell(row, '1 Identity')).toBeVisible()
-  await idLink.click()
-  await expect(page.getByText(`better-auth · ${email}`)).toBeVisible()
+  // Follow the row's own link by URL, not by click: the Payload admin
+  // list is server-rendered and WebKit can accept a click before the
+  // list hydrates, silently dropping the navigation (seen in CI).
+  const href = await idLink.first().getAttribute('href')
+  expect(href).not.toBeNull()
+  await gotoSettled(page, href ?? '')
+  await expect(page.getByText(`better-auth · ${email}`)).toBeVisible({ timeout: 30_000 })
 })
