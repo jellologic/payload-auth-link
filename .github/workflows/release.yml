@@ -1,7 +1,7 @@
 # Release via changesets: pushes to main open a "Version Packages" PR;
-# merging it publishes to npm with provenance attestations (trusted
-# publishing — configure the npm org as a trusted publisher first; no
-# long-lived token).
+# merging it publishes to npm through `bun run release`
+# (scripts/publish.mjs) with provenance attestations via trusted
+# publishing (OIDC) — no long-lived token anywhere.
 name: release
 
 on:
@@ -29,6 +29,10 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
+      # Trusted publishing (OIDC) needs npm >= 11.5.1; Node 22 ships
+      # npm 10, which cannot exchange the OIDC token and sends an
+      # unauthenticated PUT (npm answers 404).
+      - run: npm install -g npm@^11.5.1 && npm --version
       - run: bun install --frozen-lockfile
       - run: bun run build
       - uses: changesets/action@v1
