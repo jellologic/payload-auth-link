@@ -32,7 +32,7 @@
     "docs:media": "bun run build && bun scripts/capture-media.mjs",
     "docs:llms": "bun scripts/build-llms.mjs",
     "docs:check": "bun run build && bun scripts/check-docs.mjs && typedoc --treatWarningsAsErrors",
-    "release": "changeset publish",
+    "release": "bun scripts/publish.mjs",
     "version-packages": "changeset version && bun install --lockfile-only"
   },
   "devDependencies": {
