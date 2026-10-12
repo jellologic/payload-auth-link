@@ -1,0 +1,40 @@
+{
+  "name": "@payload-auth-link/web",
+  "version": "0.0.1",
+  "description": "payload-auth-link framework-free web-adapter toolkit: route handlers, session verification, server authorization, redirect safety.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "!dist/*.tsbuildinfo",
+    "src",
+    "!src/**/__tests__"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@payload-auth-link/core": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22"
+  }
+}

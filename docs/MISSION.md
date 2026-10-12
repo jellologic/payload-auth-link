@@ -37,7 +37,8 @@ while keeping every provider behind a swappable port.
 
 Initial build: Better Auth first, then Auth.js/NextAuth — the two
 providers fully validatable with unit + e2e locally (self-hosted,
-no SaaS dependency). Auth.js ships after its research spike.
+no SaaS dependency). Auth.js shipped after its research spike
+(Phase 4): both adapters, integration tests, and e2e are green.
 
 Deferred post-v1: WorkOS and Clerk. Both are SaaS-backed and cannot
 be fully validated locally; their ports stay reserved in the design

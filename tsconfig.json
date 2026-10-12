@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.base.json",
+  "files": [],
+  "references": [
+    { "path": "./packages/core" },
+    { "path": "./packages/plugin" },
+    { "path": "./packages/react" },
+    { "path": "./packages/web" },
+    { "path": "./packages/next" },
+    { "path": "./packages/tanstack-start" },
+    { "path": "./packages/provider-better-auth" },
+    { "path": "./packages/provider-authjs" }
+  ]
+}

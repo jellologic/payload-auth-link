@@ -1,0 +1,7 @@
+[
+  {
+    "name": "core",
+    "path": "packages/core/dist/index.js",
+    "limit": "10 kB"
+  }
+]
