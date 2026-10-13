@@ -216,6 +216,30 @@ export class UnsupportedCapabilityError extends AuthLinkError {
 }
 
 /**
+ * `UNSUPPORTED_VERSION`: an installed upstream package (Payload,
+ * Better Auth, Auth.js) is outside the band this release validated.
+ * Thrown at wiring time by `assertSupportedVersion`, before any
+ * collection write — the alternative is discovering the mismatch
+ * as a raw SQL/`TypeError` crash mid-request (B3/B4).
+ */
+export class UnsupportedVersionError extends AuthLinkError {
+  readonly packageName: string
+  readonly found: string
+  readonly supported: string
+
+  constructor(packageName: string, found: string, supported: string) {
+    super(
+      'UNSUPPORTED_VERSION',
+      `Unsupported ${packageName} version: found ${found}, supported ${supported}. ` +
+        'See docs/compatibility.md for the validated bands and upgrade steps.'
+    )
+    this.packageName = packageName
+    this.found = found
+    this.supported = supported
+  }
+}
+
+/**
  * `PROVIDER_ERROR`: an identity provider failed; `providerId` says
  * which. Session reads treat this as anonymous (fail closed).
  */

@@ -1,4 +1,5 @@
 import { okAsync, type ResultAsync } from 'neverthrow'
+import { assertNever } from '../assert.js'
 import type { RepositoryError, UserExistsError } from '../errors.js'
 import type { IdentityEvent } from '../events.js'
 import type { LoggerPort, UserRepository } from '../ports.js'
@@ -48,5 +49,8 @@ export function applyIdentityEvent(
       case 'user-deleted':
         return users.unlinkIdentity(user.id, ref).map(() => undefined)
     }
+    // A new IdentityEvent variant must fail typecheck here (B17),
+    // never fall through as a silent no-op at runtime.
+    return assertNever(event)
   })
 }

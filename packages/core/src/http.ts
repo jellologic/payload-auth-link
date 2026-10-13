@@ -2,7 +2,12 @@ import { z } from 'zod'
 import { parseEmail } from './email.js'
 import { InvalidConfigError } from './errors.js'
 import { isNonEmptyString, isRecord } from './guards.js'
-import { defineUserId, type ResolvedSessionActor, type SessionAssurance } from './ports.js'
+import {
+  authMethods,
+  defineUserId,
+  type ResolvedSessionActor,
+  type SessionAssurance,
+} from './ports.js'
 import { parseRole } from './roles.js'
 
 /**
@@ -129,16 +134,9 @@ export type SessionUser = {
   readonly mfaRequired?: true | undefined
 }
 
-const authMethodSchema = z.enum([
-  'password',
-  'magic-link',
-  'email-otp',
-  'oauth',
-  'one-tap',
-  'passkey',
-  'phone-otp',
-  'anonymous',
-])
+// Derived from the `authMethods` tuple in ports.ts (single source,
+// B16): the wire enum and the `AuthMethod` union cannot drift apart.
+const authMethodSchema = z.enum(authMethods)
 
 // Non-strict on purpose (forward compatibility): a newer server may
 // add keys inside these optional facts, and an older client must keep
@@ -166,6 +164,27 @@ const resolvedSessionActorSchema = z.discriminatedUnion('kind', [
 const legacySessionActorSchema = z.object({ providerUserId: z.string().min(1) })
 
 /**
+ * Why {@link parseSessionUser} degraded an optional wire field instead
+ * of trusting it (B20). Reported through
+ * {@link ParseSessionUserOptions.onDegrade} so a producer/consumer
+ * version skew is observable in logs instead of silent: an unknown
+ * `AuthMethod` from a newer server lands here as
+ * `'assurance-malformed'`, never as a mysteriously absent session.
+ */
+export type SessionUserDegradeReason =
+  'assurance-malformed' | 'actor-malformed' | 'organization-malformed'
+
+/** Options for {@link parseSessionUser}. */
+export type ParseSessionUserOptions = {
+  /**
+   * Called once per degraded optional field. Intended for a
+   * `LoggerPort.warn` at the composition root; omitted by default,
+   * which preserves the historical silent fail-closed behavior.
+   */
+  readonly onDegrade?: ((reason: SessionUserDegradeReason) => void) | undefined
+}
+
+/**
  * Narrow unknown JSON to a `SessionUser`. This is the CLIENT wire
  * parser: core identity fields (`id`, `collection`, `email`,
  * `roles`) stay strict and fail closed (`null`) on any deviation,
@@ -184,7 +203,11 @@ const legacySessionActorSchema = z.object({ providerUserId: z.string().min(1) })
  * explicit `null` a producer may carry for "no actor / no tenant"
  * normalizes to absent; `null` assurance degrades to `'unknown'`.
  */
-export function parseSessionUser(value: unknown): SessionUser | null {
+export function parseSessionUser(
+  value: unknown,
+  options?: ParseSessionUserOptions
+): SessionUser | null {
+  const onDegrade = options?.onDegrade
   if (!isRecord(value)) {
     return null
   }
@@ -209,12 +232,15 @@ export function parseSessionUser(value: unknown): SessionUser | null {
   let assurance: SessionAssurance | undefined
   if (value.assurance !== undefined) {
     const parsed = sessionAssuranceSchema.safeParse(value.assurance)
-    assurance = parsed.success
-      ? {
-          methods: parsed.data.methods === 'unknown' ? 'unknown' : [...parsed.data.methods],
-          mfa: parsed.data.mfa,
-        }
-      : { methods: 'unknown', mfa: 'unknown' }
+    if (parsed.success) {
+      assurance = {
+        methods: parsed.data.methods === 'unknown' ? 'unknown' : [...parsed.data.methods],
+        mfa: parsed.data.mfa,
+      }
+    } else {
+      assurance = { methods: 'unknown', mfa: 'unknown' }
+      onDegrade?.('assurance-malformed')
+    }
   }
   let actor: ResolvedSessionActor | undefined
   if (value.actor !== undefined && value.actor !== null) {
@@ -232,6 +258,8 @@ export function parseSessionUser(value: unknown): SessionUser | null {
       const legacy = legacySessionActorSchema.safeParse(value.actor)
       if (legacy.success) {
         actor = { kind: 'provider-only', providerUserId: legacy.data.providerUserId }
+      } else {
+        onDegrade?.('actor-malformed')
       }
       // Malformed actor degrades to absent on the wire; server authz
       // uses its own fail-closed extraction (see the TSDoc above).
@@ -241,6 +269,8 @@ export function parseSessionUser(value: unknown): SessionUser | null {
   if (value.organizationId !== undefined && value.organizationId !== null) {
     if (isNonEmptyString(value.organizationId)) {
       organizationId = value.organizationId
+    } else {
+      onDegrade?.('organization-malformed')
     }
   }
   return {

@@ -185,15 +185,23 @@ export type VerifiedClaim<T> = {
  * Better Auth has no per-session method; its per-user
  * `lastLoginMethod` must never back per-session assurance).
  */
-export type AuthMethod =
-  | 'password'
-  | 'magic-link'
-  | 'email-otp'
-  | 'oauth'
-  | 'one-tap'
-  | 'passkey'
-  | 'phone-otp'
-  | 'anonymous'
+/**
+ * Every {@link AuthMethod} value, single-sourced: the union below and
+ * the wire `z.enum` in `http.ts` both derive from this tuple, so the
+ * two can never drift apart silently (B16).
+ */
+export const authMethods = [
+  'password',
+  'magic-link',
+  'email-otp',
+  'oauth',
+  'one-tap',
+  'passkey',
+  'phone-otp',
+  'anonymous',
+] as const
+
+export type AuthMethod = (typeof authMethods)[number]
 
 /** The identity claims a provider session carries (PORT-1). */
 export type ProviderIdentityClaims = {
@@ -257,10 +265,15 @@ export type ResolvedSessionActor =
  * as `bearer` once redeemed into a session, so channel policies see
  * one honest value for every token-in-hand presentation.
  */
-export type SessionChannel = 'cookie' | 'bearer' | 'api-key' | 'device'
+/**
+ * Every {@link SessionChannel} value, for boundary validation. The
+ * union derives from this tuple (single source, B16): a missing
+ * member is now a compile error everywhere the union is consumed,
+ * not a silently shorter validation list.
+ */
+export const sessionChannels = ['cookie', 'bearer', 'api-key', 'device'] as const
 
-/** Every {@link SessionChannel} value, for boundary validation. */
-export const sessionChannels: readonly SessionChannel[] = ['cookie', 'bearer', 'api-key', 'device']
+export type SessionChannel = (typeof sessionChannels)[number]
 
 /**
  * An auth capability an adapter can declare on

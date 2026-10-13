@@ -9,6 +9,7 @@ import {
   parseSessionResponse,
   parseSessionUser,
   resolveOrigin,
+  type SessionUserDegradeReason,
 } from '../http.js'
 
 const valid = {
@@ -154,6 +155,33 @@ describe('parseSessionUser', () => {
       expect(parsed).not.toBeNull()
       expect(parsed).not.toHaveProperty('organizationId')
     }
+  })
+
+  it('reports every degradation through onDegrade with a typed reason (B20)', () => {
+    const reasons: SessionUserDegradeReason[] = []
+    const onDegrade = (reason: SessionUserDegradeReason): void => {
+      reasons.push(reason)
+    }
+    // Unknown AuthMethod from a newer server: assurance degrades to
+    // 'unknown' AND the skew is observable, never silent.
+    const parsed = parseSessionUser(
+      {
+        ...valid,
+        assurance: { methods: ['quantum-entanglement'], mfa: true },
+        actor: 42,
+        organizationId: 42,
+      },
+      { onDegrade }
+    )
+    expect(parsed?.assurance).toEqual({ methods: 'unknown', mfa: 'unknown' })
+    expect(reasons).toEqual(['assurance-malformed', 'actor-malformed', 'organization-malformed'])
+
+    reasons.length = 0
+    parseSessionUser(valid, { onDegrade })
+    parseSessionUser({ ...valid, assurance: { methods: ['password'], mfa: true } }, { onDegrade })
+    // Absent and explicitly-null optionals are not degradations.
+    parseSessionUser({ ...valid, actor: null, organizationId: null }, { onDegrade })
+    expect(reasons).toEqual([])
   })
 
   it('keeps core identity fields strict even when optionals are malformed', () => {

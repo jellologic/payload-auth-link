@@ -20,8 +20,20 @@ import { InvalidConfigError } from './errors.js'
  * Anonymous identities (`identity.anonymous === true`) never link
  * under any policy (D3).
  */
-export type LinkingPolicy =
-  { readonly kind: 'verified-email' } | { readonly kind: 'verified-email-or-phone' }
+/**
+ * Linking-policy boundary schema. Strict and discriminated on `kind`:
+ * unknown kinds and unknown keys are rejected, never silently mapped
+ * to the default. Defined before {@link LinkingPolicy} so the domain
+ * type derives from the schema (single source, B16): the hand-written
+ * `readonly` union it replaced was assignable but not identical to
+ * the schema output — exactly the drift the type-alarms pin catches.
+ */
+export const linkingPolicySchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('verified-email') }).strict(),
+  z.object({ kind: z.literal('verified-email-or-phone') }).strict(),
+])
+
+export type LinkingPolicy = Readonly<z.output<typeof linkingPolicySchema>>
 
 /**
  * The default linking policy: verified email only. Used by
@@ -29,16 +41,6 @@ export type LinkingPolicy =
  * omitted, so existing callers keep byte-identical behavior.
  */
 export const defaultLinkingPolicy: LinkingPolicy = { kind: 'verified-email' }
-
-/**
- * Linking-policy boundary schema. Strict and discriminated on `kind`:
- * unknown kinds and unknown keys are rejected, never silently mapped
- * to the default.
- */
-export const linkingPolicySchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('verified-email') }).strict(),
-  z.object({ kind: z.literal('verified-email-or-phone') }).strict(),
-])
 
 /**
  * Parse an untyped linking policy (for example from plugin options).

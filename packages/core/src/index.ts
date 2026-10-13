@@ -34,7 +34,14 @@ export {
   parseSessionUser,
   resolveOrigin,
 } from './http.js'
-export type { HttpFetch, OriginResolutionInput, SessionGuest, SessionUser } from './http.js'
+export type {
+  HttpFetch,
+  OriginResolutionInput,
+  ParseSessionUserOptions,
+  SessionGuest,
+  SessionUser,
+  SessionUserDegradeReason,
+} from './http.js'
 export { defaultLinkingPolicy, linkingPolicySchema, parseLinkingPolicy } from './linking.js'
 export type { LinkingPolicy } from './linking.js'
 export {
@@ -55,6 +62,7 @@ export {
   SessionInvalidError,
   UnknownProviderError,
   UnsupportedCapabilityError,
+  UnsupportedVersionError,
   UnverifiedEmailError,
   UnverifiedIdentityError,
   UserExistsError,
@@ -70,6 +78,7 @@ export {
 } from './policies.js'
 export {
   assertCapabilities,
+  authMethods,
   defineProviderId,
   defineSessionId,
   defineUserId,
@@ -138,3 +147,11 @@ export {
   validateStartupConfig,
 } from './validation.js'
 export type { CollectionMap, StartupConfig } from './validation.js'
+export {
+  assertSupportedVersion,
+  describeBand,
+  isSupportedVersion,
+  parseVersion,
+  readInstalledVersion,
+} from './version.js'
+export type { ParsedVersion, VersionRange } from './version.js'
