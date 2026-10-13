@@ -67,6 +67,8 @@ export default buildConfig({
     authLink({
       baseUrl: process.env.EXAMPLE_BASE_URL ?? 'http://localhost:3200',
       roles: ['admin', 'user'],
+      // API keys present as a distinct session channel.
+      admitChannels: ['cookie', 'api-key'],
       defaultRole: 'user',
       providers: [betterAuthProvider, authJsProvider],
     }),

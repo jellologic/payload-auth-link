@@ -65,6 +65,7 @@
       "version": "0.0.1",
       "dependencies": {
         "@auth/core": "^0.41.0",
+        "@better-auth/api-key": "1.7.7",
         "@better-auth/passkey": "^1.7.7",
         "@payload-auth-link/core": "workspace:*",
         "@payload-auth-link/plugin": "workspace:*",

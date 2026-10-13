@@ -1,4 +1,5 @@
 import { createBetterAuthEngine } from '@payload-auth-link/provider-better-auth'
+import { apiKey } from '@better-auth/api-key'
 import { passkey } from '@better-auth/passkey'
 import { anonymous, emailOTP, magicLink, twoFactor } from 'better-auth/plugins'
 import { tanstackStartCookies } from 'better-auth/tanstack-start'
@@ -43,6 +44,34 @@ export const engine = createBetterAuthEngine({
       ],
     },
     {
+      // API keys (@better-auth/api-key): declared like any satellite
+      // model — see the capabilities guide's API keys recipe.
+      model: 'apikey',
+      fields: [
+        // createdAt/updatedAt are Payload-owned and excluded, like
+        // every custom model.
+        { name: 'configId', type: 'text', required: true },
+        { name: 'enabled', type: 'boolean' },
+        { name: 'expiresAt', type: 'date' },
+        { name: 'key', type: 'text', required: true },
+        { name: 'lastRefillAt', type: 'date' },
+        { name: 'lastRequest', type: 'date' },
+        { name: 'metadata', type: 'text' },
+        { name: 'name', type: 'text' },
+        { name: 'permissions', type: 'text' },
+        { name: 'prefix', type: 'text' },
+        { name: 'rateLimitEnabled', type: 'boolean' },
+        { name: 'rateLimitMax', type: 'number' },
+        { name: 'rateLimitTimeWindow', type: 'number' },
+        { name: 'referenceId', type: 'text', required: true },
+        { name: 'refillAmount', type: 'number' },
+        { name: 'refillInterval', type: 'number' },
+        { name: 'remaining', type: 'number' },
+        { name: 'requestCount', type: 'number' },
+        { name: 'start', type: 'text' },
+      ],
+    },
+    {
       model: 'passkey',
       fields: [
         { name: 'name', type: 'text' },
@@ -82,6 +111,7 @@ export const engine = createBetterAuthEngine({
       }),
       anonymous(),
       twoFactor(),
+      apiKey({ defaultPrefix: 'bock_', enableMetadata: true, enableSessionForAPIKeys: true }),
       passkey({
         rpID: new URL(baseURL).hostname,
         rpName: 'payload-auth-link example',
