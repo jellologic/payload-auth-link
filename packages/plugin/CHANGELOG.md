@@ -1,5 +1,194 @@
 # @payload-auth-link/plugin
 
+## 0.2.0
+
+### Minor Changes
+
+- [#12](https://github.com/jellologic/payload-auth-link/pull/12) [`2eced30`](https://github.com/jellologic/payload-auth-link/commit/2eced3044f96a02bbc0f57f61345a958054030f4) Thanks [@jellologic](https://github.com/jellologic)! - Channel admission (CAP-13a) and impersonation completion (CAP-8b).
+
+  - The plugin gains `admitChannels` (default `['cookie']`): a live
+    provider session presented on a non-admitted channel (`bearer`,
+    `api-key`, `device`) is refused at verification with the new typed
+    `ChannelNotAdmittedError` (401) before any linking, and
+    verification stops at the presenting provider. Channels are
+    observed, not asserted: Better Auth reports `'bearer'` when the
+    session arrives via an `Authorization: Bearer [REDACTED]` header without
+    the session cookie (denied by the default policy), and Auth.js
+    reports `'cookie'` because it only reads cookie-presented
+    sessions. CSRF is unchanged in this phase.
+  - `Session.actor` / `SessionUser.actor` are now the resolved
+    `ResolvedSessionActor` discriminated union: `payload-user` (with
+    the operator's Payload `userId`, resolved through
+    `UserRepository.findByProviderIdentity`) or `provider-only` (no
+    linked Payload user — fail-closed: still audited and restricted,
+    never presented as a Payload id, logged as a warning).
+    `parseSessionUser` accepts the legacy `{ providerUserId }` form
+    and normalizes it to `provider-only`; `ProviderSession.actor`
+    keeps the provider form.
+  - Every authenticated Payload collection/global operation performed
+    while impersonating is audit-logged through `LoggerPort`
+    (`impersonated operation`: actor, target, operation,
+    collection/global, document id) via plugin-installed
+    `beforeOperation` hooks, so denied attempts are audited too.
+  - Default impersonation restrictions (D5): the plugin denies
+    admin-panel access and roles-field writes on the users collection
+    while an actor is present (reads allowed), and exports
+    `denyWhileImpersonating(ops?)`, the fail-closed
+    `isImpersonating(req)` / `impersonationStateFromRequest(req)`
+    server extraction (a present-but-malformed `actor` still denies
+    and audits; authorization never routes through the client wire
+    parser), plus `impersonationActorFromRequest` for attribution, so
+    builders can apply the same default — deny admin and writes,
+    allow reads — to their own collections.
+
+  See `docs/upgrading.md`.
+
+- [#12](https://github.com/jellologic/payload-auth-link/pull/12) [`2eced30`](https://github.com/jellologic/payload-auth-link/commit/2eced3044f96a02bbc0f57f61345a958054030f4) Thanks [@jellologic](https://github.com/jellologic)! - CAP-14 identity lifecycle foundation: core `IdentityEvent` union and
+  `applyIdentityEvent` use-case. Verified provider email changes sync to
+  Payload (D9); unverified changes are ignored. Provider unlink/delete
+  removes only the identity row via the new required
+  `UserRepository.unlinkIdentity` — the Payload user always remains.
+  Adapters may expose `IdentityProviderPort.onIdentityEvent`; the plugin
+  subscribes at `onInit`. Custom `UserRepository` implementations must
+  add `unlinkIdentity` (pre-1.0 minor break for port implementers).
+
+  Both provider adapters now translate lifecycle hooks: Better Auth
+  `databaseHooks` (user update/delete, account delete; builder hooks
+  preserved, plus `revokeSessionsOnPasswordReset` defaults on) and
+  Auth.js `events` (`updateUser`, `linkAccount` — upstream never fires
+  unlink/delete events, so Auth.js emits no unlink/delete facts).
+
+- [#12](https://github.com/jellologic/payload-auth-link/pull/12) [`2eced30`](https://github.com/jellologic/payload-auth-link/commit/2eced3044f96a02bbc0f57f61345a958054030f4) Thanks [@jellologic](https://github.com/jellologic)! - Impersonation audit hole closed (CAP-8a): Better Auth's
+  `session.impersonatedBy` now reaches the port as the new optional
+  `ProviderSession.actor` (`{ providerUserId }`, `null` for plain
+  sessions; Auth.js always reports `null`), the plugin audit-logs every
+  verified use of an impersonated session through `LoggerPort` with the
+  operator and target ids, and plugin logout also expires Better Auth's
+  `admin_session` cookie via the new optional `logoutCookieNames` port
+  field (`getBetterAuthLogoutCookieNames`). All additions are optional
+  and backward compatible.
+
+- [#12](https://github.com/jellologic/payload-auth-link/pull/12) [`2eced30`](https://github.com/jellologic/payload-auth-link/commit/2eced3044f96a02bbc0f57f61345a958054030f4) Thanks [@jellologic](https://github.com/jellologic)! - Capabilities Phases 3–7 (PLAN-CAPABILITIES): passwordless, OAuth,
+  passkeys, MFA policy, suspend, phone, guests, organizations, SSO.
+
+  Core: session-policy primitives (`effectiveRoles`, `mfaSatisfied`,
+  `isSuspendedAt`, `emailDomainAllowed`), `UserSuspendedError`,
+  `UserRecord.phone`/`suspendedUntil`, guest principals and their wire
+  envelope (`SessionGuest`), verified-phone linking fallback for
+  placeholder-email sign-ups, and optional multi-session port methods.
+
+  Plugin: `policies.requireMfaForRoles` (roles withheld without MFA
+  proof, `mfaRequired` on the wire), governance fields (`phone`,
+  `suspendedUntil`, `suspendReason`) with verify-time suspension and
+  best-effort provider revocation, `verified-email-or-phone` linking
+  wired end to end (`findByPhone`/`setPhone`), guest sessions on the
+  session endpoint, Payload-owned organizations (`organizations:
+{ enabled: true }` — collections, manager access, invite/accept
+  endpoints, `requireOrgRole`), SSO verified-domain enforcement
+  (`organizations.ssoProviders`), multi-session logout sweep, and
+  channel-aware CSRF (admitted bearer skips the origin check).
+
+  Better Auth: capabilities derived from installed plugins
+  (magic-link, email-otp, oauth, one-tap, passkey, mfa, phone,
+  anonymous), phone and placeholder-email claim mapping (SIWE and
+  anonymous identities are guests, never email claims),
+  `revokeUserSessions`, multi-session enumeration for logout, and a
+  fix: `ba-users.name` no longer rejects the empty-string names
+  Better Auth's passwordless flows create.
+
+  Auth.js: capabilities derived from configured providers (email →
+  magic-link, oauth/oidc → oauth, database sessions →
+  revoke-user-sessions, implemented for the database strategy), plus
+  CAP-2/CAP-4 recipes — `generateEmailOtpCode`,
+  `buildEmailOtpCallbackUrl`, `verifyGoogleIdToken`, and
+  `createGoogleOneTapAuthorize`.
+
+  React/web: `guest` on the auth context with `fetchSession`,
+  `requireRoles({ requireMfa: true })` throwing typed
+  `MfaRequiredError` (including for withheld-role step-ups).
+
+- [#12](https://github.com/jellologic/payload-auth-link/pull/12) [`2eced30`](https://github.com/jellologic/payload-auth-link/commit/2eced3044f96a02bbc0f57f61345a958054030f4) Thanks [@jellologic](https://github.com/jellologic)! - Core session vocabulary and declared capabilities (PORT-1/PORT-2):
+  `ProviderSession` now carries `identity` claims
+  (`VerifiedClaim<Email>`/`VerifiedClaim<PhoneNumber>` plus `anonymous`),
+  `assurance` (`methods`/`mfa`, `'unknown'` when the provider cannot
+  tell), a required `actor`, `organizationId`, and a `channel`
+  (`'cookie' | 'bearer' | 'api-key' | 'device'`; one-time tokens present
+  as `bearer`, there is no `'one-time'` channel). The flat
+  `email`/`emailVerified` fields remain as deprecated aliases of the
+  email claim for one minor, and linking now reads the claim. Core adds
+  the branded E.164 `PhoneNumber` with `parsePhoneNumber`, plus
+  `UnsupportedCapabilityError`, `UnverifiedIdentityError`, and
+  `MfaRequiredError`. `IdentityProviderPort` gains a required
+  `capabilities: ReadonlySet<Capability>` and an optional
+  `revokeUserSessions`. **Breaking for custom adapters (compile
+  time):** existing `IdentityProviderPort`/`ProviderSession`
+  implementations will not compile until they declare `capabilities`
+  and return the new required session fields (`identity`,
+  `assurance`, `actor`, `organizationId`, `channel`). This ships as a
+  minor under the pre-1.0 policy in `docs/upgrading.md` (minors may
+  break option shapes and internal ports; the wire contract is the
+  stability anchor). Core also adds `assertCapabilities(provider,
+required)`, which throws `UnsupportedCapabilityError` at wiring when
+  a capability a policy needs is undeclared, and the plugin enforces
+  it (e.g. a phone linking policy requires `'phone'`). Better
+  Auth fills the email claim, `mfa` from `user.twoFactorEnabled` when
+  declared (else `'unknown'`), `organizationId` from
+  `session.activeOrganizationId` when declared (else `null`), declares
+  `'impersonation'` only when the Better Auth admin plugin is
+  actually installed (observed `channel`: `'bearer'` for
+  Authorization-header presentation without the session cookie, else
+  `'cookie'`), and reports `methods: 'unknown'` (no per-session
+  method upstream). Auth.js fills the email claim with `methods`/`mfa`
+  `'unknown'` and declares no capabilities yet.
+
+- [#12](https://github.com/jellologic/payload-auth-link/pull/12) [`2eced30`](https://github.com/jellologic/payload-auth-link/commit/2eced3044f96a02bbc0f57f61345a958054030f4) Thanks [@jellologic](https://github.com/jellologic)! - Generalized linking policy (PORT-3): core adds a declared
+  `LinkingPolicy` discriminated union (`verified-email`, the default,
+  plus opt-in `verified-email-or-phone`) with `defaultLinkingPolicy`, a
+  strict `linkingPolicySchema`, and `parseLinkingPolicy`.
+  `ensureLinkedUser` accepts an optional `linkingPolicy`; omitted or
+  `verified-email` preserves the previous verified-email behavior
+  exactly. The opt-in branch links a phone-only identity carrying a
+  verified phone claim to an _existing_ user resolved through the new
+  optional `UserRepository.findByPhone` port method — it never
+  provisions, and every phone-only refusal is
+  `UnverifiedIdentityError`. Anonymous identities never link under any
+  policy — intentionally including when the identity was previously
+  linked (D3): the anonymous gate runs before the already-linked fast
+  path, so an anonymous session for a linked identity is refused, not
+  verified. The plugin accepts a validated `linkingPolicy` option and
+  passes it through to the session service; `verified-email-or-phone`
+  additionally requires every registered provider to declare the
+  `'phone'` capability (PORT-2 `assertCapabilities`, enforced at
+  wiring) and currently fails fast at wiring because the Payload users
+  collection has no phone field (and the repository no `findByPhone`)
+  until CAP-9.
+
+- [#12](https://github.com/jellologic/payload-auth-link/pull/12) [`2eced30`](https://github.com/jellologic/payload-auth-link/commit/2eced3044f96a02bbc0f57f61345a958054030f4) Thanks [@jellologic](https://github.com/jellologic)! - Session wire contract gains optional facts (PORT-4): plugin-level
+  `Session` and the `SessionUser` wire shape now carry optional
+  `assurance` (`methods`/`mfa`), `actor` (`{ providerUserId }`, only
+  while impersonating), and `organizationId` (only when a
+  provider-native tenant is active). The plugin projects them from the
+  provider session onto the session endpoint response and the Payload
+  auth strategy user; the web verifier and `require*` helpers and the
+  React provider pass them through. Back-compatible by construction:
+  payloads without the fields still parse, producers omit a field
+  unless it is known, and a reported `assurance` serializes even when
+  its values are `'unknown'` — consumers must treat absent and
+  `'unknown'` alike as not satisfied (fail closed). The client wire
+  parser is forward-compatible: unknown keys inside
+  `assurance`/`actor` are ignored and a present-but-malformed
+  optional degrades fail-closed-for-policy (`assurance` to
+  `'unknown'`, `actor`/`organizationId` to absent) instead of failing
+  the whole user, while core identity fields stay strict. Server-side
+  authorization/audit never use that parser: the plugin's fail-closed
+  server extraction treats a present-but-malformed `actor` on
+  `req.user` as impersonating (deny + audit). See `docs/upgrading.md`.
+
+### Patch Changes
+
+- Updated dependencies [[`2eced30`](https://github.com/jellologic/payload-auth-link/commit/2eced3044f96a02bbc0f57f61345a958054030f4), [`2eced30`](https://github.com/jellologic/payload-auth-link/commit/2eced3044f96a02bbc0f57f61345a958054030f4), [`2eced30`](https://github.com/jellologic/payload-auth-link/commit/2eced3044f96a02bbc0f57f61345a958054030f4), [`2eced30`](https://github.com/jellologic/payload-auth-link/commit/2eced3044f96a02bbc0f57f61345a958054030f4), [`2eced30`](https://github.com/jellologic/payload-auth-link/commit/2eced3044f96a02bbc0f57f61345a958054030f4), [`2eced30`](https://github.com/jellologic/payload-auth-link/commit/2eced3044f96a02bbc0f57f61345a958054030f4), [`2eced30`](https://github.com/jellologic/payload-auth-link/commit/2eced3044f96a02bbc0f57f61345a958054030f4), [`2eced30`](https://github.com/jellologic/payload-auth-link/commit/2eced3044f96a02bbc0f57f61345a958054030f4)]:
+  - @payload-auth-link/core@0.2.0
+
 ## 0.1.1
 
 ### Patch Changes
