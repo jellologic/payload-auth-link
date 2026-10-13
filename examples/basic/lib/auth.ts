@@ -32,65 +32,12 @@ export const engine = createBetterAuthEngine({
       { name: 'twoFactorEnabled', type: 'boolean' },
     ],
   },
-  // Plugin-owned models (CAP-5/6), declared so the Payload adapter
-  // serves them; field lists mirror BA's getAuthTables output.
-  customModels: [
-    {
-      model: 'twoFactor',
-      fields: [
-        { name: 'secret', type: 'text', required: true },
-        { name: 'backupCodes', type: 'text', required: true },
-        { name: 'userId', type: 'text', required: true },
-        { name: 'verified', type: 'boolean' },
-        { name: 'failedVerificationCount', type: 'number' },
-        { name: 'lockedUntil', type: 'date' },
-      ],
-    },
-    {
-      // API keys (@better-auth/api-key): declared like any satellite
-      // model — see the capabilities guide's API keys recipe. Sessions
-      // for keys are opt-in (enableSessionForAPIKeys) and the plugin's
-      // `admitChannels` must admit 'api-key'.
-      model: 'apikey',
-      fields: [
-        // createdAt/updatedAt are Payload-owned and excluded, like
-        // every custom model.
-        { name: 'configId', type: 'text', required: true },
-        { name: 'enabled', type: 'boolean' },
-        { name: 'expiresAt', type: 'date' },
-        { name: 'key', type: 'text', required: true },
-        { name: 'lastRefillAt', type: 'date' },
-        { name: 'lastRequest', type: 'date' },
-        { name: 'metadata', type: 'text' },
-        { name: 'name', type: 'text' },
-        { name: 'permissions', type: 'text' },
-        { name: 'prefix', type: 'text' },
-        { name: 'rateLimitEnabled', type: 'boolean' },
-        { name: 'rateLimitMax', type: 'number' },
-        { name: 'rateLimitTimeWindow', type: 'number' },
-        { name: 'referenceId', type: 'text', required: true },
-        { name: 'refillAmount', type: 'number' },
-        { name: 'refillInterval', type: 'number' },
-        { name: 'remaining', type: 'number' },
-        { name: 'requestCount', type: 'number' },
-        { name: 'start', type: 'text' },
-      ],
-    },
-    {
-      model: 'passkey',
-      fields: [
-        { name: 'name', type: 'text' },
-        { name: 'publicKey', type: 'text', required: true },
-        { name: 'userId', type: 'text', required: true },
-        { name: 'credentialID', type: 'text', required: true },
-        { name: 'counter', type: 'number', required: true },
-        { name: 'deviceType', type: 'text', required: true },
-        { name: 'backedUp', type: 'boolean', required: true },
-        { name: 'transports', type: 'text' },
-        { name: 'aaguid', type: 'text' },
-      ],
-    },
-  ],
+  // Derived declarations (issue #17): the plugin models (twoFactor,
+  // passkey, ...) and their fields come from Better Auth's own
+  // getAuthTables output, so a BA schema bump cannot drift from the
+  // declarations. Pin the derived output in a snapshot test to keep
+  // a drift alarm (see the capabilities guide).
+  autoDeclare: true,
   options: {
     baseURL,
     secret: process.env.PAYLOAD_SECRET ?? 'local-dev-only-secret-32-chars-min!',

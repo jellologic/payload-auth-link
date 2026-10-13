@@ -254,7 +254,7 @@ API keys work when the satellite's model is declared — verified end
 to end (issue #16), probed by the committed schema probe. Declare the
 `apikey` model in `customModels` (the field list mirrors BA's
 `getAuthTables` output, minus Payload-owned `createdAt`/`updatedAt`;
-see `examples/basic/lib/auth.ts`), compose the plugin, opt keys into
+or let `autoDeclare: true` derive them for you — the recipe below), compose the plugin, opt keys into
 sessions, and admit the channel:
 
 ```ts
@@ -283,6 +283,35 @@ functions, and expire them. MFA policy: key sessions report
 stays withheld from API keys — fail-closed by design. Without
 `enableSessionForAPIKeys` and the admitted channel, a key
 authenticates nothing (D8).
+## Deriving declarations from Better Auth's schema (issue #17)
+
+Hand-declaring `customFields`/`customModels` for every plugin is
+reviewed-in-code strictness; when you compose many plugins, derive
+them instead:
+
+```ts
+createBetterAuthEngine({
+  autoDeclare: true, // derive from getAuthTables(options)
+  options: { plugins: [organization(), admin(), apiKey({/* ... */})] },
+})
+
+// or compute them yourself:
+import { deriveBetterAuthSchema } from '@payload-auth-link/provider-better-auth'
+const { customFields, customModels } = deriveBetterAuthSchema(options)
+```
+
+Semantics: arrays and unknown BA types map to a JSON column;
+enum-valued attributes stay text (BA owns value validation); a BA
+`defaultValue` makes the column nullable (BA writes before applying
+defaults); renames (`modelName`/`fieldName`) throw — declare those by
+hand, the adapter serves canonical names. `autoDeclare` merges under
+your explicit declarations, so a hand-pinned field always wins. Keep
+the drift alarm: pin the derived output in a snapshot test —
+
+```ts
+const derived = deriveBetterAuthSchema(options)
+expect(derived).toMatchSnapshot() // a BA bump that changes the schema fails here
+```
 
 ## Sessions across channels (CAP-13)
 
