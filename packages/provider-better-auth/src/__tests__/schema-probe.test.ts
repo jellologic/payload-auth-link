@@ -13,12 +13,14 @@
  * reviews the change and updates the pin. Unsupported BA field types
  * fail generation outright.
  *
- * Skipped plugins (separate packages, not dependencies of this package):
- * api-key (`@better-auth/api-key`) and sso (`@better-auth/sso`).
- * Passkey is a devDependency since CAP-5 and is probed. Teams are
+ * Satellites are devDependencies and probed like first-party plugins:
+ * passkey (since CAP-5) and api-key (`@better-auth/api-key`, verified
+ * working when declared — issue #16). Skipped: sso
+ * (`@better-auth/sso`) — still not a dependency here. Teams are
  * covered via `organization({ teams: { enabled: true } })`.
  */
 import { sqliteAdapter } from '@payloadcms/db-sqlite'
+import { apiKey } from '@better-auth/api-key'
 import { passkey } from '@better-auth/passkey'
 import { getAuthTables } from 'better-auth/db'
 import {
@@ -46,6 +48,9 @@ const SECRET = 'schema-probe-integration-secret!!!'
 const probePlugins = [
   organization({ teams: { enabled: true } }),
   admin(),
+  // @better-auth/api-key (a satellite, like passkey): verified working
+  // when declared (issue #16) — probed so it stays true across BA bumps.
+  apiKey({ defaultPrefix: 'bock_', enableMetadata: true, enableSessionForAPIKeys: true }),
   anonymous(),
   phoneNumber({ sendOTP: () => Promise.resolve() }),
   magicLink({ sendMagicLink: () => Promise.resolve() }),
@@ -113,6 +118,27 @@ const pinnedInventory: readonly string[] = [
   'account.scope:string',
   'account.updatedAt:date:required',
   'account.userId:string:required',
+  'apikey.configId:string:required',
+  'apikey.createdAt:date:required',
+  'apikey.enabled:boolean',
+  'apikey.expiresAt:date',
+  'apikey.key:string:required',
+  'apikey.lastRefillAt:date',
+  'apikey.lastRequest:date',
+  'apikey.metadata:string',
+  'apikey.name:string',
+  'apikey.permissions:string',
+  'apikey.prefix:string',
+  'apikey.rateLimitEnabled:boolean',
+  'apikey.rateLimitMax:number',
+  'apikey.rateLimitTimeWindow:number',
+  'apikey.referenceId:string:required',
+  'apikey.refillAmount:number',
+  'apikey.refillInterval:number',
+  'apikey.remaining:number',
+  'apikey.requestCount:number',
+  'apikey.start:string',
+  'apikey.updatedAt:date:required',
   'invitation.createdAt:date:required',
   'invitation.email:string:required',
   'invitation.expiresAt:date:required',
@@ -272,7 +298,6 @@ describe('BA schema probe: pinned inventory', () => {
   })
 
   it.skip('passkey: lives in @better-auth/passkey, not a dependency here (lands with CAP-5)', () => {})
-  it.skip('api-key: lives in @better-auth/api-key, not exported by better-auth 1.7.7', () => {})
   it.skip('sso: lives in @better-auth/sso, not exported by better-auth 1.7.7', () => {})
 })
 

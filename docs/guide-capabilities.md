@@ -248,6 +248,42 @@ data, never a second identity authority inside the plugin. SIWE
 claim_, so a wallet is a guest at most until a verified email links
 it — the same rule covers anonymous placeholder addresses.
 
+## API keys (`@better-auth/api-key`)
+
+API keys work when the satellite's model is declared — verified end
+to end (issue #16), probed by the committed schema probe. Declare the
+`apikey` model in `customModels` (the field list mirrors BA's
+`getAuthTables` output, minus Payload-owned `createdAt`/`updatedAt`;
+see `examples/basic/lib/auth.ts`), compose the plugin, opt keys into
+sessions, and admit the channel:
+
+```ts
+import { apiKey } from '@better-auth/api-key'
+
+// engine options
+plugins: [
+  apiKey({ defaultPrefix: 'bock_', enableSessionForAPIKeys: true }),
+  // ...
+],
+customModels: [
+  { model: 'apikey', fields: [/* getAuthTables output, minus createdAt/updatedAt */] },
+],
+
+// plugin options
+authLink({ /* ... */ admitChannels: ['cookie', 'api-key'] })
+```
+
+Clients then present `x-api-key: <key>`; the request verifies through
+the `auth-link` strategy, so Payload REST sees the user. **Security
+posture:** a key session carries its owner's Payload roles, so an
+admin's key IS an admin credential — issue keys to humans sparingly,
+scope them with BA's `metadata`/`permissions` plus your own access
+functions, and expire them. MFA policy: key sessions report
+`assurance.mfa: false`, so any role gated by `requireMfaForRoles`
+stays withheld from API keys — fail-closed by design. Without
+`enableSessionForAPIKeys` and the admitted channel, a key
+authenticates nothing (D8).
+
 ## Sessions across channels (CAP-13)
 
 `admitChannels` (default `['cookie']`) is the deployment's explicit
