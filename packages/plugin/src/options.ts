@@ -3,7 +3,7 @@ import {
   assertNever,
   createProviderRegistry,
   defaultLinkingPolicy,
-  nullLogger,
+  consoleLogger,
   nullTracer,
   parseLinkingPolicy,
   parseRole,
@@ -15,6 +15,7 @@ import {
   type IdentityProviderPort,
   type IdPort,
   type LinkingPolicy,
+  type LogFields,
   type LoggerPort,
   type ProviderId,
   type ProviderRegistry,
@@ -62,8 +63,19 @@ export type AuthLinkPluginOptions = {
   readonly rolesField?: string | undefined
   /** Identities field injected on the users collection. Defaults to `identities`. */
   readonly identitiesField?: string | undefined
-  /** Structured logger. Defaults to silent. */
+  /**
+   * Structured logger. Defaults to a console logger (refusals and
+   * audit events are visible without configuration); pass
+   * `nullLogger()` to opt out of all output.
+   */
   readonly logger?: LoggerPort | undefined
+  /**
+   * Durable sink for impersonation audit events (CAP-8b), called in
+   * addition to the logger. Wire it to a SIEM push, a database
+   * insert, anything that survives log rotation — "audited" should
+   * not mean "printed to stdout once".
+   */
+  readonly onAudit?: AuditSink | undefined
   /** Tracer. Defaults to a pass-through. */
   readonly tracer?: TracerPort | undefined
   /** Clock. Defaults to system time. */
@@ -156,6 +168,11 @@ export type WiredOrganizations = {
   readonly ssoProviders: readonly ProviderId[]
 }
 
+/** A single audit event: message plus structured fields. */
+export type AuditEvent = { readonly message: string; readonly fields: LogFields }
+/** Durable impersonation-audit sink; receives every audit event. */
+export type AuditSink = (event: AuditEvent) => void
+
 /** Validated, wired composition root for the plugin. */
 export type WiredOptions = {
   readonly config: StartupConfig
@@ -179,6 +196,8 @@ export type WiredOptions = {
    * the default admin-panel fallback. Never empty.
    */
   readonly roleManagerRoles: readonly Role[]
+  /** Durable audit sink, or `null` when not configured. */
+  readonly onAudit: AuditSink | null
   /** Organizations wiring (CAP-11), or `null` when not enabled. */
   readonly organizations: WiredOrganizations | null
 }
@@ -415,7 +434,7 @@ export function wireOptions(raw: AuthLinkPluginOptions): WiredOptions {
   return {
     config: validated.value,
     registry,
-    logger: raw.logger ?? nullLogger(),
+    logger: raw.logger ?? consoleLogger(),
     tracer: raw.tracer ?? nullTracer(),
     clock: raw.clock ?? systemClock(),
     ids: raw.ids ?? randomIds(),
@@ -425,6 +444,7 @@ export function wireOptions(raw: AuthLinkPluginOptions): WiredOptions {
     userFields,
     requireMfaForRoles,
     roleManagerRoles,
+    onAudit: raw.onAudit ?? null,
     organizations,
   }
 }

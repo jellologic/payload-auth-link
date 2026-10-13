@@ -54,7 +54,13 @@ export function logVerifyFailure(
     })
     return
   }
-  logger.warn(`${scope} verification failed: invalid session`)
+  // Plain "invalid session" covers every anonymous request (no
+  // cookie, no session) — warning here would spam the log on every
+  // logged-out page load. Actionable variants above keep their
+  // warning, and a session-shaped cookie that resolves to nothing is
+  // warned where it is detected (session.ts, with the stale-config
+  // message); this residue is trace noise, so: debug.
+  logger.debug(`${scope} verification failed: invalid session`)
 }
 
 /** Strict same-origin comparison against `baseUrl`. Never throws. */

@@ -127,6 +127,24 @@ for fields it did not inject. The negative behaviour is pinned by
 `e2e/access.spec.ts` (non-admin escalation, admin-panel entry, field
 stripping, manager writes) across all six adapter/example combos.
 
+## 0.3.x → 0.4.0 (audible by default)
+
+`authLink` now defaults to a **console logger** instead of a silent
+one: session refusals (expired sessions, channels not admitted,
+suspensions, provider errors, a session-shaped cookie that resolves
+to nothing) and the impersonation audit print without
+configuration. Consequences and opt-outs:
+
+- To restore the old silence, pass `logger: nullLogger()` explicitly.
+- Per-request "invalid session" residue (every logged-out page load
+  hitting the session endpoint) logs at debug level, not warn —
+  actionable refusals keep their warning, with reason, provider and
+  channel.
+- New `onAudit` option: a durable sink for impersonation audit
+  events (called in addition to the logger). With an
+  impersonation-capable provider, a silent logger and no `onAudit`,
+  the plugin warns once at startup that audit events are dropped.
+
 ## 0.2.x → 0.3.0
 
 Install-level changes — read before bumping:

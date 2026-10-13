@@ -641,7 +641,7 @@ roles } }` (`SessionUser` — the versioned wire contract in
 
 The Payload strategy is read-only: it never refreshes provider state,
 so login loops are impossible by construction. Failures at any step
-resolve to anonymous (`{ user: null }` / 401), loudly logged.
+resolve to anonymous (`{ user: null }` / 401), loudly logged (the default console logger; pass `nullLogger()` to mute).
 
 ## Two-layer validation (both frameworks)
 
@@ -1862,7 +1862,7 @@ does not hold on your deployment until you run the reconciliation.
 ## 0.3.x → 0.3.1 (security default change)
 
 The injected users-collection fields now fail closed
-(GHSA-2m5q-cqr7-45xc). Previously, Payload's own defaults made every
+(security hardening). Previously, Payload's own defaults made every
 authenticated user able to write every field of every user document —
 including `roles`. The new default policy:
 
@@ -1890,6 +1890,24 @@ those fields' access explicitly; the plugin never guesses a policy
 for fields it did not inject. The negative behaviour is pinned by
 `e2e/access.spec.ts` (non-admin escalation, admin-panel entry, field
 stripping, manager writes) across all six adapter/example combos.
+
+## 0.3.x → 0.4.0 (audible by default)
+
+`authLink` now defaults to a **console logger** instead of a silent
+one: session refusals (expired sessions, channels not admitted,
+suspensions, provider errors, a session-shaped cookie that resolves
+to nothing) and the impersonation audit print without
+configuration. Consequences and opt-outs:
+
+- To restore the old silence, pass `logger: nullLogger()` explicitly.
+- Per-request "invalid session" residue (every logged-out page load
+  hitting the session endpoint) logs at debug level, not warn —
+  actionable refusals keep their warning, with reason, provider and
+  channel.
+- New `onAudit` option: a durable sink for impersonation audit
+  events (called in addition to the logger). With an
+  impersonation-capable provider, a silent logger and no `onAudit`,
+  the plugin warns once at startup that audit events are dropped.
 
 ## 0.2.x → 0.3.0
 

@@ -18,7 +18,14 @@ export {
   serializeCookie,
 } from './cookies.js'
 export type { SecureCookieEnvironment, SecureCookieRuleInput } from './cookies.js'
-export { nullLogger, nullTracer, randomIds, systemClock } from './defaults.js'
+export {
+  consoleLogger,
+  isSilentLogger,
+  nullLogger,
+  nullTracer,
+  randomIds,
+  systemClock,
+} from './defaults.js'
 export { emailSchema, parseEmail } from './email.js'
 export type { Email } from './email.js'
 export { parsePhoneNumber, phoneNumberSchema } from './phone.js'

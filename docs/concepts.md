@@ -158,7 +158,7 @@ roles } }` (`SessionUser` — the versioned wire contract in
 
 The Payload strategy is read-only: it never refreshes provider state,
 so login loops are impossible by construction. Failures at any step
-resolve to anonymous (`{ user: null }` / 401), loudly logged.
+resolve to anonymous (`{ user: null }` / 401), loudly logged (the default console logger; pass `nullLogger()` to mute).
 
 ## Two-layer validation (both frameworks)
 

@@ -154,10 +154,17 @@ export { IdentityRowLabel } from './IdentityRowLabel.js';
 // ===== audit.d.ts =====
 import { type LoggerPort } from '@payload-auth-link/core';
 import type { CollectionBeforeOperationHook, CollectionConfig, GlobalBeforeOperationHook, GlobalConfig } from 'payload';
+import type { AuditSink } from './options.js';
 /** Collection `beforeOperation` audit hook; leaves args untouched. */
 export declare function impersonatedCollectionAuditHook(logger: LoggerPort): CollectionBeforeOperationHook;
 /** Global `beforeOperation` audit hook; leaves args untouched. */
 export declare function impersonatedGlobalAuditHook(logger: LoggerPort): GlobalBeforeOperationHook;
+/**
+ * Compose the audit surface: every audit event goes to the logger
+ * and, when configured, the durable `onAudit` sink — "audited" must
+ * survive log rotation, so the sink is not a logger nicety.
+ */
+export declare function composeAuditLogger(logger: LoggerPort, onAudit: AuditSink): LoggerPort;
 /**
  * Append the audit hook to every collection, preserving existing
  * hooks and order. Pure config transform: inputs are never mutated.
@@ -326,7 +333,7 @@ export declare function toPayloadUser(record: UserRecord, collection: string, fa
 }): PayloadAuthUser;
 
 // ===== options.d.ts =====
-import { type ClockPort, type IdentityProviderPort, type IdPort, type LinkingPolicy, type LoggerPort, type ProviderId, type ProviderRegistry, type Role, type SessionChannel, type StartupConfig, type TracerPort } from '@payload-auth-link/core';
+import { type ClockPort, type IdentityProviderPort, type IdPort, type LinkingPolicy, type LogFields, type LoggerPort, type ProviderId, type ProviderRegistry, type Role, type SessionChannel, type StartupConfig, type TracerPort } from '@payload-auth-link/core';
 /**
  * Raw plugin options from the site builder. Validated once at wiring
  * time; invalid options throw fail-fast at config time.
@@ -364,8 +371,19 @@ export type AuthLinkPluginOptions = {
     readonly rolesField?: string | undefined;
     /** Identities field injected on the users collection. Defaults to `identities`. */
     readonly identitiesField?: string | undefined;
-    /** Structured logger. Defaults to silent. */
+    /**
+     * Structured logger. Defaults to a console logger (refusals and
+     * audit events are visible without configuration); pass
+     * `nullLogger()` to opt out of all output.
+     */
     readonly logger?: LoggerPort | undefined;
+    /**
+     * Durable sink for impersonation audit events (CAP-8b), called in
+     * addition to the logger. Wire it to a SIEM push, a database
+     * insert, anything that survives log rotation — "audited" should
+     * not mean "printed to stdout once".
+     */
+    readonly onAudit?: AuditSink | undefined;
     /** Tracer. Defaults to a pass-through. */
     readonly tracer?: TracerPort | undefined;
     /** Clock. Defaults to system time. */
@@ -456,6 +474,13 @@ export type WiredOrganizations = {
     /** Provider registry ids under SSO domain enforcement (CAP-15). */
     readonly ssoProviders: readonly ProviderId[];
 };
+/** A single audit event: message plus structured fields. */
+export type AuditEvent = {
+    readonly message: string;
+    readonly fields: LogFields;
+};
+/** Durable impersonation-audit sink; receives every audit event. */
+export type AuditSink = (event: AuditEvent) => void;
 /** Validated, wired composition root for the plugin. */
 export type WiredOptions = {
     readonly config: StartupConfig;
@@ -479,6 +504,8 @@ export type WiredOptions = {
      * the default admin-panel fallback. Never empty.
      */
     readonly roleManagerRoles: readonly Role[];
+    /** Durable audit sink, or `null` when not configured. */
+    readonly onAudit: AuditSink | null;
     /** Organizations wiring (CAP-11), or `null` when not enabled. */
     readonly organizations: WiredOrganizations | null;
 };

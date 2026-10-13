@@ -7,19 +7,21 @@ import { createStubProvider } from './stub-provider.js'
 
 function capturingLogger(): {
   logger: LoggerPort
+  debug: ReturnType<typeof vi.fn>
   warn: ReturnType<typeof vi.fn>
   error: ReturnType<typeof vi.fn>
 } {
+  const debug = vi.fn()
   const warn = vi.fn()
   const error = vi.fn()
   const logger: LoggerPort = {
-    debug: vi.fn(),
+    debug,
     info: vi.fn(),
     warn,
     error,
     child: () => logger,
   }
-  return { logger, warn, error }
+  return { logger, debug, warn, error }
 }
 
 function stubPayload(overrides: {
@@ -71,7 +73,9 @@ describe('strategy verify logging', () => {
     const { provider } = createStubProvider()
     const result = await authenticate(logs.logger, provider, new Headers(), stubPayload({}))
     expect(result).toEqual({ user: null })
-    expect(logs.warn).toHaveBeenCalledWith('strategy verification failed: invalid session')
+    // Anonymous traffic: debug-level residue, not a warning (issue #15).
+    expect(logs.debug).toHaveBeenCalledWith('strategy verification failed: invalid session')
+    expect(logs.warn).not.toHaveBeenCalled()
     expect(logs.error).not.toHaveBeenCalled()
   })
 

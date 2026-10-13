@@ -1,10 +1,16 @@
 import {
   assertSupportedVersion,
+  consoleLogger,
+  isSilentLogger,
   readInstalledVersion,
   type VersionRange,
 } from '@payload-auth-link/core'
 import type { Config, Plugin } from 'payload'
-import { withImpersonationAuditCollections, withImpersonationAuditGlobals } from './audit.js'
+import {
+  composeAuditLogger,
+  withImpersonationAuditCollections,
+  withImpersonationAuditGlobals,
+} from './audit.js'
 import { applyUsersCollection } from './collections.js'
 import { createEndpoints } from './endpoints.js'
 import { subscribeIdentityEvents } from './lifecycle.js'
@@ -58,6 +64,11 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
     assertSupportedVersion('payload', payloadVersion, supportedPayloadBand)
   }
   const strategy = createAuthLinkStrategy(wired)
+  // CAP-8b audit: every audit event goes to the logger and, when
+  // configured, the durable `onAudit` sink — "audited" must survive
+  // log rotation, so the sink is not a logger nicety.
+  const auditLogger =
+    wired.onAudit === null ? wired.logger : composeAuditLogger(wired.logger, wired.onAudit)
   const plugin: Plugin = (config: Config) => ({
     ...config,
     // Impersonation audit (CAP-8b): every collection/global gains a
@@ -68,9 +79,9 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
         applyUsersCollection(config.collections, wired, strategy),
         wired
       ),
-      wired.logger
+      auditLogger
     ),
-    globals: withImpersonationAuditGlobals(config.globals, wired.logger),
+    globals: withImpersonationAuditGlobals(config.globals, auditLogger),
     endpoints: [
       ...(config.endpoints ?? []),
       ...createEndpoints(wired),
@@ -79,6 +90,20 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
     // CAP-14: subscribe provider identity lifecycle events once the
     // Payload instance exists, then run the builder's own onInit.
     onInit: async (payload) => {
+      // "Audited" must land somewhere: with an impersonation-capable
+      // provider and neither a hearing logger nor an audit sink, say
+      // so once, through a channel the builder has not muted.
+      const impersonationCapable = wired.registry.ids().some((id) => {
+        const required = wired.registry.require(id)
+        return required.isOk() && required.value.capabilities.has('impersonation')
+      })
+      if (impersonationCapable && wired.onAudit === null && isSilentLogger(wired.logger)) {
+        consoleLogger().warn(
+          'payload-auth-link: an impersonation-capable provider is configured, but the ' +
+            'logger is silent and no onAudit sink is set — impersonation audit events ' +
+            'will be dropped. Pass onAudit or a logger.'
+        )
+      }
       // B11: one startup warning when stored roles drifted out of the
       // configured set (removed/renamed role). Never blocks the boot.
       await auditStoredRoles(wired, payload)

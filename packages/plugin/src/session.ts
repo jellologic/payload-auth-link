@@ -98,6 +98,28 @@ async function findProviderSession(
       return { providerId: provider.id, providerSession: current.value }
     }
   }
+  // Refusals are loud (docs/concepts), but only when there is
+  // something to refuse: a request carrying a cookie named like a
+  // registered provider's session cookie that resolves to no session
+  // means a stale configuration or a stale cookie — worth a warning.
+  // Truly anonymous probes (no matching cookie at all) stay silent or
+  // every health check and cold page load would warn.
+  const cookieHeader = headers.get('cookie') ?? ''
+  const presented = deps.registry.ids().some((id) => {
+    const required = deps.registry.require(id)
+    if (required.isErr()) {
+      return false
+    }
+    return required.value.sessionCookieNames.some((name) =>
+      new RegExp(`(?:^|;\\s*)${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}=`).test(cookieHeader)
+    )
+  })
+  if (presented) {
+    deps.logger.warn(
+      'session cookie present but no provider session resolved (stale cookie or stale config?)',
+      { channel: 'cookie' }
+    )
+  }
   return null
 }
 
@@ -140,6 +162,10 @@ export function createSessionService(deps: SessionServiceDeps): SessionPort {
         // provider's session store must keep synchronized clocks (NTP) —
         // a documented hard requirement (docs/concepts.md).
         if (found.providerSession.expiresAt.getTime() <= deps.clock.now().getTime()) {
+          deps.logger.warn('provider session expired', {
+            providerId: found.providerId,
+            channel: found.providerSession.channel,
+          })
           return err(new SessionExpiredError())
         }
         // Channel gate (CAP-13a): a live session presented on a

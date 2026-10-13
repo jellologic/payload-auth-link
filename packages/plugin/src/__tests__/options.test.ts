@@ -1,4 +1,6 @@
 import {
+  isSilentLogger,
+  nullLogger,
   InvalidConfigError,
   UnsupportedCapabilityError,
   type LinkingPolicy,
@@ -27,6 +29,16 @@ describe('wireOptions', () => {
     expect(wired.config.defaultRole).toBe('user')
     expect(wired.registry.ids()).toHaveLength(1)
     expect(wired.depth).toBe(0)
+  })
+
+  it('defaults the logger to the console logger and onAudit to null', () => {
+    const wired = wireOptions(options())
+    // Refusals and audit events must be audible without configuration.
+    expect(isSilentLogger(wired.logger)).toBe(false)
+    expect(wired.onAudit).toBeNull()
+    const opted = wireOptions(options({ logger: nullLogger(), onAudit: () => undefined }))
+    expect(isSilentLogger(opted.logger)).toBe(true)
+    expect(opted.onAudit).not.toBeNull()
   })
 
   it('honors custom map names, ports, and depth', () => {

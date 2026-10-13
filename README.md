@@ -47,7 +47,7 @@ wiring when unsupported — highlights (full matrix in the
 | OAuth / OIDC            | ✅                               | ✅ (D6 allow-list) |
 | Passkeys                | ✅                               | — experimental     |
 | Two-factor / MFA policy | ✅                               | —                  |
-| Impersonation           | ✅ (audited)                     | —                  |
+| Impersonation           | ✅ (audit log + `onAudit`)       | —                  |
 | Phone · anonymous guest | ✅                               | —                  |
 | Organizations · SSO     | ✅ Payload-owned, both providers |
 
