@@ -7,6 +7,7 @@ import type {
   PayloadRequest,
 } from 'payload'
 import { impersonationStateFromRequest } from './access.js'
+import type { AuditSink } from './options.js'
 
 /**
  * Per-operation impersonation audit (CAP-8b).
@@ -80,6 +81,23 @@ export function impersonatedGlobalAuditHook(logger: LoggerPort): GlobalBeforeOpe
   return ({ args, global, operation, req }) => {
     auditOperation(logger, req, { operation, global: global.slug, args })
   }
+}
+
+/**
+ * Compose the audit surface: every audit event goes to the logger
+ * and, when configured, the durable `onAudit` sink — "audited" must
+ * survive log rotation, so the sink is not a logger nicety.
+ */
+export function composeAuditLogger(logger: LoggerPort, onAudit: AuditSink): LoggerPort {
+  const composed: LoggerPort = {
+    ...logger,
+    info: (message, fields) => {
+      logger.info(message, fields)
+      onAudit({ message, fields: fields ?? {} })
+    },
+    child: () => composed,
+  }
+  return composed
 }
 
 /**

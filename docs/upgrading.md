@@ -95,7 +95,7 @@ per deployment after upgrading (idempotent; safe to re-run).
 Already upgraded without it? The composite-key behavior silently
 does not hold on your deployment until you run the reconciliation.
 
-## 0.3.x → 0.3.1 (security default change)
+## 0.3.x → 0.4.0 (security default change)
 
 The injected users-collection fields now fail closed
 (security hardening). Previously, Payload's own defaults made every
@@ -170,6 +170,25 @@ and a script sketch.
 Upgrade impact: config-time behavior — previously-throwing setups
 with a compatible roles select now boot and adopt it; the adopted
 field gains the role-manager write restriction (roleManagerRoles).
+
+
+## 0.3.x → 0.4.0 (audible by default)
+
+`authLink` now defaults to a **console logger** instead of a silent
+one: session refusals (expired sessions, channels not admitted,
+suspensions, provider errors, a session-shaped cookie that resolves
+to nothing) and the impersonation audit print without
+configuration. Consequences and opt-outs:
+
+- To restore the old silence, pass `logger: nullLogger()` explicitly.
+- Per-request "invalid session" residue (every logged-out page load
+  hitting the session endpoint) logs at debug level, not warn —
+  actionable refusals keep their warning, with reason, provider and
+  channel.
+- New `onAudit` option: a durable sink for impersonation audit
+  events (called in addition to the logger). With an
+  impersonation-capable provider, a silent logger and no `onAudit`,
+  the plugin warns once at startup that audit events are dropped.
 
 ## 0.2.x → 0.3.0
 
