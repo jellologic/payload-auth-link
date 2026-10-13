@@ -20,6 +20,13 @@ ESM-only, Node 20.9 or later.
 - `createPayloadDatabaseAdapter`: Better Auth's database layer over the Payload Local API
 - `@payload-auth-link/provider-better-auth/cookies`: an Edge-safe cookie-name helper for middleware
 
+Declared capabilities are derived from the plugins you install:
+magic link, email OTP, OAuth, One Tap, passkeys, two-factor MFA,
+phone sign-in, anonymous guests, audited impersonation, and
+multi-session revocation — see the
+[capabilities guide](https://github.com/jellologic/payload-auth-link/blob/main/docs/guide-capabilities.md)
+and the [compatibility matrix](https://github.com/jellologic/payload-auth-link/blob/main/docs/compatibility.md).
+
 ## Docs
 
 - [Better Auth guide](https://github.com/jellologic/payload-auth-link/blob/main/docs/guide-better-auth.md)

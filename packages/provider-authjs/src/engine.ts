@@ -1,13 +1,20 @@
 import {
+  createIdentityEventEmitter,
   InvalidConfigError,
   normalizeBaseUrl,
+  nullLogger,
   resolveOrigin,
   resolveSlugs,
+  type LoggerPort,
 } from '@payload-auth-link/core'
 import { Auth, type AuthConfig } from '@auth/core'
 import type { CollectionConfig, Payload } from 'payload'
 import { createAuthJsAdapter } from './adapter.js'
-import { createAuthLinkCallbacks } from './callbacks.js'
+import {
+  createAuthLinkCallbacks,
+  createAuthLinkEvents,
+  type AuthLinkTrustOptions,
+} from './callbacks.js'
 import {
   createAuthJsCollections,
   defaultAuthJsSlugs,
@@ -49,10 +56,45 @@ export type AuthJsEngineInput = {
    */
   readonly chunkSlots?: number | undefined
   /**
+   * Allow-list of OAuth/OIDC provider ids (e.g. `['google', 'acme-oidc']`)
+   * whose asserted `email_verified === true` may stamp the adapter
+   * user's `emailVerified` through `updateUser` (D6). Auth.js otherwise
+   * creates every OAuth user with `emailVerified: null`, so the plugin
+   * refuses to link them. Defaults to empty: no provider is trusted and
+   * nothing is ever stamped. A stamp additionally requires the profile
+   * email to be the user's own email; `email_verified` false or absent
+   * never stamps. Combining an allow-listed provider with that
+   * provider's `allowDangerousEmailAccountLinking: true` fails fast
+   * with `InvalidConfigError` — dangerous linking would attach the
+   * account to a pre-existing user by email alone, defeating the
+   * verified-email gate this option relies on.
+   */
+  readonly trustProviderEmailVerification?: readonly string[] | undefined
+  /**
+   * Structured logger for wiring-time risky-linking warnings (CAP-12).
+   * Defaults to silent (`nullLogger`) — pass the same logger as the
+   * plugin to see them. Warnings name the offending setting; they
+   * never go to `console.*`.
+   */
+  readonly logger?: LoggerPort | undefined
+  /**
+   * Turn every risky-linking warning into a wiring-time
+   * `InvalidConfigError` (CAP-12). Risky means any provider with
+   * `allowDangerousEmailAccountLinking: true`, which attaches accounts
+   * by email alone on sign-in. The plugin's verified-email gate still
+   * guards Payload linking either way; this option makes the
+   * provider-side loosening fail fast instead of merely loud.
+   * Combining a `trustProviderEmailVerification` provider with
+   * dangerous linking already throws regardless of this option (D6).
+   * Defaults to `false` (warn only).
+   */
+  readonly strictLinking?: boolean | undefined
+  /**
    * The builder's Auth.js config, passed through verbatim except for
    * `adapter` (wired to Payload here, so it is omitted from this type),
-   * `callbacks` (chained with the claims the port needs — see
-   * `callbacks.ts`), and the secure defaults below.
+   * `callbacks` and the `signIn` event (chained with the claims and
+   * D6 stamping the port needs — see `callbacks.ts`), and the secure
+   * defaults below.
    */
   readonly options: Omit<AuthConfig, 'adapter'>
 }
@@ -73,15 +115,21 @@ export type AuthJsEngine = {
   readonly handleRequest: (request: Request) => Promise<Response>
 }
 
-function providerType(provider: AuthConfig['providers'][number]): string | undefined {
+type InspectedProvider = {
+  readonly id?: string | undefined
+  readonly type?: string | undefined
+  readonly allowDangerousEmailAccountLinking?: boolean | undefined
+}
+
+function inspectProvider(provider: AuthConfig['providers'][number]): InspectedProvider | undefined {
   if (typeof provider !== 'function') {
-    return provider.type
+    return provider
   }
   // Factories are a valid provider form; Auth.js itself calls them with
   // `{}` at normalization, so the engine inspects them the same way.
   // A factory that throws here would throw identically on first request.
   try {
-    return provider({})?.type
+    return provider({})
   } catch (error) {
     throw new InvalidConfigError(
       `Auth.js provider factory threw when called (Auth.js calls factories the same way): ${error instanceof Error ? error.message : String(error)}`
@@ -89,8 +137,78 @@ function providerType(provider: AuthConfig['providers'][number]): string | undef
   }
 }
 
+/**
+ * CAP-12: collect every provider with
+ * `allowDangerousEmailAccountLinking: true` and report it — one loud
+ * `LoggerPort` warning naming the setting and provider by default, or
+ * one `InvalidConfigError` naming them all under `strictLinking`.
+ * Runs after the D6 check, which keeps its always-throw precedence
+ * for trusted providers.
+ */
+function reportDangerousLinking(
+  options: Omit<AuthConfig, 'adapter'>,
+  opts: { readonly logger: LoggerPort; readonly strictLinking: boolean }
+): void {
+  const dangerous: string[] = []
+  for (const provider of options.providers) {
+    const inspected = inspectProvider(provider)
+    if (inspected?.allowDangerousEmailAccountLinking === true) {
+      dangerous.push(inspected.id ?? '<unknown provider id>')
+    }
+  }
+  if (dangerous.length === 0) {
+    return
+  }
+  if (opts.strictLinking) {
+    throw new InvalidConfigError(
+      `Auth.js strictLinking rejects allowDangerousEmailAccountLinking on provider(s) ${dangerous
+        .map((id) => `"${id}"`)
+        .join(', ')}: dangerous linking attaches accounts by email alone`
+    )
+  }
+  for (const providerId of dangerous) {
+    opts.logger.warn(
+      `Auth.js risky account-linking config: provider "${providerId}" sets allowDangerousEmailAccountLinking: true, so Auth.js may link accounts by email alone on sign-in. Payload linking still requires a verified email, but the provider may link internally on weaker proof; set strictLinking: true to fail fast instead.`,
+      { setting: 'allowDangerousEmailAccountLinking', providerId }
+    )
+  }
+}
+
 function hasCredentialsProvider(options: Omit<AuthConfig, 'adapter'>): boolean {
-  return options.providers.some((provider) => providerType(provider) === 'credentials')
+  return options.providers.some((provider) => inspectProvider(provider)?.type === 'credentials')
+}
+
+/**
+ * D6 fail-fast: trusting a provider's `email_verified` while that same
+ * provider may link accounts by email alone would let an unverified
+ * OAuth email claim attach to (and then verify) a pre-existing user.
+ */
+function assertTrustIsNotDangerous(
+  options: Omit<AuthConfig, 'adapter'>,
+  trusted: readonly string[]
+): void {
+  for (const providerId of trusted) {
+    if (typeof providerId !== 'string' || providerId.trim() === '') {
+      throw new InvalidConfigError(
+        'Auth.js trustProviderEmailVerification entries must be non-empty provider ids'
+      )
+    }
+  }
+  if (trusted.length === 0) {
+    return
+  }
+  for (const provider of options.providers) {
+    const inspected = inspectProvider(provider)
+    if (
+      inspected?.id !== undefined &&
+      trusted.includes(inspected.id) &&
+      inspected.allowDangerousEmailAccountLinking === true
+    ) {
+      throw new InvalidConfigError(
+        `Auth.js trustProviderEmailVerification cannot be combined with allowDangerousEmailAccountLinking on provider "${inspected.id}": dangerous linking attaches accounts by email alone, defeating the verified-email gate`
+      )
+    }
+  }
 }
 
 /**
@@ -168,6 +286,28 @@ export function anchorRequestOrigin(request: Request, baseURL: string | undefine
 export function createAuthJsEngine(input: AuthJsEngineInput): AuthJsEngine {
   const slugs: AuthJsCollectionSlugs = resolveSlugs(defaultAuthJsSlugs, input.slugs)
   const adapter = createAuthJsAdapter({ getPayload: input.getPayload, slugs, depth: input.depth })
+  const trustedProviders = input.trustProviderEmailVerification ?? []
+  assertTrustIsNotDangerous(input.options, trustedProviders)
+  reportDangerousLinking(input.options, {
+    logger: input.logger ?? nullLogger(),
+    strictLinking: input.strictLinking === true,
+  })
+  if (trustedProviders.length > 0 && adapter.updateUser === undefined) {
+    throw new InvalidConfigError(
+      'Auth.js trustProviderEmailVerification requires an adapter updateUser to stamp emailVerified'
+    )
+  }
+  const trust: AuthLinkTrustOptions = {
+    trustProviderEmailVerification: trustedProviders,
+    updateUser: (user) => {
+      if (adapter.updateUser === undefined) {
+        throw new InvalidConfigError(
+          'Auth.js trustProviderEmailVerification requires an adapter updateUser to stamp emailVerified'
+        )
+      }
+      return adapter.updateUser(user)
+    },
+  }
   const strategy = input.options.session?.strategy ?? 'database'
   if (strategy === 'database' && hasCredentialsProvider(input.options)) {
     throw new InvalidConfigError(
@@ -194,6 +334,9 @@ export function createAuthJsEngine(input: AuthJsEngineInput): AuthJsEngine {
     hasCredentialsProvider(input.options) && input.options.session?.maxAge === undefined
       ? { ...input.options.session, maxAge: 3600 }
       : input.options.session
+  // CAP-14: Auth.js events are translated onto this emitter; the
+  // port exposes its subscriptions as `onIdentityEvent`.
+  const lifecycleEvents = createIdentityEventEmitter()
   const config: AuthConfig = {
     ...input.options,
     basePath,
@@ -205,7 +348,14 @@ export function createAuthJsEngine(input: AuthJsEngineInput): AuthJsEngine {
     adapter,
     callbacks: {
       ...input.options.callbacks,
-      ...createAuthLinkCallbacks(input.options.callbacks),
+      ...createAuthLinkCallbacks(input.options.callbacks, trust),
+    },
+    events: {
+      ...input.options.events,
+      ...createAuthLinkEvents(input.options.events, trust, {
+        emitter: lifecycleEvents,
+        logger: input.logger ?? nullLogger(),
+      }),
     },
   }
   const baseURL = input.baseURL ?? process.env.AUTH_URL
@@ -256,12 +406,35 @@ export function createAuthJsEngine(input: AuthJsEngineInput): AuthJsEngine {
       // JWT sessions are stateless: nothing server-side to revoke. The
       // plugin's logout response expires the cookies.
     },
+    // CAP-7: database sessions are rows in `aj-sessions` keyed by the
+    // adapter user id — delete them all through the Local API. JWT
+    // deployments omit this (and the capability with it): the
+    // Payload-side suspension gate still refuses at verify time.
+    ...(strategy === 'database'
+      ? {
+          revokeUserSessions: async (providerUserId: string) => {
+            const payload = await input.getPayload()
+            await payload.delete({
+              collection: slugs.session,
+              where: { userId: { equals: providerUserId } },
+              overrideAccess: true,
+            })
+          },
+        }
+      : {}),
   }
 
   const provider = createAuthJsProvider({
     sessions,
     sessionCookieNames,
     sessionCookieClearOptions,
+    events: lifecycleEvents,
+    // PORT-2 capability derivation inputs: one `type` per configured
+    // provider (factories resolved by `inspectProvider`).
+    providerTypes: input.options.providers
+      .map((candidate) => inspectProvider(candidate)?.type)
+      .filter((type): type is string => typeof type === 'string'),
+    databaseSessions: strategy === 'database',
   })
   const collections = createAuthJsCollections({
     slugs: input.slugs,

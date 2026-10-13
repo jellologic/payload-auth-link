@@ -33,6 +33,10 @@ describe('createAuthJsProvider', () => {
     expect(provider.id).toBe('authjs')
     expect(provider.sessionCookieNames).toEqual(cookieNames)
     expect(provider.sessionCookieNames).not.toBe(cookieNames)
+    // PORT-2: builder providers pass through verbatim and nothing is
+    // mapped to assurance yet, so no capability is honestly declared.
+    expect(provider.capabilities).toEqual(new Set())
+    expect(provider.revokeUserSessions).toBeUndefined()
   })
 
   it('exposes clearing attributes when wired, omits the hook otherwise', () => {
@@ -74,6 +78,17 @@ describe('createAuthJsProvider', () => {
       expect(result.value.providerUserId).toBe('au-1')
       expect(result.value.email).toBe('a@b.co')
       expect(result.value.emailVerified).toBe(true)
+      // No impersonation primitive on Auth.js (CAP-8/D4): always null.
+      expect(result.value.actor).toBeNull()
+      // PORT-1 claims: email claim only, assurance unknown, cookie channel.
+      expect(result.value.identity).toEqual({
+        email: { value: 'a@b.co', verified: true },
+        phone: null,
+        anonymous: false,
+      })
+      expect(result.value.assurance).toEqual({ methods: 'unknown', mfa: 'unknown' })
+      expect(result.value.organizationId).toBeNull()
+      expect(result.value.channel).toBe('cookie')
       expect(result.value.expiresAt).toEqual(new Date('2026-06-01T00:00:00.000Z'))
     } else {
       expect.unreachable('expected a narrowed session')

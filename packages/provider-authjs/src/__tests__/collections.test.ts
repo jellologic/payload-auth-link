@@ -47,7 +47,7 @@ describe('createAuthJsCollections', () => {
       expect.arrayContaining(['sessionToken', 'userId', 'expires'])
     )
     expect(namesOf(defaultAuthJsSlugs.verificationToken)).toEqual(
-      expect.arrayContaining(['identifier', 'token', 'expires'])
+      expect.arrayContaining(['key', 'identifier', 'token', 'expires'])
     )
     expect(namesOf(defaultAuthJsSlugs.authenticator)).toEqual(
       expect.arrayContaining([
@@ -59,6 +59,20 @@ describe('createAuthJsCollections', () => {
         'credentialDeviceType',
       ])
     )
+  })
+
+  it('makes verification-token uniqueness composite, not token-only', () => {
+    // Duplicate 6-digit OTP codes hash identically across identifiers, so
+    // `token` alone must not be unique; the composite `key` carries
+    // (identifier, token) uniqueness instead (spikes S2/S7).
+    const collections = createAuthJsCollections()
+    const tokens = collections.find(
+      (collection) => collection.slug === defaultAuthJsSlugs.verificationToken
+    )
+    const fieldNamed = (name: string) =>
+      (tokens?.fields ?? []).find((field) => 'name' in field && field.name === name)
+    expect(fieldNamed('key')).toMatchObject({ unique: true, required: true })
+    expect(fieldNamed('token')).not.toMatchObject({ unique: true })
   })
 
   it('honors slug overrides and custom access', () => {

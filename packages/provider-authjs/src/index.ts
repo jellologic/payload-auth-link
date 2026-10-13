@@ -5,8 +5,8 @@
  */
 export { createAuthJsAdapter } from './adapter.js'
 export type { AuthJsAdapterDeps } from './adapter.js'
-export { createAuthLinkCallbacks, emailVerifiedClaim } from './callbacks.js'
-export type { AuthLinkCallbacks } from './callbacks.js'
+export { createAuthLinkCallbacks, createAuthLinkEvents, emailVerifiedClaim } from './callbacks.js'
+export type { AuthLinkCallbacks, AuthLinkEvents, AuthLinkTrustOptions } from './callbacks.js'
 export { createAuthJsCollections, defaultAuthJsSlugs } from './collections.js'
 export type {
   AuthJsCollectionsAccess,
@@ -31,7 +31,20 @@ export type {
 export { createAuthJsEngine } from './engine.js'
 export type { AuthJsEngine, AuthJsEngineInput } from './engine.js'
 export { AdapterMappingError, AdapterOperationError, WeakPasswordError } from './errors.js'
-export { createAuthJsProvider } from './port.js'
+export { authJsCapabilities, createAuthJsProvider } from './port.js'
+export {
+  buildEmailOtpCallbackUrl,
+  createGoogleOneTapAuthorize,
+  emailOtpMaxAgeSeconds,
+  emailOtpVerificationToken,
+  generateEmailOtpCode,
+  verifyGoogleIdToken,
+} from './recipes.js'
+export type {
+  GoogleIdTokenProfile,
+  GoogleOneTapAuthorizeDeps,
+  GoogleOneTapVerifyDeps,
+} from './recipes.js'
 export type { AuthJsProviderDeps, AuthJsSessionApi } from './port.js'
 /** Package name for diagnostics. */
 export const packageName = '@payload-auth-link/provider-authjs'

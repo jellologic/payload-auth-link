@@ -1,14 +1,39 @@
+import { createIdentityEventEmitter, nullLogger, type IdentityEvent } from '@payload-auth-link/core'
 import type { JWT } from '@auth/core/jwt'
 import type { Session } from '@auth/core/types'
 import { describe, expect, it, vi } from 'vitest'
 import {
   createAuthLinkCallbacks,
+  createAuthLinkEvents,
   emailVerifiedClaim,
   type AuthLinkCallbacks,
 } from '../callbacks.js'
 
 type JwtParams = Parameters<AuthLinkCallbacks['jwt']>[0]
 type SessionParams = Parameters<AuthLinkCallbacks['session']>[0]
+
+const STAMPED = new Date('2026-02-03T00:00:00.000Z')
+
+function fakeUpdateUser() {
+  return vi.fn((user: { id: string; emailVerified?: Date | null }) =>
+    Promise.resolve({
+      id: user.id,
+      email: 'a@b.co',
+      emailVerified: user.emailVerified ?? null,
+    })
+  )
+}
+
+function oauthJwtParams(overrides: Record<string, unknown> = {}): JwtParams {
+  return {
+    token: jwtToken({}),
+    user: { id: 'au-1', email: 'a@b.co', emailVerified: null },
+    account: { provider: 'google', type: 'oidc', providerAccountId: 'g-1' },
+    profile: { email: 'a@b.co', email_verified: true },
+    trigger: 'signIn',
+    ...overrides,
+  }
+}
 
 function jwtToken(claims: Record<string, unknown>): JWT {
   return claims
@@ -138,5 +163,163 @@ describe('session claims callback', () => {
     expect(builderSession).toHaveBeenCalledTimes(1)
     // Builder customizations survive; the claims layer owns id/verification.
     expect(resolved.user).toMatchObject({ name: 'Builder', id: 'au-9', emailVerified: false })
+  })
+})
+
+describe('trusted provider email verification (CAP-3a / D6)', () => {
+  it('stamps through updateUser for an allow-listed provider asserting email_verified', async () => {
+    const updateUser = fakeUpdateUser()
+    const { jwt } = createAuthLinkCallbacks(undefined, {
+      trustProviderEmailVerification: ['google'],
+      updateUser,
+    })
+    const token = await jwt(oauthJwtParams())
+    expect(updateUser).toHaveBeenCalledTimes(1)
+    expect(updateUser.mock.calls[0]?.[0].id).toBe('au-1')
+    expect(updateUser.mock.calls[0]?.[0].emailVerified).toBeInstanceOf(Date)
+    // The first JWT already carries the stamped date, not a fabricated claim.
+    const claim = token?.[emailVerifiedClaim]
+    expect(typeof claim).toBe('string')
+    expect(claim).toBe(updateUser.mock.calls[0]?.[0].emailVerified?.toISOString())
+  })
+
+  it('never stamps when the allow-listed provider asserts email_verified false (R6)', async () => {
+    const updateUser = fakeUpdateUser()
+    const { jwt } = createAuthLinkCallbacks(undefined, {
+      trustProviderEmailVerification: ['google'],
+      updateUser,
+    })
+    const token = await jwt(oauthJwtParams({ profile: { email: 'a@b.co', email_verified: false } }))
+    expect(updateUser).not.toHaveBeenCalled()
+    expect(token?.[emailVerifiedClaim]).toBeNull()
+  })
+
+  it('never stamps when email_verified is absent or not strictly true', async () => {
+    const updateUser = fakeUpdateUser()
+    const { jwt } = createAuthLinkCallbacks(undefined, {
+      trustProviderEmailVerification: ['google'],
+      updateUser,
+    })
+    for (const profile of [{ email: 'a@b.co' }, { email: 'a@b.co', email_verified: 'true' }]) {
+      const token = await jwt(oauthJwtParams({ profile }))
+      expect(token?.[emailVerifiedClaim]).toBeNull()
+    }
+    expect(updateUser).not.toHaveBeenCalled()
+  })
+
+  it('never stamps for a provider outside the allow-list', async () => {
+    const updateUser = fakeUpdateUser()
+    const { jwt } = createAuthLinkCallbacks(undefined, {
+      trustProviderEmailVerification: ['acme-oidc'],
+      updateUser,
+    })
+    const token = await jwt(oauthJwtParams())
+    expect(updateUser).not.toHaveBeenCalled()
+    expect(token?.[emailVerifiedClaim]).toBeNull()
+  })
+
+  it('never stamps by default (no trust option)', async () => {
+    const { jwt } = createAuthLinkCallbacks()
+    const token = await jwt(oauthJwtParams())
+    expect(token?.[emailVerifiedClaim]).toBeNull()
+  })
+
+  it('never stamps a user whose email differs from the verified profile email', async () => {
+    const updateUser = fakeUpdateUser()
+    const { jwt } = createAuthLinkCallbacks(undefined, {
+      trustProviderEmailVerification: ['google'],
+      updateUser,
+    })
+    const token = await jwt(
+      oauthJwtParams({
+        user: { id: 'au-1', email: 'victim@b.co', emailVerified: null },
+        profile: { email: 'attacker@b.co', email_verified: true },
+      })
+    )
+    expect(updateUser).not.toHaveBeenCalled()
+    expect(token?.[emailVerifiedClaim]).toBeNull()
+  })
+
+  it('does not re-stamp an already verified user', async () => {
+    const updateUser = fakeUpdateUser()
+    const { jwt } = createAuthLinkCallbacks(undefined, {
+      trustProviderEmailVerification: ['google'],
+      updateUser,
+    })
+    const token = await jwt(
+      oauthJwtParams({
+        user: { id: 'au-1', email: 'a@b.co', emailVerified: STAMPED },
+      })
+    )
+    expect(updateUser).not.toHaveBeenCalled()
+    expect(token?.[emailVerifiedClaim]).toBe(STAMPED.toISOString())
+  })
+
+  it('stamps on the signIn event for database sessions and chains the builder event', async () => {
+    const updateUser = fakeUpdateUser()
+    const builderSignIn = vi.fn(() => Promise.resolve())
+    const events = createAuthLinkEvents(
+      { signIn: builderSignIn },
+      { trustProviderEmailVerification: ['google'], updateUser }
+    )
+    await events.signIn?.({
+      user: { id: 'au-2', email: 'a@b.co' },
+      account: { provider: 'google', type: 'oidc', providerAccountId: 'g-1' },
+      profile: { email: 'A@b.co', email_verified: true },
+    })
+    expect(builderSignIn).toHaveBeenCalledTimes(1)
+    expect(updateUser).toHaveBeenCalledTimes(1)
+    expect(updateUser.mock.calls[0]?.[0].id).toBe('au-2')
+  })
+
+  it('does not stamp on the signIn event when email_verified is false', async () => {
+    const updateUser = fakeUpdateUser()
+    const events = createAuthLinkEvents(undefined, {
+      trustProviderEmailVerification: ['google'],
+      updateUser,
+    })
+    await events.signIn?.({
+      user: { id: 'au-2', email: 'a@b.co' },
+      account: { provider: 'google', type: 'oidc', providerAccountId: 'g-1' },
+      profile: { email: 'a@b.co', email_verified: false },
+    })
+    expect(updateUser).not.toHaveBeenCalled()
+  })
+})
+
+describe('identity lifecycle events (CAP-14)', () => {
+  it('translates updateUser and linkAccount, chaining builder events first', async () => {
+    const emitter = createIdentityEventEmitter()
+    const seen: IdentityEvent[] = []
+    emitter.subscribe((event) => {
+      seen.push(event)
+      return Promise.resolve()
+    })
+    const builderUpdate = vi.fn(() => Promise.resolve())
+    const events = createAuthLinkEvents({ updateUser: builderUpdate }, undefined, {
+      emitter,
+      logger: nullLogger(),
+    })
+    await events.updateUser?.({
+      user: { id: 'au-7', email: 'fresh@example.com', emailVerified: STAMPED } as never,
+    })
+    expect(builderUpdate).toHaveBeenCalledTimes(1)
+    expect(seen[0]).toMatchObject({ type: 'email-changed', providerUserId: 'au-7', verified: true })
+    await events.updateUser?.({
+      user: { id: 'au-7', email: 'fresh@example.com', emailVerified: null } as never,
+    })
+    expect(seen[1]).toMatchObject({ type: 'email-changed', verified: false })
+    await events.linkAccount?.({
+      user: { id: 'au-7', email: 'fresh@example.com', emailVerified: STAMPED },
+      account: { provider: 'google', type: 'oidc', providerAccountId: 'g-9' },
+      profile: { email: 'fresh@example.com' },
+    })
+    expect(seen[2]).toMatchObject({ type: 'email-verified', providerUserId: 'au-7' })
+    await events.linkAccount?.({
+      user: { id: 'au-7', email: 'fresh@example.com', emailVerified: null },
+      account: { provider: 'google', type: 'oidc', providerAccountId: 'g-9' },
+      profile: { email: 'fresh@example.com' },
+    })
+    expect(seen).toHaveLength(3)
   })
 })
