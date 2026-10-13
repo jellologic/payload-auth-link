@@ -1,5 +1,89 @@
 # @payload-auth-link/provider-authjs
 
+## 0.3.0
+
+### Minor Changes
+
+- [`8ef5975`](https://github.com/jellologic/payload-auth-link/commit/8ef59750f5cc42de7488587b2f3d47abe59202bd) Thanks [@jellologic](https://github.com/jellologic)! - `reconcileAuthJsMongoIndexes(payload)`: an idempotent one-time fix
+  for upgraded MongoDB deployments. Payload's mongo adapter never
+  drops indexes, so after the 0.1.1 → 0.2.x composite-token change
+  the stale `token` unique index kept enforcing the old one-row-per-
+  hash constraint, and the new `key` unique index built over rows
+  without the field. The helper backfills `key`
+  (`JSON.stringify([identifier, tokenHash])`), drops the stale
+  `token` index, and reports the `key` index state ('created' |
+  'present' | 'failed') without throwing while a build is in flight.
+  Covered by the env-gated Mongo golden test; run it once per
+  deployment after upgrading (see docs/upgrading.md).
+
+  Upgrade impact: MongoDB only. Already upgraded without it? The
+  composite-key behavior silently does not hold on your deployment
+  until you run the reconciliation. Fresh installs need nothing.
+
+- [`8ef5975`](https://github.com/jellologic/payload-auth-link/commit/8ef59750f5cc42de7488587b2f3d47abe59202bd) Thanks [@jellologic](https://github.com/jellologic)! - Version-range honesty (upgrade-resilience Phase 1): declared ranges
+  now equal the CI-tested bands, and unvalidated upstreams fail at
+  boot, typed, before any database write.
+
+  - **`better-auth` and `@auth/core` are peer dependencies.** The
+    providers no longer install them transitively; install the version
+    you configure (validated bands: `better-auth >=1.7.6 <1.8.0`,
+    `@auth/core >=0.41.0 <0.42.0`). Floors are bisected: BA 1.7.6
+    (adapter `modelKey` types), @auth/core 0.41.0.
+  - **`payload` peers tighten to `^3.83.0 || 4.0.0-beta.0`** (3.83.0
+    is the named-plugin/global-hook floor; the v4 entry is the exact
+    tested beta — canaries were silently inside the old caret). The
+    plugin's runtime band matches the manifest.
+  - **Framework peers get honest floors**: `next` `^15.0.0 || ^16.0.0`
+    (both majors typechecked, 16.4 e2e-tested), TanStack Start
+    `^1.140.2` (first `createMiddleware` types) with react-router
+    `^1.170.0`.
+  - **Runtime assertions at wiring time**: the providers check their
+    upstream's installed version (`supportedBetterAuthBand`,
+    `supportedAuthJsBand`, `assertBetterAuthVersion`,
+    `assertAuthJsCoreVersion` exported; core adds
+    `readInstalledVersion`) and throw `UnsupportedVersionError`
+    before any collection write; unreadable manifests warn once and
+    skip, never guess.
+  - CI: a scheduled/dispatchable `compat` workflow proves
+    {floor, latest} per upstream plus the golden Postgres/Mongo
+    upgrade tests, with a non-blocking canary for drift; dependabot
+    keeps installed versions moving as reviewed PRs.
+
+  Upgrade impact: none for the database. Install-level: add explicit
+  `better-auth` / `@auth/core` installs when adopting the providers
+  (the READMEs show the lines); payload below 3.83.0 and prerelease
+  payload canaries are no longer accepted. See docs/upgrading.md
+  § 0.2.x → 0.3.0.
+
+### Patch Changes
+
+- [`8ef5975`](https://github.com/jellologic/payload-auth-link/commit/8ef59750f5cc42de7488587b2f3d47abe59202bd) Thanks [@jellologic](https://github.com/jellologic)! - Upgrade-safe collection shapes (upgrade-resilience Phase 0). Booting
+  these versions on a database seeded by 0.1.1 no longer hangs,
+  crashes, or destroys rows:
+
+  - Auth.js: `aj-verification-tokens.key` is no longer DB-level
+    `required` — it stays unique (NULLs tolerated by SQLite and
+    Postgres) and is written and read by the adapter, backfilled
+    lazily. Adding the column on push is an in-place ALTER, not a
+    table rebuild; seeded tokens survive and stay consumable.
+  - Better Auth: `ba-users.name` keeps its DB-level NOT NULL (the
+    physical column is unchanged, so SQLite never rebuilds the table)
+    while BA's `name: ""` writes are accepted via field-level
+    validation.
+  - Golden-DB upgrade tests now boot the 0.1.1 seed on current code
+    in push and migrations modes on SQLite, Postgres, and MongoDB,
+    in both upgrade and rollback directions.
+
+  Upgrade impact: none for fresh installs. For 0.1.1 databases, see
+  docs/upgrading.md § 0.1.1 → 0.2.0 — SQLite/Postgres push boots
+  cleanly; migrations mode requires `key` nullable in the generated
+  migration; MongoDB needs the one-time index reconciliation
+  (`reconcileAuthJsMongoIndexes`, shipped alongside). No verification
+  tokens are invalidated.
+
+- Updated dependencies [[`8ef5975`](https://github.com/jellologic/payload-auth-link/commit/8ef59750f5cc42de7488587b2f3d47abe59202bd), [`8ef5975`](https://github.com/jellologic/payload-auth-link/commit/8ef59750f5cc42de7488587b2f3d47abe59202bd)]:
+  - @payload-auth-link/core@0.3.0
+
 ## 0.2.0
 
 ### Minor Changes

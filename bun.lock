@@ -93,7 +93,7 @@
     },
     "packages/core": {
       "name": "@payload-auth-link/core",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "@standard-schema/spec": "^1.1.0",
         "neverthrow": "^8.2.0",
@@ -106,7 +106,7 @@
     },
     "packages/next": {
       "name": "@payload-auth-link/next",
-      "version": "0.1.2",
+      "version": "0.2.0",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
         "@payload-auth-link/react": "workspace:*",
@@ -122,7 +122,7 @@
     },
     "packages/plugin": {
       "name": "@payload-auth-link/plugin",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
         "neverthrow": "^8.2.0",
@@ -144,14 +144,18 @@
     },
     "packages/provider-authjs": {
       "name": "@payload-auth-link/provider-authjs",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
         "neverthrow": "^8.2.0",
       },
       "devDependencies": {
         "@payload-auth-link/plugin": "workspace:*",
+        "@payloadcms/db-mongodb": "3.90.2",
+        "@payloadcms/db-postgres": "3.90.2",
         "@payloadcms/db-sqlite": "3.90.2",
+        "mongodb": "^6.0.0",
+        "mongodb-memory-server": "^11.3.0",
         "payload": "3.90.2",
       },
       "peerDependencies": {
@@ -161,7 +165,7 @@
     },
     "packages/provider-better-auth": {
       "name": "@payload-auth-link/provider-better-auth",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
         "neverthrow": "^8.2.0",
@@ -180,7 +184,7 @@
     },
     "packages/react": {
       "name": "@payload-auth-link/react",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
       },
@@ -193,7 +197,7 @@
     },
     "packages/tanstack-start": {
       "name": "@payload-auth-link/tanstack-start",
-      "version": "0.1.2",
+      "version": "0.2.0",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
         "@payload-auth-link/react": "workspace:*",
@@ -211,7 +215,7 @@
     },
     "packages/web": {
       "name": "@payload-auth-link/web",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
       },
