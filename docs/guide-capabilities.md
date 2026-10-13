@@ -248,6 +248,36 @@ data, never a second identity authority inside the plugin. SIWE
 claim_, so a wallet is a guest at most until a verified email links
 it — the same rule covers anonymous placeholder addresses.
 
+## Deriving declarations from Better Auth's schema (issue #17)
+
+Hand-declaring `customFields`/`customModels` for every plugin is
+reviewed-in-code strictness; when you compose many plugins, derive
+them instead:
+
+```ts
+createBetterAuthEngine({
+  autoDeclare: true, // derive from getAuthTables(options)
+  options: { plugins: [organization(), admin(), apiKey({/* ... */})] },
+})
+
+// or compute them yourself:
+import { deriveBetterAuthSchema } from '@payload-auth-link/provider-better-auth'
+const { customFields, customModels } = deriveBetterAuthSchema(options)
+```
+
+Semantics: arrays and unknown BA types map to a JSON column;
+enum-valued attributes stay text (BA owns value validation); a BA
+`defaultValue` makes the column nullable (BA writes before applying
+defaults); renames (`modelName`/`fieldName`) throw — declare those by
+hand, the adapter serves canonical names. `autoDeclare` merges under
+your explicit declarations, so a hand-pinned field always wins. Keep
+the drift alarm: pin the derived output in a snapshot test —
+
+```ts
+const derived = deriveBetterAuthSchema(options)
+expect(derived).toMatchSnapshot() // a BA bump that changes the schema fails here
+```
+
 ## Sessions across channels (CAP-13)
 
 `admitChannels` (default `['cookie']`) is the deployment's explicit

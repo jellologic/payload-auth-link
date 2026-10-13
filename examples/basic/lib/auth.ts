@@ -31,35 +31,12 @@ export const engine = createBetterAuthEngine({
       { name: 'twoFactorEnabled', type: 'boolean' },
     ],
   },
-  // Plugin-owned models (CAP-5/6), declared so the Payload adapter
-  // serves them; field lists mirror BA's getAuthTables output.
-  customModels: [
-    {
-      model: 'twoFactor',
-      fields: [
-        { name: 'secret', type: 'text', required: true },
-        { name: 'backupCodes', type: 'text', required: true },
-        { name: 'userId', type: 'text', required: true },
-        { name: 'verified', type: 'boolean' },
-        { name: 'failedVerificationCount', type: 'number' },
-        { name: 'lockedUntil', type: 'date' },
-      ],
-    },
-    {
-      model: 'passkey',
-      fields: [
-        { name: 'name', type: 'text' },
-        { name: 'publicKey', type: 'text', required: true },
-        { name: 'userId', type: 'text', required: true },
-        { name: 'credentialID', type: 'text', required: true },
-        { name: 'counter', type: 'number', required: true },
-        { name: 'deviceType', type: 'text', required: true },
-        { name: 'backedUp', type: 'boolean', required: true },
-        { name: 'transports', type: 'text' },
-        { name: 'aaguid', type: 'text' },
-      ],
-    },
-  ],
+  // Derived declarations (issue #17): the plugin models (twoFactor,
+  // passkey, ...) and their fields come from Better Auth's own
+  // getAuthTables output, so a BA schema bump cannot drift from the
+  // declarations. Pin the derived output in a snapshot test to keep
+  // a drift alarm (see the capabilities guide).
+  autoDeclare: true,
   options: {
     baseURL,
     secret: process.env.PAYLOAD_SECRET ?? 'local-dev-only-secret-32-chars-min!',

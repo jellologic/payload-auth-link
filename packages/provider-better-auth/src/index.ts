@@ -21,6 +21,13 @@ export type {
   BetterAuthModelKey,
 } from './collections.js'
 export {
+  declarationsFromTables,
+  deriveBetterAuthSchema,
+  isCoreModel,
+  payloadOwnedFields,
+} from './derive-schema.js'
+export { mergeDeclarations } from './engine.js'
+export {
   getBetterAuthLogoutCookieNames,
   getBetterAuthSessionCookieClearOptions,
   getBetterAuthSessionCookieNames,

@@ -27,6 +27,7 @@ import {
   getBetterAuthSessionCookieNames,
 } from './cookies.js'
 import { createIdentityEventBus } from './events.js'
+import { deriveBetterAuthSchema } from './derive-schema.js'
 import { createBetterAuthProviderFromUnknown } from './port.js'
 
 /** Engine wiring: Payload access plus the builder's Better Auth options. */
@@ -40,6 +41,14 @@ export type BetterAuthEngineInput<TOptions extends Omit<BetterAuthOptions, 'data
     Partial<Record<BetterAuthModelKey, readonly BetterAuthCustomField[]>> | undefined
   /** Custom plugin models (e.g. the organization plugin's tables). */
   readonly customModels?: readonly BetterAuthCustomModel[] | undefined
+  /**
+   * Derive `customFields`/`customModels` from Better Auth's own
+   * `getAuthTables(options)` (issue #17) and merge them UNDER the
+   * builder's explicit declarations — a hand declaration always wins
+   * over a derived one, and the derived remainder fills the gaps.
+   * Strict hand-declared mode is unchanged when this is absent.
+   */
+  readonly autoDeclare?: boolean | undefined
   /** Payload query depth for adapter reads. Defaults to 0. */
   readonly depth?: number | undefined
   /** Access control for the system collections. Defaults to deny-all. */
@@ -261,6 +270,65 @@ export const supportedBetterAuthBand: readonly VersionRange[] = [
   { min: '1.7.6', maxExclusive: '1.8.0' },
 ]
 
+type EngineDeclarations = {
+  readonly customFields?:
+    Partial<Record<BetterAuthModelKey, readonly BetterAuthCustomField[]>> | undefined
+  readonly customModels?: readonly BetterAuthCustomModel[] | undefined
+}
+
+/**
+ * Merge builder declarations with derived ones (`autoDeclare`).
+ * Builder entries win per field/model; the derived remainder fills
+ * the gaps, so a plugin the builder did not hand-declare still boots
+ * — and a field the builder pinned stays pinned.
+ */
+export function mergeDeclarations(
+  input: EngineDeclarations & {
+    readonly autoDeclare?: boolean | undefined
+    readonly options: Record<string, unknown>
+  },
+  autoDeclare: boolean
+): {
+  customFields: Partial<Record<BetterAuthModelKey, BetterAuthCustomField[]>>
+  customModels: BetterAuthCustomModel[]
+} {
+  const builderFields = input.customFields ?? {}
+  const builderModels = input.customModels ?? []
+  if (!autoDeclare) {
+    return {
+      customFields: Object.fromEntries(
+        Object.entries(builderFields).map(([model, fields]) => [model, [...(fields ?? [])]])
+      ),
+      customModels: builderModels.map((entry) => ({ ...entry, fields: [...entry.fields] })),
+    }
+  }
+  const derived = deriveBetterAuthSchema(input.options)
+  const customFields: Partial<Record<BetterAuthModelKey, BetterAuthCustomField[]>> = {}
+  for (const model of new Set([
+    ...Object.keys(derived.customFields),
+    ...Object.keys(builderFields),
+  ])) {
+    const derivedFields = derived.customFields[model as BetterAuthModelKey] ?? []
+    const builderOnes = builderFields[model as BetterAuthModelKey] ?? []
+    const byName = new Map<string, BetterAuthCustomField>()
+    for (const field of [...derivedFields, ...builderOnes]) {
+      byName.set(field.name, field)
+    }
+    customFields[model as BetterAuthModelKey] = [...byName.values()]
+  }
+  const derivedModels = new Map(derived.customModels.map((entry) => [entry.model, entry]))
+  const customModels: BetterAuthCustomModel[] = builderModels.map((entry) => ({
+    ...entry,
+    fields: [...entry.fields],
+  }))
+  for (const [model, entry] of derivedModels) {
+    if (!customModels.some((declared) => declared.model === model)) {
+      customModels.push({ ...entry, fields: [...entry.fields] })
+    }
+  }
+  return { customFields, customModels }
+}
+
 /** Wiring contract, split out for tests: the BA version assertion. */
 export function assertBetterAuthVersion(installedVersion: string | null, logger: LoggerPort): void {
   if (installedVersion === null) {
@@ -283,12 +351,13 @@ export function createBetterAuthEngine<
     input.logger ?? nullLogger()
   )
   const slugs: BetterAuthCollectionSlugs = resolveSlugs(defaultBetterAuthSlugs, input.slugs)
+  const declared = mergeDeclarations(input, input.autoDeclare === true)
   const database = createPayloadDatabaseAdapter({
     getPayload: input.getPayload,
     slugs,
     depth: input.depth,
-    customFields: input.customFields,
-    customModels: input.customModels,
+    customFields: declared.customFields,
+    customModels: declared.customModels,
   })
   reportRiskyLinkingSettings(findRiskyLinkingSettings(input.options), {
     logger: input.logger ?? nullLogger(),
@@ -394,8 +463,8 @@ export function createBetterAuthEngine<
   const collections = createBetterAuthCollections({
     slugs: input.slugs,
     access: input.collectionsAccess,
-    customFields: input.customFields,
-    customModels: input.customModels,
+    customFields: declared.customFields,
+    customModels: declared.customModels,
   })
   return { auth, provider, collections, slugs, sessionCookieNames }
 }
