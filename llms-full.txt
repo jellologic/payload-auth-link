@@ -1916,6 +1916,25 @@ identity email; `@payload-auth-link/next` exports
 optimistic middleware for apps that run their own `proxy.ts`
 pipeline.
 
+## 0.3.x → 0.4.0 (adopting existing roles fields; migration guide)
+
+The plugin now **adopts** a compatible existing `roles` field on the
+users collection instead of throwing: a Payload `select` with
+`hasMany: true` whose options cover every configured role is taken
+over — required-ness, the default, and the plugin's governed write
+access are imposed; host options and labels survive. Incompatible
+shapes fail at config time with the exact remediation, and
+`rolesField: 'role'` remapping now works against an existing `role`
+column. Coming from `payload-auth`? There is a runbook:
+[migrating-from-payload-auth.md](migrating-from-payload-auth.md) — the
+data move, the roles adoption, the `req.user` projection (it is the
+session projection, not the full document), session/cookie policy,
+and a script sketch.
+
+Upgrade impact: config-time behavior — previously-throwing setups
+with a compatible roles select now boot and adopt it; the adopted
+field gains the role-manager write restriction (roleManagerRoles).
+
 ## 0.2.x → 0.3.0
 
 Install-level changes — read before bumping:

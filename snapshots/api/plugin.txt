@@ -171,12 +171,6 @@ import type { AuthStrategy, CollectionConfig, Field } from 'payload';
 import type { WiredOptions } from './options.js';
 /** Field name when the field variant has one (`collapsible` has none). */
 export declare function fieldName(field: Field): string | undefined;
-/**
- * Ensure the users collection exists with our fields, strategy, and hooks.
- * Pure config transform: never mutates its input, never overwrites existing
- * hooks or strategies, and throws {@link InvalidConfigError} on field-name
- * collisions instead of silently skipping them.
- */
 export declare function applyUsersCollection(collections: readonly CollectionConfig[] | undefined, wired: WiredOptions, strategy: AuthStrategy): CollectionConfig[];
 
 // ===== endpoints.d.ts =====
