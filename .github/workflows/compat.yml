@@ -1,0 +1,100 @@
+# Compatibility matrix (PLAN-UPGRADE-RESILIENCE Phase 1): the supported
+# bands in docs/compatibility.md are exactly the cells proven here —
+# {floor, latest} per upstream. Weekly + manually dispatchable; a
+# non-blocking canary detects drift before it becomes a band decision.
+#
+# A red cell means the band is no longer honest: narrow the range and
+# runtime band to the last green cell, ship a compat patch, and record
+# the break in docs/upgrading.md.
+name: compat
+
+on:
+  schedule:
+    # Weekly, Monday ~05:23 UTC (off the :00 stampede).
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: compat-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  matrix:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: payload-floor, axis: payload, version: '3.83.0' }
+          - { name: payload-latest, axis: payload, version: latest }
+          - { name: ba-floor, axis: better-auth, version: '1.7.6' }
+          - { name: ba-latest, axis: better-auth, version: latest }
+          - { name: authjs-floor, axis: '@auth/core', version: '0.41.0' }
+          - { name: authjs-latest, axis: '@auth/core', version: latest }
+          - { name: tanstack-floor, axis: '@tanstack/react-start', version: '1.140.2' }
+          - { name: next-floor, axis: next, version: '15.0.0' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Resolve latest upstream version
+        if: matrix.version == 'latest'
+        run: echo "RESOLVED=$(npm view '${{ matrix.axis }}' version)" >> "$GITHUB_ENV"
+      - name: Pin ${{ matrix.axis }} @ ${{ matrix.version }}
+        run: bun scripts/compat-install.mjs '${{ matrix.axis }}' '${{ matrix.version == 'latest' && env.RESOLVED || matrix.version }}'
+      - name: Install (ranges untouched, pins moved)
+        run: bun install
+      - name: Build (typecheck = tsc -b)
+        run: bun run build
+      - name: Unit + schema-probe suites
+        run: bun run test
+
+  # Golden-DB upgrade tests (Phase 0/2) against every SQL/no-SQL
+  # adapter, so the seeded-0.1.1 upgrade path can never rot silently
+  # — locally they are env-gated; here they always run.
+  golden:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: payload
+          POSTGRES_DB: golden
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    env:
+      GOLDEN_PG_URL: postgres://postgres:payload@localhost:5432/golden
+      GOLDEN_MONGO: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install
+      - run: bun run build
+      - run: bunx vitest run upgrade-golden-postgres upgrade-golden-mongo
+
+  # Non-blocking drift alarm: install whatever is newest (including
+  # betas) and just build. Failure here is information, not a gate —
+  # it tells us a band decision is coming.
+  canary:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Pin unpinned canary versions
+        run: |
+          bun scripts/compat-install.mjs payload "$(npm view payload@beta version)"
+          bun scripts/compat-install.mjs better-auth "$(npm view better-auth version)"
+      - run: bun install
+      - run: bun run build

@@ -1,0 +1,701 @@
+// ===== adapter.d.ts =====
+import type { BetterAuthOptions } from 'better-auth';
+import { type AdapterFactory } from 'better-auth/adapters';
+import type { Payload } from 'payload';
+import { type BetterAuthCollectionSlugs, type BetterAuthCustomField, type BetterAuthCustomModel, type BetterAuthModelKey } from './collections.js';
+/** Database adapter wiring: Payload access, slugs, read depth. */
+export type PayloadDatabaseAdapterDeps = {
+    /** Resolves the Payload instance (cached `getPayload` in Next.js). */
+    readonly getPayload: () => Promise<Payload>;
+    /** Collection slugs per model. Defaults to {@link defaultBetterAuthSlugs}. */
+    readonly slugs?: Partial<BetterAuthCollectionSlugs> | undefined;
+    /** Payload query depth for adapter reads. Rows are flat; defaults to 0. */
+    readonly depth?: number | undefined;
+    /** Declared custom fields on core models; must match the BA schema exactly. */
+    readonly customFields?: Partial<Record<BetterAuthModelKey, readonly BetterAuthCustomField[]>> | undefined;
+    /** Declared custom plugin models; must match the BA schema exactly. */
+    readonly customModels?: readonly BetterAuthCustomModel[] | undefined;
+};
+/**
+ * Better Auth database adapter over the Payload Local API. System-level
+ * persistence (like the plugin repository): reads and writes bypass access
+ * control with `overrideAccess`, and the collections default to deny-all
+ * API access.
+ *
+ * The returned factory is passed as Better Auth's `database` option; the
+ * factory validates the Better Auth schema against the Payload mapping
+ * when the instance is created, failing fast on renames and unmapped
+ * fields. Transactions run sequentially (Payload commits per operation).
+ */
+export declare function createPayloadDatabaseAdapter(deps: PayloadDatabaseAdapterDeps): AdapterFactory<BetterAuthOptions>;
+
+// ===== collections.d.ts =====
+import type { CollectionConfig } from 'payload';
+/** Access control for the Better Auth system collections. */
+export type BetterAuthCollectionsAccess = NonNullable<CollectionConfig['access']>;
+/** Canonical Better Auth models persisted in Payload. */
+export type BetterAuthModelKey = 'user' | 'session' | 'account' | 'verification' | 'rateLimit';
+/** Payload collection slugs backing each Better Auth model. */
+export type BetterAuthCollectionSlugs = Record<BetterAuthModelKey, string>;
+/** Default `ba-*` slugs; override per model via options. */
+export declare const defaultBetterAuthSlugs: BetterAuthCollectionSlugs;
+/** Payload column types a custom field can map to. */
+export type BetterAuthCustomFieldType = 'text' | 'number' | 'boolean' | 'date' | 'json';
+/**
+ * A builder-declared custom field: an `additionalFields` entry (or plugin
+ * field) on a core model, or a field of a custom model. The declaration
+ * must match Better Auth's schema exactly — the adapter fail-fasts both
+ * undeclared schema fields and declared-but-absent names.
+ */
+export type BetterAuthCustomField = {
+    readonly name: string;
+    /** Payload column type; match Better Auth's attribute type. */
+    readonly type: BetterAuthCustomFieldType;
+    readonly required?: boolean | undefined;
+    /** Unique + indexed (text/number/date only). */
+    readonly unique?: boolean | undefined;
+};
+/**
+ * A builder-declared custom model: a plugin model (e.g. the organization
+ * plugin's `organization`, `member`, `invitation`) the adapter should
+ * serve. Gets its own `ba-*` collection with a `baId` id column.
+ */
+export type BetterAuthCustomModel = {
+    /** Better Auth model name, exactly as the plugin registers it. */
+    readonly model: string;
+    /** Collection slug. Defaults to `ba-${model}`. */
+    readonly slug?: string | undefined;
+    /** Admin label. Defaults to `Better Auth ${model}`. */
+    readonly label?: string | undefined;
+    readonly fields: readonly BetterAuthCustomField[];
+};
+/** Slug overrides and access for {@link createBetterAuthCollections}. */
+export type BetterAuthCollectionsOptions = {
+    /** Override any default slug. Unmentioned models keep their defaults. */
+    readonly slugs?: Partial<BetterAuthCollectionSlugs> | undefined;
+    /**
+     * Access control for the system collections. Defaults to deny-all: these
+     * tables hold credential material (hashes, tokens) and the adapter writes
+     * with `overrideAccess`, so no API access is needed. Builders may open
+     * `read` for operations debugging.
+     */
+    readonly access?: BetterAuthCollectionsAccess | undefined;
+    /** Custom fields appended to core-model collections. */
+    readonly customFields?: Partial<Record<BetterAuthModelKey, readonly BetterAuthCustomField[]>> | undefined;
+    /** Custom plugin-model collections. */
+    readonly customModels?: readonly BetterAuthCustomModel[] | undefined;
+};
+/**
+ * Canonical Better Auth core fields per model (mirrors `get-tables`; `id`
+ * is implicit). Single source of truth shared by the collections (which
+ * must not collide with it) and the adapter (which allowlists it).
+ */
+export declare const betterAuthCoreFields: Record<BetterAuthModelKey, readonly string[]>;
+/** Default slug for a custom model collection. */
+export declare function defaultCustomSlug(model: string): string;
+/** Validated collection slug for a custom model declaration. */
+export declare function customModelSlug(entry: BetterAuthCustomModel): string;
+/**
+ * Payload collections backing the five Better Auth core models plus any
+ * declared custom fields and custom models. Spread the result into the
+ * Payload config `collections` array; the engine wires the adapter
+ * against the same slugs.
+ *
+ * Field lists mirror Better Auth's canonical schema; the adapter rejects
+ * renamed models/fields, undeclared extras, and declared-but-absent names
+ * fail-fast at startup.
+ */
+export declare function createBetterAuthCollections(options?: BetterAuthCollectionsOptions): CollectionConfig[];
+
+// ===== cookies.d.ts =====
+import { type CookieOptions, type SecureCookieEnvironment } from '@payload-auth-link/core';
+import type { BetterAuthOptions } from 'better-auth';
+/** The Better Auth options that influence cookie names. */
+export type BetterAuthCookieOptions = Pick<BetterAuthOptions, 'advanced' | 'baseURL' | 'session'>;
+/**
+ * Cookies to expire on logout that do not indicate a live session (the
+ * port's `logoutCookieNames`): today only the admin plugin's
+ * `admin_session`. Expired unconditionally — when the admin plugin is
+ * absent the cookie simply never exists and expiring it is a no-op,
+ * while leaving a present one behind would keep the impersonating
+ * operator's resumable session token in the browser after logout.
+ */
+export declare function getBetterAuthLogoutCookieNames(options: BetterAuthCookieOptions, environment?: SecureCookieEnvironment): readonly string[];
+/**
+ * Session cookie names for a Better Auth instance. See
+ * `sessionCookieEntries` for the mirroring rule; the cookie-suite drift
+ * test asserts these against BA's real cookie getter.
+ */
+export declare function getBetterAuthSessionCookieNames(options: BetterAuthCookieOptions, environment?: SecureCookieEnvironment): readonly string[];
+/**
+ * Logout clearing lookup: the live overwrite attributes per session
+ * cookie. Attribute precedence mirrors BA: per-cookie
+ * `advanced.cookies.*.attributes` win, then
+ * `advanced.defaultCookieAttributes`, then the secure default above.
+ * Unknown names yield `undefined` so the caller falls back to
+ * `expiringCookieOptions`.
+ *
+ * Limitation: `crossSubDomainCookies` derives the cookie domain from the
+ * base URL inside BA; that derivation is not mirrored here, so
+ * cross-subdomain deployments should sign out through BA's own sign-out
+ * for full cookie clearing. Server-side revocation still applies, so any
+ * surviving cookie is dead — the plugin fails closed on it.
+ */
+export declare function getBetterAuthSessionCookieClearOptions(options: BetterAuthCookieOptions, environment?: SecureCookieEnvironment): (name: string) => CookieOptions | undefined;
+
+// ===== engine.d.ts =====
+import { type IdentityProviderPort, type LoggerPort, type VersionRange } from '@payload-auth-link/core';
+import { type BetterAuthOptions, type BetterAuthPlugin } from 'better-auth';
+import type { CollectionConfig, Payload } from 'payload';
+import { type BetterAuthCollectionsAccess, type BetterAuthCollectionSlugs, type BetterAuthCustomField, type BetterAuthCustomModel, type BetterAuthModelKey } from './collections.js';
+/** Engine wiring: Payload access plus the builder's Better Auth options. */
+export type BetterAuthEngineInput<TOptions extends Omit<BetterAuthOptions, 'database'>> = {
+    /** Resolves the Payload instance (cached `getPayload` in Next.js). */
+    readonly getPayload: () => Promise<Payload>;
+    /** Override any default Better Auth collection slug. */
+    readonly slugs?: Partial<BetterAuthCollectionSlugs> | undefined;
+    /** Custom fields on core models (`additionalFields`, plugin fields). */
+    readonly customFields?: Partial<Record<BetterAuthModelKey, readonly BetterAuthCustomField[]>> | undefined;
+    /** Custom plugin models (e.g. the organization plugin's tables). */
+    readonly customModels?: readonly BetterAuthCustomModel[] | undefined;
+    /** Payload query depth for adapter reads. Defaults to 0. */
+    readonly depth?: number | undefined;
+    /** Access control for the system collections. Defaults to deny-all. */
+    readonly collectionsAccess?: BetterAuthCollectionsAccess | undefined;
+    /**
+     * Structured logger for wiring-time risky-linking warnings (CAP-12).
+     * Defaults to silent (`nullLogger`) — pass the same logger as the
+     * plugin to see them. Warnings name the offending
+     * `account.accountLinking` setting; they never go to `console.*`.
+     */
+    readonly logger?: LoggerPort | undefined;
+    /**
+     * Turn every risky-linking warning into a wiring-time
+     * `InvalidConfigError` (CAP-12). Risky means a Better Auth setting
+     * that can let an unverified email claim link accounts inside the
+     * provider: `account.accountLinking.trustedProviders` naming a
+     * provider without `requireEmailVerification`,
+     * `allowDifferentEmails: true`, `requireLocalEmailVerified: false`,
+     * or `updateUserInfoOnLink: true`. The plugin's verified-email gate
+     * still guards Payload linking either way; this option makes the
+     * provider-side loosening fail fast instead of merely loud.
+     * Defaults to `false` (warn only).
+     */
+    readonly strictLinking?: boolean | undefined;
+    /**
+     * The builder's Better Auth options, passed through verbatim except for
+     * `database` (wired to Payload here, so it is omitted from this type),
+     * `emailAndPassword` (see below), and
+     * `account.accountLinking.updateUserInfoOnLink`, which the engine
+     * forces off so a link can never rewrite `email`/`emailVerified`
+     * (CAP-12; see `strictLinking`).
+     *
+     * Framework cookie plugins (`nextCookies()`, `tanstackStartCookies()`,
+     * …) belong in `options.plugins`, exactly as Better Auth documents
+     * them — the engine never touches the plugin list, so any present or
+     * future cookie plugin works without the engine knowing about it.
+     */
+    readonly options: TOptions;
+};
+/** Composed engine: instance, port, collections, slugs, cookie names. */
+export type BetterAuthEngine<AuthType> = {
+    /** The composed Better Auth instance; mount it with the Next adapter. */
+    readonly auth: AuthType;
+    /** The instance behind `IdentityProviderPort`; register it with the plugin. */
+    readonly provider: IdentityProviderPort;
+    /** Payload collections for the Better Auth models; spread into the config. */
+    readonly collections: CollectionConfig[];
+    /** Resolved slugs (defaults plus overrides). */
+    readonly slugs: BetterAuthCollectionSlugs;
+    /** Session cookie names for middleware fast-paths and logout clearing. */
+    readonly sessionCookieNames: readonly string[];
+};
+/**
+ * Compose a Better Auth instance on Payload storage: the Payload database
+ * adapter, secure credential defaults, the `IdentityProviderPort`, and
+ * the Payload collections.
+ *
+ * The return type is inferred so Better Auth's own option-driven typing
+ * (plugin endpoints, `$Infer` session types) flows through untouched.
+ * Builder options (including `plugins`) pass through verbatim — the
+ * engine appends nothing, so framework cookie plugins are declared by
+ * the builder exactly as Better Auth documents them.
+ *
+ * Secure defaults: when `emailAndPassword` is present but silent on
+ * `requireEmailVerification`, verification is required — builders must
+ * explicitly opt out (the example does, and documents why). The user
+ * bridge provisions Payload users lazily and idempotently at session
+ * verification (see the plugin session service), so no signup
+ * ordering can strand a provider user. The engine does compose
+ * `databaseHooks` for CAP-14 lifecycle translation (user update /
+ * delete, account delete → core `IdentityEvent`s on the port's
+ * `onIdentityEvent`), preserving any builder-supplied hooks.
+ */
+/**
+ * better-auth versions this release validated (Phase-1 bisect): the
+ * type-level floor is 1.7.6 (BA's adapter `modelKey` types), and the
+ * band admits only the validated 1.7 line — BA satellites force
+ * minors (B12), so an unvalidated minor must fail here, typed and
+ * before any DB write, never as a missing adapter method
+ * mid-request. Widened only by the compatibility matrix, never by
+ * optimism.
+ */
+export declare const supportedBetterAuthBand: readonly VersionRange[];
+/** Wiring contract, split out for tests: the BA version assertion. */
+export declare function assertBetterAuthVersion(installedVersion: string | null, logger: LoggerPort): void;
+export declare function createBetterAuthEngine<TOptions extends Omit<BetterAuthOptions, 'database'>, TPlugins extends readonly BetterAuthPlugin[] | undefined>(input: BetterAuthEngineInput<TOptions> & {
+    options: {
+        plugins?: TPlugins;
+    };
+}): {
+    auth: import("better-auth").Auth<TOptions & {
+        database: import("better-auth/adapters").AdapterFactory<BetterAuthOptions>;
+        emailAndPassword: {
+            enabled: boolean;
+            disableSignUp?: boolean;
+            requireEmailVerification: boolean;
+            maxPasswordLength?: number;
+            minPasswordLength?: number;
+            sendResetPassword?: (data: {
+                user: import("better-auth").User;
+                url: string;
+                token: string;
+            }, request?: Request) => Promise<void>;
+            resetPasswordTokenExpiresIn?: number;
+            onPasswordReset?: (data: {
+                user: import("better-auth").User;
+            }, request?: Request) => Promise<void>;
+            password?: {
+                hash?: (password: string) => Promise<string>;
+                verify?: (data: {
+                    hash: string;
+                    password: string;
+                }) => Promise<boolean>;
+            };
+            autoSignIn?: boolean;
+            revokeSessionsOnPasswordReset: boolean;
+            onExistingUserSignUp?: (data: {
+                user: import("better-auth").User;
+            }, request?: Request) => Promise<void>;
+            customSyntheticUser?: (params: {
+                coreFields: {
+                    name: string;
+                    email: string;
+                    emailVerified: boolean;
+                    image: string | null;
+                    createdAt: Date;
+                    updatedAt: Date;
+                };
+                additionalFields: Record<string, unknown>;
+                id: string;
+            }) => Record<string, unknown>;
+        } | undefined;
+        account: (import("better-auth").BetterAuthDBOptions<"account", "createdAt" | "updatedAt" | "userId" | "accountId" | "providerId" | "accessToken" | "refreshToken" | "idToken" | "accessTokenExpiresAt" | "refreshTokenExpiresAt" | "scope" | "password" | "id"> & {
+            updateAccountOnSignIn?: boolean;
+            accountLinking?: {
+                enabled?: boolean;
+                disableImplicitLinking?: boolean;
+                requireLocalEmailVerified?: boolean;
+                trustedProviders?: Array<import("better-auth").LiteralUnion<import("better-auth").SocialProviderList[number] | "email-password", string>> | ((request?: Request | undefined) => import("better-auth").Awaitable<Array<import("better-auth").LiteralUnion<import("better-auth").SocialProviderList[number] | "email-password", string>>>);
+                allowDifferentEmails?: boolean;
+                allowUnlinkingAll?: boolean;
+                updateUserInfoOnLink?: boolean;
+            };
+            encryptOAuthTokens?: boolean;
+            skipStateCookieCheck?: boolean;
+            storeStateStrategy?: "database" | "cookie";
+            storeAccountCookie?: boolean;
+        }) | undefined;
+        databaseHooks: {
+            user?: {
+                create?: {
+                    before?: (user: import("better-auth").User & Record<string, unknown>, context: import("better-auth").GenericEndpointContext | null) => Promise<boolean | void | {
+                        data: {
+                            id?: string | undefined;
+                            createdAt?: Date | undefined;
+                            updatedAt?: Date | undefined;
+                            email?: string | undefined;
+                            emailVerified?: boolean | undefined;
+                            name?: string | undefined;
+                            image?: string | null | undefined;
+                        } & Record<string, any>;
+                    }>;
+                    after?: (user: import("better-auth").User & Record<string, unknown>, context: import("better-auth").GenericEndpointContext | null) => Promise<void>;
+                };
+                update?: {
+                    before?: (user: Partial<import("better-auth").User> & Record<string, unknown>, context: import("better-auth").GenericEndpointContext | null) => Promise<boolean | void | {
+                        data: {
+                            [x: string]: any;
+                            id?: string | undefined;
+                            createdAt?: Date | undefined;
+                            updatedAt?: Date | undefined;
+                            email?: string | undefined;
+                            emailVerified?: boolean | undefined;
+                            name?: string | undefined;
+                            image?: string | null | undefined;
+                        };
+                    }>;
+                    after?: (user: import("better-auth").User & Record<string, unknown>, context: import("better-auth").GenericEndpointContext | null) => Promise<void>;
+                };
+                delete?: {
+                    before?: (user: import("better-auth").User & Record<string, unknown>, context: import("better-auth").GenericEndpointContext | null) => Promise<boolean | void>;
+                    after?: (user: import("better-auth").User & Record<string, unknown>, context: import("better-auth").GenericEndpointContext | null) => Promise<void>;
+                };
+            };
+            session?: {
+                create?: {
+                    before?: (session: import("better-auth").Session & Record<string, unknown>, context: import("better-auth").GenericEndpointContext | null) => Promise<boolean | void | {
+                        data: {
+                            id?: string | undefined;
+                            createdAt?: Date | undefined;
+                            updatedAt?: Date | undefined;
+                            userId?: string | undefined;
+                            expiresAt?: Date | undefined;
+                            token?: string | undefined;
+                            ipAddress?: string | null | undefined;
+                            userAgent?: string | null | undefined;
+                        } & Record<string, any>;
+                    }>;
+                    after?: (session: import("better-auth").Session & Record<string, unknown>, context: import("better-auth").GenericEndpointContext | null) => Promise<void>;
+                };
+                update?: {
+                    before?: (session: Partial<import("better-auth").Session> & Record<string, unknown>, context: import("better-auth").GenericEndpointContext | null) => Promise<boolean | void | {
+                        data: {
+                            [x: string]: any;
+                            id?: string | undefined;
+                            createdAt?: Date | undefined;
+                            updatedAt?: Date | undefined;
+                            userId?: string | undefined;
+                            expiresAt?: Date | undefined;
+                            token?: string | undefined;
+                            ipAddress?: string | null | undefined;
+                            userAgent?: string | null | undefined;
+                        };
+                    }>;
+                    after?: (session: import("better-auth").Session & Record<string, unknown>, context: import("better-auth").GenericEndpointContext | null) => Promise<void>;
+                };
+                delete?: {
+                    before?: (session: import("better-auth").Session & Record<string, unknown>, context: import("better-auth").GenericEndpointContext | null) => Promise<boolean | void>;
+                    after?: (session: import("better-auth").Session & Record<string, unknown>, context: import("better-auth").GenericEndpointContext | null) => Promise<void>;
+                };
+            };
+            account?: {
+                create?: {
+                    before?: (account: import("better-auth").Account, context: import("better-auth").GenericEndpointContext | null) => Promise<boolean | void | {
+                        data: {
+                            id?: string | undefined;
+                            createdAt?: Date | undefined;
+                            updatedAt?: Date | undefined;
+                            providerId?: string | undefined;
+                            accountId?: string | undefined;
+                            userId?: string | undefined;
+                            accessToken?: string | null | undefined;
+                            refreshToken?: string | null | undefined;
+                            idToken?: string | null | undefined;
+                            accessTokenExpiresAt?: Date | null | undefined;
+                            refreshTokenExpiresAt?: Date | null | undefined;
+                            scope?: string | null | undefined;
+                            password?: string | null | undefined;
+                        } & Record<string, any>;
+                    }>;
+                    after?: (account: import("better-auth").Account, context: import("better-auth").GenericEndpointContext | null) => Promise<void>;
+                };
+                update?: {
+                    before?: (account: Partial<import("better-auth").Account> & Record<string, unknown>, context: import("better-auth").GenericEndpointContext | null) => Promise<boolean | void | {
+                        data: {
+                            [x: string]: any;
+                            id?: string | undefined;
+                            createdAt?: Date | undefined;
+                            updatedAt?: Date | undefined;
+                            providerId?: string | undefined;
+                            accountId?: string | undefined;
+                            userId?: string | undefined;
+                            accessToken?: string | null | undefined;
+                            refreshToken?: string | null | undefined;
+                            idToken?: string | null | undefined;
+                            accessTokenExpiresAt?: Date | null | undefined;
+                            refreshTokenExpiresAt?: Date | null | undefined;
+                            scope?: string | null | undefined;
+                            password?: string | null | undefined;
+                        };
+                    }>;
+                    after?: (account: import("better-auth").Account & Record<string, unknown>, context: import("better-auth").GenericEndpointContext | null) => Promise<void>;
+                };
+                delete?: {
+                    before?: (account: import("better-auth").Account & Record<string, unknown>, context: import("better-auth").GenericEndpointContext | null) => Promise<boolean | void>;
+                    after?: (account: import("better-auth").Account & Record<string, unknown>, context: import("better-auth").GenericEndpointContext | null) => Promise<void>;
+                };
+            };
+            verification?: {
+                create?: {
+                    before?: (verification: import("better-auth").Verification & Record<string, unknown>, context: import("better-auth").GenericEndpointContext | null) => Promise<boolean | void | {
+                        data: {
+                            id?: string | undefined;
+                            createdAt?: Date | undefined;
+                            updatedAt?: Date | undefined;
+                            value?: string | undefined;
+                            expiresAt?: Date | undefined;
+                            identifier?: string | undefined;
+                        } & Record<string, any>;
+                    }>;
+                    after?: (verification: import("better-auth").Verification & Record<string, unknown>, context: import("better-auth").GenericEndpointContext | null) => Promise<void>;
+                };
+                update?: {
+                    before?: (verification: Partial<import("better-auth").Verification> & Record<string, unknown>, context: import("better-auth").GenericEndpointContext | null) => Promise<boolean | void | {
+                        data: {
+                            [x: string]: any;
+                            id?: string | undefined;
+                            createdAt?: Date | undefined;
+                            updatedAt?: Date | undefined;
+                            value?: string | undefined;
+                            expiresAt?: Date | undefined;
+                            identifier?: string | undefined;
+                        };
+                    }>;
+                    after?: (verification: import("better-auth").Verification & Record<string, unknown>, context: import("better-auth").GenericEndpointContext | null) => Promise<void>;
+                };
+                delete?: {
+                    before?: (verification: import("better-auth").Verification & Record<string, unknown>, context: import("better-auth").GenericEndpointContext | null) => Promise<boolean | void>;
+                    after?: (verification: import("better-auth").Verification & Record<string, unknown>, context: import("better-auth").GenericEndpointContext | null) => Promise<void>;
+                };
+            };
+        };
+        plugins?: TPlugins;
+    }>;
+    provider: IdentityProviderPort;
+    collections: CollectionConfig[];
+    slugs: BetterAuthCollectionSlugs;
+    sessionCookieNames: readonly string[];
+};
+
+// ===== errors.d.ts =====
+import { AuthLinkError } from '@payload-auth-link/core';
+/** A Better Auth adapter operation against Payload failed. Wraps the cause. */
+export declare class AdapterOperationError extends AuthLinkError {
+    readonly operation: string;
+    constructor(operation: string, options?: {
+        cause?: unknown;
+    });
+}
+/** A Better Auth model with no mapped Payload collection. */
+export declare class UnknownModelError extends AuthLinkError {
+    constructor(model: string);
+}
+/** A `Where` operator with no faithful Payload translation. */
+export declare class UnsupportedOperatorError extends AuthLinkError {
+    constructor(operator: string);
+}
+/** A Better Auth schema customization the Payload mapping cannot honor. */
+export declare class UnsupportedSchemaError extends AuthLinkError {
+    constructor(detail: string);
+}
+
+// ===== events.d.ts =====
+import { type IdentityEventHandler, type LoggerPort } from '@payload-auth-link/core';
+/**
+ * Better Auth identity lifecycle translation (CAP-14): the engine
+ * feeds BA `databaseHooks` observations into this bus, which narrows
+ * BA's user/account rows (arriving as `unknown` at this boundary)
+ * into core `IdentityEvent`s for subscribers. Rows that cannot be
+ * narrowed are skipped and logged — a hook observation must never
+ * throw into the provider operation that already committed.
+ */
+export type IdentityEventBus = {
+    readonly subscribe: (handler: IdentityEventHandler) => () => void;
+    readonly userUpdated: (user: unknown) => Promise<void>;
+    readonly userDeleted: (user: unknown) => Promise<void>;
+    readonly accountDeleted: (account: unknown) => Promise<void>;
+};
+/** Create the event bus the BA engine composes its hooks over. */
+export declare function createIdentityEventBus(logger: LoggerPort): IdentityEventBus;
+
+// ===== index.d.ts =====
+/**
+ * Better Auth identity-provider adapter: Payload-backed database adapter,
+ * `IdentityProviderPort`, session cookie names, and the composition engine.
+ */
+export { createPayloadDatabaseAdapter } from './adapter.js';
+export type { PayloadDatabaseAdapterDeps } from './adapter.js';
+export { betterAuthCoreFields, createBetterAuthCollections, customModelSlug, defaultBetterAuthSlugs, defaultCustomSlug, } from './collections.js';
+export type { BetterAuthCollectionsAccess, BetterAuthCollectionSlugs, BetterAuthCollectionsOptions, BetterAuthCustomField, BetterAuthCustomFieldType, BetterAuthCustomModel, BetterAuthModelKey, } from './collections.js';
+export { getBetterAuthLogoutCookieNames, getBetterAuthSessionCookieClearOptions, getBetterAuthSessionCookieNames, } from './cookies.js';
+export type { BetterAuthCookieOptions } from './cookies.js';
+export { assertBetterAuthVersion, createBetterAuthEngine, supportedBetterAuthBand, } from './engine.js';
+export { createIdentityEventBus } from './events.js';
+export type { IdentityEventBus } from './events.js';
+export type { BetterAuthEngine, BetterAuthEngineInput } from './engine.js';
+export { AdapterOperationError, UnknownModelError, UnsupportedOperatorError, UnsupportedSchemaError, } from './errors.js';
+export { betterAuthCapabilities, betterAuthPluginCapabilities, createBetterAuthProvider, isPlaceholderEmail, } from './port.js';
+export type { BetterAuthProviderDeps, BetterAuthServerApi, BetterAuthSessionQuery } from './port.js';
+export { baFieldToPayload, translateWhereClause } from './where.js';
+
+// ===== port.d.ts =====
+import { type Capability, type CookieOptions, type IdentityProviderPort } from '@payload-auth-link/core';
+import type { IdentityEventBus } from './events.js';
+/**
+ * Better Auth plugin ids whose presence this adapter maps to core
+ * capabilities (PORT-2). The engine collects the ids from the
+ * builder's plugin list; direct port users pass them honestly.
+ * A capability is declared only when the plugin is installed AND the
+ * narrowing below maps its session facts — declaring one without the
+ * plugin would lie (its fields can never appear), so the set is
+ * derived, never asserted wholesale.
+ */
+export declare const betterAuthPluginCapabilities: Readonly<Record<string, Capability>>;
+/**
+ * Derive declared capabilities from installed plugin ids (PORT-2).
+ * `revoke-user-sessions` is always declared: it rides BA core's
+ * `internalAdapter.deleteUserSessions`, which needs no plugin.
+ * `oauth` is also set directly (not via a plugin) when the builder
+ * configured core social providers — the engine reports that as the
+ * `oauth` flag. Assurance honesty: `mfa` means enrollment-mapped
+ * (spike S3), and `methods` stays `'unknown'` (spike S4) for every
+ * capability — declared capabilities assert the FACT mapping exists,
+ * never a per-session method BA cannot report.
+ */
+export declare function betterAuthCapabilities(input: {
+    readonly plugins?: readonly string[] | undefined;
+    readonly oauth?: boolean | undefined;
+    readonly impersonation?: boolean | undefined;
+}): ReadonlySet<Capability>;
+/** Session read input: live headers, cache and refresh disabled. */
+export type BetterAuthSessionQuery = {
+    headers: Headers;
+    query: {
+        disableCookieCache: boolean;
+        disableRefresh: boolean;
+    };
+};
+/**
+ * The Better Auth server surface the port needs, stated structurally so
+ * direct users pass the real instance and tests pass stubs. `getSession`
+ * returns `unknown` and is narrowed below — never trusted blindly.
+ */
+export type BetterAuthServerApi = {
+    readonly api: {
+        readonly getSession: (input: BetterAuthSessionQuery) => Promise<unknown>;
+        /**
+         * Multi-session enumeration (CAP-13b), present only with BA's
+         * `multiSession` plugin. Signature-verified by BA; returns one
+         * entry per presented device session.
+         */
+        readonly listDeviceSessions?: ((input: {
+            headers: Headers;
+        }) => Promise<unknown>) | undefined;
+    };
+    readonly $context: Promise<{
+        readonly internalAdapter: {
+            readonly deleteSession: (token: string) => Promise<void>;
+            /**
+             * Present on every real BA instance (core internal adapter);
+             * optional here so narrow hand-built stubs still typecheck —
+             * `revokeUserSessions` fails with `ProviderError` when absent.
+             */
+            readonly deleteUserSessions?: ((userId: string) => Promise<void>) | undefined;
+        };
+    }>;
+};
+/** Port wiring: the Better Auth server surface plus cookie names. */
+export type BetterAuthProviderDeps = {
+    readonly auth: BetterAuthServerApi;
+    /** From {@link getBetterAuthSessionCookieNames} (see `cookies.ts`). */
+    readonly sessionCookieNames: readonly string[];
+    /**
+     * Clearing attributes per session cookie, from
+     * {@link getBetterAuthSessionCookieClearOptions} (see `cookies.ts`).
+     * Used on logout; unknown names fall back to prefix-derived attributes.
+     */
+    readonly sessionCookieClearOptions?: ((name: string) => CookieOptions | undefined) | undefined;
+    /**
+     * Non-session cookies to expire on logout, from
+     * {@link getBetterAuthLogoutCookieNames} (see `cookies.ts`): BA's
+     * `admin_session` impersonation cookie.
+     */
+    readonly logoutCookieNames?: readonly string[] | undefined;
+    /**
+     * Whether the BA admin plugin is installed on this instance.
+     * Gates the declared `'impersonation'` capability: only the admin
+     * plugin can produce `session.impersonatedBy`. The engine sets
+     * this from the builder's plugin list; direct users must set it
+     * honestly. Defaults to `false` (capability undeclared) — the
+     * actor narrowing still runs and fails closed on malformed input
+     * either way.
+     */
+    readonly impersonation?: boolean | undefined;
+    /**
+     * Ids of the BA plugins installed on this instance (e.g.
+     * `'magic-link'`, `'two-factor'`), used to derive declared
+     * capabilities via {@link betterAuthCapabilities}. The engine
+     * collects them from the builder's plugin list; direct users pass
+     * the ids of the plugins they actually installed.
+     */
+    readonly plugins?: readonly string[] | undefined;
+    /**
+     * Whether core social OAuth providers are configured (declares
+     * `'oauth'` without the `genericOAuth` plugin). Engine-set.
+     */
+    readonly oauth?: boolean | undefined;
+    /**
+     * Identity lifecycle event bus (CAP-14): when present, the port
+     * exposes `onIdentityEvent` subscriptions fed by the engine's
+     * `databaseHooks` translation. Direct users who compose their own
+     * hooks may supply their own bus from `createIdentityEventBus`.
+     */
+    readonly events?: IdentityEventBus | undefined;
+};
+/**
+ * Placeholder emails BA mints for identities that have no real
+ * address: anonymous users (`temp-…@anonymous.placeholder.invalid`
+ * by default) and SIWE wallets (`createPlaceholderEmail`, CAP-17).
+ * Such an address is not an identity claim at all — it must never
+ * link, whatever `emailVerified` says.
+ */
+export declare function isPlaceholderEmail(email: string): boolean;
+/**
+ * `IdentityProviderPort` over a Better Auth server instance. Session reads
+ * bypass the cookie cache and refresh (`disableCookieCache`,
+ * `disableRefresh`): the plugin verifies the authoritative database
+ * session, so a revoked-but-cached session can never authorize. The
+ * revocable handle is the session token, revoked through BA's own
+ * `internalAdapter.deleteSession` (which also clears secondary storage).
+ */
+export declare function createBetterAuthProvider(deps: BetterAuthProviderDeps): IdentityProviderPort;
+/**
+ * Same port, but the instance arrives as `unknown` and is shape-checked at
+ * wiring time. The engine uses this: `Auth` is invariant in its options,
+ * so a generically-typed instance cannot be converted to
+ * {@link BetterAuthServerApi} statically; the runtime shape check plus the
+ * engine integration tests (which run a real instance through here) close
+ * the gap. Not exported from the barrel — same-package use only.
+ */
+export declare function createBetterAuthProviderFromUnknown(auth: unknown, sessionCookieNames: readonly string[], sessionCookieClearOptions?: (name: string) => CookieOptions | undefined, logoutCookieNames?: readonly string[], options?: {
+    readonly impersonation?: boolean | undefined;
+    readonly plugins?: readonly string[] | undefined;
+    readonly oauth?: boolean | undefined;
+    readonly events?: IdentityEventBus | undefined;
+}): IdentityProviderPort;
+
+// ===== where.d.ts =====
+import type { Where } from 'payload';
+import type { CleanedWhere } from 'better-auth/adapters';
+/**
+ * Better Auth addresses rows by `id`; Payload owns the document `id`, so the
+ * adapter persists the provider id in `baId`. Every other field maps 1:1 —
+ * the adapter rejects renamed models/fields at startup, so physical names
+ * always equal the canonical Better Auth names here.
+ */
+export declare function baFieldToPayload(field: string): string;
+/**
+ * Translate a Better Auth `where` list to Payload `Where`, folding mixed
+ * `AND`/`OR` connectors left-associatively. Pattern operators and
+ * case-insensitive non-equality have no faithful translation and throw
+ * {@link UnsupportedOperatorError}.
+ *
+ * The returned `postFilter` runs over Better Auth-shaped rows (with `id`,
+ * not `baId`) and exacts case-insensitive equality; it is `undefined`
+ * when the Payload query alone is exact.
+ */
+export declare function translateWhereClause(clauses: readonly CleanedWhere[]): {
+    where: Where;
+    postFilter: ((row: Record<string, unknown>) => boolean) | undefined;
+};

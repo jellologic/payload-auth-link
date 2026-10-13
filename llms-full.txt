@@ -1395,26 +1395,54 @@ bun run e2e:tanstack-mongo                       # memory replset
 
 # Compatibility
 
-Pinned versions are the validated set; ranges are what the package
-manifests allow. CI runs the full matrix (unit + e2e on SQLite,
-Postgres service, and mongo memory replset).
+The **supported bands are exactly the CI-tested matrix**: the
+`compat` workflow proves `{floor, latest}` per upstream (build +
+unit + schema-probe), the e2e suites run every release against
+SQLite, Postgres, and mongo, and the golden-DB tests keep the
+previous minor's database booting. A range below is a promise only
+as wide as those cells; the runtime version assertions
+(`UnsupportedVersionError` at wiring time) enforce the same bands
+before any database write.
+
+Support policy: recommend **exact pins** for upstreams in your
+lockfile (the manifests' ranges exist so fresh installs resolve
+something tested, not so every version is blessed). After an
+upstream minor lands, the compat patch that widens the band is the
+next release — file or watch an issue; until then the old band
+holds and the assertion fails fast with a typed error instead of
+letting an unvalidated version touch your database.
+
+**Better Auth lockstep (three-way rule):** `better-auth` core and
+every `@better-auth/*` satellite you enable (`@better-auth/passkey`
+today) move **together**, and only within our validated band.
+Satellites peer-lock to exact BA minors — when a satellite ships for
+BA 1.8, installing it forces BA 1.8 under you — so bump satellites
+and core in one commit, run the provider's schema probe (it fails
+fast on unvalidated BA schemas), and never let a satellite drag you
+outside the band: the version assertion will refuse to boot, which
+is the intended outcome. Unprobed satellites (`@better-auth/api-key`,
+`@better-auth/sso`) are **unsupported until probed**: adding one
+meets `UnsupportedSchemaError` with this same fail-fast.
 
 ## Runtimes and frameworks
 
-| Dependency                               | Validated           | Range                       | Notes                                                                |
-| ---------------------------------------- | ------------------- | --------------------------- | -------------------------------------------------------------------- |
-| `payload`                                | 3.90.2              | `^3.0.0` (peer)             | v3 for Next; plugin also loads on v4 beta with zero changes          |
-| `payload` (Start)                        | 4.0.0-beta.0        | narrow beta pin (example)   | `@payloadcms/tanstack-start` exists only on the v4 line              |
-| `next`                                   | 16.4.0              | `>=15.0.0` (peer, next pkg) | App router; `middleware.ts` (proxy-safe)                             |
-| `@tanstack/react-start` / `react-router` | 1.168.61 / 1.170.41 | peer (start pkg)            | File routes, server functions, request middleware                    |
-| `vite` (Start)                           | 8.3.4               | dev (example)               | + `@vitejs/plugin-rsc`, `react-server-dom-webpack` for Payload admin |
-| `react` / `react-dom`                    | 19.2.6              | `^19.0.0` (peer, UI pkgs)   |                                                                      |
-| `better-auth`                            | 1.7.7               | provider dep                | Ships with the provider; install directly only to import it yourself |
-| `@auth/core`                             | 0.41.3              | provider dep                | Raw core, not the `next-auth` wrapper                                |
-| `neverthrow`                             | 8.2.0               | dep                         | `Result`/`ResultAsync` throughout                                    |
-| `zod`                                    | 4.6.5               | dep                         | Boundary schemas + branded types                                     |
-| `bun`                                    | 1.4.2               | `packageManager`            | CI pins the same                                                     |
-| `node`                                   | 20.9+ / 22          | `engines`                   | All packages ESM-only (`type: module`)                               |
+| Dependency                               | Validated (floor / installed) | Range (peer unless noted)           | Notes                                                                               |
+| ---------------------------------------- | ----------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------- |
+| `payload`                                | 3.83.0 / 3.90.2               | `^3.83.0 \|\| 4.0.0-beta.0`         | v3 for Next; 3.83 is the named-plugin/global-hook floor; v4 pin is exact            |
+| `payload` (Start)                        | 4.0.0-beta.0                  | exact beta pin (example)            | `@payloadcms/tanstack-start` exists only on the v4 line                             |
+| `better-auth`                            | 1.7.6 / 1.7.7                 | `>=1.7.6 <1.8.0`                    | Type-level floor 1.7.6 (`modelKey` types); validated 1.7 line only — lockstep above |
+| `@auth/core`                             | 0.41.0 / 0.41.3               | `>=0.41.0 <0.42.0`                  | Raw core, not the `next-auth` wrapper; 0.x minors add Adapter methods               |
+| `next`                                   | 15.0.0 / 16.4.0               | `^15.0.0 \|\| ^16.0.0` (next pkg)   | Both majors typecheck; 16.4 e2e-tested by the example                               |
+| `@tanstack/react-start` / `react-router` | 1.140.2 / 1.168.61 · 1.170.41 | `^1.140.2` / `^1.170.0` (start pkg) | 1.140.2 is the `createMiddleware` types floor                                       |
+| `vite` (Start)                           | 8.3.4                         | dev (example)                       | + `@vitejs/plugin-rsc`, `react-server-dom-webpack` for Payload admin                |
+| `react` / `react-dom`                    | 19.2.6                        | `^19.0.0` (peer, UI pkgs)           |                                                                                     |
+| `neverthrow`                             | 8.2.0                         | dep                                 | `Result`/`ResultAsync` throughout                                                   |
+| `zod`                                    | 4.6.5 (floor 4.0.0)           | dep                                 | Boundary schemas + branded types; floor proven by probe (see below)                 |
+| `@standard-schema/spec`                  | 1.1.0                         | dep (types)                         | Every exported schema is a Standard Schema v1                                       |
+| `typescript` (consumer)                  | 5.5.4 / 6.0.3                 | —                                   | Floor is 5.5; 5.0 fails inside Zod 4.6's own types (`NoInfer`)                      |
+| `effect`                                 | 3.22.2                        | dev only                            | Interop tested in CI; never a runtime dependency (recipe below)                     |
+| `bun`                                    | 1.4.2                         | `packageManager`                    | CI pins the same                                                                    |
+| `node`                                   | 20.9+ / 22                    | `engines`                           | All packages ESM-only (`type: module`)                                              |
 
 Module resolution: shipped code builds under `nodenext`, except
 `@payload-auth-link/next`, which uses `esnext`/`bundler` because
@@ -1486,6 +1514,58 @@ core), and every e2e spec runs against both examples.
 (`bun run release:check`). Legacy node10/CJS resolution is the
 documented non-goal: ESM-only by decision.
 
+More alarms run in `bun run check` so breakage is caught here, not
+in your build:
+
+- **API snapshots** (`snapshots/api/*.txt`, `bun run api:check`):
+  the full shipped `.d.ts` surface of every package. Any change
+  requires a changeset at the right semver level.
+- **Schema snapshots** (`snapshots/schema/*.json`,
+  `bun run schema:check`): the DB-facing collection shapes both
+  providers ship and the plugin's injected users fields. A change
+  must carry an `Upgrade impact:` changeset section and a
+  [upgrading.md](upgrading.md) entry, or CI fails — a silent shape
+  change is a broken user database.
+- **Consumer fixture** (`bun run consumer:check`): the built `dist`
+  types typechecked with `skipLibCheck: false` under the strictest
+  flags, the way a strict consumer compiles.
+- **Type pins** (`expectTypeOf` in `type-alarms.test.ts` and the
+  adapter inventory alarms in both providers): union inventories,
+  schema↔domain-type pairs, and the full `Adapter`/`CustomAdapter`
+  method surfaces pinned literal-for-literal — an upstream-added
+  adapter method fails `tsc`, not a production request.
+- **Payload import inventory** (`payload-inventory.test.ts`): every
+  `payload`/`payload/shared` symbol shipped source imports is
+  pinned; a new import (which sets the real Payload floor) fails CI
+  until it is verified against the band and noted here.
+
+## Schema interoperability (Zod, Effect, Standard Schema)
+
+Core's boundary schemas (`emailSchema`, `roleSchema`,
+`providerIdSchema`, `phoneNumberSchema`, `linkingPolicySchema`,
+`collectionMapSchema`, `startupConfigSchema`) are Zod 4 schemas and
+therefore Standard Schema v1 objects: each carries
+`~standard.validate` with `StandardSchemaV1.InferOutput` equal to
+its domain type (`Email`, `Role`, …). That is the supported
+composition surface for every schema ecosystem:
+
+- **Do not** nest an exported schema inside a Zod 3 schema; the
+  majors are runtime-incompatible. Compose through `~standard`, or
+  validate with the paired parser (`parseEmail`, `parseRole`, …)
+  and keep the branded result.
+- **Effect users:** decode through `~standard.validate` inside
+  `Effect.tryPromise`, convert your own schemas with
+  `Schema.standardSchemaV1`, and lift neverthrow `ResultAsync` port
+  calls with `Effect.promise` + `Result.match` (they never reject
+  by contract). The recipe is pinned by
+  `packages/core/src/__tests__/effect-interop.test.ts`, which runs
+  in CI against the current Effect release; `effect` stays a
+  devDependency — nothing shipped imports it.
+- The `zod: ^4.0.0` floor is proven, not assumed: core source
+  typechecks against Zod 4.0.0 and the built package passes a
+  runtime probe on 4.0.0 (Better Auth's own `^4.5.4` requirement
+  will float most real trees higher).
+
 ---
 
 <!-- docs/troubleshooting.md -->
@@ -1540,6 +1620,61 @@ field — inspect the `aj-*` row directly. Better Auth's equivalent
 fail-fast is `UnsupportedSchemaError` on the `ba-*` row. Fix or
 delete the row; this never becomes a silent login failure — that is
 the point.
+
+The same error at **boot** (not login) usually means a Better Auth
+plugin contributes a field or model this adapter has not declared.
+Two satellite packages are known-unprobed today — `@better-auth/api-key`
+and `@better-auth/sso`: composing them fails fast with
+`UnsupportedSchemaError` until support lands; every plugin exported
+by `better-auth/plugins` plus `@better-auth/passkey` is covered by
+the committed schema probe.
+
+## `SQLITE_ERROR: no such column: …` (or `42703` on Postgres) at boot or on first use
+
+The code is newer than the database: a column this version selects
+or writes does not exist in your tables. This is the raw shape of an
+**unmigrated upgrade** (B1) — the 0.1.1 → 0.2.0 move added
+`aj-verification-tokens.key` and the `users` governance fields, and
+booting 0.2.x on an unmigrated 0.1.1 database died exactly this way
+on the first `users` query.
+
+Map the missing column to the fix:
+
+- `users.phone` / `users.suspendedUntil` / `users.suspendReason` →
+  0.1.1 → 0.2.x upgrade steps in
+  [upgrading.md](upgrading.md#011--020): boot once with push on
+  (dev), or generate/apply the migration (production). All three
+  columns are optional; no backfill needed.
+- `aj_verification_tokens.key` → same section. After a 0.2.1+ boot
+  the column exists nullable; if your database instead shows the
+  old table recreation damage (empty `aj-verification-tokens`,
+  half-migrated `ba_users` on SQLite), that was 0.2.0-exact with
+  push on — restore from backup or re-create the token rows, then
+  upgrade to 0.2.1+.
+- On MongoDB you will never see this error — drift surfaces as
+  silently wrong indexes instead. If you upgraded the Auth.js
+  provider and the composite-token behavior seems absent, run
+  `reconcileAuthJsMongoIndexes(payload)` (see the 0.1.1 → 0.2.0
+  section).
+- Column exists but a `NOT NULL` insert fails (`key`) → an old
+  0.2.0 migration made it required; drop and re-add it nullable per
+  the upgrading.md SQL sketch.
+
+Prevention: upgrade through one version heading at a time, keep
+`bun run schema:check`-style migration review in your deploy, and
+check `docs/upgrading.md` for the version you are adopting before
+bumping. The runtime `UnsupportedVersionError` catches upstream
+version drift at boot; missing columns mean the **database** half
+of an upgrade was skipped.
+
+## `UnsupportedVersionError` at boot
+
+An upstream (`payload`, `better-auth`, `@auth/core`) sits outside
+the validated band — found vs supported are both in the message.
+Pin the named package back inside the band (exact versions in
+[compatibility.md](compatibility.md)) and wait for the compat patch
+that widens it. The refusal happens before any database write by
+design: an unvalidated upstream must not touch your data.
 
 ## Edge build fails importing `payload` / database code
 
@@ -1604,15 +1739,221 @@ the `exports` map agree.
 Versioning rides [changesets](https://github.com/changesets/changesets):
 every user-facing change ships a changeset, the release workflow
 opens Version Packages PRs, and each package CHANGELOG records what
-moved (starting at first publish — all packages are pre-release
-`0.0.1` today). This page covers the moves that need human attention.
+moved. This page covers the moves that need human attention —
+especially database moves, where an unattended upgrade has historically
+meant an unbootable app (see the per-adapter steps under each version
+heading before you bump).
 
 ## Pre-1.0 policy
 
 Minor versions may break: the wire contract (`SessionUser`, endpoint
 paths, cookie semantics) is the stability anchor and changes only
 with a migration note here; option shapes and internal ports may
-evolve. Read the package CHANGELOGs on every bump once published.
+evolve. Read the package CHANGELOGs on every bump.
+
+## Supported bands and the version assertion
+
+The validated bands live in [compatibility.md](compatibility.md) and
+equal the CI compat matrix ({floor, latest} per upstream). At wiring
+time every package asserts the upstream versions it drives:
+
+- the plugin checks `payload` (`supportedPayloadBand`),
+- `provider-better-auth` checks `better-auth` (`supportedBetterAuthBand`),
+- `provider-authjs` checks `@auth/core` (`supportedAuthJsBand`).
+
+An out-of-band version throws `UnsupportedVersionError` (found vs
+supported + a pointer here) **before any collection write** — an
+unsupported upstream fails at startup with a typed, actionable error,
+never as a raw SQL error or a missing-adapter `TypeError`
+mid-request. When it fires: pin the upstream back inside the band
+and wait for (or cut) a compat patch that widens the band after the
+matrix proves the new version. Prerelease builds only ever match via
+an explicit `exact` entry — canaries never float in through a range.
+
+## 0.1.1 → 0.2.0
+
+What changed in the database (and nothing else did — provider
+collection shapes otherwise moved zero columns):
+
+- **`users`** gains three optional governance fields: `phone`
+  (text), `suspendedUntil` (date), `suspendReason` (text). All
+  nullable and additive — safe on every adapter, every mode.
+- **`aj-verification-tokens`** (Auth.js provider): `token` loses its
+  standalone unique index; a new nullable unique `key` column
+  identifies a token by its `(identifier, token-hash)` pair. This is
+  the composite-key fix: the same OTP hash may now exist for two
+  different identifiers. The `key` column is **nullable** — pre-fix
+  releases shipped it `required`, which is what made upgraded
+  databases unbootable (see below); 0.2.1+ accepts `NULL` keys and
+  backfills lazily on write.
+- **`ba-*` collections** (Better Auth provider): no shape change.
+
+Verification tokens are **not** invalidated: existing rows keep
+working (the adapter reads by `(identifier, token)` and tolerates
+`NULL` keys). No data loss on any adapter.
+
+**SQLite, dev-push (Payload `push: true`):** just boot the new
+version. Adding a nullable column alters the table in place — no
+data-loss prompt, no table rebuild. (0.2.0 exactly shipped `key` as
+required; booting it hangs on drizzle's data-loss prompt and can
+recreate the token table empty. Upgrade straight to 0.2.1+.)
+
+**Postgres, dev-push:** same — the column adds in place and the
+unique index swaps `token` → `key`. (0.2.0 exactly hung on the same
+prompt; Postgres converged if you accepted, but the token table
+emptied.)
+
+**Production (migrations mode):** generate the migration yourself
+(`payload.migrate:create`) and check it adds `key` as a **nullable**
+column and drops the `token` unique index — `ADD COLUMN key TEXT`
+without `NOT NULL`. On a non-empty table, a NOT NULL variant fails
+outright (`column "key" contains null values`); a nullable one is a
+no-loss step. See the [migrations recipe](#running-production-on-migrations-not-push).
+
+**MongoDB:** schema drift cannot crash Mongo, but index lifecycle is
+the trap: Payload's adapter never drops indexes, so the **stale
+`token` unique index survives the upgrade** (silently keeping the
+pre-0.2.0 "one row per token hash" constraint), and the added `key`
+unique index builds in the background over rows without the field.
+Fix with the idempotent reconciliation helper:
+
+```ts
+import { reconcileAuthJsMongoIndexes } from '@payload-auth-link/provider-authjs'
+
+const report = await reconcileAuthJsMongoIndexes(payload)
+// { status: 'reconciled', droppedStaleTokenIndex, backfilledKeys, keyIndex }
+```
+
+It backfills `key` (`JSON.stringify([identifier, tokenHash])`),
+drops the stale `token` unique index, and reports (rather than
+throws) when the `key` index build is still in flight. Run it once
+per deployment after upgrading (idempotent; safe to re-run).
+Already upgraded without it? The composite-key behavior silently
+does not hold on your deployment until you run the reconciliation.
+
+## 0.2.x → 0.3.0
+
+Install-level changes — read before bumping:
+
+- **`better-auth` and `@auth/core` moved from dependencies to
+  peers.** The providers no longer install them for you. If you
+  already import them (you almost certainly do — you configure the
+  BA server or the Auth.js providers), add them explicitly:
+
+  ```sh
+  # Better Auth tree
+  bun add better-auth@1.7          # validated band: >=1.7.6 <1.8.0
+  # Auth.js tree
+  bun add @auth/core@0.41          # validated band: >=0.41.0 <0.42.0
+  ```
+
+  Missing peers fail at install time with a clear "unmet peer" (npm)
+  or auto-install-warn (bun) — not with a runtime module-not-found
+  three frames deep. The narrow bands are the point: a fresh install
+  can no longer resolve an upstream minor nobody validated. Widening
+  is a compat patch away once the matrix proves the new version.
+
+- **`payload` peers tightened to `^3.83.0 || 4.0.0-beta.0`.** 3.83.0
+  is the bisected floor for the named-plugin and global-hook APIs the
+  plugin uses; the v4 pin is the exact tested beta (no caret — v4
+  canaries were silently inside the old range and broken).
+- **Framework peers got honest floors:** `next` is now
+  `^15.0.0 || ^16.0.0` (16 e2e-tested by the examples), and
+  TanStack Start is `^1.140.2` (the first version with the
+  `createMiddleware` types the adapter uses) with
+  `@tanstack/react-router` `^1.170.0`.
+- **Runtime version assertions** are live (see above). On a peer
+  outside the band you get `UnsupportedVersionError` at boot —
+  actionable, before any write.
+- **Role-config safety:** removing a role from
+  `authLink({ roles })` now stops granting it on the next session
+  (stored values are filtered at read time), and the first boot
+  after the change logs one aggregate warning naming the drifted
+  values and affected user count. See the
+  [role runbook](#changing-or-removing-roles) before trimming roles.
+
+No database shape changes in this line: the collection snapshots are
+byte-identical to 0.2.x (enforced by `bun run schema:check` from
+here on — a PR that changes a shape must carry an `Upgrade impact:`
+changeset section and an entry in this file, or CI fails).
+
+## Rolling deploys and rollback (N and N−1)
+
+The compatibility criterion, tested by the golden-DB suite on every
+change: **the previous minor boots and serves core flows on the new
+schema, and the new minor serves pre-migration rows.** Concretely,
+during a rolling deploy or a rollback:
+
+- 0.1.1 code on a 0.2.x database works — extra nullable columns are
+  ignored, and old Auth.js token writes (`key` absent) are accepted
+  by the nullable unique index. Rollback is data-safe.
+- Caveat: an old pod cannot know fields it predates (e.g.
+  `suspendedUntil`), so a suspended user keeps verifying on old pods
+  until the rollout finishes. Finish rollouts promptly; that window
+  is inherent to N/N−1.
+- **Dev-push makes downgrades destructive** (Payload/drizzle prompts
+  to delete the newer columns; accepting loses data, declining exits
+  silently). Never roll back through a dev-push boot. Migrations
+  mode boots old code read/write against the new schema safely
+  (that is what the N−1 test proves).
+- Schema changes follow expand → backfill → contract across two
+  releases; a column that a previous minor cannot write against
+  (NOT NULL without default, narrowed type) must never ship.
+
+## Changing or removing roles
+
+Roles are stored on user docs as plain slugs and validated for
+**format** at the boundary, but grant only what the configured
+`authLink({ roles })` allows (B11). When you remove or rename a
+role, stored rows keep the old value until rewritten — so:
+
+1. **Drain first.** Reassign every user holding the role to its
+   replacement (admin panel or `payload.updateOne`) while the role
+   is still configured.
+2. **Then remove it** from `authLink({ roles })`.
+3. **Boot and read the audit.** The first boot logs one aggregate
+   warning — `N user doc(s) carry roles outside the configured set:
+'editor' (2)` — if anything was missed. Sessions already stopped
+   granting the removed role at that boot (reads filter it), and a
+   user whose _only_ role was removed is denied a record entirely
+   (never silently upgraded to the default role — same policy as
+   corrupt roles).
+4. Re-add the role to the config (temporarily) to drain properly if
+   step 3 shows stragglers; clean rows keep the warning away on the
+   next boot.
+
+Renaming = add the new role, drain, remove the old one. The audit
+runs on every boot (`onInit`) and costs one indexed query.
+
+## Running production on migrations, not push
+
+Dev-push (`push: true`) is for development: it makes destructive
+choices interactively and makes downgrades lossy (above). Production
+runs with `push: false` and explicit migrations:
+
+1. Create the migration in your repo:
+
+   ```sh
+   payload.migrate:create   # or: bunx payload migrate:create
+   ```
+
+   Review the generated SQL before committing it. For the 0.1.1 →
+   0.2.x move it must add `key` **nullable** (see above) and the
+   optional governance columns — anything NOT NULL without a default
+   is a bug in the migration, not in your database.
+
+2. Run migrations as a deploy step, before new pods serve traffic:
+   `payload.migrate` (or `bunx payload migrate`) in the release
+   job. The expand→backfill→contract policy means migrations run
+   cleanly while old-version pods still serve.
+3. Keep the migration files in the repo — they are the record of
+   how each release moves the database, and the artifact you attach
+   to upgrade notes when you operate more than one environment.
+
+The golden-DB tests (SQLite in `bun run check`; Postgres and Mongo
+in the compat workflow) boot the previous release's seed under the
+current code in both push and migrations modes, so a release that
+would strand an upgraded database fails CI before it ships.
 
 ## 0.0.x → 0.1.0 (initial release)
 
@@ -3512,6 +3853,31 @@ Guidance for coding agents working **on this repository**. Start with
 - Behavior change → test. Security change → an integration test that
   would fail without it.
 - Public API → TSDoc, plus docs in `docs/`.
+
+## Schema changes (upgrade safety)
+
+Shipped collection shapes — the provider `ba-*`/`aj-*` collections
+and the plugin-injected users fields — are what a Payload push or
+migration acts on; a careless change there has historically left
+user databases unbootable. Therefore:
+
+- **Additive-only by default.** No new `required` (NOT NULL) column
+  without a DB default or a backfill plan; adapter-side validation
+  instead of DB-level `required` when the column must tolerate
+  pre-existing rows.
+- **No nullability/type/unique change or rename** on an existing
+  column without a two-release expand → backfill → contract
+  sequence. The previous minor must keep reading AND writing the
+  new schema (N/N−1 is tested by the golden-DB suite).
+- Every shape change ships: a regenerated `snapshots/schema/`
+  (`bun run schema:snapshot`), a changeset with an `Upgrade impact:`
+  section (per-adapter push/migrations behavior + operator steps),
+  an `upgrading.md` entry, and a golden-DB upgrade test. `bun run
+schema:check` enforces the first three in CI.
+- Upstream version bands move only with compat-matrix evidence
+  (`.github/workflows/compat.yml`); the runtime
+  `supported*Band` constants and the manifest ranges change
+  together, never one without the other.
 
 ---
 

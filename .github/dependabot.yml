@@ -1,0 +1,25 @@
+# Upstream bumps arrive as reviewed PRs that run the full gates
+# (PLAN-UPGRADE-RESILIENCE Phase 1 / B5): never a silent float inside
+# a wide range. The compat workflow owns {floor, latest}; these PRs
+# keep the installed versions (the "latest" cells) moving.
+version: 2
+updates:
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      payload:
+        patterns:
+          - payload
+          - '@payloadcms/*'
+      better-auth:
+        patterns:
+          - better-auth
+          - '@better-auth/*'
+      tanstack:
+        patterns:
+          - '@tanstack/*'
+      dev-tools:
+        dependency-type: development

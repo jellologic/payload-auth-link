@@ -1,0 +1,24 @@
+{
+  "//": "Consumer fixture (B19): typechecks the BUILT dist types the way a strict consumer would — skipLibCheck off — so broken upstream .d.ts or incompatible declaration syntax fails here, not in a user's build. Standalone on purpose: not part of the solution build. Run: bun run consumer:check (after bun run build).",
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["es2023", "dom", "dom.iterable"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": false,
+    "noEmit": true,
+    "types": ["node"],
+    "paths": {
+      "@payload-auth-link/core": ["../../packages/core/dist/index.d.ts"],
+      "@payload-auth-link/web": ["../../packages/web/dist/index.d.ts"],
+      "@standard-schema/spec": [
+        "../../packages/core/node_modules/@standard-schema/spec/dist/index.d.ts"
+      ]
+    }
+  },
+  "include": ["consumer.ts"]
+}

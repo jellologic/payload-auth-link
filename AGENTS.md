@@ -81,3 +81,28 @@ Guidance for coding agents working **on this repository**. Start with
 - Behavior change → test. Security change → an integration test that
   would fail without it.
 - Public API → TSDoc, plus docs in `docs/`.
+
+## Schema changes (upgrade safety)
+
+Shipped collection shapes — the provider `ba-*`/`aj-*` collections
+and the plugin-injected users fields — are what a Payload push or
+migration acts on; a careless change there has historically left
+user databases unbootable. Therefore:
+
+- **Additive-only by default.** No new `required` (NOT NULL) column
+  without a DB default or a backfill plan; adapter-side validation
+  instead of DB-level `required` when the column must tolerate
+  pre-existing rows.
+- **No nullability/type/unique change or rename** on an existing
+  column without a two-release expand → backfill → contract
+  sequence. The previous minor must keep reading AND writing the
+  new schema (N/N−1 is tested by the golden-DB suite).
+- Every shape change ships: a regenerated `snapshots/schema/`
+  (`bun run schema:snapshot`), a changeset with an `Upgrade impact:`
+  section (per-adapter push/migrations behavior + operator steps),
+  an `upgrading.md` entry, and a golden-DB upgrade test. `bun run
+schema:check` enforces the first three in CI.
+- Upstream version bands move only with compat-matrix evidence
+  (`.github/workflows/compat.yml`); the runtime
+  `supported*Band` constants and the manifest ranges change
+  together, never one without the other.

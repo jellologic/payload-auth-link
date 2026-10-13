@@ -22,6 +22,10 @@ export default tseslint.config(
       // ARCH-2: boundary-violation fixtures must fail lint, so they are
       // ignored by the normal run and executed explicitly by their tests.
       '**/__fixtures__/**',
+      // B19: the consumer fixture typechecks built dist types under its
+      // own tsconfig (skipLibCheck off); it is not part of any lint project.
+      'scripts/consumer-fixture/**',
+      'snapshots/**',
     ],
   },
   eslint.configs.recommended,

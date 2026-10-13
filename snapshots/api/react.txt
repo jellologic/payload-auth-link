@@ -1,0 +1,151 @@
+// ===== components.d.ts =====
+import type { ReactNode } from 'react';
+/** {@link SignInButton} wiring; unstyled by design. */
+export type SignInButtonProps = {
+    /** Where the sign-in page lives. Defaults to `/sign-in`. */
+    readonly href?: string | undefined;
+    readonly className?: string | undefined;
+    readonly children?: ReactNode | undefined;
+};
+/** Unstyled link to the builder's sign-in page. */
+export declare function SignInButton({ href, className, children, }: SignInButtonProps): ReactNode;
+/** {@link SignOutButton} wiring; navigation is injectable. */
+export type SignOutButtonProps = {
+    readonly className?: string | undefined;
+    readonly children?: ReactNode | undefined;
+    /**
+     * Where to go after a successful sign-out. Stays put by default.
+     * Narrowed by `safeRedirectPath` (an off-origin or API destination
+     * falls back to `/`), so a prop fed from a query param cannot turn
+     * sign-out into an open redirect.
+     */
+    readonly redirectTo?: string | undefined;
+    /** Navigation injection for tests; defaults to a full page load. */
+    readonly navigate?: ((url: string) => void) | undefined;
+    /** Called after a successful sign-out, before navigation. */
+    readonly onSignedOut?: (() => void) | undefined;
+};
+/**
+ * Unstyled sign-out button. Revokes through the provider; on failure it
+ * does nothing (the session is still live, so navigating away would lie).
+ */
+export declare function SignOutButton({ className, children, redirectTo, navigate, onSignedOut, }: SignOutButtonProps): ReactNode;
+/** {@link UserMenu} wiring; renders nothing while loading. */
+export type UserMenuProps = {
+    readonly className?: string | undefined;
+    /** Sign-in page for the anonymous state. Defaults to `/sign-in`. */
+    readonly signInHref?: string | undefined;
+    /** Where to go after sign-out. Stays put by default. */
+    readonly signOutRedirectTo?: string | undefined;
+};
+/**
+ * Minimal session menu: nothing while loading, a sign-in link when
+ * anonymous, the email plus a sign-out button when authenticated.
+ */
+export declare function UserMenu({ className, signInHref, signOutRedirectTo, }: UserMenuProps): ReactNode;
+/** {@link RequireRoles} wiring: all roles required, fail closed. */
+export type RequireRolesProps = {
+    /** Every listed role is required (fail closed while loading). */
+    readonly roles: readonly string[];
+    readonly children: ReactNode;
+    readonly fallback?: ReactNode | undefined;
+};
+/** Render-gate for role-restricted UI. Hides — it never authorizes. */
+export declare function RequireRoles({ roles, children, fallback }: RequireRolesProps): ReactNode;
+
+// ===== index.d.ts =====
+/**
+ * Provider-agnostic React UI: session context, sign-in components, user
+ * menu, role gates. No Next, no Payload imports — framework work lives in
+ * `@payload-auth-link/next`, server work in `@payload-auth-link/plugin`.
+ */
+export declare const packageName = "@payload-auth-link/react";
+export { RequireRoles, SignInButton, SignOutButton, UserMenu } from './components.js';
+export type { RequireRolesProps, SignInButtonProps, SignOutButtonProps, UserMenuProps, } from './components.js';
+export { AuthLinkProvider, useAuthLink, useHasRoles } from './provider.js';
+export type { AuthLinkContextValue, AuthLinkProviderProps, AuthLinkStatus } from './provider.js';
+export { fetchSession, fetchSessionUser, revokeSession } from './session.js';
+export type { SessionSnapshot } from './session.js';
+
+// ===== provider.d.ts =====
+import { type ReactNode } from 'react';
+import { type HttpFetch, type SessionGuest, type SessionUser } from '@payload-auth-link/core';
+/** Session state: unknown until the first load settles. */
+export type AuthLinkStatus = 'loading' | 'authenticated' | 'anonymous';
+/** What `useAuthLink` returns: user, status, refresh, honest sign-out. */
+export type AuthLinkContextValue = {
+    readonly user: SessionUser | null;
+    /**
+     * The anonymous guest principal (CAP-10), present instead of a
+     * user while the provider session is anonymous. Never carries
+     * roles or access — a stable key for anonymous app state only.
+     */
+    readonly guest: SessionGuest | null;
+    readonly status: AuthLinkStatus;
+    /** Re-read the session endpoint (call after sign-in or role changes). */
+    readonly refresh: () => Promise<void>;
+    /**
+     * Revoke the session and drop local state. Resolves `false` when the
+     * revocation failed — local state is kept so the UI stays honest.
+     */
+    readonly signOut: () => Promise<boolean>;
+};
+/** Client provider wiring; `initialUser` is the hydration contract. */
+export type AuthLinkProviderProps = {
+    readonly children: ReactNode;
+    /** Session endpoint path. Defaults to the plugin's endpoint. */
+    readonly sessionEndpoint?: string | undefined;
+    /** Injectible fetch. Defaults to the global `fetch`. */
+    readonly fetchImpl?: HttpFetch | undefined;
+    /**
+     * Hydration contract: `undefined` (default) fetches on mount;
+     * `SessionUser` starts authenticated without a fetch; `null` starts
+     * anonymous without a fetch. The Next adapter's server provider
+     * supplies this from full server-side validation.
+     */
+    readonly initialUser?: SessionUser | null | undefined;
+};
+/**
+ * Client session provider: loads once on mount (unless hydrated),
+ * exposes refresh/sign-out. Fail-closed — fetch errors mean anonymous.
+ *
+ * A later `initialUser` (a re-run server loader, a new RSC payload) is
+ * synced into context when its value changes; re-renders passing the
+ * same user as a fresh object change nothing, so a client-side sign-out
+ * is never undone by a stale snapshot. Refresh stays explicit.
+ */
+export declare function AuthLinkProvider({ children, sessionEndpoint, fetchImpl, initialUser, }: AuthLinkProviderProps): ReactNode;
+/** Read the auth context. Throws outside `AuthLinkProvider` — fail loud. */
+export declare function useAuthLink(): AuthLinkContextValue;
+/** `true` when the current user holds every listed role. Fails closed. */
+export declare function useHasRoles(...roles: readonly string[]): boolean;
+
+// ===== session.d.ts =====
+import { type HttpFetch, type SessionGuest, type SessionUser } from '@payload-auth-link/core';
+/**
+ * Read the current session user from the plugin's session endpoint
+ * (`{ user }` envelope). Fails closed: transport errors, non-2xx
+ * statuses, invalid JSON, and malformed envelopes all yield `null`,
+ * never an exception and never a partial user.
+ */
+export declare function fetchSessionUser(sessionEndpoint?: string, fetchImpl?: HttpFetch): Promise<SessionUser | null>;
+/** Both halves of one session-endpoint read (CAP-10). */
+export type SessionSnapshot = {
+    readonly user: SessionUser | null;
+    readonly guest: SessionGuest | null;
+};
+/**
+ * Read user AND guest from one session-endpoint response. The body
+ * is parsed exactly once; a guest body yields `user: null` plus the
+ * guest, a user body the reverse. Fails closed like
+ * {@link fetchSessionUser}.
+ */
+export declare function fetchSession(sessionEndpoint?: string, fetchImpl?: HttpFetch): Promise<SessionSnapshot>;
+/**
+ * Revoke the current session through the plugin's session endpoint.
+ * Sends the CSRF header the endpoint requires. Returns `true` when the
+ * session is gone afterwards: `2xx`, or `401` (already signed out —
+ * logout is idempotent). Transport errors and other statuses return
+ * `false` so the caller can report instead of lying.
+ */
+export declare function revokeSession(sessionEndpoint?: string, fetchImpl?: HttpFetch): Promise<boolean>;

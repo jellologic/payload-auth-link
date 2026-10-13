@@ -1,0 +1,1593 @@
+// ===== assert.d.ts =====
+/** Exhaustiveness guard for discriminated unions. */
+export declare function assertNever(value: never): never;
+
+// ===== collections.d.ts =====
+/**
+ * System-collection building blocks shared by provider packages: slug
+ * resolution and validation plus the deny-all access default. Structural
+ * types only — core never imports Payload (see DNA §3).
+ */
+/**
+ * Merge slug overrides over provider defaults. Rejects empty and
+ * non-string slugs plus unknown model keys at wiring time: a typo'd
+ * override otherwise points the adapter at a missing collection and fails
+ * deep in a query instead of here.
+ */
+export declare function resolveSlugs<TSlugs extends Record<string, string>>(defaults: TSlugs, overrides?: Partial<TSlugs>): TSlugs;
+/**
+ * Reject slug collisions: two models sharing one collection corrupt each
+ * other's reads. Run over the final slug record (core plus custom models).
+ */
+export declare function assertUniqueSlugs(slugs: Readonly<Record<string, string>>, owner: string): void;
+/** Payload collection access shape, structurally: four deny decisions. */
+export type DenyAllAccess = {
+    readonly create: () => boolean;
+    readonly read: () => boolean;
+    readonly update: () => boolean;
+    readonly delete: () => boolean;
+};
+/**
+ * Fresh deny-all access for system collections (sessions, tokens,
+ * hashes): only the adapter touches them, via `overrideAccess`. Fresh
+ * object per call — never share one across collections.
+ */
+export declare function denyAllAccess(): DenyAllAccess;
+
+// ===== cookies.d.ts =====
+import type { CookieOptions } from './ports.js';
+/** RFC 6265 cookie-name token check, shared by serialization and wiring. */
+export declare function isCookieName(name: string): boolean;
+/**
+ * Serialize one `Set-Cookie` header value. Pure and framework-free;
+ * `CookiePort` adapters use this — never hand-rolled cookie strings.
+ */
+export declare function serializeCookie(name: string, value: string, options?: CookieOptions): string;
+/**
+ * RFC 6265bis `__Secure-` prefix: setting or clearing such a cookie
+ * requires the `Secure` attribute, or the browser rejects the write.
+ */
+export declare const secureCookiePrefix = "__Secure-";
+/**
+ * Inputs to the shared production-secure rule. Every provider's
+ * cookie-name derivation funnels through {@link resolveSecureCookies}
+ * with these three inputs so secure-cookie behavior cannot drift
+ * between providers.
+ */
+export type SecureCookieRuleInput = {
+    /** Explicit builder flag; wins over every other input. */
+    readonly useSecureCookies?: boolean | undefined;
+    /** Configured site origin; an https origin means secure cookies. */
+    readonly baseURL?: string | undefined;
+    /**
+     * Better Auth object-form `baseURL` protocol (`'https'` / `'http'`),
+     * which that SDK reads at runtime ahead of the string check. Providers
+     * whose SDK has no object form leave this unset.
+     */
+    readonly dynamicProtocol?: string | undefined;
+};
+/** Injectable environment for the production fallback below. */
+export type SecureCookieEnvironment = {
+    readonly nodeEnv?: string | undefined;
+};
+/**
+ * One production-secure rule shared by every provider: an explicit
+ * `useSecureCookies` wins, then the configured origin (https → secure),
+ * then `NODE_ENV=production`. Pure and Edge-safe — no imports, no
+ * globals: callers inject the environment (adapters read the live
+ * `NODE_ENV`; an absent environment reads as non-production).
+ *
+ * Production deployments must set a canonical https `baseURL`: it is the
+ * only input on which both SDKs and the session layer's origin anchoring
+ * agree. Without it, production falls back to `NODE_ENV` detection, which
+ * matches SDK behavior on https deployments but fails closed (Auth.js
+ * session detection misses) on http ones.
+ */
+export declare function resolveSecureCookies(input: SecureCookieRuleInput, environment?: SecureCookieEnvironment): boolean;
+/**
+ * RFC 6265bis `__Host-` prefix: requires `Secure`, `Path=/`, and no
+ * `Domain` on every write, including the clearing write.
+ */
+export declare const hostCookiePrefix = "__Host-";
+/**
+ * Clearing attributes for a session cookie known by name only: `Max-Age=0`
+ * at `Path=/`, plus `Secure` when the name carries a prefix that demands
+ * it. Providers that know their cookies' real attributes (custom names,
+ * custom domains) report them via
+ * `IdentityProviderPort.sessionCookieClearOptions` instead — this is the
+ * fallback for providers that predate that hook.
+ */
+export declare function expiringCookieOptions(name: string): CookieOptions;
+/** Parse a `Cookie` request header into name/value pairs. */
+export declare function parseCookieHeader(header: string | null): ReadonlyMap<string, string>;
+
+// ===== defaults.d.ts =====
+import type { ClockPort, IdPort, LoggerPort, TracerPort } from './ports.js';
+/**
+ * Safe leaf defaults for composition roots and tests. These are honest
+ * implementations of leaf behavior (system time, random ids, silent logs),
+ * not stubs hiding missing functionality — adapters replace them freely.
+ */
+export declare function systemClock(): ClockPort;
+/** Random UUID ids via `crypto.randomUUID`. */
+export declare function randomIds(): IdPort;
+/** Silent logger; `child` returns itself. */
+export declare function nullLogger(): LoggerPort;
+/** No-op tracer; `withSpan` runs the function directly. */
+export declare function nullTracer(): TracerPort;
+
+// ===== email.d.ts =====
+import { type Result } from 'neverthrow';
+import { z } from 'zod';
+import { InvalidEmailError } from './errors.js';
+/**
+ * Email boundary schema: valid format, max 320 chars, lowercased,
+ * branded so only {@link parseEmail} output inhabits `Email`.
+ */
+export declare const emailSchema: z.core.$ZodBranded<z.ZodEmail, "Email", "out">;
+/**
+ * A validated, lowercased email address.
+ * Construct only via {@link parseEmail}.
+ */
+export type Email = z.output<typeof emailSchema>;
+/** Smart constructor: the one place raw input becomes an `Email`. */
+export declare function parseEmail(value: unknown): Result<Email, InvalidEmailError>;
+
+// ===== errors.d.ts =====
+/**
+ * Typed error taxonomy. Expected failures travel as `Result<T, E>` values;
+ * only programmer errors and truly unexpected faults are thrown.
+ *
+ * Domain errors (invalid input at a boundary) stay distinct from application
+ * errors (a valid operation that failed). Web adapters map them to status
+ * codes; core never touches HTTP.
+ */
+/**
+ * Base error: machine-readable `code`, human `message`, optional
+ * `cause`. Leaf classes fix their code; adapters map codes to HTTP.
+ */
+export declare class AuthLinkError extends Error {
+    readonly code: string;
+    constructor(code: string, message: string, options?: {
+        cause?: unknown;
+    });
+}
+/** `INVALID_EMAIL`: raw input failed {@link parseEmail}. */
+export declare class InvalidEmailError extends AuthLinkError {
+    constructor(detail: string);
+}
+/** `INVALID_PHONE_NUMBER`: raw input failed {@link parsePhoneNumber}. */
+export declare class InvalidPhoneNumberError extends AuthLinkError {
+    constructor(detail: string);
+}
+/** `INVALID_ROLE`: unknown role string at a boundary. */
+export declare class InvalidRoleError extends AuthLinkError {
+    constructor(detail: string);
+}
+/** `INVALID_PROVIDER_ID`: malformed provider registry id. */
+export declare class InvalidProviderIdError extends AuthLinkError {
+    constructor(detail: string);
+}
+/** `INVALID_COLLECTION_MAP`: bad slug/field map in plugin options. */
+export declare class InvalidCollectionMapError extends AuthLinkError {
+    constructor(detail: string);
+}
+/** `INVALID_CONFIG`: startup validation rejected the config. Thrown, never returned. */
+export declare class InvalidConfigError extends AuthLinkError {
+    constructor(detail: string);
+}
+/** `DUPLICATE_PROVIDER`: two providers registered under one id. */
+export declare class DuplicateProviderError extends AuthLinkError {
+    constructor(providerId: string);
+}
+/** `UNKNOWN_PROVIDER`: registry lookup for an unregistered id. */
+export declare class UnknownProviderError extends AuthLinkError {
+    constructor(providerId: string);
+}
+/** `USER_EXISTS`: registration raced or replayed an existing email. */
+export declare class UserExistsError extends AuthLinkError {
+    constructor(email: string);
+}
+/** `REPOSITORY_ERROR`: user storage failed; see `cause`. */
+export declare class RepositoryError extends AuthLinkError {
+    constructor(operation: string, options?: {
+        cause?: unknown;
+    });
+}
+/** `SESSION_EXPIRED`: a structurally valid session passed its expiry. */
+export declare class SessionExpiredError extends AuthLinkError {
+    constructor();
+}
+/** `SESSION_INVALID`: no session, malformed session, or link failure. Maps to 401. */
+export declare class SessionInvalidError extends AuthLinkError {
+    constructor(detail: string);
+}
+/**
+ * `CHANNEL_NOT_ADMITTED`: a live provider session was presented on a
+ * channel the plugin does not admit (CAP-13a `admitChannels`, default
+ * `['cookie']`). A valid credential on an unadmitted channel is still
+ * refused — maps to 401, and verification stops at the presenting
+ * provider instead of trying later ones. Distinct from
+ * {@link SessionInvalidError} so operators can tell "bad credential"
+ * from "good credential, wrong presentation" in logs.
+ */
+export declare class ChannelNotAdmittedError extends AuthLinkError {
+    readonly channel: string;
+    readonly admittedChannels: readonly string[];
+    constructor(channel: string, admittedChannels: readonly string[]);
+}
+/**
+ * `USER_SUSPENDED`: the Payload user behind an otherwise valid
+ * provider session is suspended (CAP-7). Payload owns the suspension,
+ * so this refuses every provider and every session strategy —
+ * including stateless JWTs no provider can revoke. Maps to 401 at
+ * session endpoints (the session is not usable), with the suspension
+ * expiry carried for logs/UI copy. Never leak `reason` to clients by
+ * default; it is operator-facing.
+ */
+export declare class UserSuspendedError extends AuthLinkError {
+    readonly suspendedUntil: Date;
+    constructor(suspendedUntil: Date);
+}
+/** `FORBIDDEN`: authenticated but missing required roles. Maps to 403. */
+export declare class ForbiddenError extends AuthLinkError {
+    constructor(detail: string);
+}
+/** `UNVERIFIED_EMAIL`: refused to link an unverified provider email. */
+export declare class UnverifiedEmailError extends AuthLinkError {
+    constructor(email: string);
+}
+/**
+ * `UNVERIFIED_IDENTITY`: refused to link because the session carries no
+ * verified identity claim the active policy can link on (no email claim,
+ * no verified phone where phone-linking is enabled, an anonymous
+ * identity, …). Sibling of {@link UnverifiedEmailError} for the
+ * claim-based policies (PORT-3/CAP-9); declared now with PORT-1 so both
+ * adapters and policies share one taxonomy.
+ */
+export declare class UnverifiedIdentityError extends AuthLinkError {
+    constructor(detail: string);
+}
+/**
+ * `MFA_REQUIRED`: the session is authenticated but a policy
+ * (`requireMfaForRoles`, CAP-6) demands multi-factor assurance this
+ * session does not carry. Enforced by the plugin's role projection
+ * (CAP-6) and the web `requireRoles({ requireMfa: true })` helper.
+ */
+export declare class MfaRequiredError extends AuthLinkError {
+    constructor(detail: string);
+}
+/**
+ * `UNSUPPORTED_CAPABILITY`: a plugin option or policy needs a
+ * `Capability` the registered provider does not declare. Thrown at
+ * wiring time (fail fast) — behavior never silently degrades.
+ */
+export declare class UnsupportedCapabilityError extends AuthLinkError {
+    readonly providerId: string;
+    readonly capability: string;
+    constructor(providerId: string, capability: string);
+}
+/**
+ * `UNSUPPORTED_VERSION`: an installed upstream package (Payload,
+ * Better Auth, Auth.js) is outside the band this release validated.
+ * Thrown at wiring time by `assertSupportedVersion`, before any
+ * collection write — the alternative is discovering the mismatch
+ * as a raw SQL/`TypeError` crash mid-request (B3/B4).
+ */
+export declare class UnsupportedVersionError extends AuthLinkError {
+    readonly packageName: string;
+    readonly found: string;
+    readonly supported: string;
+    constructor(packageName: string, found: string, supported: string);
+}
+/**
+ * `PROVIDER_ERROR`: an identity provider failed; `providerId` says
+ * which. Session reads treat this as anonymous (fail closed).
+ */
+export declare class ProviderError extends AuthLinkError {
+    readonly providerId: string;
+    constructor(providerId: string, operation: string, options?: {
+        cause?: unknown;
+    });
+}
+
+// ===== events.d.ts =====
+import type { Email } from './email.js';
+import type { ProviderId } from './ports.js';
+/**
+ * Provider-side identity lifecycle facts (CAP-14), translated by each
+ * adapter from its native hooks (Better Auth `databaseHooks`, Auth.js
+ * `events`) into this one core vocabulary. The plugin applies them
+ * through `UserRepository`, so Payload stays the single user store
+ * (invariant 1): an event can sync a verified email or unlink an
+ * identity row, but it can never create or delete a Payload user.
+ *
+ * These are provider HOOKS observed in-process, not webhooks: nothing
+ * here is delivered over the network, and the read-time sync in
+ * `ensureLinkedUser` remains the backstop when an event is missed
+ * (for example while the process was down).
+ */
+export type IdentityEvent = {
+    /**
+     * The provider changed the user's email. Applied to Payload
+     * only when `verified` is true (D9: the provider owns the
+     * email for verified changes only); an unverified change is
+     * ignored and logged.
+     */
+    readonly type: 'email-changed';
+    readonly providerId: ProviderId;
+    readonly providerUserId: string;
+    readonly email: Email;
+    readonly verified: boolean;
+} | {
+    /**
+     * The provider verified this email for the user. Payload users
+     * carry no verification flag (verification gates linking, which
+     * already happened), so applying means: sync the address if it
+     * differs, otherwise a no-op.
+     */
+    readonly type: 'email-verified';
+    readonly providerId: ProviderId;
+    readonly providerUserId: string;
+    readonly email: Email;
+} | {
+    /**
+     * The provider account was unlinked from the provider user.
+     * Applying removes the identity row from the Payload user; the
+     * Payload user itself always remains (D9).
+     */
+    readonly type: 'identity-unlinked';
+    readonly providerId: ProviderId;
+    readonly providerUserId: string;
+} | {
+    /**
+     * The provider user was deleted. Applying unlinks the identity
+     * row; the Payload user remains, because Payload owns it (D9).
+     */
+    readonly type: 'user-deleted';
+    readonly providerId: ProviderId;
+    readonly providerUserId: string;
+};
+/**
+ * Consumes one {@link IdentityEvent}. Adapters call every registered
+ * handler from their provider hooks; handlers must not throw into the
+ * provider operation (the plugin's applier logs failures instead, so
+ * a Payload-side sync failure never aborts the provider-side change
+ * that already committed — read-time sync is the backstop).
+ */
+export type IdentityEventHandler = (event: IdentityEvent) => Promise<void>;
+/**
+ * The fan-out behind an adapter's `onIdentityEvent`: adapters `emit`
+ * narrowed events from their provider hooks; the plugin subscribes
+ * once. Emission awaits every handler in subscription order.
+ */
+export type IdentityEventEmitter = {
+    readonly emit: (event: IdentityEvent) => Promise<void>;
+    readonly subscribe: (handler: IdentityEventHandler) => () => void;
+};
+/** Create an {@link IdentityEventEmitter} for an adapter. */
+export declare function createIdentityEventEmitter(): IdentityEventEmitter;
+
+// ===== guards.d.ts =====
+/**
+ * Runtime narrowing guards for untrusted SDK and storage shapes. One
+ * definition shared by every package — adapters narrow through these,
+ * never through local copies.
+ */
+/** Plain-object check for narrowing `unknown` payloads. */
+export declare function isRecord(value: unknown): value is Record<string, unknown>;
+/** Non-empty-string check for required string fields. */
+export declare function isNonEmptyString(value: unknown): value is string;
+/**
+ * Coerce `Date`s, ISO strings, and epoch numbers to a valid `Date`.
+ * Anything else (including `NaN` dates) yields `null` — fail closed.
+ */
+export declare function toDate(value: unknown): Date | null;
+
+// ===== http.d.ts =====
+import { type ResolvedSessionActor, type SessionAssurance } from './ports.js';
+/**
+ * Custom CSRF header. A cross-site page cannot set it without a preflight,
+ * so its presence proves a same-origin (or deliberate non-browser) caller.
+ * UI adapters always send it with the value `1` on state-changing requests.
+ */
+export declare const csrfHeaderName = "x-auth-link-csrf";
+/**
+ * Default plugin session endpoint path. Payload serves custom endpoints
+ * under `/api`; builders who customize `routes.api` override the endpoint
+ * in the UI adapters instead of this constant.
+ */
+export declare const defaultSessionEndpointPath = "/api/auth-link/session";
+/**
+ * Injectible `fetch` shape. UI adapters default to the global `fetch`;
+ * tests inject stubs. Same signature as `fetch` restricted to string URLs.
+ */
+export type HttpFetch = (input: string, init?: RequestInit) => Promise<Response>;
+/**
+ * Validate a configured origin. Returns it unchanged when it is an
+ * absolute http(s) URL; throws `InvalidConfigError` otherwise. Call at
+ * wiring time so a malformed base URL fails the build, never a request
+ * (where `new URL` would throw a bare `TypeError` instead).
+ */
+export declare function normalizeBaseUrl(baseUrl: string): string;
+/** Origin resolution: configured base URL plus the dev-only host fallback. */
+export type OriginResolutionInput = {
+    /** Validated configured origin; wins whenever set. */
+    readonly baseUrl?: string | undefined;
+    /** Request headers, for the host fallback only. */
+    readonly headers: Headers;
+    /**
+     * Whether the request-host fallback is allowed. Host headers are
+     * client-spoofable, so production session reads (which forward
+     * cookies to the resolved origin) must pass `false`; local
+     * development passes `true`.
+     */
+    readonly allowHostFallback: boolean;
+};
+/**
+ * Single origin resolver behind every server-side session read
+ * (`@payload-auth-link/web` verifier, Auth.js engine). The configured
+ * base URL wins; without it, the request host is used only when
+ * `allowHostFallback` is set. Throws `InvalidConfigError` when no
+ * origin can be resolved — a wiring bug, fail loud rather than
+ * fetching a nonsense URL.
+ */
+export declare function resolveOrigin(input: OriginResolutionInput): string;
+/**
+ * The session user: what the plugin's session endpoint returns inside its
+ * `{ user }` envelope, and what the UI adapters hydrate from. Plain JSON —
+ * roles are the wire form of `Role`, re-validated on parse.
+ *
+ * The PORT-4 fields are additive and optional, so payloads from older
+ * servers (without them) still parse, and older clients ignore them.
+ * Producers include a field only when it is known: `actor` only while
+ * an operator impersonates the user, `organizationId` only when the
+ * provider reports an active tenant. `assurance` is the exception that
+ * proves the rule — when the provider reported it, it serializes even
+ * when its values are `'unknown'`, because "the provider cannot tell"
+ * is itself a fact. Consumers must treat absent or `'unknown'`
+ * assurance as not satisfied (R3 fail-closed): it never proves a
+ * method or MFA.
+ */
+export type SessionUser = {
+    readonly id: string;
+    readonly collection: string;
+    readonly email: string;
+    readonly roles: readonly string[];
+    /** How the session was proven, when the provider reported it. */
+    readonly assurance?: SessionAssurance | undefined;
+    /**
+     * The impersonating operator, present only while impersonating,
+     * resolved against Payload users when linked (CAP-8b): the
+     * `kind: 'payload-user'` form also carries the operator's Payload
+     * user id; `kind: 'provider-only'` means no linked Payload user.
+     */
+    readonly actor?: ResolvedSessionActor | undefined;
+    /** Provider-native active tenant, when one is active. */
+    readonly organizationId?: string | undefined;
+    /**
+     * Present (`true`) only when a `requireMfaForRoles` policy (CAP-6)
+     * withheld one or more of the user's stored roles from `roles`
+     * because this session lacks MFA proof — the UI's signal to prompt
+     * for a step-up sign-in instead of a flat "forbidden".
+     */
+    readonly mfaRequired?: true | undefined;
+};
+/**
+ * Why {@link parseSessionUser} degraded an optional wire field instead
+ * of trusting it (B20). Reported through
+ * {@link ParseSessionUserOptions.onDegrade} so a producer/consumer
+ * version skew is observable in logs instead of silent: an unknown
+ * `AuthMethod` from a newer server lands here as
+ * `'assurance-malformed'`, never as a mysteriously absent session.
+ */
+export type SessionUserDegradeReason = 'assurance-malformed' | 'actor-malformed' | 'organization-malformed';
+/** Options for {@link parseSessionUser}. */
+export type ParseSessionUserOptions = {
+    /**
+     * Called once per degraded optional field. Intended for a
+     * `LoggerPort.warn` at the composition root; omitted by default,
+     * which preserves the historical silent fail-closed behavior.
+     */
+    readonly onDegrade?: ((reason: SessionUserDegradeReason) => void) | undefined;
+};
+/**
+ * Narrow unknown JSON to a `SessionUser`. This is the CLIENT wire
+ * parser: core identity fields (`id`, `collection`, `email`,
+ * `roles`) stay strict and fail closed (`null`) on any deviation,
+ * because a partial identity is never a session.
+ *
+ * The optional PORT-4 fields degrade instead of nuking the user:
+ * unknown keys inside `assurance`/`actor` are ignored (forward
+ * compatibility with newer servers), and a present-but-malformed
+ * optional degrades fail-closed-for-policy — `assurance` to
+ * `'unknown'`/`'unknown'` (which never satisfies a policy requiring
+ * proof), `actor`/`organizationId` to absent. Dropping a malformed
+ * client-side actor marker is safe ONLY because server-side
+ * authorization and audit never route through this parser: the
+ * plugin extracts the actor from `req.user` with its own fail-closed
+ * server extraction (a malformed actor there still denies). The
+ * explicit `null` a producer may carry for "no actor / no tenant"
+ * normalizes to absent; `null` assurance degrades to `'unknown'`.
+ */
+export declare function parseSessionUser(value: unknown, options?: ParseSessionUserOptions): SessionUser | null;
+/**
+ * The guest principal as it travels on the wire (CAP-10): the session
+ * endpoint answers `{ user: null, guest }` for a live anonymous
+ * provider session. A guest has NO Payload user, roles, or access —
+ * `id` is only a stable key for anonymous app state.
+ */
+export type SessionGuest = {
+    readonly id: string;
+    readonly providerId: string;
+    /** ISO instant the underlying provider session expires. */
+    readonly expiresAt: string;
+};
+/** Narrow unknown JSON to a `SessionGuest`; `null` on any deviation. */
+export declare function parseSessionGuest(value: unknown): SessionGuest | null;
+/**
+ * Parse a session-endpoint `Response` through its `{ guest }`
+ * envelope (CAP-10). Fails closed exactly like
+ * {@link parseSessionResponse}; note a guest body parses to `null`
+ * there (its `user` is `null`), so user-only consumers stay correct
+ * without knowing guests exist.
+ */
+export declare function parseGuestResponse(response: Pick<Response, 'ok' | 'json'>): Promise<SessionGuest | null>;
+/**
+ * Parse a session-endpoint `Response` through its `{ user }` envelope.
+ * Fails closed (`null`) on non-2xx statuses, unreadable JSON, non-record
+ * bodies, and malformed users — the single envelope parser shared by
+ * the client reader (`react`) and the server verifier (`web`).
+ */
+export declare function parseSessionResponse(response: Pick<Response, 'ok' | 'json'>): Promise<SessionUser | null>;
+
+// ===== index.d.ts =====
+/**
+ * Framework-free auth domain and port interfaces.
+ *
+ * This barrel is the entire public API: exporting something new is a
+ * decision, not a side effect. Adapters implement the ports; the domain
+ * never imports a framework.
+ */
+export { assertNever } from './assert.js';
+export { assertUniqueSlugs, denyAllAccess, resolveSlugs } from './collections.js';
+export type { DenyAllAccess } from './collections.js';
+export { expiringCookieOptions, hostCookiePrefix, isCookieName, parseCookieHeader, resolveSecureCookies, secureCookiePrefix, serializeCookie, } from './cookies.js';
+export type { SecureCookieEnvironment, SecureCookieRuleInput } from './cookies.js';
+export { nullLogger, nullTracer, randomIds, systemClock } from './defaults.js';
+export { emailSchema, parseEmail } from './email.js';
+export type { Email } from './email.js';
+export { parsePhoneNumber, phoneNumberSchema } from './phone.js';
+export type { PhoneNumber } from './phone.js';
+export { isNonEmptyString, isRecord, toDate } from './guards.js';
+export { csrfHeaderName, defaultSessionEndpointPath, normalizeBaseUrl, parseGuestResponse, parseSessionGuest, parseSessionResponse, parseSessionUser, resolveOrigin, } from './http.js';
+export type { HttpFetch, OriginResolutionInput, ParseSessionUserOptions, SessionGuest, SessionUser, SessionUserDegradeReason, } from './http.js';
+export { defaultLinkingPolicy, linkingPolicySchema, parseLinkingPolicy } from './linking.js';
+export type { LinkingPolicy } from './linking.js';
+export { AuthLinkError, ChannelNotAdmittedError, DuplicateProviderError, ForbiddenError, InvalidCollectionMapError, InvalidConfigError, InvalidEmailError, InvalidPhoneNumberError, InvalidProviderIdError, InvalidRoleError, MfaRequiredError, ProviderError, RepositoryError, SessionExpiredError, SessionInvalidError, UnknownProviderError, UnsupportedCapabilityError, UnsupportedVersionError, UnverifiedEmailError, UnverifiedIdentityError, UserExistsError, UserSuspendedError, } from './errors.js';
+export { effectiveRoles, emailDomainAllowed, emailDomainOf, isSuspendedAt, mfaSatisfied, withheldRoles, } from './policies.js';
+export { assertCapabilities, authMethods, defineProviderId, defineSessionId, defineUserId, providerIdSchema, runProviderOperation, sessionChannels, wellKnownProviderIds, } from './ports.js';
+export type { AuthMethod, Capability, CookieOptions, CookiePort, ClockPort, GuestPrincipal, IdentityProviderPort, IdPort, LinkedIdentity, LogFields, LoggerPort, NewUser, ProviderIdentityClaims, ProviderIdentityRef, ProviderId, ProviderProfile, ProviderSession, ResolvedSessionActor, SameSite, Session, SessionActor, SessionAssurance, SessionChannel, SessionId, SessionPort, TracerPort, TransactionPort, UserId, UserRecord, UserRepository, VerifiedClaim, } from './ports.js';
+export { safeRedirectPath } from './redirect.js';
+export type { SafeRedirectOptions } from './redirect.js';
+export { createProviderRegistry } from './registry.js';
+export type { ProviderRegistry } from './registry.js';
+export { parseRole, roleSchema } from './roles.js';
+export type { Role } from './roles.js';
+export { registerUser, registerWithStore } from './use-cases/register-user.js';
+export type { RegisterUserDeps, RegisterUserInput, RegisterWithStoreDeps, RegisterWithStoreInput, RegisteredWithStore, RegistrationStore, } from './use-cases/register-user.js';
+export { applyIdentityEvent } from './use-cases/apply-identity-event.js';
+export { createIdentityEventEmitter } from './events.js';
+export type { IdentityEvent, IdentityEventEmitter, IdentityEventHandler } from './events.js';
+export { ensureLinkedUser } from './use-cases/ensure-linked-user.js';
+export type { EnsureLinkedUserDeps, EnsureLinkedUserInput } from './use-cases/ensure-linked-user.js';
+export { collectionMapSchema, parseCollectionMap, startupConfigSchema, validateStartupConfig, } from './validation.js';
+export type { CollectionMap, StartupConfig } from './validation.js';
+export { assertSupportedVersion, describeBand, isSupportedVersion, parseVersion, readInstalledVersion, } from './version.js';
+export type { ParsedVersion, VersionRange } from './version.js';
+
+// ===== linking.d.ts =====
+import { type Result } from 'neverthrow';
+import { z } from 'zod';
+import { InvalidConfigError } from './errors.js';
+/**
+ * Declared policy for linking a provider identity to a Payload user
+ * (PORT-3). The policy names which verified identifier claims may act
+ * as the linking authority in `ensureLinkedUser`:
+ *
+ * - `'verified-email'` (the default): only a provider-verified email
+ *   claim links to an existing user or provisions a new one. This is
+ *   the pre-PORT-3 hard-coded rule, unchanged.
+ * - `'verified-email-or-phone'`: the email rule above, plus one
+ *   additional branch for phone-only identities (no email claim): a
+ *   provider-verified E.164 phone claim links to the _existing_ user
+ *   resolved through `UserRepository.findByPhone`. The branch never
+ *   provisions a user — an unmatched verified phone refuses with
+ *   `UnverifiedIdentityError`.
+ *
+ * Anonymous identities (`identity.anonymous === true`) never link
+ * under any policy (D3).
+ */
+/**
+ * Linking-policy boundary schema. Strict and discriminated on `kind`:
+ * unknown kinds and unknown keys are rejected, never silently mapped
+ * to the default. Defined before {@link LinkingPolicy} so the domain
+ * type derives from the schema (single source, B16): the hand-written
+ * `readonly` union it replaced was assignable but not identical to
+ * the schema output — exactly the drift the type-alarms pin catches.
+ */
+export declare const linkingPolicySchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
+    kind: z.ZodLiteral<"verified-email">;
+}, z.core.$strict>, z.ZodObject<{
+    kind: z.ZodLiteral<"verified-email-or-phone">;
+}, z.core.$strict>], "kind">;
+export type LinkingPolicy = Readonly<z.output<typeof linkingPolicySchema>>;
+/**
+ * The default linking policy: verified email only. Used by
+ * `ensureLinkedUser` when `EnsureLinkedUserInput.linkingPolicy` is
+ * omitted, so existing callers keep byte-identical behavior.
+ */
+export declare const defaultLinkingPolicy: LinkingPolicy;
+/**
+ * Parse an untyped linking policy (for example from plugin options).
+ * Returns {@link InvalidConfigError} on any shape the strict schema
+ * rejects — wiring fails fast instead of degrading to the default.
+ */
+export declare function parseLinkingPolicy(value: unknown): Result<LinkingPolicy, InvalidConfigError>;
+
+// ===== phone.d.ts =====
+import { type Result } from 'neverthrow';
+import { z } from 'zod';
+import { InvalidPhoneNumberError } from './errors.js';
+/**
+ * Phone-number boundary schema: E.164 only (`+` then a country-code-led
+ * run of 7–15 digits), branded so only {@link parsePhoneNumber} output
+ * inhabits `PhoneNumber`.
+ *
+ * Minimal by design (PORT-1): core needs the branded type so session
+ * identity claims can carry a phone. Display/national formatting and
+ * the verified-phone linking policy are CAP-9 (Phase 6), not here.
+ */
+export declare const phoneNumberSchema: z.core.$ZodBranded<z.ZodString, "PhoneNumber", "out">;
+/**
+ * A validated E.164 phone number.
+ * Construct only via {@link parsePhoneNumber}.
+ */
+export type PhoneNumber = z.output<typeof phoneNumberSchema>;
+/** Smart constructor: the one place raw input becomes a `PhoneNumber`. */
+export declare function parsePhoneNumber(value: unknown): Result<PhoneNumber, InvalidPhoneNumberError>;
+
+// ===== policies.d.ts =====
+import type { SessionAssurance } from './ports.js';
+import type { Role } from './roles.js';
+/**
+ * Pure session-policy decisions (CAP-6/CAP-7), shared by the plugin's
+ * role projection and the web authorization helpers so the two can
+ * never drift. Every function here fails closed: absent or `'unknown'`
+ * assurance never satisfies a policy requiring proof (risk R3).
+ */
+/** Whether an assurance fact proves multi-factor authentication. */
+export declare function mfaSatisfied(assurance: SessionAssurance | undefined): boolean;
+/**
+ * The roles a session may exercise under a `requireMfaForRoles`
+ * policy: when MFA is not satisfied, the listed roles are withheld
+ * (the stored roles are untouched — this is a per-session view, so a
+ * later MFA-proven session sees the full set again). Returns the
+ * input array unchanged when the policy is empty or satisfied.
+ */
+export declare function effectiveRoles(roles: readonly Role[], assurance: SessionAssurance | undefined, requireMfaForRoles: readonly Role[]): readonly Role[];
+/** The gated roles {@link effectiveRoles} withholds for this session. */
+export declare function withheldRoles(roles: readonly Role[], assurance: SessionAssurance | undefined, requireMfaForRoles: readonly Role[]): readonly Role[];
+/**
+ * Whether a suspension is in force at `now` (CAP-7). `null` /
+ * `undefined` means not suspended; a past instant means the
+ * suspension has lapsed and the user is admitted again without any
+ * operator action.
+ */
+export declare function isSuspendedAt(suspendedUntil: Date | null | undefined, now: Date): boolean;
+/** The lowercase domain part of an email address (after the last `@`). */
+export declare function emailDomainOf(email: string): string;
+/**
+ * Whether an email may link through enterprise SSO (CAP-15): its
+ * domain must be one of the organization's VERIFIED domains. Exact
+ * match only — subdomains do not inherit trust (`mail.example.com`
+ * does not satisfy `example.com`), and an empty domain list admits
+ * nothing (fail closed): a tenant-registered IdP can assert verified
+ * emails for anyone, so the verified domain is the boundary.
+ */
+export declare function emailDomainAllowed(email: string, verifiedDomains: readonly string[]): boolean;
+
+// ===== ports.d.ts =====
+import { ResultAsync } from 'neverthrow';
+import { z } from 'zod';
+import type { Email } from './email.js';
+import type { IdentityEventHandler } from './events.js';
+import { ChannelNotAdmittedError, ProviderError, RepositoryError, SessionExpiredError, SessionInvalidError, UnknownProviderError, UserSuspendedError, UserExistsError } from './errors.js';
+import type { PhoneNumber } from './phone.js';
+import type { Role } from './roles.js';
+/** Payload document id of a user. */
+export type UserId = string & {
+    readonly __brand: 'UserId';
+};
+/** Opaque session id. */
+export type SessionId = string & {
+    readonly __brand: 'SessionId';
+};
+/** Provider-id boundary schema: lowercase slug, branded `ProviderId`. */
+export declare const providerIdSchema: z.core.$ZodBranded<z.ZodString, "ProviderId", "out">;
+/**
+ * Identity-provider id (`better-auth`, `authjs`, custom …).
+ * Well-known ids come from {@link wellKnownProviderIds}; custom adapters
+ * brand their own via {@link defineProviderId} (fail-fast on invalid input).
+ */
+export type ProviderId = z.output<typeof providerIdSchema>;
+/**
+ * Brand a provider id. Throws {@link InvalidProviderIdError} on invalid
+ * input: an invalid literal is a programmer error at wiring time, so failing
+ * fast and loudly is correct — never a silent fallback.
+ */
+export declare function defineProviderId(id: string): ProviderId;
+/**
+ * Brand a Payload document id. Throws on empty input: ids come from storage,
+ * so an empty id is a bug at the adapter boundary, not an expected failure.
+ */
+export declare function defineUserId(id: string): UserId;
+/**
+ * Brand an opaque session id. Throws on empty input, like
+ * {@link defineUserId}.
+ */
+export declare function defineSessionId(id: string): SessionId;
+/**
+ * Reserved provider ids. `workos`/`clerk` are deferred post-v1 but their ids
+ * are reserved here so the registry shape never changes under adapters.
+ */
+export declare const wellKnownProviderIds: {
+    readonly betterAuth: string & z.core.$brand<"ProviderId">;
+    readonly authjs: string & z.core.$brand<"ProviderId">;
+    readonly workos: string & z.core.$brand<"ProviderId">;
+    readonly clerk: string & z.core.$brand<"ProviderId">;
+};
+/** A provider-side identity, independent of any user document. */
+export type ProviderIdentityRef = {
+    readonly providerId: ProviderId;
+    readonly providerUserId: string;
+};
+/** A provider identity linked to a user document. */
+export type LinkedIdentity = ProviderIdentityRef & {
+    readonly email: Email;
+    readonly linkedAt: Date;
+};
+/** The canonical user: one Payload document, N linked identities. */
+export type UserRecord = {
+    readonly id: UserId;
+    readonly email: Email;
+    readonly roles: readonly Role[];
+    readonly identities: readonly LinkedIdentity[];
+    readonly createdAt: Date;
+    readonly updatedAt: Date;
+    /**
+     * Verified E.164 phone on file (CAP-9), when the user store carries
+     * one. Optional/additive: repositories without a phone field omit
+     * it. This is the value `findByPhone` resolves on; it is written
+     * only from a verified provider claim or by an operator.
+     */
+    readonly phone?: PhoneNumber | null | undefined;
+    /**
+     * Suspension expiry (CAP-7): while in the future, session
+     * verification refuses this user for every provider and strategy.
+     * `null`/absent means not suspended; a past instant means lapsed.
+     */
+    readonly suspendedUntil?: Date | null | undefined;
+    /** Operator-facing suspension reason (CAP-7). Never sent to clients. */
+    readonly suspendReason?: string | null | undefined;
+};
+/** Registration input: every provisioned user starts with roles. */
+export type NewUser = {
+    readonly email: Email;
+    readonly roles: readonly Role[];
+    readonly identity?: ProviderIdentityRef | undefined;
+    /** Verified phone to store at provisioning time (CAP-9). */
+    readonly phone?: PhoneNumber | undefined;
+};
+/**
+ * A verified plugin-level session: provider-agnostic, role-free.
+ *
+ * The PORT-4 facts (`assurance`, `actor`, `organizationId`) are
+ * optional and additive: a `SessionPort` implementation that cannot
+ * know them omits them, and consumers must treat an absent fact as
+ * unknown — never as satisfied (R3 fail-closed: `'unknown'`
+ * assurance does not satisfy a policy requiring proof). When a
+ * provider does report `assurance`, it is carried even when its
+ * values are `'unknown'`, so "the provider cannot tell" stays
+ * distinguishable from "nobody asked". `actor` is present only
+ * while an operator impersonates the user, and `organizationId`
+ * only when the provider reports an active tenant.
+ */
+export type Session = {
+    readonly id: SessionId;
+    readonly userId: UserId;
+    readonly providerId: ProviderId;
+    readonly expiresAt: Date;
+    /** How the session was proven, when the provider reported it. */
+    readonly assurance?: SessionAssurance | undefined;
+    /**
+     * The impersonating operator, present only while impersonating,
+     * resolved against Payload users (CAP-8b {@link ResolvedSessionActor}).
+     */
+    readonly actor?: ResolvedSessionActor | undefined;
+    /** Provider-native active tenant, when one is active. */
+    readonly organizationId?: string | undefined;
+};
+/**
+ * One identifier claim from the provider plus whether the provider
+ * verified it. The claim is the linking authority (SEC-2): only a
+ * `verified` claim may link or provision a Payload user.
+ */
+export type VerifiedClaim<T> = {
+    readonly value: T;
+    readonly verified: boolean;
+};
+/**
+ * How the user proved their identity for this session. Providers that
+ * record no per-session method report `'unknown'` on
+ * {@link SessionAssurance} instead of guessing (Phase 0 spike S4:
+ * Better Auth has no per-session method; its per-user
+ * `lastLoginMethod` must never back per-session assurance).
+ */
+/**
+ * Every {@link AuthMethod} value, single-sourced: the union below and
+ * the wire `z.enum` in `http.ts` both derive from this tuple, so the
+ * two can never drift apart silently (B16).
+ */
+export declare const authMethods: readonly ["password", "magic-link", "email-otp", "oauth", "one-tap", "passkey", "phone-otp", "anonymous"];
+export type AuthMethod = (typeof authMethods)[number];
+/** The identity claims a provider session carries (PORT-1). */
+export type ProviderIdentityClaims = {
+    /** The email claim, or `null` when the session has no email identity. */
+    readonly email: VerifiedClaim<Email> | null;
+    /** The E.164 phone claim, or `null`. Filled by CAP-9 adapters. */
+    readonly phone: VerifiedClaim<PhoneNumber> | null;
+    /** True for an anonymous/guest identity, which never links (D3). */
+    readonly anonymous: boolean;
+};
+/**
+ * How strongly this session was proven. `'unknown'` is a first-class
+ * value, never a guess: policies requiring proof treat it as absent.
+ * On Better Auth `mfa` reflects enrollment (`user.twoFactorEnabled`,
+ * spike S3), not per-session proof, which BA 1.7.7 cannot report.
+ */
+export type SessionAssurance = {
+    readonly methods: readonly AuthMethod[] | 'unknown';
+    readonly mfa: boolean | 'unknown';
+};
+/** The operator acting as this user while impersonating (CAP-8). */
+export type SessionActor = {
+    readonly providerUserId: string;
+};
+/**
+ * A {@link SessionActor} resolved against Payload users (CAP-8b), as
+ * carried on the plugin-level {@link Session} and the `SessionUser`
+ * wire shape. Discriminated so an unresolved operator can never be
+ * mistaken for a Payload user:
+ *
+ * - `payload-user`: the operator's provider identity is linked to a
+ *   Payload user; `userId` is that user's Payload document id.
+ * - `provider-only`: the operator has no linked Payload user (e.g. a
+ *   provider-side admin who has never signed in through Payload).
+ *   Fail-closed by design: the session still verifies and the actor
+ *   is still audit-logged and still restricted by impersonation
+ *   access policy, but the actor stays in explicit provider-id form
+ *   instead of being dropped or dressed up as a Payload user id.
+ *   The lookup re-runs on every verification, so the actor resolves
+ *   as soon as the operator links a Payload user.
+ */
+export type ResolvedSessionActor = {
+    readonly kind: 'payload-user';
+    readonly providerUserId: string;
+    readonly userId: UserId;
+} | {
+    readonly kind: 'provider-only';
+    readonly providerUserId: string;
+};
+/**
+ * How the credential was presented (CAP-13).
+ *
+ * There is deliberately no `'one-time'` channel: one-time tokens
+ * (CAP-13b transports such as magic-link/OTP exchange codes) present
+ * as `bearer` once redeemed into a session, so channel policies see
+ * one honest value for every token-in-hand presentation.
+ */
+/**
+ * Every {@link SessionChannel} value, for boundary validation. The
+ * union derives from this tuple (single source, B16): a missing
+ * member is now a compile error everywhere the union is consumed,
+ * not a silently shorter validation list.
+ */
+export declare const sessionChannels: readonly ["cookie", "bearer", "api-key", "device"];
+export type SessionChannel = (typeof sessionChannels)[number];
+/**
+ * An auth capability an adapter can declare on
+ * {@link IdentityProviderPort.capabilities}. Declared, never
+ * discovered: plugin options that need a capability fail at wiring
+ * with `UnsupportedCapabilityError` when it is absent.
+ */
+export type Capability = 'magic-link' | 'email-otp' | 'passkey' | 'oauth' | 'one-tap' | 'phone' | 'anonymous' | 'mfa' | 'impersonation' | 'revoke-user-sessions';
+/** Normalized profile returned by an identity provider. */
+export type ProviderProfile = {
+    readonly providerUserId: string;
+    /** The session's identity claims; the linking authority. */
+    readonly identity: ProviderIdentityClaims;
+    /**
+     * @deprecated Use `identity.email?.value`. Kept as an alias of the
+     * email claim for one minor; `ensureLinkedUser` reads the claim.
+     */
+    readonly email: Email;
+    /**
+     * @deprecated Use `identity.email?.verified`. Kept as an alias of
+     * the email claim for one minor; `ensureLinkedUser` reads the claim.
+     */
+    readonly emailVerified: boolean;
+    readonly name: string | null;
+    readonly image: string | null;
+};
+/** A live provider-side session. */
+export type ProviderSession = {
+    readonly sessionId: string;
+    readonly providerUserId: string;
+    /**
+     * @deprecated Use `identity.email?.value`. Kept as an alias of the
+     * email claim for one minor; new code reads the claim.
+     */
+    readonly email: Email;
+    /**
+     * Whether the provider verified the email; gates JIT linking.
+     *
+     * @deprecated Use `identity.email?.verified`. Kept as an alias of
+     * the email claim for one minor; new code reads the claim.
+     */
+    readonly emailVerified: boolean;
+    readonly expiresAt: Date;
+    /** The session's identity claims (PORT-1); gates JIT linking. */
+    readonly identity: ProviderIdentityClaims;
+    /** How the session was proven; `unknown` when the provider can't tell. */
+    readonly assurance: SessionAssurance;
+    /**
+     * The operator acting as this user while impersonating (CAP-8):
+     * `{ providerUserId }` for an impersonated session, `null` for a
+     * plain one. Adapters that can tell must set it explicitly — a
+     * malformed source value fails closed in the adapter, never `null`.
+     */
+    readonly actor: SessionActor | null;
+    /** Provider-native active tenant, if any (D1 decides its use). */
+    readonly organizationId: string | null;
+    /** How the credential was presented (CAP-13). */
+    readonly channel: SessionChannel;
+};
+/** Users via Payload Local API. Never raw database access. */
+export interface UserRepository {
+    findById(id: UserId): ResultAsync<UserRecord | null, RepositoryError>;
+    findByEmail(email: Email): ResultAsync<UserRecord | null, RepositoryError>;
+    /**
+     * Resolve an existing user by E.164 phone number (PORT-3). Optional:
+     * only repositories whose users collection carries a phone field
+     * implement it (the Payload phone field lands with CAP-9, Phase 6).
+     * The verified-phone branch of a `LinkingPolicy` fails closed with
+     * `UnverifiedIdentityError` when this is absent; it never falls back
+     * to another identifier and never provisions.
+     */
+    readonly findByPhone?: ((phone: PhoneNumber) => ResultAsync<UserRecord | null, RepositoryError>) | undefined;
+    findByProviderIdentity(ref: ProviderIdentityRef): ResultAsync<UserRecord | null, RepositoryError>;
+    create(input: NewUser): ResultAsync<UserRecord, RepositoryError | UserExistsError>;
+    linkIdentity(userId: UserId, ref: ProviderIdentityRef): ResultAsync<UserRecord, RepositoryError>;
+    /**
+     * Remove one linked identity row (CAP-14: provider unlink/delete).
+     * Idempotent no-op when the identity is not linked. Never deletes
+     * the user: Payload owns users (D9), so a provider-side deletion
+     * unlinks and leaves the Payload document in place.
+     */
+    unlinkIdentity(userId: UserId, ref: ProviderIdentityRef): ResultAsync<UserRecord, RepositoryError>;
+    setRoles(userId: UserId, roles: readonly Role[]): ResultAsync<UserRecord, RepositoryError>;
+    /**
+     * Sync the user's email to the provider's verified address. Idempotent
+     * no-op when the address already matches. Fails with `UserExistsError`
+     * when another user holds the address.
+     */
+    setEmail(userId: UserId, email: Email): ResultAsync<UserRecord, RepositoryError | UserExistsError>;
+    /**
+     * Store a verified phone for the user (CAP-9). Optional like
+     * `findByPhone`: only phone-capable repositories implement it.
+     * Idempotent no-op when the number already matches; fails with
+     * `RepositoryError` when another user holds the number, so a
+     * verified claim can never silently steal an existing link target.
+     */
+    readonly setPhone?: ((userId: UserId, phone: PhoneNumber) => ResultAsync<UserRecord, RepositoryError>) | undefined;
+}
+/**
+ * An anonymous provider session recognized as a guest (CAP-10, D3):
+ * a stable provider-side identity with NO Payload user, no roles,
+ * and no Payload access. Applications may key anonymous state
+ * (carts, drafts) on `id`; upgrading the provider account (BA
+ * `onLinkAccount`) turns a later verified session into a normal
+ * linked {@link Session} through the usual path.
+ */
+export type GuestPrincipal = {
+    /** The provider-side anonymous user id (stable per guest). */
+    readonly id: string;
+    readonly providerId: ProviderId;
+    readonly expiresAt: Date;
+};
+/** Plugin-level sessions, resolved against users. */
+export interface SessionPort {
+    verify(headers: Headers): ResultAsync<Session, SessionInvalidError | SessionExpiredError | ChannelNotAdmittedError | UserSuspendedError | RepositoryError>;
+    revoke(session: Session): ResultAsync<void, UnknownProviderError | ProviderError>;
+    /**
+     * Recognize an anonymous provider session as a {@link GuestPrincipal}
+     * (CAP-10). Optional: session services without an anonymous-capable
+     * provider omit it. Returns `null` when no live anonymous session
+     * is presented; NEVER provisions or links a Payload user.
+     */
+    readonly guest?: ((headers: Headers) => ResultAsync<GuestPrincipal | null, RepositoryError>) | undefined;
+}
+/**
+ * One identity provider behind the port. Register via the registry.
+ *
+ * Providers own their OAuth dance (their SDK mounts its own routes and
+ * persists via its database adapter); the plugin only needs to verify and
+ * revoke provider sessions and bridge them to Payload users.
+ */
+export interface IdentityProviderPort {
+    readonly id: ProviderId;
+    /**
+     * Cookie names carrying this provider's session (e.g. Better Auth's
+     * `better-auth.session_token`). Surfaces use them for middleware
+     * fast-paths and for clearing stale provider cookies on logout — the
+     * provider itself remains the only reader of their values.
+     */
+    readonly sessionCookieNames: readonly string[];
+    /**
+     * Clearing attributes for one session cookie on logout: `secure`
+     * (required to overwrite `Secure` cookies, which prefix inference
+     * misses when the name is customized), `domain`, `path`, `sameSite`.
+     * Optional for backward compatibility — providers that omit it fall
+     * back to prefix-derived attributes (see `expiringCookieOptions`).
+     */
+    readonly sessionCookieClearOptions?: ((name: string) => CookieOptions | undefined) | undefined;
+    /**
+     * Extra provider cookies to expire on logout that do NOT themselves
+     * indicate a live session, so they must stay out of
+     * `sessionCookieNames` (middleware fast-paths read that list as
+     * "signed in"). Example: Better Auth's `admin_session`, which holds
+     * the impersonating operator's session token — leaving it behind on
+     * logout would keep a resumable operator credential in the browser
+     * after the user believes they signed out. Optional: providers
+     * without such cookies omit it.
+     */
+    readonly logoutCookieNames?: readonly string[] | undefined;
+    /**
+     * The capabilities this adapter honestly supports today (PORT-2).
+     * Declared, never discovered: a plugin option or policy that needs
+     * a capability absent here fails at wiring with
+     * `UnsupportedCapabilityError` instead of silently degrading. An
+     * adapter declares a capability only once it maps the provider's
+     * native mechanism to the core claims/assurance vocabulary.
+     */
+    readonly capabilities: ReadonlySet<Capability>;
+    getSession(headers: Headers): ResultAsync<ProviderSession | null, ProviderError>;
+    revokeSession(sessionId: string): ResultAsync<void, ProviderError>;
+    /**
+     * Revoke every live session of one provider user (CAP-7 suspend).
+     * Optional: only adapters that declare `'revoke-user-sessions'` in
+     * {@link IdentityProviderPort.capabilities} implement it; providers
+     * on stateless JWT sessions honestly omit it (the Payload-side
+     * suspended check still refuses at verify time).
+     */
+    readonly revokeUserSessions?: ((providerUserId: string) => ResultAsync<void, ProviderError>) | undefined;
+    /**
+     * Enumerate every session id presented by this request beyond the
+     * active session (CAP-13b multi-session logout): the ids are
+     * provider-verified handles suitable for {@link revokeSession},
+     * never parsed out of cookie names. Optional: only multi-session
+     * capable adapters implement it; logout revokes each returned id
+     * and expires every presented multi-session cookie.
+     */
+    readonly listPresentedSessionIds?: ((headers: Headers) => ResultAsync<readonly string[], ProviderError>) | undefined;
+    /**
+     * Names of presented cookies that must be expired on logout in
+     * addition to `sessionCookieNames`/`logoutCookieNames`, computed
+     * from the actual request (CAP-13b: multi-session cookie names are
+     * per-token dynamic, so no static list can contain them). Optional.
+     */
+    readonly presentedLogoutCookieNames?: ((headers: Headers) => readonly string[]) | undefined;
+    /**
+     * Subscribe to this provider's identity lifecycle events (CAP-14),
+     * translated from its native hooks. Returns an unsubscribe
+     * function. Optional: adapters whose provider exposes no usable
+     * hooks omit it and rely on read-time sync. The plugin subscribes
+     * at `onInit` (the composition root) and applies events through
+     * `UserRepository`; builders never wire this by hand.
+     */
+    readonly onIdentityEvent?: ((handler: IdentityEventHandler) => () => void) | undefined;
+}
+/**
+ * Assert a provider declares every required capability (PORT-2
+ * enforcement). Throws {@link UnsupportedCapabilityError} naming the
+ * first missing capability — wiring-time fail-fast, so an option or
+ * policy that needs a capability the adapter does not honestly
+ * support never silently degrades at request time. Composition
+ * roots call this for each capability-gated option they accept.
+ */
+export declare function assertCapabilities(provider: Pick<IdentityProviderPort, 'id' | 'capabilities'>, required: readonly Capability[]): void;
+/**
+ * Run one provider operation behind the port: invoke `call`, validate the
+ * unknown result with `narrow`, and map every failure to `ProviderError`.
+ * The single place where unexpected provider throws (SDK faults, malformed
+ * payloads rejected by `narrow`) become typed port errors with their cause
+ * — port implementations use this instead of hand-rolled `try` blocks.
+ */
+export declare function runProviderOperation<T>(providerId: ProviderId, operation: string, call: () => Promise<unknown>, narrow: (value: unknown) => T): ResultAsync<T, ProviderError>;
+/** Cookie `SameSite` attribute values. */
+export type SameSite = 'lax' | 'strict' | 'none';
+/** Framework-free cookie attributes for {@link CookiePort}. */
+export type CookieOptions = {
+    readonly path?: string | undefined;
+    readonly maxAge?: number | undefined;
+    readonly httpOnly?: boolean | undefined;
+    readonly secure?: boolean | undefined;
+    readonly sameSite?: SameSite | undefined;
+    readonly domain?: string | undefined;
+    readonly partitioned?: boolean | undefined;
+};
+/** Cookie transport over Web-standard `Headers`. Implemented per framework. */
+export interface CookiePort {
+    read(headers: Headers, name: string): string | undefined;
+    write(headers: Headers, name: string, value: string, options?: CookieOptions): void;
+    clear(headers: Headers, name: string, options?: CookieOptions): void;
+}
+/** Storage transactions. Adapters implement real transactions — no no-ops. */
+export interface TransactionPort {
+    run<T, E>(fn: () => ResultAsync<T, E>): ResultAsync<T, E>;
+}
+/** Structured log fields; values must be JSON-safe, never credentials. */
+export type LogFields = {
+    readonly [key: string]: unknown;
+};
+/** Structured logging. Adapters forward to pino; never `console.*`. */
+export interface LoggerPort {
+    debug(message: string, fields?: LogFields): void;
+    info(message: string, fields?: LogFields): void;
+    warn(message: string, fields?: LogFields): void;
+    error(message: string, fields?: LogFields): void;
+    child(bindings: LogFields): LoggerPort;
+}
+/** Distributed tracing. Adapters implement with OpenTelemetry spans. */
+export interface TracerPort {
+    withSpan<T>(name: string, attributes: LogFields, fn: () => Promise<T>): Promise<T>;
+}
+/** Time. Injected so domain logic stays deterministic in tests. */
+export interface ClockPort {
+    now(): Date;
+}
+/** Id generation. Injected so domain logic stays deterministic in tests. */
+export interface IdPort {
+    newId(): string;
+}
+
+// ===== redirect.d.ts =====
+/**
+ * Post-login redirect safety. The sign-in page receives its destination
+ * as a query param, and query params are attacker-controlled input:
+ * blindly pushing them is an open redirect. Every consumer of that
+ * param (sign-in forms, `SignOutButton`, adapters) funnels through here.
+ * Lives in core so UI packages can use it without a web dependency;
+ * `@payload-auth-link/web` re-exports it unchanged.
+ */
+/** Destination policy for {@link safeRedirectPath}. */
+export type SafeRedirectOptions = {
+    /**
+     * Sign-in page path. A destination equal to it (with or without a
+     * query) falls back: landing a fresh login on the sign-in page loops.
+     * Defaults to `/sign-in`, matching `decideAuthRedirect`. `null`
+     * disables the rule for destinations where sign-in is legitimate
+     * (post-sign-out navigation).
+     */
+    readonly signInPath?: string | null | undefined;
+    /**
+     * API mount prefix. Destinations under it fall back: a browser
+     * navigation to a JSON or mutating endpoint is never a page to land
+     * on. Defaults to `/api` (Payload's default `routes.api`).
+     */
+    readonly apiPrefix?: string | undefined;
+};
+/**
+ * Narrow a post-login destination to a safe in-app page path. Returns
+ * `value` only when it is a relative path (single leading slash, no
+ * scheme, no backslashes, no control characters) that is neither the
+ * sign-in page nor under the API prefix; anything else yields
+ * `fallback`. Absolute URLs, protocol-relative URLs (`//evil`), and
+ * values with surrounding whitespace (header/parsing differentials) all
+ * fall back.
+ */
+export declare function safeRedirectPath(value: string | null | undefined, fallback?: string, options?: SafeRedirectOptions): string;
+
+// ===== registry.d.ts =====
+import { type Result } from 'neverthrow';
+import { DuplicateProviderError, UnknownProviderError } from './errors.js';
+import type { IdentityProviderPort, ProviderId } from './ports.js';
+/**
+ * Explicit adapter registry: providers are registered at the composition
+ * root, never discovered by magic. Duplicate registration is an error;
+ * an illegal session cookie name is a wiring bug and throws
+ * `InvalidConfigError` at registration, instead of surfacing later as a
+ * per-request serialization throw on logout.
+ */
+export interface ProviderRegistry {
+    register(provider: IdentityProviderPort): Result<void, DuplicateProviderError>;
+    require(id: ProviderId): Result<IdentityProviderPort, UnknownProviderError>;
+    ids(): readonly ProviderId[];
+}
+/** Create an empty provider registry for the composition root. */
+export declare function createProviderRegistry(): ProviderRegistry;
+
+// ===== roles.d.ts =====
+import { type Result } from 'neverthrow';
+import { z } from 'zod';
+import { InvalidRoleError } from './errors.js';
+/** Role boundary schema: lowercase slug, branded `Role`. */
+export declare const roleSchema: z.core.$ZodBranded<z.ZodString, "Role", "out">;
+/** A canonical role. Construct only via {@link parseRole}. */
+export type Role = z.output<typeof roleSchema>;
+/** Smart constructor: the one place raw input becomes a `Role`. */
+export declare function parseRole(value: unknown): Result<Role, InvalidRoleError>;
+
+// ===== testing/index.d.ts =====
+/**
+ * Test-only helpers for adapter authors. Import from
+ * `@payload-auth-link/core/testing`; nothing here is runtime API and
+ * nothing is re-exported from the core barrel.
+ *
+ * Packaging: this is a plain subpath export (`types` + `default`),
+ * matching every other subpath in the workspace
+ * (`@payload-auth-link/plugin/admin`, the providers' `./cookies`) —
+ * no export condition, so the kit resolves identically under
+ * bundler and NodeNext resolution. It is a separate entry, never
+ * imported by `dist/index.js`, so it adds zero bytes to the core
+ * runtime bundle; it carries its own `.size-limit.json` budget
+ * (`core/testing`) so kit growth is still gated.
+ */
+export { assertProviderConformance, checkProviderConformance, ProviderConformanceError, } from './provider-conformance.js';
+export type { ConformanceCheckId, ConformanceViolation, ExpectedConformanceSession, ProviderConformanceFactory, ProviderConformanceScenarios, ProviderConformanceSubject, } from './provider-conformance.js';
+
+// ===== testing/provider-conformance.d.ts =====
+import type { AuthMethod, IdentityProviderPort, SessionActor, SessionChannel } from '../ports.js';
+/** One named conformance check a {@link ConformanceViolation} can blame. */
+export type ConformanceCheckId = 'session-shape' | 'verified-claim' | 'assurance' | 'actor' | 'channel' | 'capabilities' | 'no-session' | 'revoke-session' | 'revoke-user-sessions';
+/** One failed conformance assertion: which check, and what was wrong. */
+export type ConformanceViolation = {
+    readonly check: ConformanceCheckId;
+    readonly message: string;
+};
+/**
+ * Thrown by {@link assertProviderConformance} when a port fails any
+ * check. Carries every violation found in the run, not just the first.
+ */
+export declare class ProviderConformanceError extends Error {
+    readonly violations: readonly ConformanceViolation[];
+    constructor(violations: readonly ConformanceViolation[]);
+}
+/** What one live-session scenario must narrow to. */
+export type ExpectedConformanceSession = {
+    readonly providerUserId: string;
+    /** Expected `identity.email` claim value (and deprecated alias). */
+    readonly email: string;
+    /** Expected claim verification (and deprecated alias). */
+    readonly emailVerified: boolean;
+    readonly channel: SessionChannel;
+    /** Expected `assurance.methods`; omit to accept any well-formed value. */
+    readonly methods?: (readonly AuthMethod[] | 'unknown') | undefined;
+    /** Expected `assurance.mfa`; omit to accept any well-formed value. */
+    readonly mfa?: (boolean | 'unknown') | undefined;
+    /** Expected actor; defaults to `null` (no impersonation). */
+    readonly actor?: SessionActor | null | undefined;
+    /** Expected `organizationId`; omit to accept any string-or-null. */
+    readonly organizationId?: string | null | undefined;
+    /** Expected `identity.anonymous`; defaults to `false`. */
+    readonly anonymous?: boolean | undefined;
+    /**
+     * Expected `identity.phone` claim; omit to require the claim to be
+     * well-formed only. Required as evidence when the port declares
+     * the `'phone'` capability.
+     */
+    readonly phone?: {
+        readonly value: string;
+        readonly verified: boolean;
+    } | null | undefined;
+};
+/** Scenario drivers for one freshly built port. */
+export type ProviderConformanceScenarios = {
+    /** A live session with a verified email claim. */
+    readonly session: {
+        readonly headers: Headers;
+        readonly expected: ExpectedConformanceSession;
+    };
+    /**
+     * A live session whose email claim is unverified: the claim and the
+     * deprecated alias must both report `verified: false` (SEC-2).
+     */
+    readonly unverifiedSession?: {
+        readonly headers: Headers;
+        readonly expected: ExpectedConformanceSession;
+    } | undefined;
+    /**
+     * A live impersonated session. Required when the port declares
+     * `'impersonation'`, and supplying one requires that declaration:
+     * declared capabilities must match behavior in both directions.
+     */
+    readonly impersonatedSession?: {
+        readonly headers: Headers;
+        readonly expectedActorProviderUserId: string;
+    } | undefined;
+    /** Headers carrying no session: `getSession` must return ok `null`. */
+    readonly noSession?: {
+        readonly headers: Headers;
+    } | undefined;
+    /**
+     * Revoke observability. `'invalidates-session'` (the default)
+     * requires a revoked session to read back as `null`;
+     * `'best-effort'` is the honest declaration for stateless JWT
+     * transports whose revocation cannot invalidate the token, and only
+     * requires the revoke calls to succeed.
+     */
+    readonly revoke?: {
+        readonly mode: 'invalidates-session' | 'best-effort';
+    } | undefined;
+};
+/** One fresh port plus its scenario drivers. */
+export type ProviderConformanceSubject = {
+    readonly port: IdentityProviderPort;
+    readonly scenarios: ProviderConformanceScenarios;
+};
+/**
+ * Builds a fresh {@link ProviderConformanceSubject}. Called once per
+ * check group (reads, `revokeSession`, `revokeUserSessions`), so each
+ * mutating check starts from a live session.
+ */
+export type ProviderConformanceFactory = () => ProviderConformanceSubject | Promise<ProviderConformanceSubject>;
+/**
+ * Run every conformance check against a provider port factory and
+ * return the violations (empty when the port conforms). Never throws
+ * for a non-conforming port; a factory that itself throws propagates.
+ */
+export declare function checkProviderConformance(factory: ProviderConformanceFactory): Promise<readonly ConformanceViolation[]>;
+/**
+ * Assert that a provider port conforms: resolves when it does and
+ * throws {@link ProviderConformanceError} listing every violation
+ * otherwise. The one call each adapter's test suite makes.
+ */
+export declare function assertProviderConformance(factory: ProviderConformanceFactory): Promise<void>;
+
+// ===== use-cases/apply-identity-event.d.ts =====
+import { type ResultAsync } from 'neverthrow';
+import type { RepositoryError, UserExistsError } from '../errors.js';
+import type { IdentityEvent } from '../events.js';
+import type { LoggerPort, UserRepository } from '../ports.js';
+/**
+ * Apply one provider {@link IdentityEvent} to the Payload user store
+ * (CAP-14). Payload stays the single user store (invariant 1, D9):
+ *
+ * - `email-changed` syncs via `setEmail` only when the provider
+ *   verified the new address; an unverified change is ignored.
+ * - `email-verified` syncs the address when it differs.
+ * - `identity-unlinked` and `user-deleted` remove only the identity
+ *   row; the Payload user always remains.
+ * - An event for a provider user with no linked Payload user is a
+ *   no-op: that user was never linked (or was already unlinked).
+ *
+ * Never creates or deletes a Payload user.
+ */
+export declare function applyIdentityEvent(users: UserRepository, event: IdentityEvent, logger: LoggerPort): ResultAsync<void, RepositoryError | UserExistsError>;
+
+// ===== use-cases/ensure-linked-user.d.ts =====
+import { type ResultAsync } from 'neverthrow';
+import { RepositoryError, UnverifiedEmailError, UnverifiedIdentityError, UserExistsError } from '../errors.js';
+import { type LinkingPolicy } from '../linking.js';
+import type { LoggerPort, ProviderId, ProviderProfile, UserRecord, UserRepository } from '../ports.js';
+import type { Role } from '../roles.js';
+export type EnsureLinkedUserDeps = {
+    readonly users: UserRepository;
+    readonly logger: LoggerPort;
+};
+export type EnsureLinkedUserInput = {
+    readonly providerId: ProviderId;
+    readonly profile: ProviderProfile;
+    /** Roles for a newly created user. Existing users keep their roles. */
+    readonly defaultRoles: readonly Role[];
+    /**
+     * Which verified claims may link (PORT-3). Defaults to
+     * {@link defaultLinkingPolicy} (`verified-email`), preserving the
+     * pre-PORT-3 behavior for callers that omit it.
+     */
+    readonly linkingPolicy?: LinkingPolicy | undefined;
+};
+/**
+ * Bridge a provider identity to a Payload user, converging link and email.
+ * Idempotent: an already-linked identity returns its user, syncing the
+ * email when the provider reports a new verified address (an unverified
+ * change is logged and kept stale, never applied); a matching email
+ * links only when the provider verified it, otherwise the link is refused
+ * with {@link UnverifiedEmailError} (no unverified-email account
+ * takeover); an unknown email creates a fresh user with `defaultRoles`.
+ *
+ * The linking authority is the declared {@link LinkingPolicy}
+ * (PORT-3) over the `identity` claims (PORT-1): the deprecated
+ * `email`/`emailVerified` aliases on the profile are never read here.
+ * Under the default policy a missing email claim refuses with
+ * {@link UnverifiedIdentityError} and an unverified claim refuses
+ * exactly as the flat flag did before — byte-identical to the
+ * pre-claim gate (V1), which the existing tests pin as the regression
+ * spec. The opt-in `verified-email-or-phone` policy adds exactly one
+ * branch: a phone-only identity (no email claim) carrying a verified
+ * phone claim links to an existing user by phone and never
+ * provisions. An anonymous identity never links under any policy
+ * (D3), not even to an already-linked user.
+ *
+ * `UserExistsError` escapes only on a lost create race: two concurrent
+ * first touches for the same email. Callers retry the read once, which
+ * then finds the winner's link.
+ *
+ * Verification gates creation exactly like linking: an unverified
+ * provider email for an unknown address refuses with
+ * {@link UnverifiedEmailError} instead of provisioning a full user,
+ * so OAuth (or any flow yielding unverified sessions) cannot mint
+ * default-role accounts.
+ */
+export declare function ensureLinkedUser(deps: EnsureLinkedUserDeps, input: EnsureLinkedUserInput): ResultAsync<UserRecord, RepositoryError | UnverifiedEmailError | UnverifiedIdentityError | UserExistsError>;
+
+// ===== use-cases/register-user.d.ts =====
+import { type ResultAsync } from 'neverthrow';
+import { type Email } from '../email.js';
+import { InvalidEmailError, RepositoryError, UserExistsError } from '../errors.js';
+import type { LoggerPort, ProviderIdentityRef, UserRecord, UserRepository } from '../ports.js';
+import type { Role } from '../roles.js';
+export type RegisterUserDeps = {
+    readonly users: UserRepository;
+    readonly logger: LoggerPort;
+};
+export type RegisterUserInput = {
+    readonly email: Email;
+    readonly roles: readonly Role[];
+    readonly identity?: ProviderIdentityRef | undefined;
+};
+/**
+ * Register a new user. Pure domain flow over injected ports: rejects
+ * duplicates with {@link UserExistsError}, persists via the repository,
+ * and logs the outcome. Linking extra identities is a separate operation.
+ */
+export declare function registerUser(deps: RegisterUserDeps, input: RegisterUserInput): ResultAsync<UserRecord, RepositoryError | UserExistsError>;
+/**
+ * Registration-relevant subset of {@link UserRepository}: the two
+ * operations registration needs. Plugin flows pass their repository
+ * (which satisfies this structurally); provider flows implement it over
+ * their own collections, whose row shapes (`auId`, `passwordHash`, …)
+ * are not `NewUser`/`UserRecord` and must stay provider-owned.
+ */
+export type RegistrationStore<TCandidate, TCreated> = {
+    findByEmail(email: Email): ResultAsync<TCreated | null, RepositoryError>;
+    create(candidate: TCandidate): ResultAsync<TCreated, RepositoryError | UserExistsError>;
+};
+export type RegisterWithStoreDeps<TCandidate, TCreated> = {
+    readonly store: RegistrationStore<TCandidate, TCreated>;
+    readonly logger: LoggerPort;
+};
+export type RegisterWithStoreInput<TCandidate> = {
+    /** Raw email; parsed (and normalized) here so stores see `Email` only. */
+    readonly email: string;
+    /** Build the store candidate from the parsed email. Runs only when no existing row is found, so expensive construction (password hashing) is skipped for duplicates. */
+    readonly candidate: (email: Email) => TCandidate;
+};
+export type RegisteredWithStore<TCreated> = {
+    readonly created: TCreated;
+    readonly email: Email;
+};
+/**
+ * Register through an injected store: the provider-registration flow.
+ * Parses the email, rejects duplicates with {@link UserExistsError} (a
+ * lost create race surfaces the same error — the caller learns the email
+ * is taken, no retry needed), persists via the store, and logs the
+ * outcome. Never throws; storage failures arrive as
+ * {@link RepositoryError} for the caller to map to its own taxonomy.
+ */
+export declare function registerWithStore<TCandidate, TCreated>(deps: RegisterWithStoreDeps<TCandidate, TCreated>, input: RegisterWithStoreInput<TCandidate>): ResultAsync<RegisteredWithStore<TCreated>, InvalidEmailError | UserExistsError | RepositoryError>;
+
+// ===== validation.d.ts =====
+import { type Result } from 'neverthrow';
+import { z } from 'zod';
+import { InvalidCollectionMapError, InvalidConfigError } from './errors.js';
+import { type ProviderId } from './ports.js';
+import { type Role } from './roles.js';
+/**
+ * Typed map from the domain to Payload collection/field slugs.
+ * Explicit and strict: unknown keys are rejected, never silently ignored.
+ */
+export declare const collectionMapSchema: z.ZodObject<{
+    usersCollection: z.ZodString;
+    emailField: z.ZodString;
+    rolesField: z.ZodString;
+    identitiesField: z.ZodString;
+}, z.core.$strict>;
+/** Validated slug/field map from {@link collectionMapSchema}. */
+export type CollectionMap = z.output<typeof collectionMapSchema>;
+/** Parse a collection map; strict — unknown keys fail, never ignored. */
+export declare function parseCollectionMap(value: unknown): Result<CollectionMap, InvalidCollectionMapError>;
+/**
+ * Startup config, validated once at composition-root wiring time.
+ * Invalid config fails fast here instead of misbehaving at runtime.
+ */
+export declare const startupConfigSchema: z.ZodObject<{
+    baseUrl: z.ZodURL;
+    roles: z.ZodArray<z.core.$ZodBranded<z.ZodString, "Role", "out">>;
+    defaultRole: z.core.$ZodBranded<z.ZodString, "Role", "out">;
+    providers: z.ZodArray<z.core.$ZodBranded<z.ZodString, "ProviderId", "out">>;
+    map: z.ZodObject<{
+        usersCollection: z.ZodString;
+        emailField: z.ZodString;
+        rolesField: z.ZodString;
+        identitiesField: z.ZodString;
+    }, z.core.$strict>;
+}, z.core.$strict>;
+/** Validated startup config from {@link startupConfigSchema}. */
+export type StartupConfig = z.output<typeof startupConfigSchema>;
+/**
+ * Validate startup config once at wiring time. Fails fast on bad
+ * URLs, empty roles, default-role-not-in-roles, or zero providers.
+ */
+export declare function validateStartupConfig(value: unknown): Result<StartupConfig, InvalidConfigError>;
+export type { ProviderId, Role };
+
+// ===== version.d.ts =====
+/**
+ * One supported upstream version range. A band is a list of these:
+ * version lines we have actually validated (bisected floor, tested
+ * ceiling), never a hopeful caret. Prerelease versions match only
+ * via an `exact` entry — the B10 canary leak came from semver
+ * prerelease ordering silently admitting untested builds.
+ */
+export type VersionRange = {
+    readonly min: string;
+    readonly maxExclusive: string;
+} | {
+    readonly exact: string;
+};
+/** Parsed semver core; `prerelease` is `null` for plain releases. */
+export type ParsedVersion = {
+    readonly major: number;
+    readonly minor: number;
+    readonly patch: number;
+    readonly prerelease: string | null;
+};
+/** Parse `major.minor.patch[-prerelease][+build]`; `null` if unparsable. */
+export declare function parseVersion(version: string): ParsedVersion | null;
+/** True when `version` falls inside any range of the band. */
+export declare function isSupportedVersion(version: string, band: readonly VersionRange[]): boolean;
+/** Human-readable band, for error messages (`>=1.7.6 <1.8.0 || 4.0.0-beta.0`). */
+export declare function describeBand(band: readonly VersionRange[]): string;
+/**
+ * Startup version assertion (upgrade resilience Phase 1): an
+ * upstream version outside the validated band fails at wiring time
+ * with {@link UnsupportedVersionError} — before any collection
+ * write — instead of surfacing later as a raw SQL error, a missing
+ * adapter method, or a silently wrong schema.
+ */
+export declare function assertSupportedVersion(packageName: string, installedVersion: string, band: readonly VersionRange[]): void;
+/**
+ * Read the installed version of an upstream package from its
+ * `package.json` manifest. Resolution follows the caller: pass the
+ * importing module's `import.meta.url` as `fromUrl` so the manifest
+ * resolves through the caller's own dependency tree (under strict
+ * linkers, core cannot see the caller's deps). The manifest is
+ * located by resolving the package entry and walking up — some
+ * packages (`@auth/core`) block the `./package.json` subpath in
+ * their `exports`. Returns `null` when nothing resolves (exotic
+ * bundling) — callers decide whether that skips the assertion (with
+ * a warning) or fails.
+ */
+export declare function readInstalledVersion(packageName: string, fromUrl?: string): string | null;

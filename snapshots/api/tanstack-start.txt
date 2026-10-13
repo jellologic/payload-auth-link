@@ -1,0 +1,149 @@
+// ===== client.d.ts =====
+/**
+ * Refresh both layers after a client-side auth change (sign-in, sign-out,
+ * role update): re-reads the session endpoint into context, then
+ * invalidates TanStack Router loaders (`router.invalidate()` — the
+ * Start parallel of Next's `router.refresh()`).
+ */
+export declare function useAuthLinkRefreshStart(): () => Promise<void>;
+
+// ===== handlers.d.ts =====
+import { type RouteHandler, type RouteHandlersOptions } from '@payload-auth-link/web';
+/** TanStack Start server-route handler context: the incoming request. */
+export type ServerRouteContext = {
+    readonly request: Request;
+};
+/** Error-reporting hook for {@link createServerRouteHandlers}. */
+export type ServerRouteHandlersOptions = RouteHandlersOptions;
+/**
+ * Mount any auth request handler (e.g. a provider's `auth.handler`) as
+ * TanStack Start `server.handlers` `GET`/`POST` exports. The envelope is
+ * shared with Next (`createRouteHandlers`) — thrown errors become
+ * `{ error }` 500s instead of HTML error pages.
+ *
+ * ```ts
+ * // src/app/api.auth.$.ts
+ * import { createServerRouteHandlers } from '@payload-auth-link/tanstack-start'
+ * import { auth } from '@/lib/auth'
+ *
+ * export const Route = createFileRoute('/api/auth/$')({
+ *   server: { handlers: createServerRouteHandlers((request) => auth.handler(request)) },
+ * })
+ * ```
+ */
+export declare function createServerRouteHandlers(handle: RouteHandler, options?: ServerRouteHandlersOptions): {
+    readonly GET: (context: ServerRouteContext) => Promise<Response>;
+    readonly POST: (context: ServerRouteContext) => Promise<Response>;
+};
+
+// ===== index.d.ts =====
+/**
+ * TanStack Start adapter: server-route handlers, request middleware,
+ * session server-function helpers, route-loader hydration, and the
+ * client refresh hook. Framework-free behavior (verification,
+ * authorization, redirect safety) lives in `@payload-auth-link/web`.
+ * This is the only package that imports `@tanstack/*` — see DNA §3.
+ */
+export declare const packageName = "@payload-auth-link/tanstack-start";
+export { useAuthLinkRefreshStart } from './client.js';
+export { createServerRouteHandlers } from './handlers.js';
+export type { ServerRouteContext, ServerRouteHandlersOptions } from './handlers.js';
+export { createAuthRequestMiddleware } from './middleware.js';
+export type { AuthRequestMiddlewareOptions } from './middleware.js';
+export { createSessionLoader } from './loader.js';
+export type { SessionLoaderData } from './loader.js';
+export { getSessionUserFromRequest } from './server.js';
+export * from '@payload-auth-link/web';
+
+// ===== loader.d.ts =====
+import type { SessionUser } from '@payload-auth-link/core';
+/**
+ * Root-route loader data: the session user (or null) for hydrating
+ * `AuthLinkProvider initialUser`, so the client never fetches on mount
+ * unless unhydrated.
+ */
+export type SessionLoaderData = {
+    readonly initialUser: SessionUser | null;
+};
+/**
+ * Build a route `loader` returning {@link SessionLoaderData} from a
+ * session server function. Use on the root (or a layout) route and pass
+ * `Route.useLoaderData()` into `AuthLinkProvider`.
+ *
+ * ```tsx
+ * // routes/__root.tsx
+ * export const Route = createRootRoute({
+ *   loader: createSessionLoader(getSessionUser),
+ *   component: () => (
+ *     <AuthLinkProvider initialUser={Route.useLoaderData().initialUser}>
+ *       <Outlet />
+ *     </AuthLinkProvider>
+ *   ),
+ * })
+ * ```
+ */
+export declare function createSessionLoader(getSessionUser: () => Promise<SessionUser | null>): () => Promise<SessionLoaderData>;
+
+// ===== middleware.d.ts =====
+import { type AuthRedirectOptions } from '@payload-auth-link/web';
+/** Optimistic request-middleware wiring; see {@link createAuthRequestMiddleware}. */
+export type AuthRequestMiddlewareOptions = AuthRedirectOptions & {
+    /**
+     * Bounce `/_serverFn/` RPC through the auth check. Defaults to false:
+     * the exemption is built in because bouncing RPC corrupts the
+     * server-function protocol (redirect followed with a JSON Accept →
+     * Start 406). Set true only if you want the bounce anyway. Server
+     * functions authenticate themselves via the shared verifier either
+     * way — this flag only controls the optimistic bounce.
+     */
+    readonly bounceServerFunctions?: boolean | undefined;
+};
+/**
+ * Optimistic auth request middleware: presence of any session cookie
+ * lets the request through; absence redirects to sign-in. Optimistic is
+ * deliberate — route protection here is UX (bounce obvious anonymous
+ * traffic early), never authorization. Real validation happens via the
+ * shared verifier (server functions, loaders) and the Payload
+ * strategy. Register globally in `src/start.ts` (and keep
+ * `createCsrfMiddleware()` installed — defining `start.ts` disables
+ * Start's automatic CSRF middleware).
+ *
+ * Thin adapter: the bounce decision is the shared framework-free
+ * `decideAuthRedirect` from `@payload-auth-link/web` (unit-tested
+ * there); this wrapper only maps its verdict onto a Start middleware.
+ * The bounce is an explicit 303 so it always becomes a GET to
+ * sign-in (never a replayed POST). The unit suite invokes the
+ * registered server fn directly; e2e covers it inside the real
+ * Start runtime.
+ *
+ * `/_serverFn/` is exempt by default (see `bounceServerFunctions`):
+ * bouncing RPC corrupts the server-function protocol (redirect
+ * followed with a JSON Accept → Start 406). Server functions
+ * authenticate themselves via the shared verifier.
+ */
+export declare function createAuthRequestMiddleware(options: AuthRequestMiddlewareOptions): import("@tanstack/react-start").RequestMiddlewareAfterServer<{}, undefined, undefined>;
+
+// ===== server.d.ts =====
+import type { SessionUser } from '@payload-auth-link/core';
+import type { SessionVerifier } from '@payload-auth-link/web';
+/**
+ * Read the session user inside a server function, loader, or route
+ * handler: forwards the request to the shared verifier (fails closed
+ * to `null`). Pair with Start's `getRequest()`:
+ *
+ * ```ts
+ * // lib/session.ts
+ * import { createServerFn } from '@tanstack/react-start'
+ * import { getRequest } from '@tanstack/react-start/server'
+ * import { getSessionUserFromRequest } from '@payload-auth-link/tanstack-start'
+ *
+ * export const getSessionUser = createServerFn({ method: 'GET' }).handler(() =>
+ *   getSessionUserFromRequest(getRequest(), verifySession)
+ * )
+ * ```
+ *
+ * Deliberately a helper, not a pre-built server function: the app's own
+ * `createServerFn` call stays in app code where the Start vite plugin
+ * transforms it, with no library-transform magic to go stale.
+ */
+export declare function getSessionUserFromRequest(request: Request, verify: SessionVerifier): Promise<SessionUser | null>;

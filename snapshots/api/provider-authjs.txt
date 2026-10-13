@@ -1,0 +1,677 @@
+// ===== adapter.d.ts =====
+import type { Adapter } from '@auth/core/adapters';
+import type { Payload } from 'payload';
+import { type AuthJsCollectionSlugs } from './collections.js';
+/** Database adapter wiring: Payload access, slugs, read depth. */
+export type AuthJsAdapterDeps = {
+    /** Resolves the Payload instance (cached `getPayload` in Next.js). */
+    readonly getPayload: () => Promise<Payload>;
+    /** Override any default Auth.js collection slug. */
+    readonly slugs?: Partial<AuthJsCollectionSlugs> | undefined;
+    /** Payload query depth for adapter reads. Defaults to 0. */
+    readonly depth?: number | undefined;
+};
+/**
+ * Composite `(identifier, token)` uniqueness key for verification tokens
+ * (Payload has no compound unique indexes; see `collections.ts`). JSON
+ * encoding keeps the pair unambiguous for any identifier/token strings,
+ * unlike a delimiter join. Lookups still query `identifier` + `token`
+ * directly, so rows written before this field existed remain consumable.
+ */
+export declare function verificationTokenKey(identifier: string, token: string): string;
+/**
+ * Auth.js database adapter over Payload collections. Every lookup is a
+ * single-field (or dual-field) equality query through the Local API —
+ * no query language to translate, unlike the Better Auth adapter. Auth.js
+ * user ids live in `auId` (Payload owns the document `id`); cross-model
+ * `userId` references hold `auId` values.
+ */
+export declare function createAuthJsAdapter(deps: AuthJsAdapterDeps): Adapter;
+
+// ===== callbacks.d.ts =====
+import type { AuthConfig } from '@auth/core';
+import type { Adapter } from '@auth/core/adapters';
+import { type IdentityEventEmitter, type LoggerPort } from '@payload-auth-link/core';
+declare module '@auth/core/types' {
+    interface Session {
+        user?: {
+            id?: string;
+            name?: string | null;
+            email?: string | null;
+            image?: string | null;
+            emailVerified?: boolean | null | undefined;
+        };
+    }
+}
+/** JWT claim carrying the verification timestamp (ISO string) or null. */
+export declare const emailVerifiedClaim = "authLinkEmailVerified";
+type JwtCallback = NonNullable<NonNullable<AuthConfig['callbacks']>['jwt']>;
+type SessionCallback = NonNullable<NonNullable<AuthConfig['callbacks']>['session']>;
+type SignInEvent = NonNullable<NonNullable<AuthConfig['events']>['signIn']>;
+type UpdateUserEvent = NonNullable<NonNullable<AuthConfig['events']>['updateUser']>;
+type LinkAccountEvent = NonNullable<NonNullable<AuthConfig['events']>['linkAccount']>;
+/** Chained jwt/session callbacks carrying the port's claims. */
+export type AuthLinkCallbacks = {
+    readonly jwt: JwtCallback;
+    readonly session: SessionCallback;
+};
+/** Chained Auth.js events carrying trust stamping + CAP-14 translation. */
+export type AuthLinkEvents = {
+    readonly signIn: SignInEvent;
+    readonly updateUser: UpdateUserEvent;
+    readonly linkAccount: LinkAccountEvent;
+};
+/** CAP-14 lifecycle sink for {@link createAuthLinkEvents}. */
+export type AuthLinkLifecycle = {
+    readonly emitter: IdentityEventEmitter;
+    readonly logger: LoggerPort;
+};
+/**
+ * D6 trust options for the claims layer. `trustProviderEmailVerification`
+ * is an allow-list of OAuth/OIDC provider ids whose `email_verified`
+ * profile claim may stamp the adapter user's `emailVerified` (through
+ * `updateUser`). Empty or absent means never stamp — the default.
+ */
+export type AuthLinkTrustOptions = {
+    readonly trustProviderEmailVerification?: readonly string[] | undefined;
+    readonly updateUser?: NonNullable<Adapter['updateUser']> | undefined;
+};
+/**
+ * Chain the builder's callbacks (if any) with the claims the port needs.
+ * The builder's callbacks run FIRST on raw values; the claims layer then
+ * wins on its own keys so a builder callback can never silently break
+ * the port contract. A builder jwt callback returning `null` (forced
+ * logout) is respected as-is.
+ *
+ * Spike findings encoded here: the jwt callback re-runs on every session
+ * read WITHOUT `user` (the token re-encodes), so claims are stuffed only
+ * when `user` is present — otherwise the re-encoded token loses them.
+ *
+ * D6 (CAP-3a): upstream `handle-login` creates OAuth users with
+ * `emailVerified: null` whatever the IdP asserts, and the oauth jwt
+ * invocation is the one point that has the adapter user, the account,
+ * AND the raw profile (`email_verified`) before the first token is
+ * encoded — so trusted stamping happens here, and the token claim is
+ * the date the adapter actually stored.
+ */
+export declare function createAuthLinkCallbacks(builder?: AuthConfig['callbacks'], trust?: AuthLinkTrustOptions): AuthLinkCallbacks;
+/**
+ * Chain the builder's `signIn` event with D6 trusted stamping. Database
+ * sessions never run the jwt callback at sign-in, so this event (which
+ * upstream fires with the adapter user and the raw OAuth profile on
+ * every OAuth callback) is their stamp point; later session reads then
+ * load the stamped row. On JWT flows the jwt callback stamps first and
+ * this becomes a no-op. The builder's event runs first, matching the
+ * callbacks convention.
+ */
+export declare function createAuthLinkEvents(builder?: AuthConfig['events'], trust?: AuthLinkTrustOptions, lifecycle?: AuthLinkLifecycle): AuthLinkEvents;
+export {};
+
+// ===== collections.d.ts =====
+import type { CollectionConfig } from 'payload';
+/** Access control for the Auth.js system collections. */
+export type AuthJsCollectionsAccess = NonNullable<CollectionConfig['access']>;
+/** Canonical Auth.js models persisted in Payload. */
+export type AuthJsModelKey = 'user' | 'account' | 'session' | 'verificationToken' | 'authenticator';
+/** Payload collection slugs backing each Auth.js model. */
+export type AuthJsCollectionSlugs = Record<AuthJsModelKey, string>;
+/** Default `aj-*` slugs; override per model via options. */
+export declare const defaultAuthJsSlugs: AuthJsCollectionSlugs;
+/** Slug overrides and access for {@link createAuthJsCollections}. */
+export type AuthJsCollectionsOptions = {
+    /** Override any default slug. Unmentioned models keep their defaults. */
+    readonly slugs?: Partial<AuthJsCollectionSlugs> | undefined;
+    /**
+     * Access control for the system collections. Defaults to deny-all: these
+     * hold sessions and token material, so only the adapter (which uses
+     * `overrideAccess`) touches them. Builders may loosen `read` for
+     * operations debugging.
+     */
+    readonly access?: AuthJsCollectionsAccess | undefined;
+};
+/**
+ * Payload collections backing the Auth.js adapter. Field names mirror the
+ * Auth.js models 1:1 with these exceptions: the user id lives in `auId`
+ * (Payload owns the document `id`); accounts and verification tokens carry
+ * a composite `key` (unique) because Payload has no compound unique
+ * indexes — for verification tokens that gives `(identifier, token)`
+ * uniqueness, so the same token hash (e.g. two identical 6-digit email
+ * OTP codes) can coexist for different identifiers while a repeated pair
+ * is rejected. The users collection additionally holds `passwordHash` for
+ * the credentials service — Auth.js itself never reads it.
+ */
+export declare function createAuthJsCollections(options?: AuthJsCollectionsOptions): CollectionConfig[];
+
+// ===== cookies.d.ts =====
+import { type CookieOptions, type SecureCookieEnvironment } from '@payload-auth-link/core';
+import type { CookieOption } from '@auth/core/types';
+/** The Auth.js options that influence cookie names. */
+export type AuthJsCookieOptions = {
+    /** Mirrors `useSecureCookies`. Defaults to the shared rule below. */
+    readonly useSecureCookies?: boolean | undefined;
+    /**
+     * Canonical site origin, used for the secure-cookie default (https →
+     * secure + `__Secure-` prefix) via the shared production-secure rule.
+     * Auth.js derives the protocol per request (`useSecureCookies ??
+     * protocol === 'https:'`); pass the canonical origin so middleware and
+     * logout agree with it. Production deployments must set a canonical
+     * https origin here: without one the rule falls back to `NODE_ENV`
+     * detection, which matches Auth.js on https deployments but fails
+     * closed (session detection misses) on http ones.
+     */
+    readonly baseURL?: string | undefined;
+    /** Mirrors `cookies.sessionToken.name`. Defaults to the Auth.js default. */
+    readonly sessionTokenName?: string | undefined;
+    /**
+     * Mirrors `cookies.sessionToken.options` (Auth.js `SerializeOptions`).
+     * Only overwrite-relevant attributes (`secure`, `domain`, `path`,
+     * `partitioned`) are read, for logout clearing — `sameSite` and
+     * `httpOnly` never affect overwrite matching.
+     */
+    readonly sessionTokenOptions?: Partial<CookieOption['options']> | undefined;
+    /**
+     * Chunk slots after the base name (`.0`, `.1`, …). Defaults to 3
+     * (~12k of token). Raise it when custom claims push JWTs past that;
+     * the engine fail-fasts nonsense, this pure function floors and
+     * clamps at zero instead.
+     */
+    readonly chunkSlots?: number | undefined;
+};
+export declare function getAuthJsSessionCookieNames(options: AuthJsCookieOptions, environment?: SecureCookieEnvironment): readonly string[];
+/**
+ * Logout clearing lookup: the live overwrite attributes for each session
+ * cookie (base plus chunk slots share them). `secure` defaults to the
+ * same rule as the names, so a custom `sessionTokenName` without the
+ * `__Secure-` prefix still clears with `Secure` when Auth.js sets it —
+ * prefix inference alone would miss that combination. Unknown names yield
+ * `undefined` so the caller falls back to `expiringCookieOptions`.
+ */
+export declare function getAuthJsSessionCookieClearOptions(options: AuthJsCookieOptions, environment?: SecureCookieEnvironment): (name: string) => CookieOptions | undefined;
+
+// ===== credentials.d.ts =====
+import { type Email, type InvalidEmailError, type LoggerPort, type UserExistsError } from '@payload-auth-link/core';
+import type { User } from '@auth/core/types';
+import { ResultAsync } from 'neverthrow';
+import type { Payload } from 'payload';
+import { type AuthJsCollectionSlugs } from './collections.js';
+import { AdapterOperationError, WeakPasswordError } from './errors.js';
+/** Minimum credentials password length. Builders may raise it, never lower it. */
+export declare const minCredentialsPasswordLength = 8;
+/**
+ * Hash a credentials password (scrypt, random salt, `salt:derived`
+ * format). Auth.js never sees passwords — hashing and verification live
+ * here, beside the `passwordHash` column only this service reads.
+ */
+export declare function hashCredentialsPassword(password: string): string;
+/** Constant-time verification. Malformed hashes fail closed (false). */
+export declare function verifyCredentialsPassword(password: string, stored: string): boolean;
+/** Credentials service wiring: Payload access, slugs, password floor. */
+export type AuthJsCredentialsDeps = {
+    /** Resolves the Payload instance (cached `getPayload` in Next.js). */
+    readonly getPayload: () => Promise<Payload>;
+    /** Override any default Auth.js collection slug. */
+    readonly slugs?: Partial<AuthJsCollectionSlugs> | undefined;
+    /** Minimum password length. Defaults to 8; lower values are rejected. */
+    readonly minPasswordLength?: number | undefined;
+    /** Logger for registration outcomes. Defaults to silent. */
+    readonly logger?: LoggerPort | undefined;
+};
+/** Builder-owned signup input; verification is builder policy. */
+export type RegisterCredentialsUserInput = {
+    readonly email: string;
+    readonly password: string;
+    readonly name?: string | undefined;
+    /**
+     * Verification timestamp. Defaults to null (unverified): the plugin
+     * refuses to link unverified identities, so credentials users stay
+     * locked out until the builder verifies them — Auth.js has no email
+     * flow for credentials, so verification is the builder's signup
+     * policy, stamped here.
+     */
+    readonly emailVerified?: Date | null | undefined;
+};
+/** What registration returns: stable id plus normalized email. */
+export type RegisteredCredentialsUser = {
+    readonly id: string;
+    readonly email: Email;
+};
+/** Credentials service: `authorize` for the provider, `register` for signup. */
+export type AuthJsCredentials = {
+    /**
+     * `authorize` for the Credentials provider: validates the credentials
+     * against the users collection. Returns null for unknown users and
+     * wrong passwords (normal login failure); throws `AdapterMappingError`
+     * on corrupt stored rows (loud, not a silent login failure).
+     */
+    readonly authorize: (credentials: Record<string, unknown> | undefined) => Promise<User | null>;
+    /**
+     * Register a credentials user (builder signup endpoints call this).
+     * Flows through the core `registerWithStore` use-case over an
+     * `aj-users` store: never throws, errors arrive as values —
+     * `InvalidEmailError` / `WeakPasswordError` (400s), `UserExistsError`
+     * (409), `AdapterOperationError` (500, storage failure with cause).
+     */
+    readonly register: (input: RegisterCredentialsUserInput) => ResultAsync<RegisteredCredentialsUser, InvalidEmailError | WeakPasswordError | UserExistsError | AdapterOperationError>;
+};
+/**
+ * Credentials service over the Auth.js users collection. Auth.js's
+ * Credentials provider stores nothing itself — `register` writes the
+ * user row (scrypt hash, verification stamp) and `authorize` reads it
+ * back. Works with any session strategy; the engine fail-fasts the
+ * credentials+database combination Auth.js itself rejects.
+ */
+export declare function createAuthJsCredentials(deps: AuthJsCredentialsDeps): AuthJsCredentials;
+
+// ===== engine.d.ts =====
+import { type LoggerPort, type VersionRange } from '@payload-auth-link/core';
+import { type AuthConfig } from '@auth/core';
+import type { CollectionConfig, Payload } from 'payload';
+import { type AuthJsCollectionsAccess, type AuthJsCollectionSlugs } from './collections.js';
+import { createAuthJsProvider } from './port.js';
+/** Engine wiring: Payload access plus the builder's Auth.js config. */
+export type AuthJsEngineInput = {
+    /** Resolves the Payload instance (cached `getPayload` in Next.js). */
+    readonly getPayload: () => Promise<Payload>;
+    /** Override any default Auth.js collection slug. */
+    readonly slugs?: Partial<AuthJsCollectionSlugs> | undefined;
+    /** Payload query depth for adapter reads. Defaults to 0. */
+    readonly depth?: number | undefined;
+    /** Access control for the system collections. Defaults to deny-all. */
+    readonly collectionsAccess?: AuthJsCollectionsAccess | undefined;
+    /**
+     * Site origin. Derives secure cookie names (https → secure +
+     * `__Secure-` prefix) and — more importantly — anchors the internal
+     * session read: without it the origin falls back to request host
+     * headers, which a client can spoof. Defaults to `AUTH_URL` (Auth.js's
+     * own env), then to http. Required in production behind a proxy, and
+     * production deployments must set a canonical https origin (without
+     * one the secure-cookie rule falls back to `NODE_ENV` detection —
+     * see the Auth.js guide's production note).
+     */
+    readonly baseURL?: string | undefined;
+    /**
+     * Chunk slots after the base session cookie name (`.0`, `.1`, …).
+     * Defaults to 3 (~12k of token); raise it when custom claims push
+     * JWTs past that. Must be a non-negative integer.
+     */
+    readonly chunkSlots?: number | undefined;
+    /**
+     * Allow-list of OAuth/OIDC provider ids (e.g. `['google', 'acme-oidc']`)
+     * whose asserted `email_verified === true` may stamp the adapter
+     * user's `emailVerified` through `updateUser` (D6). Auth.js otherwise
+     * creates every OAuth user with `emailVerified: null`, so the plugin
+     * refuses to link them. Defaults to empty: no provider is trusted and
+     * nothing is ever stamped. A stamp additionally requires the profile
+     * email to be the user's own email; `email_verified` false or absent
+     * never stamps. Combining an allow-listed provider with that
+     * provider's `allowDangerousEmailAccountLinking: true` fails fast
+     * with `InvalidConfigError` — dangerous linking would attach the
+     * account to a pre-existing user by email alone, defeating the
+     * verified-email gate this option relies on.
+     */
+    readonly trustProviderEmailVerification?: readonly string[] | undefined;
+    /**
+     * Structured logger for wiring-time risky-linking warnings (CAP-12).
+     * Defaults to silent (`nullLogger`) — pass the same logger as the
+     * plugin to see them. Warnings name the offending setting; they
+     * never go to `console.*`.
+     */
+    readonly logger?: LoggerPort | undefined;
+    /**
+     * Turn every risky-linking warning into a wiring-time
+     * `InvalidConfigError` (CAP-12). Risky means any provider with
+     * `allowDangerousEmailAccountLinking: true`, which attaches accounts
+     * by email alone on sign-in. The plugin's verified-email gate still
+     * guards Payload linking either way; this option makes the
+     * provider-side loosening fail fast instead of merely loud.
+     * Combining a `trustProviderEmailVerification` provider with
+     * dangerous linking already throws regardless of this option (D6).
+     * Defaults to `false` (warn only).
+     */
+    readonly strictLinking?: boolean | undefined;
+    /**
+     * The builder's Auth.js config, passed through verbatim except for
+     * `adapter` (wired to Payload here, so it is omitted from this type),
+     * `callbacks` and the `signIn` event (chained with the claims and
+     * D6 stamping the port needs — see `callbacks.ts`), and the secure
+     * defaults below.
+     */
+    readonly options: Omit<AuthConfig, 'adapter'>;
+};
+/** Composed engine: config, port, collections, slugs, cookie names. */
+export type AuthJsEngine = {
+    /** The composed Auth.js config; mount it with the Next adapter. */
+    readonly config: AuthConfig;
+    /** The config behind `IdentityProviderPort`; register it with the plugin. */
+    readonly provider: ReturnType<typeof createAuthJsProvider>;
+    /** Payload collections for the Auth.js models; spread into the config. */
+    readonly collections: CollectionConfig[];
+    /** Resolved slugs (defaults plus overrides). */
+    readonly slugs: AuthJsCollectionSlugs;
+    /** Session cookie names for middleware fast-paths and logout clearing. */
+    readonly sessionCookieNames: readonly string[];
+    /** Handle an Auth.js request (`(request) => Auth(request, config)`). */
+    readonly handleRequest: (request: Request) => Promise<Response>;
+};
+/**
+ * Anchor an incoming request's origin to the configured `baseURL` before
+ * raw `@auth/core` sees it. Core derives every host-dependent decision
+ * (action URLs, redirect and callbackUrl validation) from `request.url`,
+ * and honors forwarded host headers while `trustHost` is true — which it
+ * must be (see above). Rewriting only the origin (protocol + host + port,
+ * never path or query) keeps a spoofed `Host` / `X-Forwarded-Host` from
+ * steering Auth.js. Matching origins (and an unset `baseURL`) pass the
+ * original request through untouched, so correct deployments see zero
+ * behavior change. Exported for the engine suite.
+ */
+export declare function anchorRequestOrigin(request: Request, baseURL: string | undefined): Request;
+/**
+ * Compose Auth.js on Payload storage: the Payload database adapter, the
+ * claims callbacks the port needs, the `IdentityProviderPort`, and the
+ * Payload collections.
+ *
+ * Secure defaults and fail-fasts (spike findings, Phase 4):
+ * - `basePath` defaults to `/api/authjs` (coexists with Better Auth's
+ *   `/api/auth`); `trustHost` defaults to true because raw `@auth/core`
+ *   rejects every request otherwise (`UntrustedHost`, unconditionally —
+ *   there is no `AUTH_URL` rescue at this layer since `Auth()` never runs
+ *   `setEnvDefaults`). Host strictness comes from origin anchoring
+ *   instead: `handleRequest` rewrites the request origin to the
+ *   configured `baseURL` before core sees it, so forwarded host headers
+ *   cannot steer Auth.js redirects or callback validation.
+ * - A missing secret (`options.secret` and `AUTH_SECRET` both unset)
+ *   throws here instead of 500ing on first use.
+ * - A Credentials provider with an effective `database` session strategy
+ *   throws here: Auth.js rejects that combination at config time with
+ *   loud 500s (`UnsupportedStrategy`), so the engine fails faster with
+ *   the fix attached. Credentials REQUIRES explicit jwt strategy.
+ *
+ * JWT sessions are stateless bearer tokens: revocation deletes database
+ * sessions and is a no-op for JWT (logout expires the cookies, but a
+ * copied token replays until `maxAge`). Credentials deployments therefore
+ * default to a short `session.maxAge` of one hour unless the builder sets
+ * one explicitly. A server-side denylist is deliberately not built
+ * (stateless JWTs need new shared infrastructure to revoke — see
+ * `docs/SPRINT.md` Accepted risks); the mitigation is this short default
+ * window plus explicit `maxAge` tuning per deployment.
+ */
+/**
+ * @auth/core versions this release validated (Phase-1 bisect): the
+ * 0.41 line is the tested band (floor 0.41.0), and 0.x minors add
+ * `Adapter` methods (the `keyof Adapter` pin alarms on them), so an
+ * unvalidated 0.x minor fails here, typed and before any DB write.
+ * Widened only by the compatibility matrix, never by optimism.
+ */
+export declare const supportedAuthJsBand: readonly VersionRange[];
+/** Wiring contract, split out for tests: the @auth/core assertion. */
+export declare function assertAuthJsCoreVersion(installedVersion: string | null, logger: LoggerPort): void;
+export declare function createAuthJsEngine(input: AuthJsEngineInput): AuthJsEngine;
+
+// ===== errors.d.ts =====
+import { AuthLinkError } from '@payload-auth-link/core';
+/** An Auth.js adapter operation against Payload failed. Wraps the cause. */
+export declare class AdapterOperationError extends AuthLinkError {
+    constructor(operation: string, options?: {
+        cause?: unknown;
+    });
+}
+/** The adapter read a Payload document it cannot honestly map. Loud, not null. */
+export declare class AdapterMappingError extends AuthLinkError {
+    constructor(detail: string);
+}
+/** A credentials password violates the minimum length policy. */
+export declare class WeakPasswordError extends AuthLinkError {
+    constructor(minLength: number);
+}
+
+// ===== index.d.ts =====
+/**
+ * Auth.js identity-provider adapter: Payload-backed database adapter,
+ * credentials service, `IdentityProviderPort`, session cookie names, and
+ * the composition engine.
+ */
+export { createAuthJsAdapter, verificationTokenKey } from './adapter.js';
+export { reconcileAuthJsMongoIndexes } from './mongo-indexes.js';
+export type { MongoIndexReconcileOptions, MongoIndexReconcileReport } from './mongo-indexes.js';
+export type { AuthJsAdapterDeps } from './adapter.js';
+export { createAuthLinkCallbacks, createAuthLinkEvents, emailVerifiedClaim } from './callbacks.js';
+export type { AuthLinkCallbacks, AuthLinkEvents, AuthLinkTrustOptions } from './callbacks.js';
+export { createAuthJsCollections, defaultAuthJsSlugs } from './collections.js';
+export type { AuthJsCollectionsAccess, AuthJsCollectionSlugs, AuthJsCollectionsOptions, AuthJsModelKey, } from './collections.js';
+export { getAuthJsSessionCookieClearOptions, getAuthJsSessionCookieNames } from './cookies.js';
+export type { AuthJsCookieOptions } from './cookies.js';
+export { createAuthJsCredentials, hashCredentialsPassword, minCredentialsPasswordLength, verifyCredentialsPassword, } from './credentials.js';
+export type { AuthJsCredentials, AuthJsCredentialsDeps, RegisteredCredentialsUser, RegisterCredentialsUserInput, } from './credentials.js';
+export { assertAuthJsCoreVersion, createAuthJsEngine, supportedAuthJsBand } from './engine.js';
+export type { AuthJsEngine, AuthJsEngineInput } from './engine.js';
+export { AdapterMappingError, AdapterOperationError, WeakPasswordError } from './errors.js';
+export { authJsCapabilities, createAuthJsProvider } from './port.js';
+export { buildEmailOtpCallbackUrl, createGoogleOneTapAuthorize, emailOtpMaxAgeSeconds, emailOtpVerificationToken, generateEmailOtpCode, verifyGoogleIdToken, } from './recipes.js';
+export type { GoogleIdTokenProfile, GoogleOneTapAuthorizeDeps, GoogleOneTapVerifyDeps, } from './recipes.js';
+export type { AuthJsProviderDeps, AuthJsSessionApi } from './port.js';
+/** Package name for diagnostics. */
+export declare const packageName = "@payload-auth-link/provider-authjs";
+
+// ===== mongo-indexes.d.ts =====
+import { type LoggerPort } from '@payload-auth-link/core';
+import type { Payload } from 'payload';
+import { type AuthJsCollectionSlugs } from './collections.js';
+/** Outcome of {@link reconcileAuthJsMongoIndexes}. */
+export type MongoIndexReconcileReport = {
+    /** `not-mongo` when the Payload adapter exposes no Mongo connection. */
+    readonly status: 'not-mongo' | 'reconciled' | 'key-index-failed';
+    /** True when the stale pre-0.2.0 unique `token` index was dropped. */
+    readonly droppedStaleTokenIndex: boolean;
+    /** Legacy token rows that received their composite `key`. */
+    readonly backfilledKeys: number;
+    /** State of the composite `key` unique index after reconciliation. */
+    readonly keyIndex: 'present' | 'created' | 'failed' | 'not-applicable';
+    /** Failure detail when `keyIndex` is `failed`. */
+    readonly detail?: string | undefined;
+};
+/** Options for {@link reconcileAuthJsMongoIndexes}. */
+export type MongoIndexReconcileOptions = {
+    /** Collection slug overrides, same shape as the adapter's. */
+    readonly slugs?: Partial<AuthJsCollectionSlugs> | undefined;
+    /** Receives one warning per action taken; defaults to silent. */
+    readonly logger?: LoggerPort | undefined;
+};
+/**
+ * MongoDB upgrade reconciliation for the 0.2.0 verification-token
+ * change (B7). Mongo cannot drift-crash on schema changes, so its
+ * failure mode is silent: Payload's mongoose adapter auto-creates
+ * indexes but never drops them, leaving the pre-0.2.0 unique `token`
+ * index in force forever (the composite-key fix silently not
+ * applying), while the new unique `key` index can fail to build over
+ * legacy rows that lack the field. Run this once after upgrading a
+ * Mongo deployment from 0.1.x (safe to run repeatedly):
+ *
+ * 1. backfills `key` on token rows that lack it, using the adapter's
+ *    own composite-key encoding, so the unique build can succeed;
+ * 2. drops the stale unique `token` index when present;
+ * 3. ensures the unique `key` index exists and reports — loudly,
+ *    via the returned report and the logger — when it cannot build.
+ *
+ * No-op with `status: 'not-mongo'` on SQL adapters, where Payload
+ * manages indexes through migrations/push instead.
+ */
+export declare function reconcileAuthJsMongoIndexes(payload: Payload, options?: MongoIndexReconcileOptions): Promise<MongoIndexReconcileReport>;
+
+// ===== port.d.ts =====
+import { type Capability, type CookieOptions, type IdentityEventEmitter, type IdentityProviderPort } from '@payload-auth-link/core';
+/**
+ * Derive declared capabilities from the Auth.js providers the
+ * builder configured (PORT-2, D7 maintenance tier). The engine
+ * inspects each provider's `type` (factories already resolved):
+ *
+ * - `email` → `'magic-link'` (CAP-1: the Email provider on this
+ *   adapter's verification tokens; spike S1 proved Email+JWT and
+ *   Email+database both).
+ * - `oauth`/`oidc` → `'oauth'` (CAP-3; the verified-email trust
+ *   policy is the engine's D6 option).
+ * - a database session strategy → `'revoke-user-sessions'` (CAP-7:
+ *   sessions are rows this adapter can delete; JWT sessions are
+ *   stateless and honestly omit it).
+ *
+ * Auth.js has no native MFA, phone, anonymous, production passkey
+ * (D7), or impersonation primitive — those are never declared, so a
+ * policy needing them fails at wiring (D4). Assurance stays
+ * `'unknown'`: Auth.js reports no per-session method or MFA.
+ */
+export declare function authJsCapabilities(input: {
+    readonly providerTypes?: readonly string[] | undefined;
+    readonly databaseSessions?: boolean | undefined;
+}): ReadonlySet<Capability>;
+/**
+ * The Auth.js server surface the port needs, stated as injected
+ * functions: the engine binds these to `Auth()` with its config, so the
+ * port never imports Auth.js and stays unit-testable with stubs.
+ */
+export type AuthJsSessionApi = {
+    /** Read the session through Auth.js's own session action (or null). */
+    readonly readSession: (headers: Headers) => Promise<unknown>;
+    /** Revoke a database session token; a no-op for JWT sessions. */
+    readonly revokeSession: (sessionId: string) => Promise<unknown>;
+    /**
+     * Revoke every database session of one user (CAP-7). The engine
+     * supplies this only for the database strategy; omitted for JWT.
+     */
+    readonly revokeUserSessions?: ((providerUserId: string) => Promise<unknown>) | undefined;
+};
+/** Port wiring: the Auth.js session surface plus cookie names. */
+export type AuthJsProviderDeps = {
+    readonly sessions: AuthJsSessionApi;
+    /** From {@link getAuthJsSessionCookieNames} (see `cookies.ts`). */
+    readonly sessionCookieNames: readonly string[];
+    /**
+     * Clearing attributes per session cookie, from
+     * {@link getAuthJsSessionCookieClearOptions} (see `cookies.ts`). Used on
+     * logout; unknown names fall back to prefix-derived attributes.
+     */
+    readonly sessionCookieClearOptions?: ((name: string) => CookieOptions | undefined) | undefined;
+    /**
+     * Identity lifecycle emitter (CAP-14): when present, the port
+     * exposes `onIdentityEvent` subscriptions fed by the engine's
+     * Auth.js `events` translation.
+     */
+    readonly events?: IdentityEventEmitter | undefined;
+    /**
+     * `type` of each configured Auth.js provider (factories resolved),
+     * plus whether sessions use the database strategy — the inputs to
+     * {@link authJsCapabilities}. The engine fills both; direct users
+     * pass them honestly. Omitted means no capabilities are declared.
+     */
+    readonly providerTypes?: readonly string[] | undefined;
+    readonly databaseSessions?: boolean | undefined;
+};
+/**
+ * `IdentityProviderPort` over Auth.js. Session reads go through Auth.js's
+ * own session action (never a hand-rolled JWT decode): JWT signatures,
+ * expiries, database lookups, and update throttling all stay upstream's
+ * job. The revocable handle is the presented session token; revocation
+ * deletes database sessions and is a documented no-op for stateless JWT
+ * sessions (whose logout is cookie expiry at the HTTP layer).
+ *
+ * Channel is always `'cookie'` and that is observed, not assumed:
+ * Auth.js resolves sessions from cookies only (no bearer transport),
+ * and this port additionally requires the presented session cookie
+ * before it returns a session at all.
+ */
+export declare function createAuthJsProvider(deps: AuthJsProviderDeps): IdentityProviderPort;
+
+// ===== recipes.d.ts =====
+import { ResultAsync } from 'neverthrow';
+import { ProviderError, type Email } from '@payload-auth-link/core';
+import type { User } from '@auth/core/types';
+/**
+ * Builder-owned recipes for capabilities Auth.js has no native
+ * primitive for (D7 maintenance tier): email OTP (CAP-2) and Google
+ * One Tap (CAP-4). These are small, fully tested building blocks the
+ * builder wires into their own providers — the plugin's linking gate
+ * still decides what reaches Payload.
+ */
+/**
+ * Recommended OTP lifetime in seconds. Auth.js defaults verification
+ * tokens to 24h, which is far too long for a 6-digit code: codes are
+ * brute-forceable, so the recipe pairs this short `maxAge` with the
+ * builder's verify-path rate limiter (attempt caps are builder-owned,
+ * the SEC-13 precedent — a wrong guess neither consumes nor counts
+ * against the code upstream).
+ */
+export declare const emailOtpMaxAgeSeconds = 300;
+/**
+ * Generate one 6-digit email OTP code with a CSPRNG. Rejection
+ * sampling keeps the distribution uniform over `000000`–`999999`
+ * (never `Math.random`, never modulo bias). Suitable as an Email
+ * provider's `generateVerificationToken`.
+ */
+export declare function generateEmailOtpCode(): string;
+/** `generateVerificationToken` for an Auth.js Email provider (CAP-2). */
+export declare const emailOtpVerificationToken: typeof generateEmailOtpCode;
+/**
+ * Build the callback URL an OTP form must submit to (spike S2: the
+ * Auth.js email callback reads `token`/`email` from the QUERY STRING
+ * only — a form POSTing them in the body fails with `Configuration`).
+ * Use as the form's `action` (GET, or POST to this URL) — never put
+ * the code in the POST body expecting it to be read.
+ */
+export declare function buildEmailOtpCallbackUrl(input: {
+    /** Auth.js base path; defaults to this engine's `/api/authjs`. */
+    readonly basePath?: string | undefined;
+    /** Email provider id, e.g. `resend` or `nodemailer`. */
+    readonly providerId: string;
+    readonly email: string;
+    readonly code: string;
+    /** Post-sign-in destination Auth.js may return to. */
+    readonly callbackUrl?: string | undefined;
+}): string;
+/** The Google ID-token facts the recipe trusts after verification. */
+export type GoogleIdTokenProfile = {
+    /** Google account id (`sub`), stable per account. */
+    readonly providerUserId: string;
+    readonly email: Email;
+    readonly emailVerified: boolean;
+    readonly name: string | null;
+    readonly image: string | null;
+};
+/** `verifyGoogleIdToken` wiring; every network/clock input is injectable. */
+export type GoogleOneTapVerifyDeps = {
+    /** Expected `aud`: your Google OAuth client id. Required, never defaulted. */
+    readonly clientId: string;
+    /** JWKS fetcher; defaults to `fetch` against Google's certs endpoint. */
+    readonly fetchJwks?: (() => Promise<unknown>) | undefined;
+    /** JWKS endpoint override (tests, proxies). */
+    readonly jwksUrl?: string | undefined;
+    /** Clock for `exp`/`iat` checks; defaults to system time. */
+    readonly now?: (() => Date) | undefined;
+};
+/**
+ * Verify a Google One Tap ID token locally: RS256 signature against
+ * Google's JWKS (selected by `kid`), then `iss`, `aud`, and `exp`.
+ * No Google callout beyond the public keys, and no claim is read
+ * before the signature verifies. Every failure is a typed
+ * `ProviderError` — callers treat any error as "not signed in".
+ */
+export declare function verifyGoogleIdToken(token: string, deps: GoogleOneTapVerifyDeps): ResultAsync<GoogleIdTokenProfile, ProviderError>;
+/** `createGoogleOneTapAuthorize` wiring. */
+export type GoogleOneTapAuthorizeDeps = GoogleOneTapVerifyDeps & {
+    /**
+     * Resolve the verified Google profile to an Auth.js user (builder
+     * owns persistence — e.g. the adapter's `getUserByEmail` +
+     * `createUser`). Return `null` to refuse. Only ever called with a
+     * signature-verified profile whose `emailVerified` is `true`:
+     * One Tap sessions link by email, so an unverified Google email
+     * must never resolve to a user here either.
+     */
+    readonly upsertUser: (profile: GoogleIdTokenProfile) => Promise<User | null>;
+};
+/**
+ * Build the `authorize` callback for a Credentials provider backing
+ * Google One Tap (CAP-4 recipe). Google's browser flow posts the ID
+ * token as the `credential` field; anything else (missing token,
+ * bad signature, wrong audience, unverified email) resolves to
+ * `null` — Credentials' "not signed in", never an exception leaking
+ * which check failed. Credentials sessions are JWT-only; the engine
+ * already enforces that pairing.
+ */
+export declare function createGoogleOneTapAuthorize(deps: GoogleOneTapAuthorizeDeps): (credentials: Record<string, unknown> | undefined) => Promise<User | null>;

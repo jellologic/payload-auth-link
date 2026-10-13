@@ -49,6 +49,61 @@ fail-fast is `UnsupportedSchemaError` on the `ba-*` row. Fix or
 delete the row; this never becomes a silent login failure — that is
 the point.
 
+The same error at **boot** (not login) usually means a Better Auth
+plugin contributes a field or model this adapter has not declared.
+Two satellite packages are known-unprobed today — `@better-auth/api-key`
+and `@better-auth/sso`: composing them fails fast with
+`UnsupportedSchemaError` until support lands; every plugin exported
+by `better-auth/plugins` plus `@better-auth/passkey` is covered by
+the committed schema probe.
+
+## `SQLITE_ERROR: no such column: …` (or `42703` on Postgres) at boot or on first use
+
+The code is newer than the database: a column this version selects
+or writes does not exist in your tables. This is the raw shape of an
+**unmigrated upgrade** (B1) — the 0.1.1 → 0.2.0 move added
+`aj-verification-tokens.key` and the `users` governance fields, and
+booting 0.2.x on an unmigrated 0.1.1 database died exactly this way
+on the first `users` query.
+
+Map the missing column to the fix:
+
+- `users.phone` / `users.suspendedUntil` / `users.suspendReason` →
+  0.1.1 → 0.2.x upgrade steps in
+  [upgrading.md](upgrading.md#011--020): boot once with push on
+  (dev), or generate/apply the migration (production). All three
+  columns are optional; no backfill needed.
+- `aj_verification_tokens.key` → same section. After a 0.2.1+ boot
+  the column exists nullable; if your database instead shows the
+  old table recreation damage (empty `aj-verification-tokens`,
+  half-migrated `ba_users` on SQLite), that was 0.2.0-exact with
+  push on — restore from backup or re-create the token rows, then
+  upgrade to 0.2.1+.
+- On MongoDB you will never see this error — drift surfaces as
+  silently wrong indexes instead. If you upgraded the Auth.js
+  provider and the composite-token behavior seems absent, run
+  `reconcileAuthJsMongoIndexes(payload)` (see the 0.1.1 → 0.2.0
+  section).
+- Column exists but a `NOT NULL` insert fails (`key`) → an old
+  0.2.0 migration made it required; drop and re-add it nullable per
+  the upgrading.md SQL sketch.
+
+Prevention: upgrade through one version heading at a time, keep
+`bun run schema:check`-style migration review in your deploy, and
+check `docs/upgrading.md` for the version you are adopting before
+bumping. The runtime `UnsupportedVersionError` catches upstream
+version drift at boot; missing columns mean the **database** half
+of an upgrade was skipped.
+
+## `UnsupportedVersionError` at boot
+
+An upstream (`payload`, `better-auth`, `@auth/core`) sits outside
+the validated band — found vs supported are both in the message.
+Pin the named package back inside the band (exact versions in
+[compatibility.md](compatibility.md)) and wait for the compat patch
+that widens it. The refusal happens before any database write by
+design: an unvalidated upstream must not touch your data.
+
 ## Edge build fails importing `payload` / database code
 
 Something in `middleware.ts`'s import graph reaches the engine or

@@ -1,0 +1,67 @@
+// ===== client.d.ts =====
+/**
+ * Refresh both layers after a client-side auth change (sign-in, sign-out,
+ * role update): re-reads the session endpoint into context, then
+ * revalidates Next.js server-component state.
+ */
+export declare function useAuthLinkRefresh(): () => Promise<void>;
+
+// ===== index.d.ts =====
+/**
+ * Next.js adapter: Edge middleware, client refresh, and the
+ * server→client provider bridge. The framework-free surface (route
+ * handlers, session verification, authorization, redirect safety)
+ * lives in `@payload-auth-link/web` and is re-exported here, so
+ * existing imports keep working. This is a Next-only package — see
+ * DNA §3.
+ */
+export declare const packageName = "@payload-auth-link/next";
+export { useAuthLinkRefresh } from './client.js';
+export { createAuthMiddleware } from './middleware.js';
+export type { AuthMiddlewareOptions } from './middleware.js';
+export { AuthLinkServerProvider } from './server-provider.js';
+export type { AuthLinkServerProviderProps } from './server-provider.js';
+export * from '@payload-auth-link/web';
+
+// ===== middleware.d.ts =====
+import { type AuthRedirectOptions } from '@payload-auth-link/web';
+import { NextResponse, type NextRequest } from 'next/server.js';
+/** Optimistic Edge middleware wiring; see {@link createAuthMiddleware}. */
+export type AuthMiddlewareOptions = AuthRedirectOptions;
+/**
+ * Edge-safe optimistic auth middleware: presence of any session cookie
+ * lets the request through; absence redirects to sign-in. Optimistic is
+ * deliberate — Edge cannot reach the database, so route protection here
+ * is UX (bounce obvious anonymous traffic early), never authorization.
+ * Real validation happens on Node via `createSessionVerifier` (server
+ * components, route handlers) and the Payload strategy. Mount in
+ * `middleware.ts` (or Next 16+ `proxy.ts`).
+ *
+ * Thin adapter: the bounce decision is the shared framework-free
+ * `decideAuthRedirect` from `@payload-auth-link/web` (unit-tested
+ * there); this wrapper only maps its verdict onto `NextResponse`.
+ * The bounce is an explicit 303 so it always becomes a GET to
+ * sign-in (never a replayed POST).
+ */
+export declare function createAuthMiddleware(options: AuthMiddlewareOptions): (request: NextRequest) => NextResponse;
+
+// ===== server-provider.d.ts =====
+import type { JSX, ReactNode } from 'react';
+import type { SessionVerifier } from '@payload-auth-link/web';
+/** Server provider wiring: live validation plus hydration. */
+export type AuthLinkServerProviderProps = {
+    readonly children: ReactNode;
+    /**
+     * Full server-side validation, e.g. `createSessionVerifier(...)`.
+     * Receives the live request headers; `null` hydrates anonymous.
+     */
+    readonly verify: SessionVerifier;
+    /** Session endpoint path for client-side refresh/sign-out. */
+    readonly sessionEndpoint?: string | undefined;
+};
+/**
+ * Async server component: fully validates the session on Node and
+ * hydrates the client provider, so the first paint already knows the
+ * user (no loading flash, no client-side fetch waterfall).
+ */
+export declare function AuthLinkServerProvider({ children, verify, sessionEndpoint, }: AuthLinkServerProviderProps): Promise<JSX.Element>;

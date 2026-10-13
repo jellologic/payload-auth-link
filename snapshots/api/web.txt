@@ -1,0 +1,187 @@
+// ===== authz.d.ts =====
+import { type SessionUser } from '@payload-auth-link/core';
+import type { SessionVerifier } from './verify.js';
+/**
+ * Server-side authorization for Node (server components, route handlers).
+ * This is the enforcement point — unlike `RequireRoles` (which only hides
+ * UI), these helpers run before any protected content renders or any
+ * protected mutation executes, so denied callers never receive it.
+ *
+ * Pass live request headers (Next.js `await headers()`) and a verifier
+ * from `createSessionVerifier`. By default the helpers throw
+ * `SessionInvalidError` (anonymous) and `ForbiddenError` (missing roles);
+ * pass Next.js's `redirect()` / `notFound()` as the handlers, or catch in
+ * route handlers and map to 401 / 403.
+ */
+/**
+ * Require an authenticated session user. Throws (or delegates to
+ * `onAnonymous`) when there is no valid session. The returned user
+ * carries any PORT-4 facts the session endpoint reported
+ * (`assurance`, `actor`, `organizationId`) for caller-side policy.
+ */
+export declare function requireSessionUser(headers: Headers, verify: SessionVerifier, onAnonymous?: () => never): Promise<SessionUser>;
+/** `requireRoles` wiring: required roles plus denial handlers. */
+export type RequireRolesOptions = {
+    /** Every listed role is required. */
+    readonly roles: readonly string[];
+    /**
+     * Also require MFA proof for this session (CAP-6): an authenticated
+     * user holding the roles but lacking `assurance.mfa === true`
+     * (`'unknown'` never satisfies) hits `onMfaRequired` (default:
+     * throw `MfaRequiredError`, map to 403/step-up). Independent of
+     * the plugin's `requireMfaForRoles` projection, which withholds
+     * the roles themselves — use either or both.
+     */
+    readonly requireMfa?: boolean | undefined;
+    /** Anonymous handler, e.g. `() => redirect('/sign-in')`. */
+    readonly onAnonymous?: (() => never) | undefined;
+    /** Authenticated-but-denied handler, e.g. `() => notFound()`. */
+    readonly onDenied?: ((user: SessionUser) => never) | undefined;
+    /** Authenticated-with-roles-but-no-MFA handler (step-up redirect). */
+    readonly onMfaRequired?: ((user: SessionUser) => never) | undefined;
+};
+/**
+ * Require an authenticated user holding every listed role. Fails closed:
+ * anonymous callers hit `onAnonymous` (default: throw
+ * `SessionInvalidError`), authenticated callers missing any role hit
+ * `onDenied` (default: throw `ForbiddenError` naming the missing roles).
+ *
+ * The required roles are validated first, before any session read: an
+ * invalid entry (e.g. a typo-cased `'Admin'`, which no canonical role can
+ * ever equal) throws `InvalidRoleError`, and an empty list throws
+ * `InvalidConfigError` (use `requireSessionUser` for "any signed-in
+ * user"). Either would otherwise silently deny everyone or grant everyone.
+ */
+export declare function requireRoles(headers: Headers, verify: SessionVerifier, options: RequireRolesOptions): Promise<SessionUser>;
+
+// ===== handlers.d.ts =====
+/** A framework-agnostic auth request handler. */
+export type RouteHandler = (request: Request) => Promise<Response>;
+/** Error-reporting hook for {@link createRouteHandlers}. */
+export type RouteHandlersOptions = {
+    /** Called with handler errors (which otherwise become a 500 envelope). */
+    readonly onError?: ((error: unknown) => void) | undefined;
+};
+/**
+ * Mount any auth request handler (e.g. a provider's `auth.handler`) as
+ * Next.js `GET`/`POST` route exports with a uniform error envelope —
+ * thrown errors become `{ error }` 500s instead of HTML error pages.
+ *
+ * ```ts
+ * // app/api/auth/[...all]/route.ts
+ * import { createRouteHandlers } from '@payload-auth-link/next'
+ * import { auth } from '@/lib/auth'
+ *
+ * export const { GET, POST } = createRouteHandlers((request) => auth.handler(request))
+ * ```
+ */
+export declare function createRouteHandlers(handle: RouteHandler, options?: RouteHandlersOptions): {
+    readonly GET: RouteHandler;
+    readonly POST: RouteHandler;
+};
+
+// ===== index.d.ts =====
+/**
+ * Framework-free web-adapter toolkit: auth route handlers, server-side
+ * session verification, server authorization, and redirect safety. No
+ * framework imports — framework adapters (`next`, `tanstack-start`)
+ * build on this (see DNA §3).
+ */
+export declare const packageName = "@payload-auth-link/web";
+export { requireRoles, requireSessionUser } from './authz.js';
+export type { RequireRolesOptions } from './authz.js';
+export { createRouteHandlers } from './handlers.js';
+export type { RouteHandler, RouteHandlersOptions } from './handlers.js';
+export { decideAuthRedirect, safeRedirectPath } from './redirect.js';
+export type { AuthRedirectOptions, SafeRedirectOptions } from './redirect.js';
+export { createSessionVerifier, resolveSessionUrl } from './verify.js';
+export type { SessionVerifier, SessionVerifierOptions } from './verify.js';
+
+// ===== redirect.d.ts =====
+export { safeRedirectPath } from '@payload-auth-link/core';
+export type { SafeRedirectOptions } from '@payload-auth-link/core';
+/** Optimistic bounce wiring; see {@link decideAuthRedirect}. */
+export type AuthRedirectOptions = {
+    /**
+     * Session cookie names, from the engine (`engine.sessionCookieNames`)
+     * or the provider's `sessionCookieNames`. Empty names redirect
+     * everything: fail closed, and wire the real names.
+     */
+    readonly sessionCookieNames: readonly string[];
+    /** Sign-in page path. Defaults to `/sign-in` (always public). */
+    readonly signInPath?: string | undefined;
+    /**
+     * Paths that skip the check: exact strings or regexes tested against
+     * `pathname`. The sign-in path is always public (no redirect loops).
+     */
+    readonly publicPaths?: readonly (string | RegExp)[] | undefined;
+    /** Query param carrying the intercepted path. Defaults to `redirect`. */
+    readonly redirectParam?: string | undefined;
+};
+/**
+ * Framework-free optimistic bounce decision backing the `next` and
+ * `tanstack-start` middlewares: presence of any session cookie (or a
+ * public path) passes with `null`; absence yields the sign-in URL
+ * carrying the intercepted path. Operates on the standard `Request`
+ * (`url` + `cookie` header) so both adapters stay thin. Optimistic is
+ * deliberate — the middleware cannot reach the database, so this is UX
+ * (bounce obvious anonymous traffic early), never authorization.
+ */
+export declare function decideAuthRedirect(request: Request, options: AuthRedirectOptions): URL | null;
+
+// ===== verify.d.ts =====
+import { type HttpFetch, type SessionUser } from '@payload-auth-link/core';
+/**
+ * Full server-side session validation: forwards request cookies to the
+ * plugin session endpoint and narrows the answer. Fails closed (`null`).
+ * The narrowed `SessionUser` carries the endpoint's optional PORT-4
+ * facts (`assurance`, `actor`, `organizationId`) when the server sent
+ * them; absent or `'unknown'` assurance never proves a method or MFA.
+ */
+export type SessionVerifier = (headers: Headers) => Promise<SessionUser | null>;
+/** Full server-side session validation wiring. */
+export type SessionVerifierOptions = {
+    /** Session endpoint path or absolute URL. Defaults to the plugin's. */
+    readonly sessionEndpoint?: string | undefined;
+    /**
+     * Origin for relative endpoints (e.g. `https://app.example.com`).
+     * Required in production behind a proxy: when omitted, the origin is
+     * derived from the request's host headers, which a client can spoof —
+     * and the session cookie is forwarded to that origin, so a spoofed
+     * host exfiltrates it. The header fallback is a local-development
+     * convenience only.
+     */
+    readonly baseUrl?: string | undefined;
+    /** Injectible fetch. Defaults to the global `fetch`. */
+    readonly fetchImpl?: HttpFetch | undefined;
+    /** Called with transport errors (which otherwise fail closed to null). */
+    readonly onError?: ((error: unknown) => void) | undefined;
+    /**
+     * Injectable environment for the production gate. Defaults to
+     * `process.env` — tests inject `{ nodeEnv: 'production' }` instead
+     * of mutating the environment.
+     */
+    readonly environment?: {
+        readonly nodeEnv?: string | undefined;
+    } | undefined;
+};
+/**
+ * Resolve a session endpoint to an absolute URL. Absolute endpoints pass
+ * through; relative ones resolve against the shared origin resolver
+ * (`baseUrl`, else the request host when `allowHostFallback` is set).
+ * The `baseUrl` form is the production form (see
+ * `SessionVerifierOptions.baseUrl`); the host fallback trusts
+ * client-controlled headers and is local-development only. Throws
+ * `InvalidConfigError` when no origin can be resolved — a wiring bug,
+ * fail loud rather than fetching a nonsense URL.
+ */
+export declare function resolveSessionUrl(headers: Headers, sessionEndpoint?: string, baseUrl?: string, allowHostFallback?: boolean): string;
+/**
+ * Full server-side session validation for Node (server components, route
+ * handlers): forwards the request cookies to the plugin's session
+ * endpoint and narrows the answer. Fails closed — missing cookies,
+ * non-2xx, invalid JSON, and transport errors all yield `null`. The
+ * fetch is never cached (`no-store`): a revoked session must read as
+ * revoked on the very next request.
+ */
+export declare function createSessionVerifier(options?: SessionVerifierOptions): SessionVerifier;

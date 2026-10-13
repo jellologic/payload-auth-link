@@ -3,15 +3,221 @@
 Versioning rides [changesets](https://github.com/changesets/changesets):
 every user-facing change ships a changeset, the release workflow
 opens Version Packages PRs, and each package CHANGELOG records what
-moved (starting at first publish — all packages are pre-release
-`0.0.1` today). This page covers the moves that need human attention.
+moved. This page covers the moves that need human attention —
+especially database moves, where an unattended upgrade has historically
+meant an unbootable app (see the per-adapter steps under each version
+heading before you bump).
 
 ## Pre-1.0 policy
 
 Minor versions may break: the wire contract (`SessionUser`, endpoint
 paths, cookie semantics) is the stability anchor and changes only
 with a migration note here; option shapes and internal ports may
-evolve. Read the package CHANGELOGs on every bump once published.
+evolve. Read the package CHANGELOGs on every bump.
+
+## Supported bands and the version assertion
+
+The validated bands live in [compatibility.md](compatibility.md) and
+equal the CI compat matrix ({floor, latest} per upstream). At wiring
+time every package asserts the upstream versions it drives:
+
+- the plugin checks `payload` (`supportedPayloadBand`),
+- `provider-better-auth` checks `better-auth` (`supportedBetterAuthBand`),
+- `provider-authjs` checks `@auth/core` (`supportedAuthJsBand`).
+
+An out-of-band version throws `UnsupportedVersionError` (found vs
+supported + a pointer here) **before any collection write** — an
+unsupported upstream fails at startup with a typed, actionable error,
+never as a raw SQL error or a missing-adapter `TypeError`
+mid-request. When it fires: pin the upstream back inside the band
+and wait for (or cut) a compat patch that widens the band after the
+matrix proves the new version. Prerelease builds only ever match via
+an explicit `exact` entry — canaries never float in through a range.
+
+## 0.1.1 → 0.2.0
+
+What changed in the database (and nothing else did — provider
+collection shapes otherwise moved zero columns):
+
+- **`users`** gains three optional governance fields: `phone`
+  (text), `suspendedUntil` (date), `suspendReason` (text). All
+  nullable and additive — safe on every adapter, every mode.
+- **`aj-verification-tokens`** (Auth.js provider): `token` loses its
+  standalone unique index; a new nullable unique `key` column
+  identifies a token by its `(identifier, token-hash)` pair. This is
+  the composite-key fix: the same OTP hash may now exist for two
+  different identifiers. The `key` column is **nullable** — pre-fix
+  releases shipped it `required`, which is what made upgraded
+  databases unbootable (see below); 0.2.1+ accepts `NULL` keys and
+  backfills lazily on write.
+- **`ba-*` collections** (Better Auth provider): no shape change.
+
+Verification tokens are **not** invalidated: existing rows keep
+working (the adapter reads by `(identifier, token)` and tolerates
+`NULL` keys). No data loss on any adapter.
+
+**SQLite, dev-push (Payload `push: true`):** just boot the new
+version. Adding a nullable column alters the table in place — no
+data-loss prompt, no table rebuild. (0.2.0 exactly shipped `key` as
+required; booting it hangs on drizzle's data-loss prompt and can
+recreate the token table empty. Upgrade straight to 0.2.1+.)
+
+**Postgres, dev-push:** same — the column adds in place and the
+unique index swaps `token` → `key`. (0.2.0 exactly hung on the same
+prompt; Postgres converged if you accepted, but the token table
+emptied.)
+
+**Production (migrations mode):** generate the migration yourself
+(`payload.migrate:create`) and check it adds `key` as a **nullable**
+column and drops the `token` unique index — `ADD COLUMN key TEXT`
+without `NOT NULL`. On a non-empty table, a NOT NULL variant fails
+outright (`column "key" contains null values`); a nullable one is a
+no-loss step. See the [migrations recipe](#running-production-on-migrations-not-push).
+
+**MongoDB:** schema drift cannot crash Mongo, but index lifecycle is
+the trap: Payload's adapter never drops indexes, so the **stale
+`token` unique index survives the upgrade** (silently keeping the
+pre-0.2.0 "one row per token hash" constraint), and the added `key`
+unique index builds in the background over rows without the field.
+Fix with the idempotent reconciliation helper:
+
+```ts
+import { reconcileAuthJsMongoIndexes } from '@payload-auth-link/provider-authjs'
+
+const report = await reconcileAuthJsMongoIndexes(payload)
+// { status: 'reconciled', droppedStaleTokenIndex, backfilledKeys, keyIndex }
+```
+
+It backfills `key` (`JSON.stringify([identifier, tokenHash])`),
+drops the stale `token` unique index, and reports (rather than
+throws) when the `key` index build is still in flight. Run it once
+per deployment after upgrading (idempotent; safe to re-run).
+Already upgraded without it? The composite-key behavior silently
+does not hold on your deployment until you run the reconciliation.
+
+## 0.2.x → 0.3.0
+
+Install-level changes — read before bumping:
+
+- **`better-auth` and `@auth/core` moved from dependencies to
+  peers.** The providers no longer install them for you. If you
+  already import them (you almost certainly do — you configure the
+  BA server or the Auth.js providers), add them explicitly:
+
+  ```sh
+  # Better Auth tree
+  bun add better-auth@1.7          # validated band: >=1.7.6 <1.8.0
+  # Auth.js tree
+  bun add @auth/core@0.41          # validated band: >=0.41.0 <0.42.0
+  ```
+
+  Missing peers fail at install time with a clear "unmet peer" (npm)
+  or auto-install-warn (bun) — not with a runtime module-not-found
+  three frames deep. The narrow bands are the point: a fresh install
+  can no longer resolve an upstream minor nobody validated. Widening
+  is a compat patch away once the matrix proves the new version.
+
+- **`payload` peers tightened to `^3.83.0 || 4.0.0-beta.0`.** 3.83.0
+  is the bisected floor for the named-plugin and global-hook APIs the
+  plugin uses; the v4 pin is the exact tested beta (no caret — v4
+  canaries were silently inside the old range and broken).
+- **Framework peers got honest floors:** `next` is now
+  `^15.0.0 || ^16.0.0` (16 e2e-tested by the examples), and
+  TanStack Start is `^1.140.2` (the first version with the
+  `createMiddleware` types the adapter uses) with
+  `@tanstack/react-router` `^1.170.0`.
+- **Runtime version assertions** are live (see above). On a peer
+  outside the band you get `UnsupportedVersionError` at boot —
+  actionable, before any write.
+- **Role-config safety:** removing a role from
+  `authLink({ roles })` now stops granting it on the next session
+  (stored values are filtered at read time), and the first boot
+  after the change logs one aggregate warning naming the drifted
+  values and affected user count. See the
+  [role runbook](#changing-or-removing-roles) before trimming roles.
+
+No database shape changes in this line: the collection snapshots are
+byte-identical to 0.2.x (enforced by `bun run schema:check` from
+here on — a PR that changes a shape must carry an `Upgrade impact:`
+changeset section and an entry in this file, or CI fails).
+
+## Rolling deploys and rollback (N and N−1)
+
+The compatibility criterion, tested by the golden-DB suite on every
+change: **the previous minor boots and serves core flows on the new
+schema, and the new minor serves pre-migration rows.** Concretely,
+during a rolling deploy or a rollback:
+
+- 0.1.1 code on a 0.2.x database works — extra nullable columns are
+  ignored, and old Auth.js token writes (`key` absent) are accepted
+  by the nullable unique index. Rollback is data-safe.
+- Caveat: an old pod cannot know fields it predates (e.g.
+  `suspendedUntil`), so a suspended user keeps verifying on old pods
+  until the rollout finishes. Finish rollouts promptly; that window
+  is inherent to N/N−1.
+- **Dev-push makes downgrades destructive** (Payload/drizzle prompts
+  to delete the newer columns; accepting loses data, declining exits
+  silently). Never roll back through a dev-push boot. Migrations
+  mode boots old code read/write against the new schema safely
+  (that is what the N−1 test proves).
+- Schema changes follow expand → backfill → contract across two
+  releases; a column that a previous minor cannot write against
+  (NOT NULL without default, narrowed type) must never ship.
+
+## Changing or removing roles
+
+Roles are stored on user docs as plain slugs and validated for
+**format** at the boundary, but grant only what the configured
+`authLink({ roles })` allows (B11). When you remove or rename a
+role, stored rows keep the old value until rewritten — so:
+
+1. **Drain first.** Reassign every user holding the role to its
+   replacement (admin panel or `payload.updateOne`) while the role
+   is still configured.
+2. **Then remove it** from `authLink({ roles })`.
+3. **Boot and read the audit.** The first boot logs one aggregate
+   warning — `N user doc(s) carry roles outside the configured set:
+'editor' (2)` — if anything was missed. Sessions already stopped
+   granting the removed role at that boot (reads filter it), and a
+   user whose _only_ role was removed is denied a record entirely
+   (never silently upgraded to the default role — same policy as
+   corrupt roles).
+4. Re-add the role to the config (temporarily) to drain properly if
+   step 3 shows stragglers; clean rows keep the warning away on the
+   next boot.
+
+Renaming = add the new role, drain, remove the old one. The audit
+runs on every boot (`onInit`) and costs one indexed query.
+
+## Running production on migrations, not push
+
+Dev-push (`push: true`) is for development: it makes destructive
+choices interactively and makes downgrades lossy (above). Production
+runs with `push: false` and explicit migrations:
+
+1. Create the migration in your repo:
+
+   ```sh
+   payload.migrate:create   # or: bunx payload migrate:create
+   ```
+
+   Review the generated SQL before committing it. For the 0.1.1 →
+   0.2.x move it must add `key` **nullable** (see above) and the
+   optional governance columns — anything NOT NULL without a default
+   is a bug in the migration, not in your database.
+
+2. Run migrations as a deploy step, before new pods serve traffic:
+   `payload.migrate` (or `bunx payload migrate`) in the release
+   job. The expand→backfill→contract policy means migrations run
+   cleanly while old-version pods still serve.
+3. Keep the migration files in the repo — they are the record of
+   how each release moves the database, and the artifact you attach
+   to upgrade notes when you operate more than one environment.
+
+The golden-DB tests (SQLite in `bun run check`; Postgres and Mongo
+in the compat workflow) boot the previous release's seed under the
+current code in both push and migrations modes, so a release that
+would strand an upgraded database fails CI before it ships.
 
 ## 0.0.x → 0.1.0 (initial release)
 

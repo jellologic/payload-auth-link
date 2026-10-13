@@ -1,25 +1,53 @@
 # Compatibility
 
-Pinned versions are the validated set; ranges are what the package
-manifests allow. CI runs the full matrix (unit + e2e on SQLite,
-Postgres service, and mongo memory replset).
+The **supported bands are exactly the CI-tested matrix**: the
+`compat` workflow proves `{floor, latest}` per upstream (build +
+unit + schema-probe), the e2e suites run every release against
+SQLite, Postgres, and mongo, and the golden-DB tests keep the
+previous minor's database booting. A range below is a promise only
+as wide as those cells; the runtime version assertions
+(`UnsupportedVersionError` at wiring time) enforce the same bands
+before any database write.
+
+Support policy: recommend **exact pins** for upstreams in your
+lockfile (the manifests' ranges exist so fresh installs resolve
+something tested, not so every version is blessed). After an
+upstream minor lands, the compat patch that widens the band is the
+next release — file or watch an issue; until then the old band
+holds and the assertion fails fast with a typed error instead of
+letting an unvalidated version touch your database.
+
+**Better Auth lockstep (three-way rule):** `better-auth` core and
+every `@better-auth/*` satellite you enable (`@better-auth/passkey`
+today) move **together**, and only within our validated band.
+Satellites peer-lock to exact BA minors — when a satellite ships for
+BA 1.8, installing it forces BA 1.8 under you — so bump satellites
+and core in one commit, run the provider's schema probe (it fails
+fast on unvalidated BA schemas), and never let a satellite drag you
+outside the band: the version assertion will refuse to boot, which
+is the intended outcome. Unprobed satellites (`@better-auth/api-key`,
+`@better-auth/sso`) are **unsupported until probed**: adding one
+meets `UnsupportedSchemaError` with this same fail-fast.
 
 ## Runtimes and frameworks
 
-| Dependency                               | Validated           | Range                       | Notes                                                                |
-| ---------------------------------------- | ------------------- | --------------------------- | -------------------------------------------------------------------- |
-| `payload`                                | 3.90.2              | `^3.0.0` (peer)             | v3 for Next; plugin also loads on v4 beta with zero changes          |
-| `payload` (Start)                        | 4.0.0-beta.0        | narrow beta pin (example)   | `@payloadcms/tanstack-start` exists only on the v4 line              |
-| `next`                                   | 16.4.0              | `>=15.0.0` (peer, next pkg) | App router; `middleware.ts` (proxy-safe)                             |
-| `@tanstack/react-start` / `react-router` | 1.168.61 / 1.170.41 | peer (start pkg)            | File routes, server functions, request middleware                    |
-| `vite` (Start)                           | 8.3.4               | dev (example)               | + `@vitejs/plugin-rsc`, `react-server-dom-webpack` for Payload admin |
-| `react` / `react-dom`                    | 19.2.6              | `^19.0.0` (peer, UI pkgs)   |                                                                      |
-| `better-auth`                            | 1.7.7               | provider dep                | Ships with the provider; install directly only to import it yourself |
-| `@auth/core`                             | 0.41.3              | provider dep                | Raw core, not the `next-auth` wrapper                                |
-| `neverthrow`                             | 8.2.0               | dep                         | `Result`/`ResultAsync` throughout                                    |
-| `zod`                                    | 4.6.5               | dep                         | Boundary schemas + branded types                                     |
-| `bun`                                    | 1.4.2               | `packageManager`            | CI pins the same                                                     |
-| `node`                                   | 20.9+ / 22          | `engines`                   | All packages ESM-only (`type: module`)                               |
+| Dependency                               | Validated (floor / installed) | Range (peer unless noted)           | Notes                                                                               |
+| ---------------------------------------- | ----------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------- |
+| `payload`                                | 3.83.0 / 3.90.2               | `^3.83.0 \|\| 4.0.0-beta.0`         | v3 for Next; 3.83 is the named-plugin/global-hook floor; v4 pin is exact            |
+| `payload` (Start)                        | 4.0.0-beta.0                  | exact beta pin (example)            | `@payloadcms/tanstack-start` exists only on the v4 line                             |
+| `better-auth`                            | 1.7.6 / 1.7.7                 | `>=1.7.6 <1.8.0`                    | Type-level floor 1.7.6 (`modelKey` types); validated 1.7 line only — lockstep above |
+| `@auth/core`                             | 0.41.0 / 0.41.3               | `>=0.41.0 <0.42.0`                  | Raw core, not the `next-auth` wrapper; 0.x minors add Adapter methods               |
+| `next`                                   | 15.0.0 / 16.4.0               | `^15.0.0 \|\| ^16.0.0` (next pkg)   | Both majors typecheck; 16.4 e2e-tested by the example                               |
+| `@tanstack/react-start` / `react-router` | 1.140.2 / 1.168.61 · 1.170.41 | `^1.140.2` / `^1.170.0` (start pkg) | 1.140.2 is the `createMiddleware` types floor                                       |
+| `vite` (Start)                           | 8.3.4                         | dev (example)                       | + `@vitejs/plugin-rsc`, `react-server-dom-webpack` for Payload admin                |
+| `react` / `react-dom`                    | 19.2.6                        | `^19.0.0` (peer, UI pkgs)           |                                                                                     |
+| `neverthrow`                             | 8.2.0                         | dep                                 | `Result`/`ResultAsync` throughout                                                   |
+| `zod`                                    | 4.6.5 (floor 4.0.0)           | dep                                 | Boundary schemas + branded types; floor proven by probe (see below)                 |
+| `@standard-schema/spec`                  | 1.1.0                         | dep (types)                         | Every exported schema is a Standard Schema v1                                       |
+| `typescript` (consumer)                  | 5.5.4 / 6.0.3                 | —                                   | Floor is 5.5; 5.0 fails inside Zod 4.6's own types (`NoInfer`)                      |
+| `effect`                                 | 3.22.2                        | dev only                            | Interop tested in CI; never a runtime dependency (recipe below)                     |
+| `bun`                                    | 1.4.2                         | `packageManager`                    | CI pins the same                                                                    |
+| `node`                                   | 20.9+ / 22                    | `engines`                           | All packages ESM-only (`type: module`)                                              |
 
 Module resolution: shipped code builds under `nodenext`, except
 `@payload-auth-link/next`, which uses `esnext`/`bundler` because
@@ -90,3 +118,55 @@ core), and every e2e spec runs against both examples.
 `attw --profile esm-only` + `publint` gate every package
 (`bun run release:check`). Legacy node10/CJS resolution is the
 documented non-goal: ESM-only by decision.
+
+More alarms run in `bun run check` so breakage is caught here, not
+in your build:
+
+- **API snapshots** (`snapshots/api/*.txt`, `bun run api:check`):
+  the full shipped `.d.ts` surface of every package. Any change
+  requires a changeset at the right semver level.
+- **Schema snapshots** (`snapshots/schema/*.json`,
+  `bun run schema:check`): the DB-facing collection shapes both
+  providers ship and the plugin's injected users fields. A change
+  must carry an `Upgrade impact:` changeset section and a
+  [upgrading.md](upgrading.md) entry, or CI fails — a silent shape
+  change is a broken user database.
+- **Consumer fixture** (`bun run consumer:check`): the built `dist`
+  types typechecked with `skipLibCheck: false` under the strictest
+  flags, the way a strict consumer compiles.
+- **Type pins** (`expectTypeOf` in `type-alarms.test.ts` and the
+  adapter inventory alarms in both providers): union inventories,
+  schema↔domain-type pairs, and the full `Adapter`/`CustomAdapter`
+  method surfaces pinned literal-for-literal — an upstream-added
+  adapter method fails `tsc`, not a production request.
+- **Payload import inventory** (`payload-inventory.test.ts`): every
+  `payload`/`payload/shared` symbol shipped source imports is
+  pinned; a new import (which sets the real Payload floor) fails CI
+  until it is verified against the band and noted here.
+
+## Schema interoperability (Zod, Effect, Standard Schema)
+
+Core's boundary schemas (`emailSchema`, `roleSchema`,
+`providerIdSchema`, `phoneNumberSchema`, `linkingPolicySchema`,
+`collectionMapSchema`, `startupConfigSchema`) are Zod 4 schemas and
+therefore Standard Schema v1 objects: each carries
+`~standard.validate` with `StandardSchemaV1.InferOutput` equal to
+its domain type (`Email`, `Role`, …). That is the supported
+composition surface for every schema ecosystem:
+
+- **Do not** nest an exported schema inside a Zod 3 schema; the
+  majors are runtime-incompatible. Compose through `~standard`, or
+  validate with the paired parser (`parseEmail`, `parseRole`, …)
+  and keep the branded result.
+- **Effect users:** decode through `~standard.validate` inside
+  `Effect.tryPromise`, convert your own schemas with
+  `Schema.standardSchemaV1`, and lift neverthrow `ResultAsync` port
+  calls with `Effect.promise` + `Result.match` (they never reject
+  by contract). The recipe is pinned by
+  `packages/core/src/__tests__/effect-interop.test.ts`, which runs
+  in CI against the current Effect release; `effect` stays a
+  devDependency — nothing shipped imports it.
+- The `zod: ^4.0.0` floor is proven, not assumed: core source
+  typechecks against Zod 4.0.0 and the built package passes a
+  runtime probe on 4.0.0 (Better Auth's own `^4.5.4` requirement
+  will float most real trees higher).
