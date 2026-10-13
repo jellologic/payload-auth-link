@@ -121,6 +121,18 @@ single authority, and a provider's own role field (such as Better
 Auth's `admin.role`) is never read: see [One role system: Payload
 roles](concepts.md#one-role-system-payload-roles).
 
+**Who edits roles.** The injected fields fail closed by default:
+`roles`, `phone`, `suspendedUntil` and `suspendReason` are writable
+only by the role-manager roles (`roleManagerRoles`, defaulting to
+`['admin']` — required when you don't configure an `admin` role);
+`suspendReason`, `suspendedUntil` and `identities` are readable only
+by them; `identities` is engine-managed and read-only to everyone
+else. A verified self-registered user can never grant themselves a
+role. Your own access functions still win wherever you declare them
+— the plugin only fills gaps. If your users collection carries other
+fields users may edit, declare collection `access` explicitly; the
+plugin does not guess a policy for fields it did not inject.
+
 ## Edit 4 — Routes, middleware, UI
 
 **Auth routes** (`app/api/auth/[...all]/route.ts`):

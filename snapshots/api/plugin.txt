@@ -345,6 +345,15 @@ export type AuthLinkPluginOptions = {
     readonly roles: readonly string[];
     /** Role for newly created users. Must be one of `roles`. */
     readonly defaultRole: string;
+    /**
+     * Roles that govern the auth system: write `roles`, `phone`,
+     * `suspendedUntil` and `suspendReason` on users, read the
+     * operator-facing fields, and reach the admin panel by default.
+     * Defaults to `['admin']` when an `admin` role is configured;
+     * required when it is not. Payload's Local API (overrideAccess)
+     * is never restricted by this.
+     */
+    readonly roleManagerRoles?: readonly string[] | undefined;
     /** Identity providers, fronted by their ports. At least one. */
     readonly providers: readonly IdentityProviderPort[];
     /** Payload collection holding users. Defaults to `users`. */
@@ -464,6 +473,12 @@ export type WiredOptions = {
     readonly userFields: UserGovernanceFields;
     /** Roles withheld without MFA proof (CAP-6); empty means no policy. */
     readonly requireMfaForRoles: readonly Role[];
+    /**
+     * Roles governing the auth system: gate
+     * writes to injected governance fields, sensitive-field reads, and
+     * the default admin-panel fallback. Never empty.
+     */
+    readonly roleManagerRoles: readonly Role[];
     /** Organizations wiring (CAP-11), or `null` when not enabled. */
     readonly organizations: WiredOrganizations | null;
 };

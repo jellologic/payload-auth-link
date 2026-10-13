@@ -347,25 +347,47 @@ describe('real Payload auth path (strategy -> req.user)', () => {
     const after = await payload.findByID({ collection: 'users', id: targetId })
     expect(after.roles).toEqual(['user'])
 
-    // Control: the identical REST PATCH under a plain session (same
-    // strategy, no actor) DOES move the roles — so the deny above is
-    // the impersonation policy on the real `req.user`, not CSRF or
-    // generic access. Reset afterwards for the suites below.
-    const plainCookie = stub.issue({
-      sessionId: 'sess-real-rest-plain',
-      providerUserId: 'stub-target',
-      email: 'target@test.dev',
-      expiresAt: new Date(Date.now() + 3600_000),
-    })
-    const plainPatch = await handleEndpoints({
+    // Control 1: a plain session can no longer
+    // move roles at all — that write is role-manager-only now.
+    await handleEndpoints({
       config,
       request: new Request(`${ORIGIN}/api/users/${String(targetId)}`, {
         method: 'PATCH',
-        headers: { cookie: plainCookie, 'content-type': 'application/json', origin: ORIGIN },
+        headers: {
+          cookie: stub.issue({
+            sessionId: 'sess-real-rest-plain',
+            providerUserId: 'stub-target',
+            email: 'target@test.dev',
+            expiresAt: new Date(Date.now() + 3600_000),
+          }),
+          'content-type': 'application/json',
+          origin: ORIGIN,
+        },
         body: JSON.stringify({ roles: ['admin'] }),
       }),
     })
-    expect(plainPatch.status).toBe(200)
+    const stripped = await payload.findByID({ collection: 'users', id: targetId })
+    expect(stripped.roles).toEqual(['user'])
+
+    // Control 2: the identical REST PATCH under the OPERATOR's session
+    // (role manager, no actor) DOES move the roles — so the deny above
+    // is the impersonation policy on the real `req.user`, not CSRF or
+    // generic access. Reset afterwards for the suites below.
+    const managerCookie = stub.issue({
+      sessionId: 'sess-real-rest-manager',
+      providerUserId: 'stub-operator',
+      email: 'operator@test.dev',
+      expiresAt: new Date(Date.now() + 3600_000),
+    })
+    const managerPatch = await handleEndpoints({
+      config,
+      request: new Request(`${ORIGIN}/api/users/${String(targetId)}`, {
+        method: 'PATCH',
+        headers: { cookie: managerCookie, 'content-type': 'application/json', origin: ORIGIN },
+        body: JSON.stringify({ roles: ['admin'] }),
+      }),
+    })
+    expect(managerPatch.status).toBe(200)
     const promoted = await payload.findByID({ collection: 'users', id: targetId })
     expect(promoted.roles).toEqual(['admin'])
     await payload.update({ collection: 'users', id: targetId, data: { roles: ['user'] } })
@@ -389,13 +411,20 @@ describe('impersonation restrictions (CAP-8b / D5)', () => {
     const afterAttempt = await payload.findByID({ collection: 'users', id: targetId })
     expect(afterAttempt.roles).toEqual(['user'])
 
-    // Control: without an actor, the identical write goes through,
-    // proving the deny above is the impersonation policy at work.
+    // Control: without an actor, the identical write under a
+    // role-manager user goes through, proving the deny above is the
+    // impersonation policy at work (a plain user would be denied by
+    // the role-manager rule instead).
     const promoted = await payload.update({
       collection: 'users',
       id: targetId,
       data: { roles: ['admin'] },
-      user: targetUser(undefined),
+      user: {
+        id: String(operatorId),
+        collection: 'users',
+        email: 'operator@test.dev',
+        roles: ['admin'],
+      },
       overrideAccess: false,
     })
     expect(promoted.roles).toEqual(['admin'])
@@ -415,8 +444,14 @@ describe('impersonation restrictions (CAP-8b / D5)', () => {
       throw new Error('users admin access missing')
     }
     const impersonatedReq = { user: targetUser(resolvedActor()) } as unknown as PayloadRequest
+    const managerReq = {
+      user: { ...targetUser(undefined), roles: ['admin'] },
+    } as unknown as PayloadRequest
     const plainReq = { user: targetUser(undefined) } as unknown as PayloadRequest
     await expect(admin({ req: impersonatedReq })).resolves.toBe(false)
-    await expect(admin({ req: plainReq })).resolves.toBe(true)
+    // security hardening: the default admin-panel grant is the
+    // role-manager roles, not "any signed-in user".
+    await expect(admin({ req: managerReq })).resolves.toBe(true)
+    await expect(admin({ req: plainReq })).resolves.toBe(false)
   })
 })

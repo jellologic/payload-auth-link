@@ -104,6 +104,8 @@ describe('payload import inventory (Phase 3)', () => {
         'DateField',
         'Endpoint',
         'Field',
+        'FieldAccess',
+        'FieldAccessArgs',
         'GlobalBeforeOperationHook',
         'GlobalConfig',
         'Payload',

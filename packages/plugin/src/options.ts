@@ -43,6 +43,15 @@ export type AuthLinkPluginOptions = {
   readonly roles: readonly string[]
   /** Role for newly created users. Must be one of `roles`. */
   readonly defaultRole: string
+  /**
+   * Roles that govern the auth system: write `roles`, `phone`,
+   * `suspendedUntil` and `suspendReason` on users, read the
+   * operator-facing fields, and reach the admin panel by default.
+   * Defaults to `['admin']` when an `admin` role is configured;
+   * required when it is not. Payload's Local API (overrideAccess)
+   * is never restricted by this.
+   */
+  readonly roleManagerRoles?: readonly string[] | undefined
   /** Identity providers, fronted by their ports. At least one. */
   readonly providers: readonly IdentityProviderPort[]
   /** Payload collection holding users. Defaults to `users`. */
@@ -164,6 +173,12 @@ export type WiredOptions = {
   readonly userFields: UserGovernanceFields
   /** Roles withheld without MFA proof (CAP-6); empty means no policy. */
   readonly requireMfaForRoles: readonly Role[]
+  /**
+   * Roles governing the auth system: gate
+   * writes to injected governance fields, sensitive-field reads, and
+   * the default admin-panel fallback. Never empty.
+   */
+  readonly roleManagerRoles: readonly Role[]
   /** Organizations wiring (CAP-11), or `null` when not enabled. */
   readonly organizations: WiredOrganizations | null
 }
@@ -328,6 +343,32 @@ export function wireOptions(raw: AuthLinkPluginOptions): WiredOptions {
       assertCapabilities(provider, ['mfa'])
     }
   }
+  // security hardening: the roles that govern the auth system.
+  // Defaults to ['admin'] when an admin role exists; otherwise the
+  // builder must name the managers — guessing one would mint either
+  // an unmanaged system or a privilege nobody holds.
+  let roleManagerRoles: readonly Role[]
+  if (raw.roleManagerRoles === undefined) {
+    const adminRole = validated.value.roles.find((role) => role === 'admin')
+    if (adminRole === undefined) {
+      throw new InvalidConfigError(
+        'roleManagerRoles is required: no role named admin exists in roles, so ' +
+          'payload-auth-link cannot guess who may assign roles, suspend users, or ' +
+          'reach the admin panel. Pass roleManagerRoles: [...].'
+      )
+    }
+    roleManagerRoles = [adminRole]
+  } else {
+    roleManagerRoles = parseRoleList(raw.roleManagerRoles, 'roleManagerRoles')
+    if (roleManagerRoles.length === 0) {
+      throw new InvalidConfigError('roleManagerRoles must not be empty')
+    }
+    for (const role of roleManagerRoles) {
+      if (!validated.value.roles.includes(role)) {
+        throw new InvalidConfigError(`roleManagerRoles lists '${role}', which is not one of roles`)
+      }
+    }
+  }
   let organizations: WiredOrganizations | null = null
   if (raw.organizations?.enabled === true) {
     const orgsSlug = fieldNameOption(
@@ -383,6 +424,7 @@ export function wireOptions(raw: AuthLinkPluginOptions): WiredOptions {
     admitChannels: validateAdmitChannels(raw.admitChannels),
     userFields,
     requireMfaForRoles,
+    roleManagerRoles,
     organizations,
   }
 }

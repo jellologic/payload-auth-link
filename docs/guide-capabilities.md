@@ -167,7 +167,9 @@ until the instant passes or the field is cleared. As defense in
 depth, providers declaring `revoke-user-sessions` (Better Auth
 always; Auth.js on the database strategy) also drop the provider
 sessions. `suspendReason` is operator-facing and never sent to
-clients. Suspension writes are denied while impersonating.
+clients. Suspension writes are denied while impersonating and are
+limited to the role-manager roles (`roleManagerRoles`, default
+`['admin']`); reads of the suspension fields are role-manager only.
 
 ## Phone sign-in (CAP-9)
 
