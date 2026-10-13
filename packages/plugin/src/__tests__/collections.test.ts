@@ -24,7 +24,13 @@ describe('applyUsersCollection', () => {
     expect(result).toHaveLength(1)
     const users = result[0]
     expect(users?.slug).toBe('users')
-    expect(users?.fields.map((field) => fieldName(field))).toEqual(['roles', 'identities'])
+    expect(users?.fields.map((field) => fieldName(field))).toEqual([
+      'roles',
+      'identities',
+      'phone',
+      'suspendedUntil',
+      'suspendReason',
+    ])
     expect(users?.auth).toMatchObject({ strategies: [{ name: strategyName }] })
     expect(users?.hooks?.beforeValidate).toHaveLength(1)
   })
@@ -44,6 +50,9 @@ describe('applyUsersCollection', () => {
       'nickname',
       'roles',
       'identities',
+      'phone',
+      'suspendedUntil',
+      'suspendReason',
     ])
     expect(users?.hooks?.beforeValidate).toHaveLength(2)
     expect(users?.hooks?.beforeValidate?.[0]).toBe(hook)

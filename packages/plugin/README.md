@@ -16,7 +16,10 @@ ESM-only, Node 20.9 or later.
 
 ## What it provides
 
-- `authLink(options)`: the plugin itself
+- `authLink(options)`: the plugin itself — session endpoints,
+  verified-claim linking, impersonation with audit, MFA role
+  policies, suspension, multi-session logout, optional
+  Payload-owned organizations with SSO domain enforcement
 - `@payload-auth-link/plugin/admin`: admin UI components (identity row labels)
 
 ## Usage
@@ -43,6 +46,7 @@ export default buildConfig({
 ## Docs
 
 - [Getting started](https://github.com/jellologic/payload-auth-link/blob/main/docs/getting-started.md)
+- [Capabilities guide](https://github.com/jellologic/payload-auth-link/blob/main/docs/guide-capabilities.md)
 - [Concepts](https://github.com/jellologic/payload-auth-link/blob/main/docs/concepts.md)
 - [Compatibility](https://github.com/jellologic/payload-auth-link/blob/main/docs/compatibility.md) · [Troubleshooting](https://github.com/jellologic/payload-auth-link/blob/main/docs/troubleshooting.md) · [Changelog](./CHANGELOG.md)
 

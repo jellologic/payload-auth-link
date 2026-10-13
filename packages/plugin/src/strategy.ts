@@ -39,7 +39,9 @@ export function createAuthLinkStrategy(wired: WiredOptions): AuthStrategy {
       }
       return {
         user: {
-          ...toPayloadUser(found.value, wired.config.map.usersCollection),
+          ...toPayloadUser(found.value, wired.config.map.usersCollection, verified.value, {
+            requireMfaForRoles: wired.requireMfaForRoles,
+          }),
           _strategy: strategyName,
         },
       }
