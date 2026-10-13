@@ -283,6 +283,7 @@ functions, and expire them. MFA policy: key sessions report
 stays withheld from API keys — fail-closed by design. Without
 `enableSessionForAPIKeys` and the admitted channel, a key
 authenticates nothing (D8).
+
 ## Deriving declarations from Better Auth's schema (issue #17)
 
 Hand-declaring `customFields`/`customModels` for every plugin is

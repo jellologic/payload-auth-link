@@ -171,7 +171,6 @@ Upgrade impact: config-time behavior — previously-throwing setups
 with a compatible roles select now boot and adopt it; the adopted
 field gains the role-manager write restriction (roleManagerRoles).
 
-
 ## 0.3.x → 0.4.0 (audible by default)
 
 `authLink` now defaults to a **console logger** instead of a silent
