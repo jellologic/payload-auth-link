@@ -25,9 +25,11 @@ BA 1.8, installing it forces BA 1.8 under you — so bump satellites
 and core in one commit, run the provider's schema probe (it fails
 fast on unvalidated BA schemas), and never let a satellite drag you
 outside the band: the version assertion will refuse to boot, which
-is the intended outcome. Unprobed satellites (`@better-auth/api-key`,
-`@better-auth/sso`) are **unsupported until probed**: adding one
-meets `UnsupportedSchemaError` with this same fail-fast.
+is the intended outcome. Probed satellites: `@better-auth/passkey`
+and `@better-auth/api-key` (both in the committed schema probe and
+the compat matrix). Unprobed: `@better-auth/sso` is **unsupported
+until probed** — adding it meets `UnsupportedSchemaError` with this
+same fail-fast.
 
 ## Runtimes and frameworks
 

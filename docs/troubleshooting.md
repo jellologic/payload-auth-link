@@ -51,11 +51,13 @@ the point.
 
 The same error at **boot** (not login) usually means a Better Auth
 plugin contributes a field or model this adapter has not declared.
-Two satellite packages are known-unprobed today — `@better-auth/api-key`
-and `@better-auth/sso`: composing them fails fast with
-`UnsupportedSchemaError` until support lands; every plugin exported
-by `better-auth/plugins` plus `@better-auth/passkey` is covered by
-the committed schema probe.
+Satellites probed by the committed schema probe (declare their models
+in `customModels` exactly as the probe does, and they work):
+`@better-auth/passkey` and `@better-auth/api-key` (verified end to end
+— see the [API keys recipe](guide-capabilities.md#api-keys)). Still
+unprobed: `@better-auth/sso` — composing it fails fast with
+`UnsupportedSchemaError` until support lands. Every plugin exported
+by `better-auth/plugins` is covered by the probe.
 
 ## `SQLITE_ERROR: no such column: …` (or `42703` on Postgres) at boot or on first use
 
