@@ -4,8 +4,10 @@ import {
   InvalidConfigError,
   InvalidProviderIdError,
   UnknownProviderError,
+  UnsupportedCapabilityError,
 } from '../errors.js'
 import {
+  assertCapabilities,
   defineProviderId,
   defineSessionId,
   defineUserId,
@@ -21,6 +23,7 @@ function stubProvider(
   return {
     id: defineProviderId(id),
     sessionCookieNames,
+    capabilities: new Set(),
     getSession: () => okAsync(null),
     revokeSession: () => okAsync(undefined),
   }
@@ -46,6 +49,30 @@ describe('defineUserId / defineSessionId', () => {
   it('throws on empty ids', () => {
     expect(() => defineUserId('')).toThrow('must not be empty')
     expect(() => defineSessionId('')).toThrow('must not be empty')
+  })
+})
+
+describe('assertCapabilities (PORT-2)', () => {
+  it('passes when every required capability is declared (or none required)', () => {
+    const provider = { ...stubProvider('capable'), capabilities: new Set(['phone' as const]) }
+    expect(() => assertCapabilities(provider, ['phone'])).not.toThrow()
+    expect(() => assertCapabilities(provider, [])).not.toThrow()
+    expect(() => assertCapabilities(stubProvider('bare'), [])).not.toThrow()
+  })
+
+  it('throws UnsupportedCapabilityError naming provider and capability', () => {
+    const provider = stubProvider('bare')
+    let caught: unknown
+    try {
+      assertCapabilities(provider, ['phone'])
+    } catch (error) {
+      caught = error
+    }
+    expect(caught).toBeInstanceOf(UnsupportedCapabilityError)
+    if (caught instanceof UnsupportedCapabilityError) {
+      expect(caught.providerId).toBe('bare')
+      expect(caught.capability).toBe('phone')
+    }
   })
 })
 
@@ -78,6 +105,17 @@ describe('createProviderRegistry', () => {
     }
     const registry = createProviderRegistry()
     expect(registry.register(stubProvider('good', ['__Secure-a.session_token'])).isOk()).toBe(true)
+  })
+
+  it('fails fast at wiring on illegal logout cookie names too (CAP-8a)', () => {
+    const registry = createProviderRegistry()
+    expect(() =>
+      registry.register({
+        ...stubProvider('bad-logout', ['ok_name']),
+        logoutCookieNames: ['semi;colon'],
+      })
+    ).toThrow(InvalidConfigError)
+    expect(registry.ids()).toEqual([])
   })
 
   it('reports unknown providers', () => {
