@@ -50,7 +50,11 @@
   },
   "devDependencies": {
     "@payload-auth-link/plugin": "workspace:*",
+    "@payloadcms/db-mongodb": "3.90.2",
+    "@payloadcms/db-postgres": "3.90.2",
     "@payloadcms/db-sqlite": "3.90.2",
+    "mongodb": "^6.0.0",
+    "mongodb-memory-server": "^11.3.0",
     "payload": "3.90.2"
   },
   "publishConfig": {
