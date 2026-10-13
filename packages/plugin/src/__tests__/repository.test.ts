@@ -2,6 +2,7 @@ import {
   defineProviderId,
   defineUserId,
   parseEmail,
+  parsePhoneNumber,
   parseRole,
   RepositoryError,
   UserExistsError,
@@ -212,6 +213,108 @@ describe('payload user repository setEmail', () => {
         userId,
         next
       )
+    )
+  })
+})
+
+describe('payload user repository unlinkIdentity (CAP-14)', () => {
+  it('fails when the user is missing', async () => {
+    expectRepositoryError(await repository({ find: found([]) }).unlinkIdentity(userId, ref))
+  })
+
+  it('is an idempotent no-op when the identity is not linked', async () => {
+    const update = vi.fn(down)
+    const users = repository({ find: found([doc]), update })
+    expect((await users.unlinkIdentity(userId, ref)).isOk()).toBe(true)
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it('removes only the matching row and never deletes the user', async () => {
+    const update = vi.fn<(args: unknown) => Promise<unknown>>(() => Promise.resolve(doc))
+    const users = repository({ find: found([linkedDoc]), update })
+    const result = await users.unlinkIdentity(userId, ref)
+    expect(result._unsafeUnwrap().identities).toEqual([])
+    expect(update.mock.calls[0]?.[0]).toMatchObject({ id: userId, data: { identities: [] } })
+  })
+
+  it('maps write outages and unmappable results to RepositoryError', async () => {
+    expectRepositoryError(
+      await repository({ find: found([linkedDoc]), update: down }).unlinkIdentity(userId, ref)
+    )
+    expectRepositoryError(
+      await repository({
+        find: found([linkedDoc]),
+        update: () => Promise.resolve(null),
+      }).unlinkIdentity(userId, ref)
+    )
+  })
+})
+
+describe('payload user repository phone (CAP-9)', () => {
+  const phone = parsePhoneNumber('+14155550132')._unsafeUnwrap()
+  const phoneDoc = { ...doc, phone: '+14155550132' }
+
+  it('finds a user by stored E.164 phone', async () => {
+    const find = vi.fn(found([phoneDoc]))
+    const users = repository({ find })
+    expect((await users.findByPhone?.(phone))?._unsafeUnwrap()?.phone).toBe('+14155550132')
+    expect(find).toHaveBeenLastCalledWith(
+      expect.objectContaining({ where: { phone: { equals: '+14155550132' } } })
+    )
+    expectRepositoryError(
+      (await repository({ find: down }).findByPhone?.(phone)) ?? { isErr: () => false }
+    )
+  })
+
+  it('setPhone fails when the user is missing and no-ops when unchanged', async () => {
+    expectRepositoryError(
+      (await repository({ find: found([]) }).setPhone?.(userId, phone)) ?? { isErr: () => false }
+    )
+    const update = vi.fn(down)
+    const users = repository({ find: found([phoneDoc]), update })
+    expect((await users.setPhone?.(userId, phone))?.isOk()).toBe(true)
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it('setPhone refuses to steal a number held by another user', async () => {
+    const other = { ...phoneDoc, id: 'user-2' }
+    let call = 0
+    const find = () => {
+      call += 1
+      return Promise.resolve({ docs: [call === 1 ? doc : other] })
+    }
+    const result = await repository({ find }).setPhone?.(userId, phone)
+    expectRepositoryError(result ?? { isErr: () => false })
+  })
+
+  it('setPhone writes a new number and maps failures', async () => {
+    let call = 0
+    const find = () => {
+      call += 1
+      return Promise.resolve({ docs: call === 1 ? [doc] : [] })
+    }
+    const users = repository({ find, update: () => Promise.resolve(phoneDoc) })
+    expect((await users.setPhone?.(userId, phone))?._unsafeUnwrap().phone).toBe('+14155550132')
+    let failingCall = 0
+    const failingFind = () => {
+      failingCall += 1
+      return Promise.resolve({ docs: failingCall === 1 ? [doc] : [] })
+    }
+    expectRepositoryError(
+      (await repository({ find: failingFind, update: down }).setPhone?.(userId, phone)) ?? {
+        isErr: () => false,
+      }
+    )
+    let nullCall = 0
+    const nullFind = () => {
+      nullCall += 1
+      return Promise.resolve({ docs: nullCall === 1 ? [doc] : [] })
+    }
+    expectRepositoryError(
+      (await repository({ find: nullFind, update: () => Promise.resolve(null) }).setPhone?.(
+        userId,
+        phone
+      )) ?? { isErr: () => false }
     )
   })
 })

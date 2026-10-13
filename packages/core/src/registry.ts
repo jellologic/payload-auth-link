@@ -21,10 +21,13 @@ export function createProviderRegistry(): ProviderRegistry {
   const providers = new Map<ProviderId, IdentityProviderPort>()
   return {
     register(provider) {
-      const illegal = provider.sessionCookieNames.filter((name) => !isCookieName(name))
+      const illegal = [
+        ...provider.sessionCookieNames,
+        ...(provider.logoutCookieNames ?? []),
+      ].filter((name) => !isCookieName(name))
       if (illegal.length > 0) {
         throw new InvalidConfigError(
-          `provider ${provider.id} has illegal session cookie names: ${illegal
+          `provider ${provider.id} has illegal cookie names: ${illegal
             .map((name) => JSON.stringify(name))
             .join(', ')}`
         )

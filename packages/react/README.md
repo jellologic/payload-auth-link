@@ -16,7 +16,7 @@ ESM-only, Node 20.9 or later.
 
 ## What it provides
 
-- `AuthLinkProvider`, `useAuthLink`, `useHasRoles`: session context, hydrated from the server through `initialUser`
+- `AuthLinkProvider`, `useAuthLink`, `useHasRoles`: session context (`user`, anonymous `guest`, `mfaRequired` step-up signal), hydrated from the server through `initialUser`
 - `SignInButton`, `SignOutButton`, `UserMenu`: unstyled primitives
 - `RequireRoles`: hides UI by role (never use it to gate content; enforce on the server)
 

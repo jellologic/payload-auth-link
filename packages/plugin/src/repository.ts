@@ -8,6 +8,7 @@ import {
   type IdPort,
   type LoggerPort,
   type NewUser,
+  type PhoneNumber,
   type ProviderIdentityRef,
   type Role,
   type UserId,
@@ -33,6 +34,8 @@ export type PayloadUserRepositoryDeps = {
   readonly ids: IdPort
   /** Payload query depth for user reads. Always explicit, never hardcoded. */
   readonly depth: number
+  /** Governance/identity field names (CAP-7/CAP-9); defaults apply when omitted. */
+  readonly userFields?: MappingContext['userFields']
 }
 
 function isEmailUniqueViolation(error: unknown, emailField: string): boolean {
@@ -58,7 +61,9 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
     defaultRole: deps.defaultRole,
     logger: deps.logger,
     clock: deps.clock,
+    ...(deps.userFields === undefined ? {} : { userFields: deps.userFields }),
   }
+  const phoneField = deps.userFields?.phoneField ?? 'phone'
   const collection = deps.map.usersCollection
 
   const findOne = (
@@ -87,6 +92,10 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
 
     findByEmail(email: Email): ResultAsync<UserRecord | null, RepositoryError> {
       return findOne('findByEmail', { [deps.map.emailField]: { equals: email } })
+    },
+
+    findByPhone(phone: PhoneNumber): ResultAsync<UserRecord | null, RepositoryError> {
+      return findOne('findByPhone', { [phoneField]: { equals: phone } })
     },
 
     findByProviderIdentity(
@@ -170,6 +179,47 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
       })
     },
 
+    unlinkIdentity(
+      userId: UserId,
+      ref: ProviderIdentityRef
+    ): ResultAsync<UserRecord, RepositoryError> {
+      return findOne('unlinkIdentity:read', { id: { equals: userId } }).andThen((existing) => {
+        if (!existing) {
+          return err(new RepositoryError(`unlinkIdentity: user not found: ${userId}`))
+        }
+        const rows = existing.identities.filter(
+          (identity) =>
+            identity.providerId !== ref.providerId || identity.providerUserId !== ref.providerUserId
+        )
+        if (rows.length === existing.identities.length) {
+          // Idempotent: the identity is already unlinked (CAP-14).
+          return ok(existing)
+        }
+        return ResultAsync.fromPromise<unknown, RepositoryError>(
+          deps.payload.update({
+            collection,
+            id: userId,
+            data: {
+              [deps.map.identitiesField]: rows.map((identity) => ({
+                providerId: identity.providerId,
+                providerUserId: identity.providerUserId,
+                email: identity.email,
+                linkedAt: identity.linkedAt.toISOString(),
+              })),
+            },
+            overrideAccess: true,
+          }),
+          (cause) => new RepositoryError('unlinkIdentity:update', { cause })
+        ).andThen((doc) => {
+          const record = singleResultRecord(doc, ctx)
+          if (!record) {
+            return err(new RepositoryError('unlinkIdentity: unmappable result'))
+          }
+          return ok(record)
+        })
+      })
+    },
+
     setEmail(
       userId: UserId,
       email: Email
@@ -201,6 +251,41 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
           }
           return ok(record)
         })
+      })
+    },
+
+    setPhone(userId: UserId, phone: PhoneNumber): ResultAsync<UserRecord, RepositoryError> {
+      return findOne('setPhone:read', { id: { equals: userId } }).andThen((existing) => {
+        if (!existing) {
+          return err(new RepositoryError(`setPhone: user not found: ${userId}`))
+        }
+        if (existing.phone === phone) {
+          return ok(existing)
+        }
+        // A verified claim must never steal another user's link
+        // target: refuse when the number is already on file elsewhere.
+        return findOne('setPhone:conflict', { [phoneField]: { equals: phone } }).andThen(
+          (holder) => {
+            if (holder && holder.id !== userId) {
+              return err(new RepositoryError('setPhone: phone already held by another user'))
+            }
+            return ResultAsync.fromPromise<unknown, RepositoryError>(
+              deps.payload.update({
+                collection,
+                id: userId,
+                data: { [phoneField]: phone },
+                overrideAccess: true,
+              }),
+              (cause) => new RepositoryError('setPhone', { cause })
+            ).andThen((doc) => {
+              const record = singleResultRecord(doc, ctx)
+              if (!record) {
+                return err(new RepositoryError('setPhone: unmappable result'))
+              }
+              return ok(record)
+            })
+          }
+        )
       })
     },
 

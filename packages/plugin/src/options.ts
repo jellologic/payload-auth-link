@@ -1,15 +1,25 @@
 import {
+  assertCapabilities,
+  assertNever,
   createProviderRegistry,
+  defaultLinkingPolicy,
   nullLogger,
   nullTracer,
+  parseLinkingPolicy,
+  parseRole,
   randomIds,
+  sessionChannels,
   systemClock,
   validateStartupConfig,
   type ClockPort,
   type IdentityProviderPort,
   type IdPort,
+  type LinkingPolicy,
   type LoggerPort,
+  type ProviderId,
   type ProviderRegistry,
+  type Role,
+  type SessionChannel,
   type StartupConfig,
   type TracerPort,
 } from '@payload-auth-link/core'
@@ -53,6 +63,88 @@ export type AuthLinkPluginOptions = {
   readonly ids?: IdPort | undefined
   /** Payload query depth for user reads. Defaults to `0`, always explicit. */
   readonly queryDepth?: number | undefined
+  /**
+   * Which verified claims may link a provider identity to a Payload
+   * user (PORT-3). Defaults to `{ kind: 'verified-email' }`.
+   * `'verified-email-or-phone'` (CAP-9) additionally links a
+   * phone-only identity carrying a verified phone claim to an
+   * EXISTING user whose stored phone matches — it never provisions,
+   * and every registered provider must declare the `'phone'`
+   * capability or wiring throws `UnsupportedCapabilityError`.
+   */
+  readonly linkingPolicy?: LinkingPolicy | undefined
+  /** Phone field injected on the users collection (CAP-9). Defaults to `phone`. */
+  readonly phoneField?: string | undefined
+  /** Suspension-expiry field injected on users (CAP-7). Defaults to `suspendedUntil`. */
+  readonly suspendedUntilField?: string | undefined
+  /** Suspension-reason field injected on users (CAP-7). Defaults to `suspendReason`. */
+  readonly suspendReasonField?: string | undefined
+  /**
+   * Session policies enforced by the plugin (CAP-6).
+   * `requireMfaForRoles` withholds the listed roles from any session
+   * whose assurance is not `mfa: true` (`'unknown'` never satisfies):
+   * the strategy and session endpoint project the reduced role set
+   * plus `mfaRequired: true`, so Payload access and app authorization
+   * both see the step-up requirement. Every registered provider must
+   * declare the `'mfa'` capability or wiring throws
+   * `UnsupportedCapabilityError` (D4: Auth.js cannot satisfy this).
+   */
+  readonly policies?: { readonly requireMfaForRoles?: readonly string[] | undefined } | undefined
+  /**
+   * Payload-owned organizations (CAP-11, D1): when enabled the plugin
+   * adds `organizations` + `memberships` collections and organization
+   * endpoints. Slugs are overridable. Disabled by default — existing
+   * sites gain no collections until they opt in.
+   */
+  readonly organizations?:
+    | {
+        readonly enabled: true
+        readonly organizationsCollection?: string | undefined
+        readonly membershipsCollection?: string | undefined
+        /** Roles a membership can hold. Defaults to owner/admin/member. */
+        readonly orgRoles?: readonly string[] | undefined
+        /**
+         * Enterprise SSO domain enforcement (CAP-15): registry ids of
+         * providers whose sessions are SSO assertions (a BA SSO /
+         * SAML-via-OAuth composition root). Sessions from these
+         * providers link ONLY when the asserted email's domain is a
+         * verified domain of some Payload organization — a
+         * tenant-registered IdP can assert verified emails for
+         * anyone, so the verified domain is the trust boundary.
+         * Sessions from all other providers are unaffected.
+         */
+        readonly ssoProviders?: readonly string[] | undefined
+      }
+    | { readonly enabled?: false | undefined }
+    | undefined
+  /**
+   * Session presentation channels verification admits (CAP-13a).
+   * Defaults to `['cookie']`: a live provider session presented any
+   * other way (`bearer`, `api-key`, `device`) is refused with a typed
+   * `ChannelNotAdmittedError` (401), even though the credential itself
+   * is valid. Admitting a channel here does not make any adapter
+   * present one (both shipped adapters report `cookie` today), and it
+   * does not change CSRF: state-changing endpoints keep requiring
+   * CSRF proof regardless of channel (channel-aware CSRF exemptions
+   * are CAP-13b, when non-cookie channels actually arrive).
+   */
+  readonly admitChannels?: readonly SessionChannel[] | undefined
+}
+
+/** Injected governance/identity field names on the users collection. */
+export type UserGovernanceFields = {
+  readonly phoneField: string
+  readonly suspendedUntilField: string
+  readonly suspendReasonField: string
+}
+
+/** Validated organizations wiring (CAP-11); `null` when disabled. */
+export type WiredOrganizations = {
+  readonly organizationsCollection: string
+  readonly membershipsCollection: string
+  readonly orgRoles: readonly Role[]
+  /** Provider registry ids under SSO domain enforcement (CAP-15). */
+  readonly ssoProviders: readonly ProviderId[]
 }
 
 /** Validated, wired composition root for the plugin. */
@@ -64,6 +156,76 @@ export type WiredOptions = {
   readonly clock: ClockPort
   readonly ids: IdPort
   readonly depth: number
+  /** Validated linking policy (PORT-3); passed to `ensureLinkedUser`. */
+  readonly linkingPolicy: LinkingPolicy
+  /** Validated admitted session channels (CAP-13a); never empty. */
+  readonly admitChannels: readonly SessionChannel[]
+  /** Validated phone/suspension field names (CAP-7/CAP-9). */
+  readonly userFields: UserGovernanceFields
+  /** Roles withheld without MFA proof (CAP-6); empty means no policy. */
+  readonly requireMfaForRoles: readonly Role[]
+  /** Organizations wiring (CAP-11), or `null` when not enabled. */
+  readonly organizations: WiredOrganizations | null
+}
+
+function fieldNameOption(value: string | undefined, fallback: string, label: string): string {
+  if (value === undefined) {
+    return fallback
+  }
+  if (typeof value !== 'string' || value === '' || value.length > 100) {
+    throw new InvalidConfigError(
+      `${label} must be a non-empty field name of at most 100 characters`
+    )
+  }
+  return value
+}
+
+/** Parse + dedupe a role list option, failing fast on any bad entry. */
+function parseRoleList(values: readonly string[] | undefined, label: string): Role[] {
+  if (values === undefined) {
+    return []
+  }
+  const roles: Role[] = []
+  for (const value of values) {
+    const parsed = parseRole(value)
+    if (parsed.isErr()) {
+      throw new InvalidConfigError(`${label} contains an invalid role: ${parsed.error.message}`)
+    }
+    if (!roles.includes(parsed.value)) {
+      roles.push(parsed.value)
+    }
+  }
+  return roles
+}
+
+/**
+ * Validate `admitChannels` (CAP-13a). The default admits only
+ * `cookie`. An explicitly empty list would refuse every session and
+ * is far more likely a wiring mistake than intent, so it fails fast —
+ * as do duplicates and (from JS callers) unknown channel strings.
+ */
+function validateAdmitChannels(
+  raw: readonly SessionChannel[] | undefined
+): readonly SessionChannel[] {
+  if (raw === undefined) {
+    return ['cookie']
+  }
+  if (raw.length === 0) {
+    throw new InvalidConfigError("admitChannels must not be empty; omit it to admit only 'cookie'")
+  }
+  const seen = new Set<string>()
+  for (const channel of raw) {
+    if (!sessionChannels.includes(channel)) {
+      throw new InvalidConfigError(
+        `admitChannels contains an unknown channel ${JSON.stringify(channel)}; expected one of ${sessionChannels.join(', ')}`
+      )
+    }
+    if (seen.has(channel)) {
+      throw new InvalidConfigError(`admitChannels lists '${channel}' more than once`)
+    }
+    seen.add(channel)
+  }
+  return [...raw]
 }
 
 /**
@@ -98,6 +260,117 @@ export function wireOptions(raw: AuthLinkPluginOptions): WiredOptions {
   if (!Number.isInteger(depth) || depth < 0) {
     throw new InvalidConfigError(`queryDepth must be a non-negative integer, got ${String(depth)}`)
   }
+  let linkingPolicy: LinkingPolicy = defaultLinkingPolicy
+  if (raw.linkingPolicy !== undefined) {
+    const parsedPolicy = parseLinkingPolicy(raw.linkingPolicy)
+    if (parsedPolicy.isErr()) {
+      throw parsedPolicy.error
+    }
+    linkingPolicy = parsedPolicy.value
+  }
+  switch (linkingPolicy.kind) {
+    case 'verified-email':
+      break
+    case 'verified-email-or-phone':
+      // Capability gate (PORT-2): phone linking needs every registered
+      // provider to declare `'phone'` — a provider that cannot produce
+      // a phone claim makes the policy a lie, so wiring throws
+      // `UnsupportedCapabilityError` naming it. CAP-9 supplies the
+      // Payload phone field + `findByPhone` the branch resolves on.
+      for (const provider of raw.providers) {
+        assertCapabilities(provider, ['phone'])
+      }
+      break
+    default:
+      assertNever(linkingPolicy)
+  }
+  const userFields: UserGovernanceFields = {
+    phoneField: fieldNameOption(raw.phoneField, 'phone', 'phoneField'),
+    suspendedUntilField: fieldNameOption(
+      raw.suspendedUntilField,
+      'suspendedUntil',
+      'suspendedUntilField'
+    ),
+    suspendReasonField: fieldNameOption(
+      raw.suspendReasonField,
+      'suspendReason',
+      'suspendReasonField'
+    ),
+  }
+  const takenFieldNames = new Set([
+    validated.value.map.emailField,
+    validated.value.map.rolesField,
+    validated.value.map.identitiesField,
+  ])
+  for (const [label, name] of Object.entries(userFields)) {
+    if (takenFieldNames.has(name)) {
+      throw new InvalidConfigError(
+        `${label} '${name}' collides with another users-collection field managed by the plugin`
+      )
+    }
+    takenFieldNames.add(name)
+  }
+  const requireMfaForRoles = parseRoleList(
+    raw.policies?.requireMfaForRoles,
+    'policies.requireMfaForRoles'
+  )
+  for (const role of requireMfaForRoles) {
+    if (!validated.value.roles.includes(role)) {
+      throw new InvalidConfigError(
+        `policies.requireMfaForRoles lists '${role}', which is not one of roles`
+      )
+    }
+  }
+  if (requireMfaForRoles.length > 0) {
+    // CAP-6 capability gate: a policy no provider can satisfy must
+    // fail at wiring, never silently withhold roles forever (D4).
+    for (const provider of raw.providers) {
+      assertCapabilities(provider, ['mfa'])
+    }
+  }
+  let organizations: WiredOrganizations | null = null
+  if (raw.organizations?.enabled === true) {
+    const orgsSlug = fieldNameOption(
+      raw.organizations.organizationsCollection,
+      'organizations',
+      'organizations.organizationsCollection'
+    )
+    const membershipsSlug = fieldNameOption(
+      raw.organizations.membershipsCollection,
+      'memberships',
+      'organizations.membershipsCollection'
+    )
+    if (
+      orgsSlug === membershipsSlug ||
+      orgsSlug === validated.value.map.usersCollection ||
+      membershipsSlug === validated.value.map.usersCollection
+    ) {
+      throw new InvalidConfigError(
+        'organization collection slugs must differ from each other and from the users collection'
+      )
+    }
+    const orgRoles = parseRoleList(raw.organizations.orgRoles, 'organizations.orgRoles')
+    const registeredIds = new Set(raw.providers.map((provider) => provider.id))
+    const ssoProviders: ProviderId[] = []
+    for (const rawId of raw.organizations.ssoProviders ?? []) {
+      const match = raw.providers.find((provider) => provider.id === rawId)
+      if (match === undefined || !registeredIds.has(match.id)) {
+        throw new InvalidConfigError(
+          `organizations.ssoProviders lists '${String(rawId)}', which is not a registered provider id`
+        )
+      }
+      if (!ssoProviders.includes(match.id)) {
+        ssoProviders.push(match.id)
+      }
+    }
+    organizations = {
+      organizationsCollection: orgsSlug,
+      membershipsCollection: membershipsSlug,
+      orgRoles:
+        orgRoles.length > 0 ? orgRoles : parseRoleList(['owner', 'admin', 'member'], 'orgRoles'),
+      ssoProviders,
+    }
+  }
   return {
     config: validated.value,
     registry,
@@ -106,5 +379,10 @@ export function wireOptions(raw: AuthLinkPluginOptions): WiredOptions {
     clock: raw.clock ?? systemClock(),
     ids: raw.ids ?? randomIds(),
     depth,
+    linkingPolicy,
+    admitChannels: validateAdmitChannels(raw.admitChannels),
+    userFields,
+    requireMfaForRoles,
+    organizations,
   }
 }

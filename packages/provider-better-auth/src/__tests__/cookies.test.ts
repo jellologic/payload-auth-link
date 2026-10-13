@@ -1,8 +1,9 @@
 import { secureCookiePrefix } from '@payload-auth-link/core'
 import type { BetterAuthOptions } from 'better-auth'
-import { getCookies } from 'better-auth/cookies'
+import { createCookieGetter, getCookies } from 'better-auth/cookies'
 import { describe, expect, it } from 'vitest'
 import {
+  getBetterAuthLogoutCookieNames,
   getBetterAuthSessionCookieClearOptions,
   getBetterAuthSessionCookieNames,
 } from '../cookies.js'
@@ -227,6 +228,24 @@ describe('getBetterAuthSessionCookieClearOptions', () => {
     expect(fallback('better-auth.session_token')).toEqual({ domain: 'example.com' })
   })
 
+  it('covers admin_session with the session token attributes BA sets it with (CAP-8a)', () => {
+    const clear = getBetterAuthSessionCookieClearOptions(
+      {
+        baseURL: 'https://app.example.com',
+        advanced: {
+          cookies: { session_token: { attributes: { domain: 'auth.example.com' } } },
+        },
+      },
+      { nodeEnv: 'test' }
+    )
+    expect(clear('__Secure-better-auth.admin_session')).toEqual({
+      secure: true,
+      domain: 'auth.example.com',
+    })
+    const plain = getBetterAuthSessionCookieClearOptions({}, { nodeEnv: 'test' })
+    expect(plain('better-auth.admin_session')).toEqual({})
+  })
+
   it('covers the cookie-cache cookie only when enabled', () => {
     const cached = getBetterAuthSessionCookieClearOptions(
       { session: { cookieCache: { enabled: true } } },
@@ -235,5 +254,35 @@ describe('getBetterAuthSessionCookieClearOptions', () => {
     expect(cached('better-auth.session_data')).toEqual({})
     const plain = getBetterAuthSessionCookieClearOptions({}, { nodeEnv: 'test' })
     expect(plain('better-auth.session_data')).toBeUndefined()
+  })
+})
+
+describe('getBetterAuthLogoutCookieNames (CAP-8a)', () => {
+  it('returns only the admin_session cookie, never a session-indicating name', () => {
+    expect(getBetterAuthLogoutCookieNames({}, { nodeEnv: 'test' })).toEqual([
+      'better-auth.admin_session',
+    ])
+    expect(
+      getBetterAuthLogoutCookieNames({ advanced: { useSecureCookies: true } }, { nodeEnv: 'test' })
+    ).toEqual(['__Secure-better-auth.admin_session'])
+    expect(
+      getBetterAuthLogoutCookieNames({ advanced: { cookiePrefix: 'acme' } }, { nodeEnv: 'test' })
+    ).toEqual(['acme.admin_session'])
+  })
+
+  it("matches BA's real createCookieGetter for the admin_session key", () => {
+    const cases: BetterAuthOptions[] = [
+      { baseURL: 'https://app.example.com' },
+      { baseURL: 'http://localhost:3000' },
+      {
+        baseURL: 'https://app.example.com',
+        advanced: { cookiePrefix: 'acme' },
+      },
+    ]
+    for (const options of cases) {
+      expect(getBetterAuthLogoutCookieNames(options, { nodeEnv: 'test' })).toEqual([
+        createCookieGetter(options)('admin_session').name,
+      ])
+    }
   })
 })

@@ -54,6 +54,69 @@ engine); Auth.js credentials carry a builder-stamped `emailVerified`
 through a JWT claim. An unverified identity resolves to 401 at the
 session endpoint — a provider session is not yet a Payload session.
 
+## One role system: Payload roles
+
+There is exactly one role authority: **the `roles` field on the
+Payload user**. Provider role fields — notably Better Auth's
+`admin` plugin, which adds a `role` column to its user table — are
+ignored by design. Nothing in the plugin, the adapters, or the web
+helpers ever reads them: `ProviderSession` carries no roles, and the
+`roles` on every `Session` / `SessionUser` come only from the Payload
+document. Granting someone the BA `admin` role grants them zero
+Payload rights; removing their Payload `admin` role demotes them
+even if the BA row still says `admin`. (BA's own admin endpoints may
+consult the BA role before acting — for example to start an
+impersonation — but that only gates the provider mechanic; the
+resulting session still resolves to the target's Payload roles. If
+you use those endpoints, keep the BA value set by hand for that
+purpose; there is no sync in either direction, deliberately.)
+
+**Where roles live.** You declare the vocabulary once in the plugin
+options — `roles: ['admin', 'user']` plus a `defaultRole` that must
+be one of them — validated fail-fast at config time as canonical
+lowercase slugs (`parseRole` / the branded `Role` type in core). The
+plugin injects a required, multi-select field with exactly those
+options onto your users collection (name `roles`, remappable with
+the `rolesField` option). JIT-provisioned users start with
+`[defaultRole]`; after that you edit roles where you edit any
+Payload data — the admin UI or the Local API. The field requires at
+least one role, so an emptied array can't persist. Because the
+session service reloads the Payload user fresh on every request, a
+role change applies to the very next request on every provider and
+session strategy — no re-login, no token refresh, no sync job.
+
+**How roles are consumed**, in enforcement order:
+
+1. **Payload access control.** The `auth-link` strategy projects the
+   session onto `req.user`, so your collection and field access
+   functions read `req.user.roles` like any Payload-authenticated
+   request. Plugin-owned authorization lives in
+   `plugin/src/access.ts` (CSRF checks and the impersonation deny
+   layer — the roles field itself denies create/update while an
+   operator is impersonating, so an impersonated session can never
+   become a role-escalation path).
+2. **Server authorization** — `requireRoles` in
+   `@payload-auth-link/web` (re-exported by the Next and Start
+   adapters) verifies the live session and requires _every_ listed
+   role, failing closed with `ForbiddenError`; see
+   [Server authorization vs UI hiding](#server-authorization-vs-ui-hiding)
+   below. `RequireRoles` / `useHasRoles` on the client are the same
+   Payload roles, for hiding only.
+
+**How capability policies layer on this** ([capabilities
+guide](guide-capabilities.md)) — still by narrowing or scoping
+Payload roles, never by importing a provider's:
+`policies.requireMfaForRoles` treats a session without MFA
+assurance as missing the listed Payload roles (projected out of the
+session user, unknown assurance failing closed), and Payload-owned
+organizations (decision D1) carry a role _per membership_, checked
+by `requireOrgRole` alongside the global roles above. Provider-side
+role stores (BA `admin.role`, organization-member roles) stay
+storage-compatible data, never Payload authorization.
+
+To make someone an admin: set `roles` on their Payload user. That
+is the only step, on either provider.
+
 ## Session flow (read-time, no webhooks)
 
 There are no webhooks and no background sync. Every read is live:

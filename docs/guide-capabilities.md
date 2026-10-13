@@ -1,0 +1,261 @@
+# Capabilities guide
+
+How to wire every sign-in capability beyond email/password, per the
+[capability plan](PLAN-CAPABILITIES.md). One rule governs all of it:
+providers authenticate and report facts; core decides uniformly;
+Payload owns the users. A capability is usable only when the
+provider **declares** it — wiring a feature on an undeclared
+capability throws `UnsupportedCapabilityError` at composition time,
+never silently at runtime.
+
+Capability declarations are derived, never asserted:
+
+- **Better Auth**: from the plugin list you actually install
+  (`admin` → `impersonation`, `magic-link` → `magic-link`,
+  `email-otp` → `email-otp`, `generic-oauth` or configured social
+  providers → `oauth`, `one-tap` → `one-tap`, `passkey` → `passkey`,
+  `two-factor` → `mfa`, `phone-number` → `phone`, `anonymous` →
+  `anonymous`, plus `revoke-user-sessions` always). See
+  `betterAuthCapabilities` in `@payload-auth-link/provider-better-auth`.
+- **Auth.js**: from the providers you configure (`email` →
+  `magic-link`, `oauth`/`oidc` → `oauth`, database session strategy
+  → `revoke-user-sessions`). Auth.js has no MFA, phone, anonymous,
+  impersonation, or production passkey primitive — policies needing
+  them fail at wiring on Auth.js (by design; that is the honest
+  answer, not an error to work around).
+
+## Support matrix
+
+The canonical capability-by-provider matrix lives in
+[Compatibility](compatibility.md#sign-in-capabilities-by-provider) —
+this guide covers how to wire each row.
+
+## Passwordless (CAP-1, CAP-2)
+
+**Better Auth:** install `magicLink({ sendMagicLink })` and/or
+`emailOTP({ sendVerificationOTP })`. Both verify the email, so the
+sessions link and provision through the normal verified-email gate.
+Plugin-owned user fields need no declarations for these two.
+
+**Auth.js:** add an Email provider (magic link). For 6-digit codes
+use the recipe helpers from `@payload-auth-link/provider-authjs`:
+
+```ts
+Resend({
+  maxAge: emailOtpMaxAgeSeconds, // 300, not the 24h default
+  generateVerificationToken: emailOtpVerificationToken,
+  sendVerificationRequest,
+})
+```
+
+The email callback reads `token`/`email` from the **query string
+only** — build code-entry URLs with `buildEmailOtpCallbackUrl`, not
+a POST body. Examples capture mail in a dev mailbox
+(`examples/*/lib/dev-mailbox.ts`); production sends real email.
+
+**Abuse control (CAP-18).** Better Auth counts OTP guesses per
+identifier natively (`allowedAttempts`, default 3 — past the cap the
+genuine code is dead too). Auth.js does **not** count wrong codes,
+so there the cap is yours: the examples throttle the email callback
+per email+IP (`429` past 3 attempts in 10 minutes, in each
+example's Auth.js route handler). Layer per-IP send/verify limits on
+top in both cases. A limiter keyed on a forwarded-IP header is only
+as trustworthy as your proxy config — spoofed `X-Forwarded-For`
+values from untrusted clients must never mint fresh buckets.
+
+## OAuth / OIDC (CAP-3)
+
+**Better Auth:** core social providers or `genericOAuth`. BA sets
+`emailVerified` from the IdP profile, and the plugin refuses
+unverified assertions (401, no provisioning).
+
+**Auth.js:** Auth.js creates every OAuth user with
+`emailVerified: null`. To let specific IdPs' assertions through,
+allow-list them explicitly (decision D6):
+
+```ts
+createAuthJsEngine({
+  trustProviderEmailVerification: ['google', 'acme-oidc'],
+  // ...
+})
+```
+
+Only an asserted `email_verified: true` for the user's own email
+stamps. This is incompatible with that provider's
+`allowDangerousEmailAccountLinking` (wiring throws). Integration
+tests run both providers against a local mock IdP
+(`__tests__/oauth.test.ts` in each adapter) — no hosted IdP needed.
+
+## Google One Tap (CAP-4)
+
+**Better Auth:** install the `oneTap` plugin.
+**Auth.js (recipe):** a Credentials provider whose `authorize` is
+`createGoogleOneTapAuthorize({ clientId, upsertUser })` from
+`@payload-auth-link/provider-authjs`. The helper verifies the ID
+token locally against Google's JWKS (signature, issuer, audience,
+expiry) and only resolves verified-email profiles; you own
+persistence in `upsertUser`. `verifyGoogleIdToken` is exported for
+non-Credentials shapes. One Tap goes stale fast — pin it behind
+your own kill switch.
+
+## Passkeys (CAP-5)
+
+**Better Auth:** install `@better-auth/passkey` and declare its
+model for the Payload adapter:
+
+```ts
+createBetterAuthEngine({
+  customModels: [
+    {
+      model: 'passkey',
+      fields: [
+        { name: 'name', type: 'text' },
+        { name: 'publicKey', type: 'text', required: true },
+        { name: 'userId', type: 'text', required: true },
+        { name: 'credentialID', type: 'text', required: true },
+        { name: 'counter', type: 'number', required: true },
+        { name: 'deviceType', type: 'text', required: true },
+        { name: 'backedUp', type: 'boolean', required: true },
+        { name: 'transports', type: 'text' },
+        { name: 'aaguid', type: 'text' },
+      ],
+    },
+  ],
+  options: { plugins: [passkey({ rpID, rpName, origin })] },
+})
+```
+
+Register/manage from the account area, sign in from `authClient.signIn.passkey()`.
+Better Auth does not mark which ceremony created a session, so
+`assurance.methods` stays `'unknown'` — passkey sign-in neither
+claims nor denies `'passkey'` as a method.
+
+**Auth.js:** WebAuthn is experimental upstream; this adapter ships
+the `aj-authenticators` collection groundwork only and declares no
+passkey capability.
+
+## Two-factor and MFA policy (CAP-6)
+
+**Better Auth:** install `twoFactor()` (+ `twoFactorEnabled` custom
+field and the `twoFactor` custom model, as in the examples). BA
+marks no per-session TOTP proof, so mapped `assurance.mfa` means
+**enrolled** (`twoFactorEnabled`) — an enrollment gate, not recency
+proof.
+
+Enforce with either or both:
+
+```ts
+// Plugin: withhold roles from sessions without MFA proof.
+// Throws at wiring unless every provider declares 'mfa'.
+authLink({ policies: { requireMfaForRoles: ['admin'] } })
+
+// Route level (web/next/tanstack-start): typed step-up error.
+await requireRoles(headers, verifySession, { roles: ['admin'], requireMfa: true })
+```
+
+The plugin projects withheld roles out of the session user and sets
+`mfaRequired: true` so UIs prompt for step-up instead of a flat 403.
+`denyWithoutMfa()` in `@payload-auth-link/plugin` guards sensitive
+collections the same fail-closed way as `denyWhileImpersonating`.
+
+## Suspend and revoke (CAP-7)
+
+Set `suspendedUntil` (and optionally `suspendReason`) on the Payload
+user. Session verification refuses that user for **every** provider
+and strategy — including stateless JWTs no provider can revoke —
+until the instant passes or the field is cleared. As defense in
+depth, providers declaring `revoke-user-sessions` (Better Auth
+always; Auth.js on the database strategy) also drop the provider
+sessions. `suspendReason` is operator-facing and never sent to
+clients. Suspension writes are denied while impersonating.
+
+## Phone sign-in (CAP-9)
+
+Payload users carry a verified E.164 `phone` field. Verified phone
+claims sync onto the linked user automatically; to let phone-only
+identities link to the **existing** user holding that number, opt in:
+
+```ts
+authLink({ linkingPolicy: { kind: 'verified-email-or-phone' } })
+```
+
+A verified phone never provisions a new Payload user (verified-email
+registration stays the only provisioning path), never links an
+unverified claim, and never steals a number another user holds.
+Every provider must declare `'phone'` or wiring throws.
+
+## Guests (CAP-10)
+
+With Better Auth's `anonymous` plugin, an anonymous session is a
+**guest**: the session endpoint answers
+`{ user: null, guest: { id, providerId, expiresAt } }`, React
+exposes `guest` beside `user`, and no Payload user, roles, or access
+come with it. Key anonymous state (carts, drafts) on `guest.id`;
+when the guest later signs in for real, migrate that state in your
+sign-in completion handler. Guest documents are never created in
+Payload — that is the point.
+
+## Organizations (CAP-11)
+
+Payload-owned and provider-independent (decision D1):
+
+```ts
+authLink({ organizations: { enabled: true } })
+```
+
+This adds `organizations` + `memberships` collections (reads scoped
+to members, writes to managers) and endpoints for list/create/
+invite/accept under `/api/auth-link/organizations*`. Invite by
+email: existing users join immediately, unknown addresses wait as
+`invited` until that user accepts; duplicates get `409`. Delivering
+the invitation itself (email, in-app notice) is your app's job — the
+plugin owns the record and the acceptance check, not a mailer.
+Authorization reads live membership data via
+`requireOrgRole(req, { organizationsCollection, membershipsCollection, orgRoles, ssoProviders }, { organizationId, roles })`
+— pass the same slugs/roles you gave `authLink`. There is
+deliberately **no** active-organization session state: your app
+carries the org selection and asks per request.
+Provider-native org stores (e.g. BA `organization`) remain provider
+features; they are never Payload authorization.
+
+## Enterprise SSO (CAP-15)
+
+Register the composition-root providers whose sessions are SSO
+assertions, and keep each organization's `verifiedDomains` current:
+
+```ts
+authLink({
+  organizations: { enabled: true, ssoProviders: ['better-auth'] },
+})
+```
+
+SSO sessions link **only** when the asserted email's domain exactly
+matches a verified organization domain (no subdomain inheritance).
+A tenant-registered IdP can assert verified emails for anyone —
+the verified domain is the trust boundary that stops tenant A's IdP
+minting sessions for tenant B. Non-SSO providers are unaffected.
+
+## Usernames and wallets (CAP-16, CAP-17)
+
+BA's `username` plugin works for provider-side sign-in at the
+identity layer — username changes propagate to Payload as CAP-14
+identity events, but the Payload `username` stays builder-owned
+data, never a second identity authority inside the plugin. SIWE
+(CAP-17) mints placeholder-email identities
+(`…@*.placeholder.invalid`): the adapter maps those to _no email
+claim_, so a wallet is a guest at most until a verified email links
+it — the same rule covers anonymous placeholder addresses.
+
+## Sessions across channels (CAP-13)
+
+`admitChannels` (default `['cookie']`) is the deployment's explicit
+list of admitted session presentations, checked after session
+validation — server-only configuration; nothing on the wire can
+widen it. Bearer admission also skips the plugin endpoints' origin
+check for bearer-presented requests (Bearer tokens are not ambient
+credentials; CSRF does not apply to them). With BA `multiSession`,
+plugin logout revokes **every** presented device session and
+expires every presented multi cookie. API-key and device-code
+sessions verify through their provider, but the observed channel is
+fail-closed: an api-key presentation is only admitted when you list
+`'api-key'`.

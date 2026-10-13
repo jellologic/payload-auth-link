@@ -115,7 +115,11 @@ What this does:
 
 Users stay first-class Payload documents: the admin users list shows
 roles and linked identities, and opening a row shows each identity
-(`better-auth · user@example.com`).
+(`better-auth · user@example.com`). The `roles` / `defaultRole`
+options above are the whole role vocabulary — Payload roles are the
+single authority, and a provider's own role field (such as Better
+Auth's `admin.role`) is never read: see [One role system: Payload
+roles](concepts.md#one-role-system-payload-roles).
 
 ## Edit 4 — Routes, middleware, UI
 

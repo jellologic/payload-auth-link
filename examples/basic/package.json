@@ -1,6 +1,7 @@
 {
   "name": "@payload-auth-link/example-basic",
   "version": "0.0.1",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,13 +13,14 @@
     "start": "next start -p 3100"
   },
   "dependencies": {
+    "@auth/core": "^0.41.0",
+    "@better-auth/passkey": "^1.7.7",
     "@payload-auth-link/core": "workspace:*",
     "@payload-auth-link/next": "workspace:*",
     "@payload-auth-link/plugin": "workspace:*",
     "@payload-auth-link/provider-authjs": "workspace:*",
     "@payload-auth-link/provider-better-auth": "workspace:*",
     "@payload-auth-link/react": "workspace:*",
-    "@auth/core": "^0.41.0",
     "@payloadcms/db-mongodb": "3.90.2",
     "@payloadcms/db-postgres": "3.90.2",
     "@payloadcms/db-sqlite": "3.90.2",

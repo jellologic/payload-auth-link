@@ -1,15 +1,20 @@
 import { err, ok, ResultAsync } from 'neverthrow'
 import { z } from 'zod'
 import type { Email } from './email.js'
+import type { IdentityEventHandler } from './events.js'
 import {
+  ChannelNotAdmittedError,
   InvalidProviderIdError,
   ProviderError,
   RepositoryError,
   SessionExpiredError,
   SessionInvalidError,
   UnknownProviderError,
+  UserSuspendedError,
+  UnsupportedCapabilityError,
   UserExistsError,
 } from './errors.js'
+import type { PhoneNumber } from './phone.js'
 import type { Role } from './roles.js'
 
 // ---------------------------------------------------------------------------
@@ -107,6 +112,21 @@ export type UserRecord = {
   readonly identities: readonly LinkedIdentity[]
   readonly createdAt: Date
   readonly updatedAt: Date
+  /**
+   * Verified E.164 phone on file (CAP-9), when the user store carries
+   * one. Optional/additive: repositories without a phone field omit
+   * it. This is the value `findByPhone` resolves on; it is written
+   * only from a verified provider claim or by an operator.
+   */
+  readonly phone?: PhoneNumber | null | undefined
+  /**
+   * Suspension expiry (CAP-7): while in the future, session
+   * verification refuses this user for every provider and strategy.
+   * `null`/absent means not suspended; a past instant means lapsed.
+   */
+  readonly suspendedUntil?: Date | null | undefined
+  /** Operator-facing suspension reason (CAP-7). Never sent to clients. */
+  readonly suspendReason?: string | null | undefined
 }
 
 /** Registration input: every provisioned user starts with roles. */
@@ -114,20 +134,166 @@ export type NewUser = {
   readonly email: Email
   readonly roles: readonly Role[]
   readonly identity?: ProviderIdentityRef | undefined
+  /** Verified phone to store at provisioning time (CAP-9). */
+  readonly phone?: PhoneNumber | undefined
 }
 
-/** A verified plugin-level session: provider-agnostic, role-free. */
+/**
+ * A verified plugin-level session: provider-agnostic, role-free.
+ *
+ * The PORT-4 facts (`assurance`, `actor`, `organizationId`) are
+ * optional and additive: a `SessionPort` implementation that cannot
+ * know them omits them, and consumers must treat an absent fact as
+ * unknown — never as satisfied (R3 fail-closed: `'unknown'`
+ * assurance does not satisfy a policy requiring proof). When a
+ * provider does report `assurance`, it is carried even when its
+ * values are `'unknown'`, so "the provider cannot tell" stays
+ * distinguishable from "nobody asked". `actor` is present only
+ * while an operator impersonates the user, and `organizationId`
+ * only when the provider reports an active tenant.
+ */
 export type Session = {
   readonly id: SessionId
   readonly userId: UserId
   readonly providerId: ProviderId
   readonly expiresAt: Date
+  /** How the session was proven, when the provider reported it. */
+  readonly assurance?: SessionAssurance | undefined
+  /**
+   * The impersonating operator, present only while impersonating,
+   * resolved against Payload users (CAP-8b {@link ResolvedSessionActor}).
+   */
+  readonly actor?: ResolvedSessionActor | undefined
+  /** Provider-native active tenant, when one is active. */
+  readonly organizationId?: string | undefined
 }
+
+/**
+ * One identifier claim from the provider plus whether the provider
+ * verified it. The claim is the linking authority (SEC-2): only a
+ * `verified` claim may link or provision a Payload user.
+ */
+export type VerifiedClaim<T> = {
+  readonly value: T
+  readonly verified: boolean
+}
+
+/**
+ * How the user proved their identity for this session. Providers that
+ * record no per-session method report `'unknown'` on
+ * {@link SessionAssurance} instead of guessing (Phase 0 spike S4:
+ * Better Auth has no per-session method; its per-user
+ * `lastLoginMethod` must never back per-session assurance).
+ */
+export type AuthMethod =
+  | 'password'
+  | 'magic-link'
+  | 'email-otp'
+  | 'oauth'
+  | 'one-tap'
+  | 'passkey'
+  | 'phone-otp'
+  | 'anonymous'
+
+/** The identity claims a provider session carries (PORT-1). */
+export type ProviderIdentityClaims = {
+  /** The email claim, or `null` when the session has no email identity. */
+  readonly email: VerifiedClaim<Email> | null
+  /** The E.164 phone claim, or `null`. Filled by CAP-9 adapters. */
+  readonly phone: VerifiedClaim<PhoneNumber> | null
+  /** True for an anonymous/guest identity, which never links (D3). */
+  readonly anonymous: boolean
+}
+
+/**
+ * How strongly this session was proven. `'unknown'` is a first-class
+ * value, never a guess: policies requiring proof treat it as absent.
+ * On Better Auth `mfa` reflects enrollment (`user.twoFactorEnabled`,
+ * spike S3), not per-session proof, which BA 1.7.7 cannot report.
+ */
+export type SessionAssurance = {
+  readonly methods: readonly AuthMethod[] | 'unknown'
+  readonly mfa: boolean | 'unknown'
+}
+
+/** The operator acting as this user while impersonating (CAP-8). */
+export type SessionActor = {
+  readonly providerUserId: string
+}
+
+/**
+ * A {@link SessionActor} resolved against Payload users (CAP-8b), as
+ * carried on the plugin-level {@link Session} and the `SessionUser`
+ * wire shape. Discriminated so an unresolved operator can never be
+ * mistaken for a Payload user:
+ *
+ * - `payload-user`: the operator's provider identity is linked to a
+ *   Payload user; `userId` is that user's Payload document id.
+ * - `provider-only`: the operator has no linked Payload user (e.g. a
+ *   provider-side admin who has never signed in through Payload).
+ *   Fail-closed by design: the session still verifies and the actor
+ *   is still audit-logged and still restricted by impersonation
+ *   access policy, but the actor stays in explicit provider-id form
+ *   instead of being dropped or dressed up as a Payload user id.
+ *   The lookup re-runs on every verification, so the actor resolves
+ *   as soon as the operator links a Payload user.
+ */
+export type ResolvedSessionActor =
+  | {
+      readonly kind: 'payload-user'
+      readonly providerUserId: string
+      readonly userId: UserId
+    }
+  | {
+      readonly kind: 'provider-only'
+      readonly providerUserId: string
+    }
+
+/**
+ * How the credential was presented (CAP-13).
+ *
+ * There is deliberately no `'one-time'` channel: one-time tokens
+ * (CAP-13b transports such as magic-link/OTP exchange codes) present
+ * as `bearer` once redeemed into a session, so channel policies see
+ * one honest value for every token-in-hand presentation.
+ */
+export type SessionChannel = 'cookie' | 'bearer' | 'api-key' | 'device'
+
+/** Every {@link SessionChannel} value, for boundary validation. */
+export const sessionChannels: readonly SessionChannel[] = ['cookie', 'bearer', 'api-key', 'device']
+
+/**
+ * An auth capability an adapter can declare on
+ * {@link IdentityProviderPort.capabilities}. Declared, never
+ * discovered: plugin options that need a capability fail at wiring
+ * with `UnsupportedCapabilityError` when it is absent.
+ */
+export type Capability =
+  | 'magic-link'
+  | 'email-otp'
+  | 'passkey'
+  | 'oauth'
+  | 'one-tap'
+  | 'phone'
+  | 'anonymous'
+  | 'mfa'
+  | 'impersonation'
+  | 'revoke-user-sessions'
 
 /** Normalized profile returned by an identity provider. */
 export type ProviderProfile = {
   readonly providerUserId: string
+  /** The session's identity claims; the linking authority. */
+  readonly identity: ProviderIdentityClaims
+  /**
+   * @deprecated Use `identity.email?.value`. Kept as an alias of the
+   * email claim for one minor; `ensureLinkedUser` reads the claim.
+   */
   readonly email: Email
+  /**
+   * @deprecated Use `identity.email?.verified`. Kept as an alias of
+   * the email claim for one minor; `ensureLinkedUser` reads the claim.
+   */
   readonly emailVerified: boolean
   readonly name: string | null
   readonly image: string | null
@@ -137,10 +303,34 @@ export type ProviderProfile = {
 export type ProviderSession = {
   readonly sessionId: string
   readonly providerUserId: string
+  /**
+   * @deprecated Use `identity.email?.value`. Kept as an alias of the
+   * email claim for one minor; new code reads the claim.
+   */
   readonly email: Email
-  /** Whether the provider verified the email; gates JIT linking. */
+  /**
+   * Whether the provider verified the email; gates JIT linking.
+   *
+   * @deprecated Use `identity.email?.verified`. Kept as an alias of
+   * the email claim for one minor; new code reads the claim.
+   */
   readonly emailVerified: boolean
   readonly expiresAt: Date
+  /** The session's identity claims (PORT-1); gates JIT linking. */
+  readonly identity: ProviderIdentityClaims
+  /** How the session was proven; `unknown` when the provider can't tell. */
+  readonly assurance: SessionAssurance
+  /**
+   * The operator acting as this user while impersonating (CAP-8):
+   * `{ providerUserId }` for an impersonated session, `null` for a
+   * plain one. Adapters that can tell must set it explicitly — a
+   * malformed source value fails closed in the adapter, never `null`.
+   */
+  readonly actor: SessionActor | null
+  /** Provider-native active tenant, if any (D1 decides its use). */
+  readonly organizationId: string | null
+  /** How the credential was presented (CAP-13). */
+  readonly channel: SessionChannel
 }
 
 // ---------------------------------------------------------------------------
@@ -151,9 +341,26 @@ export type ProviderSession = {
 export interface UserRepository {
   findById(id: UserId): ResultAsync<UserRecord | null, RepositoryError>
   findByEmail(email: Email): ResultAsync<UserRecord | null, RepositoryError>
+  /**
+   * Resolve an existing user by E.164 phone number (PORT-3). Optional:
+   * only repositories whose users collection carries a phone field
+   * implement it (the Payload phone field lands with CAP-9, Phase 6).
+   * The verified-phone branch of a `LinkingPolicy` fails closed with
+   * `UnverifiedIdentityError` when this is absent; it never falls back
+   * to another identifier and never provisions.
+   */
+  readonly findByPhone?:
+    ((phone: PhoneNumber) => ResultAsync<UserRecord | null, RepositoryError>) | undefined
   findByProviderIdentity(ref: ProviderIdentityRef): ResultAsync<UserRecord | null, RepositoryError>
   create(input: NewUser): ResultAsync<UserRecord, RepositoryError | UserExistsError>
   linkIdentity(userId: UserId, ref: ProviderIdentityRef): ResultAsync<UserRecord, RepositoryError>
+  /**
+   * Remove one linked identity row (CAP-14: provider unlink/delete).
+   * Idempotent no-op when the identity is not linked. Never deletes
+   * the user: Payload owns users (D9), so a provider-side deletion
+   * unlinks and leaves the Payload document in place.
+   */
+  unlinkIdentity(userId: UserId, ref: ProviderIdentityRef): ResultAsync<UserRecord, RepositoryError>
   setRoles(userId: UserId, roles: readonly Role[]): ResultAsync<UserRecord, RepositoryError>
   /**
    * Sync the user's email to the provider's verified address. Idempotent
@@ -161,14 +368,53 @@ export interface UserRepository {
    * when another user holds the address.
    */
   setEmail(userId: UserId, email: Email): ResultAsync<UserRecord, RepositoryError | UserExistsError>
+  /**
+   * Store a verified phone for the user (CAP-9). Optional like
+   * `findByPhone`: only phone-capable repositories implement it.
+   * Idempotent no-op when the number already matches; fails with
+   * `RepositoryError` when another user holds the number, so a
+   * verified claim can never silently steal an existing link target.
+   */
+  readonly setPhone?:
+    ((userId: UserId, phone: PhoneNumber) => ResultAsync<UserRecord, RepositoryError>) | undefined
+}
+
+/**
+ * An anonymous provider session recognized as a guest (CAP-10, D3):
+ * a stable provider-side identity with NO Payload user, no roles,
+ * and no Payload access. Applications may key anonymous state
+ * (carts, drafts) on `id`; upgrading the provider account (BA
+ * `onLinkAccount`) turns a later verified session into a normal
+ * linked {@link Session} through the usual path.
+ */
+export type GuestPrincipal = {
+  /** The provider-side anonymous user id (stable per guest). */
+  readonly id: string
+  readonly providerId: ProviderId
+  readonly expiresAt: Date
 }
 
 /** Plugin-level sessions, resolved against users. */
 export interface SessionPort {
   verify(
     headers: Headers
-  ): ResultAsync<Session, SessionInvalidError | SessionExpiredError | RepositoryError>
+  ): ResultAsync<
+    Session,
+    | SessionInvalidError
+    | SessionExpiredError
+    | ChannelNotAdmittedError
+    | UserSuspendedError
+    | RepositoryError
+  >
   revoke(session: Session): ResultAsync<void, UnknownProviderError | ProviderError>
+  /**
+   * Recognize an anonymous provider session as a {@link GuestPrincipal}
+   * (CAP-10). Optional: session services without an anonymous-capable
+   * provider omit it. Returns `null` when no live anonymous session
+   * is presented; NEVER provisions or links a Payload user.
+   */
+  readonly guest?:
+    ((headers: Headers) => ResultAsync<GuestPrincipal | null, RepositoryError>) | undefined
 }
 
 /**
@@ -195,8 +441,82 @@ export interface IdentityProviderPort {
    * back to prefix-derived attributes (see `expiringCookieOptions`).
    */
   readonly sessionCookieClearOptions?: ((name: string) => CookieOptions | undefined) | undefined
+  /**
+   * Extra provider cookies to expire on logout that do NOT themselves
+   * indicate a live session, so they must stay out of
+   * `sessionCookieNames` (middleware fast-paths read that list as
+   * "signed in"). Example: Better Auth's `admin_session`, which holds
+   * the impersonating operator's session token — leaving it behind on
+   * logout would keep a resumable operator credential in the browser
+   * after the user believes they signed out. Optional: providers
+   * without such cookies omit it.
+   */
+  readonly logoutCookieNames?: readonly string[] | undefined
+  /**
+   * The capabilities this adapter honestly supports today (PORT-2).
+   * Declared, never discovered: a plugin option or policy that needs
+   * a capability absent here fails at wiring with
+   * `UnsupportedCapabilityError` instead of silently degrading. An
+   * adapter declares a capability only once it maps the provider's
+   * native mechanism to the core claims/assurance vocabulary.
+   */
+  readonly capabilities: ReadonlySet<Capability>
   getSession(headers: Headers): ResultAsync<ProviderSession | null, ProviderError>
   revokeSession(sessionId: string): ResultAsync<void, ProviderError>
+  /**
+   * Revoke every live session of one provider user (CAP-7 suspend).
+   * Optional: only adapters that declare `'revoke-user-sessions'` in
+   * {@link IdentityProviderPort.capabilities} implement it; providers
+   * on stateless JWT sessions honestly omit it (the Payload-side
+   * suspended check still refuses at verify time).
+   */
+  readonly revokeUserSessions?:
+    ((providerUserId: string) => ResultAsync<void, ProviderError>) | undefined
+  /**
+   * Enumerate every session id presented by this request beyond the
+   * active session (CAP-13b multi-session logout): the ids are
+   * provider-verified handles suitable for {@link revokeSession},
+   * never parsed out of cookie names. Optional: only multi-session
+   * capable adapters implement it; logout revokes each returned id
+   * and expires every presented multi-session cookie.
+   */
+  readonly listPresentedSessionIds?:
+    ((headers: Headers) => ResultAsync<readonly string[], ProviderError>) | undefined
+  /**
+   * Names of presented cookies that must be expired on logout in
+   * addition to `sessionCookieNames`/`logoutCookieNames`, computed
+   * from the actual request (CAP-13b: multi-session cookie names are
+   * per-token dynamic, so no static list can contain them). Optional.
+   */
+  readonly presentedLogoutCookieNames?: ((headers: Headers) => readonly string[]) | undefined
+  /**
+   * Subscribe to this provider's identity lifecycle events (CAP-14),
+   * translated from its native hooks. Returns an unsubscribe
+   * function. Optional: adapters whose provider exposes no usable
+   * hooks omit it and rely on read-time sync. The plugin subscribes
+   * at `onInit` (the composition root) and applies events through
+   * `UserRepository`; builders never wire this by hand.
+   */
+  readonly onIdentityEvent?: ((handler: IdentityEventHandler) => () => void) | undefined
+}
+
+/**
+ * Assert a provider declares every required capability (PORT-2
+ * enforcement). Throws {@link UnsupportedCapabilityError} naming the
+ * first missing capability — wiring-time fail-fast, so an option or
+ * policy that needs a capability the adapter does not honestly
+ * support never silently degrades at request time. Composition
+ * roots call this for each capability-gated option they accept.
+ */
+export function assertCapabilities(
+  provider: Pick<IdentityProviderPort, 'id' | 'capabilities'>,
+  required: readonly Capability[]
+): void {
+  for (const capability of required) {
+    if (!provider.capabilities.has(capability)) {
+      throw new UnsupportedCapabilityError(provider.id, capability)
+    }
+  }
 }
 
 /**

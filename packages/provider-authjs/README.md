@@ -18,7 +18,16 @@ ESM-only, Node 20.9 or later.
 
 - `createAuthJsEngine`: returns `{ handleRequest, provider, collections, sessionCookieNames, … }`
 - `createAuthJsCredentials`: `authorize` and `register`, which return `Result` values
+- Email OTP + Google One Tap recipes (`emailOtpVerificationToken`,
+  `buildEmailOtpCallbackUrl`, `verifyGoogleIdToken`,
+  `createGoogleOneTapAuthorize`)
 - `@payload-auth-link/provider-authjs/cookies`: an Edge-safe cookie-name helper for middleware
+
+Declared capabilities follow your configured providers (Email →
+magic link, OAuth/OIDC → oauth, database sessions →
+revoke-user-sessions); OAuth email trust is an explicit allow-list
+(`trustProviderEmailVerification`). See the
+[capabilities guide](https://github.com/jellologic/payload-auth-link/blob/main/docs/guide-capabilities.md).
 
 ## Docs
 

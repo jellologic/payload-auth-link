@@ -2,7 +2,12 @@ import { errAsync, okAsync, type ResultAsync } from 'neverthrow'
 import { describe, expect, it } from 'vitest'
 import { nullLogger, systemClock } from '../defaults.js'
 import { parseEmail, type Email } from '../email.js'
-import { RepositoryError, UnverifiedEmailError, UserExistsError } from '../errors.js'
+import {
+  RepositoryError,
+  UnverifiedEmailError,
+  UnverifiedIdentityError,
+  UserExistsError,
+} from '../errors.js'
 import {
   defineProviderId,
   defineUserId,
@@ -13,8 +18,31 @@ import {
   type UserRecord,
   type UserRepository,
 } from '../ports.js'
+import { parsePhoneNumber, type PhoneNumber } from '../phone.js'
 import { parseRole, type Role } from '../roles.js'
 import { ensureLinkedUser } from '../use-cases/ensure-linked-user.js'
+
+function phone(value: string): PhoneNumber {
+  const parsed = parsePhoneNumber(value)
+  if (parsed.isErr()) {
+    throw parsed.error
+  }
+  return parsed.value
+}
+
+function phoneOnlyProfile(
+  providerUserId: string,
+  overrides?: { verified?: boolean; anonymous?: boolean }
+): ProviderProfile {
+  return profile({
+    providerUserId,
+    identity: {
+      email: null,
+      phone: { value: phone('+14155550132'), verified: overrides?.verified ?? true },
+      anonymous: overrides?.anonymous ?? false,
+    },
+  })
+}
 
 function email(value: string): Email {
   const parsed = parseEmail(value)
@@ -35,9 +63,17 @@ function role(value: string): Role {
 function profile(
   overrides: Partial<ProviderProfile> & { providerUserId: string }
 ): ProviderProfile {
+  const claimEmail =
+    overrides.identity?.email?.value ?? overrides.email ?? email('user@example.com')
+  const claimVerified = overrides.identity?.email?.verified ?? overrides.emailVerified ?? true
   return {
-    email: email('user@example.com'),
-    emailVerified: true,
+    email: claimEmail,
+    emailVerified: claimVerified,
+    identity: {
+      email: { value: claimEmail, verified: claimVerified },
+      phone: null,
+      anonymous: false,
+    },
     name: null,
     image: null,
     ...overrides,
@@ -129,6 +165,25 @@ class FakeUserRepository implements UserRepository {
     return okAsync(updated)
   }
 
+  unlinkIdentity(
+    userId: UserId,
+    ref: ProviderIdentityRef
+  ): ResultAsync<UserRecord, RepositoryError> {
+    const user = this.users.get(userId)
+    if (!user) {
+      return errAsync(new RepositoryError(`unlinkIdentity: missing user ${userId}`))
+    }
+    const updated: UserRecord = {
+      ...user,
+      identities: user.identities.filter(
+        (identity) =>
+          identity.providerId !== ref.providerId || identity.providerUserId !== ref.providerUserId
+      ),
+    }
+    this.users.set(userId, updated)
+    return okAsync(updated)
+  }
+
   setRoles(userId: UserId, roles: readonly Role[]): ResultAsync<UserRecord, RepositoryError> {
     const user = this.users.get(userId)
     if (!user) {
@@ -158,6 +213,16 @@ class FakeUserRepository implements UserRepository {
     const updated: UserRecord = { ...user, email }
     this.users.set(userId, updated)
     return okAsync(updated)
+  }
+}
+
+/** Fake with `findByPhone` (CAP-9-style repository) for the opt-in branch. */
+class PhoneFakeUserRepository extends FakeUserRepository {
+  readonly phoneOwners = new Map<string, Email>()
+
+  findByPhone(phoneNumber: PhoneNumber): ResultAsync<UserRecord | null, RepositoryError> {
+    const owner = this.phoneOwners.get(phoneNumber)
+    return owner === undefined ? okAsync(null) : this.findByEmail(owner)
   }
 }
 
@@ -299,5 +364,189 @@ describe('ensureLinkedUser', () => {
     }
     const missing = await users.findByEmail(email('user@example.com'))
     expect(missing.isOk() && missing.value).toBeNull()
+  })
+
+  it('reads the identity.email claim, not the deprecated aliases (PORT-1)', async () => {
+    const users = new FakeUserRepository()
+    await users.create({ email: email('user@example.com'), roles: [role('admin')] })
+    // Alias claims verified; the identity claim says unverified. The
+    // claim wins, so linking must refuse exactly as V1 did.
+    const result = await ensureLinkedUser(
+      { users, logger: nullLogger() },
+      {
+        providerId,
+        profile: profile({
+          providerUserId: 'ba-alias',
+          emailVerified: true,
+          identity: {
+            email: { value: email('user@example.com'), verified: false },
+            phone: null,
+            anonymous: false,
+          },
+        }),
+        defaultRoles: [role('user')],
+      }
+    )
+    expect(result.isErr()).toBe(true)
+    if (result.isErr()) {
+      expect(result.error).toBeInstanceOf(UnverifiedEmailError)
+    }
+  })
+
+  it('refuses a verified phone-only identity without the opt-in policy (PORT-3)', async () => {
+    const users = new PhoneFakeUserRepository()
+    await users.create({ email: email('owner@example.com'), roles: [role('admin')] })
+    users.phoneOwners.set('+14155550132', email('owner@example.com'))
+    for (const linkingPolicy of [undefined, { kind: 'verified-email' } as const]) {
+      const result = await ensureLinkedUser(
+        { users, logger: nullLogger() },
+        {
+          providerId,
+          profile: phoneOnlyProfile('ba-phone'),
+          defaultRoles: [role('user')],
+          ...(linkingPolicy === undefined ? {} : { linkingPolicy }),
+        }
+      )
+      expect(result.isErr()).toBe(true)
+      if (result.isErr()) {
+        expect(result.error).toBeInstanceOf(UnverifiedIdentityError)
+      }
+    }
+    const untouched = await users.findByEmail(email('owner@example.com'))
+    expect(untouched.isOk() && untouched.value?.identities).toHaveLength(0)
+  })
+
+  it('links a verified phone-only identity to an existing user when opted in (PORT-3)', async () => {
+    const users = new PhoneFakeUserRepository()
+    await users.create({ email: email('owner@example.com'), roles: [role('admin')] })
+    users.phoneOwners.set('+14155550132', email('owner@example.com'))
+    const result = await ensureLinkedUser(
+      { users, logger: nullLogger() },
+      {
+        providerId,
+        profile: phoneOnlyProfile('ba-phone'),
+        defaultRoles: [role('user')],
+        linkingPolicy: { kind: 'verified-email-or-phone' },
+      }
+    )
+    expect(result.isOk()).toBe(true)
+    if (result.isOk()) {
+      expect(result.value.email).toBe('owner@example.com')
+      expect(result.value.roles).toEqual(['admin'])
+      expect(result.value.identities).toHaveLength(1)
+      expect(result.value.identities[0]?.providerUserId).toBe('ba-phone')
+    }
+  })
+
+  it('never provisions from a verified phone with no existing user (PORT-3)', async () => {
+    const users = new PhoneFakeUserRepository()
+    const result = await ensureLinkedUser(
+      { users, logger: nullLogger() },
+      {
+        providerId,
+        profile: phoneOnlyProfile('ba-phone'),
+        defaultRoles: [role('user')],
+        linkingPolicy: { kind: 'verified-email-or-phone' },
+      }
+    )
+    expect(result.isErr()).toBe(true)
+    if (result.isErr()) {
+      expect(result.error).toBeInstanceOf(UnverifiedIdentityError)
+    }
+  })
+
+  it('refuses an unverified phone claim even when opted in (PORT-3)', async () => {
+    const users = new PhoneFakeUserRepository()
+    await users.create({ email: email('owner@example.com'), roles: [role('admin')] })
+    users.phoneOwners.set('+14155550132', email('owner@example.com'))
+    const result = await ensureLinkedUser(
+      { users, logger: nullLogger() },
+      {
+        providerId,
+        profile: phoneOnlyProfile('ba-phone', { verified: false }),
+        defaultRoles: [role('user')],
+        linkingPolicy: { kind: 'verified-email-or-phone' },
+      }
+    )
+    expect(result.isErr()).toBe(true)
+    if (result.isErr()) {
+      expect(result.error).toBeInstanceOf(UnverifiedIdentityError)
+    }
+    const untouched = await users.findByEmail(email('owner@example.com'))
+    expect(untouched.isOk() && untouched.value?.identities).toHaveLength(0)
+  })
+
+  it('refuses phone linking when the repository has no findByPhone (PORT-3)', async () => {
+    const users = new FakeUserRepository()
+    const result = await ensureLinkedUser(
+      { users, logger: nullLogger() },
+      {
+        providerId,
+        profile: phoneOnlyProfile('ba-phone'),
+        defaultRoles: [role('user')],
+        linkingPolicy: { kind: 'verified-email-or-phone' },
+      }
+    )
+    expect(result.isErr()).toBe(true)
+    if (result.isErr()) {
+      expect(result.error).toBeInstanceOf(UnverifiedIdentityError)
+    }
+  })
+
+  it('never links an anonymous identity, even with a verified email or phone (PORT-3/D3)', async () => {
+    const users = new PhoneFakeUserRepository()
+    await users.create({ email: email('user@example.com'), roles: [role('admin')] })
+    users.phoneOwners.set('+14155550132', email('user@example.com'))
+    const byEmail = await ensureLinkedUser(
+      { users, logger: nullLogger() },
+      {
+        providerId,
+        profile: profile({
+          providerUserId: 'ba-anon',
+          identity: {
+            email: { value: email('user@example.com'), verified: true },
+            phone: null,
+            anonymous: true,
+          },
+        }),
+        defaultRoles: [role('user')],
+        linkingPolicy: { kind: 'verified-email-or-phone' },
+      }
+    )
+    expect(byEmail.isErr()).toBe(true)
+    if (byEmail.isErr()) {
+      expect(byEmail.error).toBeInstanceOf(UnverifiedIdentityError)
+    }
+    const byPhone = await ensureLinkedUser(
+      { users, logger: nullLogger() },
+      {
+        providerId,
+        profile: phoneOnlyProfile('ba-anon', { anonymous: true }),
+        defaultRoles: [role('user')],
+        linkingPolicy: { kind: 'verified-email-or-phone' },
+      }
+    )
+    expect(byPhone.isErr()).toBe(true)
+    const untouched = await users.findByEmail(email('user@example.com'))
+    expect(untouched.isOk() && untouched.value?.identities).toHaveLength(0)
+  })
+
+  it('refuses a session with no email claim (PORT-1)', async () => {
+    const users = new FakeUserRepository()
+    const result = await ensureLinkedUser(
+      { users, logger: nullLogger() },
+      {
+        providerId,
+        profile: profile({
+          providerUserId: 'ba-no-email',
+          identity: { email: null, phone: null, anonymous: true },
+        }),
+        defaultRoles: [role('user')],
+      }
+    )
+    expect(result.isErr()).toBe(true)
+    if (result.isErr()) {
+      expect(result.error).toBeInstanceOf(UnverifiedIdentityError)
+    }
   })
 })

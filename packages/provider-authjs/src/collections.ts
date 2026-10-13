@@ -34,11 +34,14 @@ export type AuthJsCollectionsOptions = {
 
 /**
  * Payload collections backing the Auth.js adapter. Field names mirror the
- * Auth.js models 1:1 with two exceptions: the user id lives in `auId`
- * (Payload owns the document `id`), and accounts carry a composite `key`
- * (`provider:providerAccountId`, unique) because Payload has no compound
- * unique indexes. The users collection additionally holds `passwordHash`
- * for the credentials service — Auth.js itself never reads it.
+ * Auth.js models 1:1 with these exceptions: the user id lives in `auId`
+ * (Payload owns the document `id`); accounts and verification tokens carry
+ * a composite `key` (unique) because Payload has no compound unique
+ * indexes — for verification tokens that gives `(identifier, token)`
+ * uniqueness, so the same token hash (e.g. two identical 6-digit email
+ * OTP codes) can coexist for different identifiers while a repeated pair
+ * is rejected. The users collection additionally holds `passwordHash` for
+ * the credentials service — Auth.js itself never reads it.
  */
 export function createAuthJsCollections(options?: AuthJsCollectionsOptions): CollectionConfig[] {
   const slugs: AuthJsCollectionSlugs = resolveSlugs(defaultAuthJsSlugs, options?.slugs)
@@ -74,8 +77,9 @@ export function createAuthJsCollections(options?: AuthJsCollectionsOptions): Col
     { name: 'expires', type: 'date', required: true },
   ]
   const verificationTokenFields: Field[] = [
+    { name: 'key', type: 'text', required: true, unique: true },
     { name: 'identifier', type: 'text', required: true },
-    { name: 'token', type: 'text', required: true, unique: true },
+    { name: 'token', type: 'text', required: true },
     { name: 'expires', type: 'date', required: true },
   ]
   const authenticatorFields: Field[] = [

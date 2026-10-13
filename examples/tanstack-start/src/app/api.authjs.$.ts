@@ -10,7 +10,19 @@ import { clientKey, createRateLimiter, rateLimited } from '../lib/rate-limit.js'
 // deployments key tighter behind a shared store.
 const callbackThrottle = createRateLimiter({ windowMs: 600_000, max: 100 })
 
+// Per-identifier attempt cap for the email OTP/link callback
+// (CAP-2/CAP-18) — see the Next example's route for the rationale.
+const otpAttemptThrottle = createRateLimiter({ windowMs: 600_000, max: 3 })
+
 async function throttled(request: Request): Promise<Response> {
+  const url = new URL(request.url)
+  if (url.pathname.endsWith('/callback/resend')) {
+    const email = url.searchParams.get('email') ?? ''
+    const decision = otpAttemptThrottle(`otp:${clientKey(request)}:${email.toLowerCase()}`)
+    if (decision.limited) {
+      return rateLimited(decision.retryAfterMs)
+    }
+  }
   const decision = callbackThrottle(clientKey(request))
   if (decision.limited) {
     return rateLimited(decision.retryAfterMs)

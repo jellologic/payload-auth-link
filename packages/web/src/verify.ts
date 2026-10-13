@@ -11,6 +11,9 @@ import {
 /**
  * Full server-side session validation: forwards request cookies to the
  * plugin session endpoint and narrows the answer. Fails closed (`null`).
+ * The narrowed `SessionUser` carries the endpoint's optional PORT-4
+ * facts (`assurance`, `actor`, `organizationId`) when the server sent
+ * them; absent or `'unknown'` assurance never proves a method or MFA.
  */
 export type SessionVerifier = (headers: Headers) => Promise<SessionUser | null>
 

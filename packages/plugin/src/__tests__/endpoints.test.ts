@@ -20,6 +20,7 @@ function clearProvider(
 ): IdentityProviderPort {
   return {
     id: defineProviderId(id),
+    capabilities: new Set(),
     sessionCookieNames: names,
     ...(clear === undefined ? {} : { sessionCookieClearOptions: clear }),
     getSession: () => okAsync(null),
@@ -70,6 +71,19 @@ describe('logout cookie clearing', () => {
     const cookies = await logoutCookies([clearProvider('legacy', ['__Secure-al_session'])])
     expect(cookies).toEqual(['__Secure-al_session=; Max-Age=0; Path=/; Secure'])
   })
+
+  it('also expires non-session logout cookies like BA admin_session (CAP-8a)', async () => {
+    const provider: IdentityProviderPort = {
+      ...clearProvider('ba-like', ['better-auth.session_token'], () => ({})),
+      logoutCookieNames: ['better-auth.admin_session', 'better-auth.session_token'],
+    }
+    const cookies = await logoutCookies([provider])
+    // Deduped: the token appears in both lists but is expired once.
+    expect(cookies).toEqual([
+      'better-auth.session_token=; Max-Age=0; Path=/',
+      'better-auth.admin_session=; Max-Age=0; Path=/',
+    ])
+  })
 })
 
 function capturingLogger(): {
@@ -119,6 +133,7 @@ function failingProvider(id: string): IdentityProviderPort {
   const providerId = defineProviderId(id)
   return {
     id: providerId,
+    capabilities: new Set(),
     sessionCookieNames: [`al_${id}_session`],
     getSession: () => errAsync(new ProviderError(providerId, 'getSession')),
     revokeSession: () => okAsync(undefined),
@@ -145,6 +160,31 @@ function sessionHandler(
   }
   return endpoint.handler
 }
+
+describe('guest session endpoint (CAP-10)', () => {
+  it('answers 200 with a guest principal and no user for anonymous sessions', async () => {
+    const stub = createStubProvider()
+    const cookie = stub.issue({
+      sessionId: 'guest-1',
+      providerUserId: 'anon-1',
+      email: 'temp-1@anonymous.placeholder.invalid',
+      expiresAt: new Date(Date.now() + 3600_000),
+      anonymous: true,
+    })
+    const handler = sessionHandler('get', capturingLogger().logger, stub.provider)
+    const response = await handler({
+      headers: new Headers({ cookie }),
+      payload: stubPayload({}),
+    } as unknown as PayloadRequest)
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as {
+      user: unknown
+      guest?: { id: string; providerId: string }
+    }
+    expect(body.user).toBeNull()
+    expect(body.guest).toMatchObject({ id: 'anon-1', providerId: 'stub' })
+  })
+})
 
 describe('session verify logging', () => {
   it('warns on invalid sessions before the GET 401', async () => {
@@ -195,6 +235,37 @@ describe('session verify logging', () => {
     expect(denied.status).toBe(401)
     expect(logs.error).toHaveBeenCalledWith('session endpoint verification failed: storage error', {
       cause: failure,
+    })
+  })
+
+  it("serializes 'unknown' assurance and omits unknown actor/tenant on GET (PORT-4)", async () => {
+    const stub = createStubProvider()
+    const cookie = stub.issue({
+      sessionId: 'live-port4',
+      providerUserId: 'stub-1',
+      email: 'linked@test.dev',
+      expiresAt: new Date(Date.now() + 3600_000),
+    })
+    const handler = sessionHandler('get', capturingLogger().logger, stub.provider)
+    const ok = await handler({
+      headers: new Headers({ cookie }),
+      payload: stubPayload({
+        find: () => Promise.resolve({ docs: [linkedDoc] }),
+        findByID: () => Promise.resolve(linkedDoc),
+      }),
+    } as unknown as PayloadRequest)
+    expect(ok.status).toBe(200)
+    const body: unknown = await ok.json()
+    expect(body).toEqual({
+      user: {
+        id: 'user-1',
+        collection: 'users',
+        email: 'linked@test.dev',
+        roles: ['user'],
+        // The stub provider cannot tell how the session was proven:
+        // that fact serializes as 'unknown', it is not dropped.
+        assurance: { methods: 'unknown', mfa: 'unknown' },
+      },
     })
   })
 
@@ -277,6 +348,7 @@ function presentingProvider(
   const providerId = defineProviderId(id)
   return {
     id: providerId,
+    capabilities: new Set(),
     sessionCookieNames: [`__Secure-${id}.session`],
     sessionCookieClearOptions: () => ({ secure: true, domain: 'example.com' }),
     getSession: () => {
@@ -290,6 +362,15 @@ function presentingProvider(
         email: email.value,
         emailVerified: true,
         expiresAt: new Date(Date.now() + 3600_000),
+        identity: {
+          email: { value: email.value, verified: true },
+          phone: null,
+          anonymous: false,
+        },
+        assurance: { methods: 'unknown' as const, mfa: 'unknown' as const },
+        actor: null,
+        organizationId: null,
+        channel: 'cookie' as const,
       })
     },
     revokeSession: (sessionId) => {
@@ -361,6 +442,72 @@ describe('multi-provider logout', () => {
     expect(alreadyOut.status).toBe(401)
     expect(revoked).toEqual(['second-session'])
     expect(alreadyOut.headers.getSetCookie()).toEqual(expectedClears)
+  })
+
+  it('revokes additional same-provider sessions and expires presented multi cookies (CAP-13b)', async () => {
+    const { stub, cookie } = signedInStub()
+    const revoked: string[] = []
+    const multiProvider: IdentityProviderPort = {
+      ...stub.provider,
+      revokeSession: (sessionId) => {
+        revoked.push(sessionId)
+        return stub.provider.revokeSession(sessionId)
+      },
+      listPresentedSessionIds: () => okAsync(['live-multi', 'sibling-session', '']),
+      presentedLogoutCookieNames: () => ['al_stub_session_multi-sibling-session'],
+    }
+    const handler = sessionHandler('delete', capturingLogger().logger, multiProvider)
+    const signedOut = await handler({
+      headers: new Headers({ ...csrf, cookie }),
+      payload: stubPayload({ find: () => Promise.resolve({ docs: [linkedDoc] }) }),
+    } as unknown as PayloadRequest)
+    expect(signedOut.status).toBe(200)
+    // Active session once via the session service; sibling via the sweep.
+    expect(revoked).toEqual(['live-multi', 'sibling-session'])
+    const cleared = signedOut.headers.getSetCookie().map((entry) => entry.split('=', 1)[0])
+    expect(cleared).toContain('al_stub_session_multi-sibling-session')
+  })
+
+  it('logs a failing multi-session enumeration without failing the logout (CAP-13b)', async () => {
+    const logs = capturingLogger()
+    const { stub, cookie } = signedInStub()
+    const multiProvider: IdentityProviderPort = {
+      ...stub.provider,
+      listPresentedSessionIds: () =>
+        errAsync(new ProviderError(defineProviderId('stub'), 'listPresentedSessionIds')),
+    }
+    const handler = sessionHandler('delete', logs.logger, multiProvider)
+    const signedOut = await handler({
+      headers: new Headers({ ...csrf, cookie }),
+      payload: stubPayload({ find: () => Promise.resolve({ docs: [linkedDoc] }) }),
+    } as unknown as PayloadRequest)
+    expect(signedOut.status).toBe(200)
+    expect(logs.warn).toHaveBeenCalledWith('logout multi-session enumeration failed', {
+      providerId: 'stub',
+    })
+  })
+
+  it('logs a failing sibling revoke without failing the logout (CAP-13b)', async () => {
+    const logs = capturingLogger()
+    const { stub, cookie } = signedInStub()
+    const multiProvider: IdentityProviderPort = {
+      ...stub.provider,
+      revokeSession: (sessionId) =>
+        sessionId === 'sibling-session'
+          ? errAsync(new ProviderError(defineProviderId('stub'), 'revokeSession'))
+          : stub.provider.revokeSession(sessionId),
+      listPresentedSessionIds: () => okAsync(['sibling-session']),
+    }
+    const handler = sessionHandler('delete', logs.logger, multiProvider)
+    const signedOut = await handler({
+      headers: new Headers({ ...csrf, cookie }),
+      payload: stubPayload({ find: () => Promise.resolve({ docs: [linkedDoc] }) }),
+    } as unknown as PayloadRequest)
+    expect(signedOut.status).toBe(200)
+    expect(logs.error).toHaveBeenCalledWith(
+      'logout multi-session revoke failed',
+      expect.objectContaining({ providerId: 'stub' })
+    )
   })
 
   it('logs a failing sweep revoke without failing the logout', async () => {

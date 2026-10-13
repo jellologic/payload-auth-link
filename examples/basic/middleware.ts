@@ -3,7 +3,7 @@ import { sessionCookieNames } from './lib/auth-cookie-names'
 
 export default createAuthMiddleware({
   sessionCookieNames,
-  publicPaths: ['/', '/sign-in', '/sign-in-authjs'],
+  publicPaths: ['/', '/sign-in', '/sign-in/passwordless', '/sign-in-authjs'],
 })
 
 export const config = {

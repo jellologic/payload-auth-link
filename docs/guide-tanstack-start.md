@@ -217,7 +217,7 @@ absent from denied responses, and both examples render the same
 
 ```bash
 cd examples/tanstack-start && bun run dev        # :3200
-bun run e2e:tanstack                             # SQLite, 24 specs × 3 engines
+bun run e2e:tanstack                             # SQLite, 33 specs × 3 engines
 bun run e2e:tanstack-postgres                    # per-run database
 bun run e2e:tanstack-mongo                       # memory replset
 ```

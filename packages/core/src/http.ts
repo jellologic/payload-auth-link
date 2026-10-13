@@ -1,6 +1,8 @@
+import { z } from 'zod'
 import { parseEmail } from './email.js'
 import { InvalidConfigError } from './errors.js'
 import { isNonEmptyString, isRecord } from './guards.js'
+import { defineUserId, type ResolvedSessionActor, type SessionAssurance } from './ports.js'
 import { parseRole } from './roles.js'
 
 /**
@@ -90,18 +92,97 @@ export function resolveOrigin(input: OriginResolutionInput): string {
  * The session user: what the plugin's session endpoint returns inside its
  * `{ user }` envelope, and what the UI adapters hydrate from. Plain JSON —
  * roles are the wire form of `Role`, re-validated on parse.
+ *
+ * The PORT-4 fields are additive and optional, so payloads from older
+ * servers (without them) still parse, and older clients ignore them.
+ * Producers include a field only when it is known: `actor` only while
+ * an operator impersonates the user, `organizationId` only when the
+ * provider reports an active tenant. `assurance` is the exception that
+ * proves the rule — when the provider reported it, it serializes even
+ * when its values are `'unknown'`, because "the provider cannot tell"
+ * is itself a fact. Consumers must treat absent or `'unknown'`
+ * assurance as not satisfied (R3 fail-closed): it never proves a
+ * method or MFA.
  */
 export type SessionUser = {
   readonly id: string
   readonly collection: string
   readonly email: string
   readonly roles: readonly string[]
+  /** How the session was proven, when the provider reported it. */
+  readonly assurance?: SessionAssurance | undefined
+  /**
+   * The impersonating operator, present only while impersonating,
+   * resolved against Payload users when linked (CAP-8b): the
+   * `kind: 'payload-user'` form also carries the operator's Payload
+   * user id; `kind: 'provider-only'` means no linked Payload user.
+   */
+  readonly actor?: ResolvedSessionActor | undefined
+  /** Provider-native active tenant, when one is active. */
+  readonly organizationId?: string | undefined
+  /**
+   * Present (`true`) only when a `requireMfaForRoles` policy (CAP-6)
+   * withheld one or more of the user's stored roles from `roles`
+   * because this session lacks MFA proof — the UI's signal to prompt
+   * for a step-up sign-in instead of a flat "forbidden".
+   */
+  readonly mfaRequired?: true | undefined
 }
 
+const authMethodSchema = z.enum([
+  'password',
+  'magic-link',
+  'email-otp',
+  'oauth',
+  'one-tap',
+  'passkey',
+  'phone-otp',
+  'anonymous',
+])
+
+// Non-strict on purpose (forward compatibility): a newer server may
+// add keys inside these optional facts, and an older client must keep
+// reading the session instead of nuking the whole user. Unknown keys
+// are stripped; known keys stay strictly typed.
+const sessionAssuranceSchema = z.object({
+  methods: z.union([z.array(authMethodSchema), z.literal('unknown')]),
+  mfa: z.union([z.boolean(), z.literal('unknown')]),
+})
+
+const resolvedSessionActorSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('payload-user'),
+    providerUserId: z.string().min(1),
+    userId: z.string().min(1),
+  }),
+  z.object({ kind: z.literal('provider-only'), providerUserId: z.string().min(1) }),
+])
+
 /**
- * Narrow unknown JSON to a `SessionUser`. Fails closed (`null`) on any
- * deviation: the server writes this shape from validated domain types, so
- * anything else is version skew or tampering, never a partial session.
+ * Pre-CAP-8b wire form (`{ providerUserId }` with no resolution):
+ * accepted and normalized to `provider-only`, which is exactly what
+ * it always meant — an operator known only by provider id.
+ */
+const legacySessionActorSchema = z.object({ providerUserId: z.string().min(1) })
+
+/**
+ * Narrow unknown JSON to a `SessionUser`. This is the CLIENT wire
+ * parser: core identity fields (`id`, `collection`, `email`,
+ * `roles`) stay strict and fail closed (`null`) on any deviation,
+ * because a partial identity is never a session.
+ *
+ * The optional PORT-4 fields degrade instead of nuking the user:
+ * unknown keys inside `assurance`/`actor` are ignored (forward
+ * compatibility with newer servers), and a present-but-malformed
+ * optional degrades fail-closed-for-policy — `assurance` to
+ * `'unknown'`/`'unknown'` (which never satisfies a policy requiring
+ * proof), `actor`/`organizationId` to absent. Dropping a malformed
+ * client-side actor marker is safe ONLY because server-side
+ * authorization and audit never route through this parser: the
+ * plugin extracts the actor from `req.user` with its own fail-closed
+ * server extraction (a malformed actor there still denies). The
+ * explicit `null` a producer may carry for "no actor / no tenant"
+ * normalizes to absent; `null` assurance degrades to `'unknown'`.
  */
 export function parseSessionUser(value: unknown): SessionUser | null {
   if (!isRecord(value)) {
@@ -125,7 +206,108 @@ export function parseSessionUser(value: unknown): SessionUser | null {
     }
     roles.push(parsed.value)
   }
-  return { id: value.id, collection: value.collection, email: email.value, roles }
+  let assurance: SessionAssurance | undefined
+  if (value.assurance !== undefined) {
+    const parsed = sessionAssuranceSchema.safeParse(value.assurance)
+    assurance = parsed.success
+      ? {
+          methods: parsed.data.methods === 'unknown' ? 'unknown' : [...parsed.data.methods],
+          mfa: parsed.data.mfa,
+        }
+      : { methods: 'unknown', mfa: 'unknown' }
+  }
+  let actor: ResolvedSessionActor | undefined
+  if (value.actor !== undefined && value.actor !== null) {
+    const parsed = resolvedSessionActorSchema.safeParse(value.actor)
+    if (parsed.success) {
+      actor =
+        parsed.data.kind === 'payload-user'
+          ? {
+              kind: 'payload-user',
+              providerUserId: parsed.data.providerUserId,
+              userId: defineUserId(parsed.data.userId),
+            }
+          : { kind: 'provider-only', providerUserId: parsed.data.providerUserId }
+    } else {
+      const legacy = legacySessionActorSchema.safeParse(value.actor)
+      if (legacy.success) {
+        actor = { kind: 'provider-only', providerUserId: legacy.data.providerUserId }
+      }
+      // Malformed actor degrades to absent on the wire; server authz
+      // uses its own fail-closed extraction (see the TSDoc above).
+    }
+  }
+  let organizationId: string | undefined
+  if (value.organizationId !== undefined && value.organizationId !== null) {
+    if (isNonEmptyString(value.organizationId)) {
+      organizationId = value.organizationId
+    }
+  }
+  return {
+    id: value.id,
+    collection: value.collection,
+    email: email.value,
+    roles,
+    ...(assurance === undefined ? {} : { assurance }),
+    ...(actor === undefined ? {} : { actor }),
+    ...(organizationId === undefined ? {} : { organizationId }),
+    // Only the literal `true` survives: anything else is not a
+    // step-up signal (absent and malformed alike degrade to absent).
+    ...(value.mfaRequired === true ? { mfaRequired: true as const } : {}),
+  }
+}
+
+/**
+ * The guest principal as it travels on the wire (CAP-10): the session
+ * endpoint answers `{ user: null, guest }` for a live anonymous
+ * provider session. A guest has NO Payload user, roles, or access —
+ * `id` is only a stable key for anonymous app state.
+ */
+export type SessionGuest = {
+  readonly id: string
+  readonly providerId: string
+  /** ISO instant the underlying provider session expires. */
+  readonly expiresAt: string
+}
+
+/** Narrow unknown JSON to a `SessionGuest`; `null` on any deviation. */
+export function parseSessionGuest(value: unknown): SessionGuest | null {
+  if (!isRecord(value)) {
+    return null
+  }
+  if (
+    !isNonEmptyString(value.id) ||
+    !isNonEmptyString(value.providerId) ||
+    !isNonEmptyString(value.expiresAt)
+  ) {
+    return null
+  }
+  return { id: value.id, providerId: value.providerId, expiresAt: value.expiresAt }
+}
+
+/**
+ * Parse a session-endpoint `Response` through its `{ guest }`
+ * envelope (CAP-10). Fails closed exactly like
+ * {@link parseSessionResponse}; note a guest body parses to `null`
+ * there (its `user` is `null`), so user-only consumers stay correct
+ * without knowing guests exist.
+ */
+export async function parseGuestResponse(
+  response: Pick<Response, 'ok' | 'json'>
+): Promise<SessionGuest | null> {
+  if (!response.ok) {
+    return null
+  }
+  let body: unknown
+  try {
+    body = await response.json()
+  } catch {
+    return null
+  }
+  if (!isRecord(body) || body.user !== null) {
+    return null
+  }
+  return parseSessionGuest(body.guest)
 }
 
 /**

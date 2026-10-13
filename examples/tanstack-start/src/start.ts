@@ -7,6 +7,7 @@ const authRequestMiddleware = createAuthRequestMiddleware({
   publicPaths: [
     '/',
     '/sign-in',
+    '/sign-in/passwordless',
     '/sign-in-authjs',
     '/favicon.ico',
     // Payload REST + admin carry their own auth; client assets must

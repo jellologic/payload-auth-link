@@ -238,7 +238,11 @@ export function createBetterAuthCollections(
       'Better Auth user',
       [
         { name: 'email', type: 'email', required: true, unique: true, index: true },
-        { name: 'name', type: 'text', required: true },
+        // Not `required`: BA passwordless flows create users with
+        // `name: ""` (magic-link does exactly this), and Payload's
+        // required-text validation rejects empty strings — the row
+        // must accept what BA itself writes.
+        { name: 'name', type: 'text' },
         { name: 'emailVerified', type: 'checkbox', required: true, defaultValue: false },
         { name: 'image', type: 'text' },
         ...extra('user'),

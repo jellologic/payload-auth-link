@@ -122,6 +122,17 @@ function toSession(doc: Record<string, unknown>): AdapterSession {
   }
 }
 
+/**
+ * Composite `(identifier, token)` uniqueness key for verification tokens
+ * (Payload has no compound unique indexes; see `collections.ts`). JSON
+ * encoding keeps the pair unambiguous for any identifier/token strings,
+ * unlike a delimiter join. Lookups still query `identifier` + `token`
+ * directly, so rows written before this field existed remain consumable.
+ */
+function verificationTokenKey(identifier: string, token: string): string {
+  return JSON.stringify([identifier, token])
+}
+
 function toVerificationToken(doc: Record<string, unknown>): VerificationToken {
   return {
     identifier: requiredString(doc, 'identifier', 'verification token'),
@@ -493,7 +504,12 @@ export function createAuthJsAdapter(deps: AuthJsAdapterDeps): Adapter {
         const payload = await deps.getPayload()
         const created = await payload.create({
           collection: slugs.verificationToken,
-          data: { identifier, token, expires: expires.toISOString() },
+          data: {
+            key: verificationTokenKey(identifier, token),
+            identifier,
+            token,
+            expires: expires.toISOString(),
+          },
           overrideAccess: true,
         })
         if (!isRecord(created)) {

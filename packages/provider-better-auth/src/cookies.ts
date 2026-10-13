@@ -19,6 +19,16 @@ export type BetterAuthCookieOptions = Pick<BetterAuthOptions, 'advanced' | 'base
 /** Session-indicating Better Auth cookies. */
 type SessionCookieKey = 'session_token' | 'session_data'
 
+/**
+ * The admin plugin's impersonation cookie key. BA sets it (via
+ * `createAuthCookie('admin_session')`) to the impersonating operator's
+ * signed session token when impersonation starts. It is NOT
+ * session-indicating — the live session is still `session_token` — so
+ * it never joins {@link getBetterAuthSessionCookieNames}; it is a
+ * logout-clearing concern only (see {@link getBetterAuthLogoutCookieNames}).
+ */
+const adminSessionCookieKey = 'admin_session'
+
 function readDynamicProtocol(baseURL: BetterAuthOptions['baseURL']): string | undefined {
   if (typeof baseURL !== 'object' || baseURL === null || !('protocol' in baseURL)) {
     return undefined
@@ -79,6 +89,38 @@ function sessionCookieEntries(
 }
 
 /**
+ * The `admin_session` cookie's resolved name, mirroring BA's
+ * `createCookieGetter` for the `admin_session` key exactly: the
+ * `advanced.cookies.admin_session.name` override wins, otherwise
+ * `{cookiePrefix}.admin_session`, prefixed with `__Secure-` when secure
+ * cookies apply. The drift test asserts this against BA's real getter.
+ */
+function adminSessionCookieName(
+  options: BetterAuthCookieOptions,
+  environment?: SecureCookieEnvironment
+): string {
+  const prefix = options.advanced?.cookiePrefix || defaultCookiePrefix
+  const secure = secureCookiesEnabled(options, environment) ? secureCookiePrefix : ''
+  const override: unknown = options.advanced?.cookies?.[adminSessionCookieKey]?.name
+  return `${secure}${typeof override === 'string' && override !== '' ? override : `${prefix}.${adminSessionCookieKey}`}`
+}
+
+/**
+ * Cookies to expire on logout that do not indicate a live session (the
+ * port's `logoutCookieNames`): today only the admin plugin's
+ * `admin_session`. Expired unconditionally — when the admin plugin is
+ * absent the cookie simply never exists and expiring it is a no-op,
+ * while leaving a present one behind would keep the impersonating
+ * operator's resumable session token in the browser after logout.
+ */
+export function getBetterAuthLogoutCookieNames(
+  options: BetterAuthCookieOptions,
+  environment?: SecureCookieEnvironment
+): readonly string[] {
+  return [adminSessionCookieName(options, environment)]
+}
+
+/**
  * Session cookie names for a Better Auth instance. See
  * `sessionCookieEntries` for the mirroring rule; the cookie-suite drift
  * test asserts these against BA's real cookie getter.
@@ -125,6 +167,15 @@ export function getBetterAuthSessionCookieClearOptions(
       ]
     })
   )
+  // BA sets `admin_session` with the session token's live attributes
+  // (`authCookies.sessionToken.attributes`), not its own per-cookie
+  // attributes, so its clearing write must reuse the session token's.
+  const sessionTokenEntry = entries.find((entry) => entry.key === 'session_token')
+  const sessionTokenClear =
+    sessionTokenEntry === undefined ? undefined : lookup.get(sessionTokenEntry.name)
+  if (sessionTokenClear !== undefined) {
+    lookup.set(adminSessionCookieName(options, environment), sessionTokenClear)
+  }
   return (name: string): CookieOptions | undefined => {
     const found = lookup.get(name)
     return found === undefined ? undefined : { ...found }

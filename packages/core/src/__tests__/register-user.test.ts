@@ -116,6 +116,25 @@ class FakeUserRepository implements UserRepository {
     return okAsync(updated)
   }
 
+  unlinkIdentity(
+    userId: UserId,
+    ref: ProviderIdentityRef
+  ): ResultAsync<UserRecord, RepositoryError> {
+    const user = this.users.get(userId)
+    if (!user) {
+      return errAsync(new RepositoryError(`unlinkIdentity: missing user ${userId}`))
+    }
+    const updated: UserRecord = {
+      ...user,
+      identities: user.identities.filter(
+        (identity) =>
+          identity.providerId !== ref.providerId || identity.providerUserId !== ref.providerUserId
+      ),
+    }
+    this.users.set(userId, updated)
+    return okAsync(updated)
+  }
+
   setRoles(userId: UserId, roles: readonly Role[]): ResultAsync<UserRecord, RepositoryError> {
     const user = this.users.get(userId)
     if (!user) {

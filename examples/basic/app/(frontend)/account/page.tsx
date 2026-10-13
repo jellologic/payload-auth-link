@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { useAuthLink, UserMenu } from '@payload-auth-link/react'
+import { AccountSecurity } from './security'
 
 export default function AccountPage() {
   const { user, status } = useAuthLink()
@@ -26,6 +27,7 @@ export default function AccountPage() {
       <p data-testid="account-email">{user.email}</p>
       <p data-testid="account-roles">{user.roles.join(', ')}</p>
       <UserMenu signOutRedirectTo="/" />
+      <AccountSecurity />
     </main>
   )
 }

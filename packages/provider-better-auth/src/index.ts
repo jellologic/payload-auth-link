@@ -21,11 +21,14 @@ export type {
   BetterAuthModelKey,
 } from './collections.js'
 export {
+  getBetterAuthLogoutCookieNames,
   getBetterAuthSessionCookieClearOptions,
   getBetterAuthSessionCookieNames,
 } from './cookies.js'
 export type { BetterAuthCookieOptions } from './cookies.js'
 export { createBetterAuthEngine } from './engine.js'
+export { createIdentityEventBus } from './events.js'
+export type { IdentityEventBus } from './events.js'
 export type { BetterAuthEngine, BetterAuthEngineInput } from './engine.js'
 export {
   AdapterOperationError,
@@ -33,6 +36,11 @@ export {
   UnsupportedOperatorError,
   UnsupportedSchemaError,
 } from './errors.js'
-export { createBetterAuthProvider } from './port.js'
+export {
+  betterAuthCapabilities,
+  betterAuthPluginCapabilities,
+  createBetterAuthProvider,
+  isPlaceholderEmail,
+} from './port.js'
 export type { BetterAuthProviderDeps, BetterAuthServerApi, BetterAuthSessionQuery } from './port.js'
 export { baFieldToPayload, translateWhereClause } from './where.js'

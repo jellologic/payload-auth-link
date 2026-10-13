@@ -1,6 +1,8 @@
 import {
   ForbiddenError,
   InvalidConfigError,
+  MfaRequiredError,
+  mfaSatisfied,
   parseRole,
   SessionInvalidError,
   type SessionUser,
@@ -22,7 +24,9 @@ import type { SessionVerifier } from './verify.js'
 
 /**
  * Require an authenticated session user. Throws (or delegates to
- * `onAnonymous`) when there is no valid session.
+ * `onAnonymous`) when there is no valid session. The returned user
+ * carries any PORT-4 facts the session endpoint reported
+ * (`assurance`, `actor`, `organizationId`) for caller-side policy.
  */
 export async function requireSessionUser(
   headers: Headers,
@@ -41,10 +45,21 @@ export async function requireSessionUser(
 export type RequireRolesOptions = {
   /** Every listed role is required. */
   readonly roles: readonly string[]
+  /**
+   * Also require MFA proof for this session (CAP-6): an authenticated
+   * user holding the roles but lacking `assurance.mfa === true`
+   * (`'unknown'` never satisfies) hits `onMfaRequired` (default:
+   * throw `MfaRequiredError`, map to 403/step-up). Independent of
+   * the plugin's `requireMfaForRoles` projection, which withholds
+   * the roles themselves — use either or both.
+   */
+  readonly requireMfa?: boolean | undefined
   /** Anonymous handler, e.g. `() => redirect('/sign-in')`. */
   readonly onAnonymous?: (() => never) | undefined
   /** Authenticated-but-denied handler, e.g. `() => notFound()`. */
   readonly onDenied?: ((user: SessionUser) => never) | undefined
+  /** Authenticated-with-roles-but-no-MFA handler (step-up redirect). */
+  readonly onMfaRequired?: ((user: SessionUser) => never) | undefined
 }
 
 /**
@@ -76,8 +91,18 @@ export async function requireRoles(
   const user = await requireSessionUser(headers, verify, options.onAnonymous)
   const missing = options.roles.filter((role) => !user.roles.includes(role))
   if (missing.length > 0) {
+    // When the session endpoint withheld roles for MFA (CAP-6 wire
+    // flag), the honest denial is the step-up error, not a flat 403.
+    if (user.mfaRequired === true) {
+      options.onMfaRequired?.(user)
+      throw new MfaRequiredError(`roles withheld pending MFA: ${missing.join(', ')}`)
+    }
     options.onDenied?.(user)
     throw new ForbiddenError(`missing roles: ${missing.join(', ')}`)
+  }
+  if (options.requireMfa === true && !mfaSatisfied(user.assurance)) {
+    options.onMfaRequired?.(user)
+    throw new MfaRequiredError('this resource requires a multi-factor session')
   }
   return user
 }

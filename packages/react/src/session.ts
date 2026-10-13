@@ -1,8 +1,12 @@
 import {
   csrfHeaderName,
   defaultSessionEndpointPath,
+  isRecord,
+  parseSessionGuest,
   parseSessionResponse,
+  parseSessionUser,
   type HttpFetch,
+  type SessionGuest,
   type SessionUser,
 } from '@payload-auth-link/core'
 
@@ -30,6 +34,52 @@ export async function fetchSessionUser(
     return null
   }
   return parseSessionResponse(response)
+}
+
+/** Both halves of one session-endpoint read (CAP-10). */
+export type SessionSnapshot = {
+  readonly user: SessionUser | null
+  readonly guest: SessionGuest | null
+}
+
+/**
+ * Read user AND guest from one session-endpoint response. The body
+ * is parsed exactly once; a guest body yields `user: null` plus the
+ * guest, a user body the reverse. Fails closed like
+ * {@link fetchSessionUser}.
+ */
+export async function fetchSession(
+  sessionEndpoint: string = defaultSessionEndpointPath,
+  fetchImpl: HttpFetch = fetch
+): Promise<SessionSnapshot> {
+  const empty: SessionSnapshot = { user: null, guest: null }
+  let response: Response
+  try {
+    response = await fetchImpl(sessionEndpoint, {
+      method: 'GET',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { accept: 'application/json' },
+    })
+  } catch {
+    return empty
+  }
+  if (!response.ok) {
+    return empty
+  }
+  let body: unknown
+  try {
+    body = await response.json()
+  } catch {
+    return empty
+  }
+  if (!isRecord(body)) {
+    return empty
+  }
+  return {
+    user: parseSessionUser(body.user),
+    guest: body.user === null ? parseSessionGuest(body.guest) : null,
+  }
 }
 
 /**

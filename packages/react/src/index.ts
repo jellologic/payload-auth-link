@@ -14,4 +14,5 @@ export type {
 } from './components.js'
 export { AuthLinkProvider, useAuthLink, useHasRoles } from './provider.js'
 export type { AuthLinkContextValue, AuthLinkProviderProps, AuthLinkStatus } from './provider.js'
-export { fetchSessionUser, revokeSession } from './session.js'
+export { fetchSession, fetchSessionUser, revokeSession } from './session.js'
+export type { SessionSnapshot } from './session.js'

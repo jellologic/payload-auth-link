@@ -1,10 +1,14 @@
 import {
+  assertNever,
   defineUserId,
+  effectiveRoles,
   isRecord,
   parseEmail,
+  parsePhoneNumber,
   parseRole,
   providerIdSchema,
   toDate,
+  withheldRoles,
   type ClockPort,
   type CollectionMap,
   type LinkedIdentity,
@@ -12,6 +16,7 @@ import {
   type NewUser,
   type ProviderIdentityRef,
   type Role,
+  type Session,
   type SessionUser,
   type UserRecord,
 } from '@payload-auth-link/core'
@@ -22,7 +27,25 @@ export type MappingContext = {
   readonly defaultRole: Role
   readonly logger: LoggerPort
   readonly clock: ClockPort
+  /**
+   * Governance/identity field names (CAP-7/CAP-9). Optional so direct
+   * mapping callers keep working; absent means the plugin defaults
+   * (`phone`, `suspendedUntil`, `suspendReason`).
+   */
+  readonly userFields?:
+    | {
+        readonly phoneField: string
+        readonly suspendedUntilField: string
+        readonly suspendReasonField: string
+      }
+    | undefined
 }
+
+const defaultUserFields = {
+  phoneField: 'phone',
+  suspendedUntilField: 'suspendedUntil',
+  suspendReasonField: 'suspendReason',
+} as const
 
 function toIdentityRow(row: unknown, email: string, ctx: MappingContext): LinkedIdentity | null {
   if (!isRecord(row)) {
@@ -132,6 +155,34 @@ export function toUserRecord(doc: unknown, ctx: MappingContext): UserRecord | nu
       }
     }
   }
+  const fields = ctx.userFields ?? defaultUserFields
+  // Phone (CAP-9): absent/null -> null; a present-but-invalid value is
+  // dropped with a warning (never trusted for linking), without
+  // nuking an otherwise valid user record.
+  let phone: UserRecord['phone'] = null
+  const rawPhone: unknown = doc[fields.phoneField]
+  if (rawPhone !== undefined && rawPhone !== null && rawPhone !== '') {
+    const parsedPhone = parsePhoneNumber(rawPhone)
+    if (parsedPhone.isOk()) {
+      phone = parsedPhone.value
+    } else {
+      ctx.logger.warn('dropping invalid stored phone value')
+    }
+  }
+  // Suspension (CAP-7): a present-but-unparseable date fails CLOSED —
+  // the record is denied rather than admitting a possibly-suspended
+  // user. Absent/null is the only "not suspended" spelling.
+  let suspendedUntil: Date | null = null
+  const rawSuspended: unknown = doc[fields.suspendedUntilField]
+  if (rawSuspended !== undefined && rawSuspended !== null) {
+    suspendedUntil = toDate(rawSuspended)
+    if (!suspendedUntil) {
+      ctx.logger.warn('cannot map user doc: invalid suspendedUntil')
+      return null
+    }
+  }
+  const rawReason: unknown = doc[fields.suspendReasonField]
+  const suspendReason = typeof rawReason === 'string' && rawReason !== '' ? rawReason : null
   return {
     id: defineUserId(String(rawId)),
     email: email.value,
@@ -139,6 +190,9 @@ export function toUserRecord(doc: unknown, ctx: MappingContext): UserRecord | nu
     identities,
     createdAt,
     updatedAt,
+    phone,
+    suspendedUntil,
+    suspendReason,
   }
 }
 
@@ -172,15 +226,17 @@ export function singleResultRecord(doc: unknown, ctx: MappingContext): UserRecor
  */
 export function toNewUserData(
   input: NewUser,
-  ctx: Pick<MappingContext, 'map' | 'clock'>,
+  ctx: Pick<MappingContext, 'map' | 'clock' | 'userFields'>,
   password: string
 ): Record<string, unknown> {
+  const phoneField = (ctx.userFields ?? defaultUserFields).phoneField
   return {
     [ctx.map.emailField]: input.email,
     password,
     [ctx.map.rolesField]: [...input.roles],
     [ctx.map.identitiesField]:
       input.identity === undefined ? [] : [toIdentityData(input.identity, input.email, ctx.clock)],
+    ...(input.phone === undefined ? {} : { [phoneField]: input.phone }),
   }
 }
 
@@ -206,12 +262,62 @@ export function toIdentityData(
  */
 export type PayloadAuthUser = SessionUser
 
-/** Project a user record to the session wire shape (roles defensively copied). */
-export function toPayloadUser(record: UserRecord, collection: string): PayloadAuthUser {
+/**
+ * The PORT-4 session facts a {@link Session} carries onto the wire.
+ * Structurally the optional tail of `Session`, so callers pass the
+ * verified session itself.
+ */
+export type SessionUserFacts = Pick<Session, 'assurance' | 'actor' | 'organizationId'>
+
+/** Defensive copy of the resolved actor discriminated union. */
+function copyActor(actor: NonNullable<Session['actor']>): NonNullable<Session['actor']> {
+  switch (actor.kind) {
+    case 'payload-user':
+      return { kind: 'payload-user', providerUserId: actor.providerUserId, userId: actor.userId }
+    case 'provider-only':
+      return { kind: 'provider-only', providerUserId: actor.providerUserId }
+    default:
+      return assertNever(actor)
+  }
+}
+
+/**
+ * Project a user record to the session wire shape (roles defensively
+ * copied). `facts` carries the verified session's PORT-4 fields:
+ * each is copied only when present, so an absent fact stays absent
+ * on the wire (never `null`, never a fabricated default), while a
+ * reported `assurance` — including `'unknown'` values — serializes
+ * as data. Omitting `facts` yields exactly the pre-PORT-4 shape.
+ */
+export function toPayloadUser(
+  record: UserRecord,
+  collection: string,
+  facts?: SessionUserFacts,
+  policies?: { readonly requireMfaForRoles?: readonly Role[] | undefined }
+): PayloadAuthUser {
+  // CAP-6: roles listed in `requireMfaForRoles` are withheld from
+  // sessions without MFA proof (core `effectiveRoles`, fail-closed on
+  // absent/'unknown' assurance). Stored roles are untouched; the
+  // wire gains `mfaRequired: true` exactly when something was withheld.
+  const gated = policies?.requireMfaForRoles ?? []
+  const roles = effectiveRoles(record.roles, facts?.assurance, gated)
+  const withheld = withheldRoles(record.roles, facts?.assurance, gated)
   return {
     id: record.id,
     collection,
     email: record.email,
-    roles: [...record.roles],
+    roles: [...roles],
+    ...(withheld.length > 0 ? { mfaRequired: true as const } : {}),
+    ...(facts?.assurance === undefined
+      ? {}
+      : {
+          assurance: {
+            methods:
+              facts.assurance.methods === 'unknown' ? 'unknown' : [...facts.assurance.methods],
+            mfa: facts.assurance.mfa,
+          },
+        }),
+    ...(facts?.actor === undefined ? {} : { actor: copyActor(facts.actor) }),
+    ...(facts?.organizationId === undefined ? {} : { organizationId: facts.organizationId }),
   }
 }

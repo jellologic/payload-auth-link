@@ -1,4 +1,4 @@
-import { InvalidConfigError } from '@payload-auth-link/core'
+import { InvalidConfigError, type LoggerPort } from '@payload-auth-link/core'
 import type { AuthConfig } from '@auth/core'
 import Credentials from '@auth/core/providers/credentials'
 import { readFileSync } from 'node:fs'
@@ -42,6 +42,89 @@ function baseInput(overrides: Partial<AuthJsEngineInput> = {}): AuthJsEngineInpu
 
 afterEach(() => {
   vi.unstubAllEnvs()
+})
+
+function spyLogger(): { logger: LoggerPort; warn: ReturnType<typeof vi.fn> } {
+  const warn = vi.fn()
+  const logger: LoggerPort = {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn,
+    error: vi.fn(),
+    child: () => logger,
+  }
+  return { logger, warn }
+}
+
+function dangerousProvider(): AuthConfig['providers'][number] {
+  return {
+    id: 'google',
+    name: 'Google',
+    type: 'oidc',
+    allowDangerousEmailAccountLinking: true,
+  } as unknown as AuthConfig['providers'][number]
+}
+
+describe('engine risky linking validation (CAP-12)', () => {
+  it('warns (not throws) on allowDangerousEmailAccountLinking by default', () => {
+    const { logger, warn } = spyLogger()
+    expect(() =>
+      createAuthJsEngine(
+        baseInput({ logger, options: { providers: [dangerousProvider()], secret: SECRET } })
+      )
+    ).not.toThrow()
+    expect(warn).toHaveBeenCalledTimes(1)
+    const [message, fields] = warn.mock.calls[0] as [string, Record<string, unknown>]
+    expect(message).toContain('allowDangerousEmailAccountLinking')
+    expect(message).toContain('google')
+    expect(fields).toMatchObject({ setting: 'allowDangerousEmailAccountLinking' })
+  })
+
+  it('throws InvalidConfigError on allowDangerousEmailAccountLinking under strictLinking', () => {
+    expect(() =>
+      createAuthJsEngine(
+        baseInput({
+          strictLinking: true,
+          options: { providers: [dangerousProvider()], secret: SECRET },
+        })
+      )
+    ).toThrow(InvalidConfigError)
+    expect(() =>
+      createAuthJsEngine(
+        baseInput({
+          strictLinking: true,
+          options: { providers: [dangerousProvider()], secret: SECRET },
+        })
+      )
+    ).toThrow('allowDangerousEmailAccountLinking')
+  })
+
+  it('warns through factory-wrapped dangerous providers', () => {
+    const { logger, warn } = spyLogger()
+    const factory = (() => ({
+      id: 'google',
+      name: 'Google',
+      type: 'oidc',
+      allowDangerousEmailAccountLinking: true,
+    })) as unknown as AuthConfig['providers'][number]
+    createAuthJsEngine(baseInput({ logger, options: { providers: [factory], secret: SECRET } }))
+    expect(warn).toHaveBeenCalledTimes(1)
+  })
+
+  it('stays silent without dangerous linking, even under strictLinking', () => {
+    const { logger, warn } = spyLogger()
+    const safe = {
+      id: 'google',
+      name: 'Google',
+      type: 'oidc',
+    } as unknown as AuthConfig['providers'][number]
+    expect(() =>
+      createAuthJsEngine(
+        baseInput({ logger, strictLinking: true, options: { providers: [safe], secret: SECRET } })
+      )
+    ).not.toThrow()
+    expect(warn).not.toHaveBeenCalled()
+  })
 })
 
 describe('engine fail-fasts', () => {
@@ -96,6 +179,78 @@ describe('engine fail-fasts', () => {
         })
       )
     ).not.toThrow()
+  })
+
+  it('fails fast when trustProviderEmailVerification meets allowDangerousEmailAccountLinking', () => {
+    const dangerous = {
+      id: 'google',
+      name: 'Google',
+      type: 'oidc',
+      allowDangerousEmailAccountLinking: true,
+    } as unknown as AuthConfig['providers'][number]
+    expect(() =>
+      createAuthJsEngine(
+        baseInput({
+          trustProviderEmailVerification: ['google'],
+          options: { providers: [dangerous], secret: SECRET },
+        })
+      )
+    ).toThrow(InvalidConfigError)
+    expect(() =>
+      createAuthJsEngine(
+        baseInput({
+          trustProviderEmailVerification: ['google'],
+          options: { providers: [dangerous], secret: SECRET },
+        })
+      )
+    ).toThrow('allowDangerousEmailAccountLinking')
+
+    // Dangerous linking on a provider that is NOT trusted stays allowed.
+    expect(() =>
+      createAuthJsEngine(
+        baseInput({
+          trustProviderEmailVerification: ['acme-oidc'],
+          options: { providers: [dangerous], secret: SECRET },
+        })
+      )
+    ).not.toThrow()
+    // Trusting a provider without dangerous linking is the intended use.
+    const safe = {
+      id: 'google',
+      name: 'Google',
+      type: 'oidc',
+    } as unknown as AuthConfig['providers'][number]
+    expect(() =>
+      createAuthJsEngine(
+        baseInput({
+          trustProviderEmailVerification: ['google'],
+          options: { providers: [safe], secret: SECRET },
+        })
+      )
+    ).not.toThrow()
+  })
+
+  it('sees dangerous linking through factory-wrapped providers', () => {
+    const factory = (() => ({
+      id: 'google',
+      name: 'Google',
+      type: 'oidc',
+      allowDangerousEmailAccountLinking: true,
+    })) as unknown as AuthConfig['providers'][number]
+    expect(() =>
+      createAuthJsEngine(
+        baseInput({
+          trustProviderEmailVerification: ['google'],
+          options: { providers: [factory], secret: SECRET },
+        })
+      )
+    ).toThrow('allowDangerousEmailAccountLinking')
+  })
+
+  it('rejects empty trustProviderEmailVerification entries', () => {
+    expect(() => createAuthJsEngine(baseInput({ trustProviderEmailVerification: [''] }))).toThrow(
+      InvalidConfigError
+    )
   })
 
   it('fails fast when a provider factory throws on inspection', () => {

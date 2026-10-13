@@ -110,6 +110,21 @@ the same deny-all access and `baId` id column as core models.
   (`disableCookieCache`, `disableRefresh`) — session reads are
   always live, never stale cache.
 
+## Roles: the `admin` plugin's `role` is not Payload authorization
+
+Payload roles are the one role system; the BA `admin` plugin's
+`user.role` is **ignored by design** — see [One role system: Payload
+roles](concepts.md#one-role-system-payload-roles). The plugin's
+extra fields are ordinary storage as far as this adapter is
+concerned: declare `user.role` / `banned` / `banReason` /
+`banExpires` and `session.impersonatedBy` via `customFields` like
+any other plugin fields, and BA's own admin endpoints may consult
+the BA role. But nothing maps it into a session, a `SessionUser`, or
+a Payload access decision — set Payload `roles` to grant rights,
+and treat `banned` the same way (provider-side and optional, never
+the authority). The same applies to the `organization` plugin's
+member roles: storage-compatible, not Payload authorization.
+
 ## Cookie names (middleware + logout)
 
 Session cookie names derive from your options through

@@ -1,6 +1,9 @@
 import type { Config, Plugin } from 'payload'
+import { withImpersonationAuditCollections, withImpersonationAuditGlobals } from './audit.js'
 import { applyUsersCollection } from './collections.js'
 import { createEndpoints } from './endpoints.js'
+import { subscribeIdentityEvents } from './lifecycle.js'
+import { applyOrganizationCollections, createOrganizationEndpoints } from './organizations.js'
 import { wireOptions, type AuthLinkPluginOptions } from './options.js'
 import { createAuthLinkStrategy, strategyName } from './strategy.js'
 
@@ -25,8 +28,28 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
   const strategy = createAuthLinkStrategy(wired)
   const plugin: Plugin = (config: Config) => ({
     ...config,
-    collections: applyUsersCollection(config.collections, wired, strategy),
-    endpoints: [...(config.endpoints ?? []), ...createEndpoints(wired)],
+    // Impersonation audit (CAP-8b): every collection/global gains a
+    // `beforeOperation` hook that logs operations performed while an
+    // operator impersonates the request's user (see `audit.ts`).
+    collections: withImpersonationAuditCollections(
+      applyOrganizationCollections(
+        applyUsersCollection(config.collections, wired, strategy),
+        wired
+      ),
+      wired.logger
+    ),
+    globals: withImpersonationAuditGlobals(config.globals, wired.logger),
+    endpoints: [
+      ...(config.endpoints ?? []),
+      ...createEndpoints(wired),
+      ...createOrganizationEndpoints(wired),
+    ],
+    // CAP-14: subscribe provider identity lifecycle events once the
+    // Payload instance exists, then run the builder's own onInit.
+    onInit: async (payload) => {
+      subscribeIdentityEvents(wired, payload)
+      await config.onInit?.(payload)
+    },
   })
   plugin.slug = pluginSlug
   // Cross-plugin discovery parity with `definePlugin` (which exposes the
@@ -37,5 +60,20 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
 }
 
 export type { AuthLinkPluginOptions }
-export type { WiredOptions } from './options.js'
+export type { UserGovernanceFields, WiredOptions, WiredOrganizations } from './options.js'
 export { strategyName }
+export {
+  defaultDeniedWhileImpersonating,
+  denyWhileImpersonating,
+  denyWithoutMfa,
+  impersonationActorFromRequest,
+  impersonationStateFromRequest,
+  isImpersonating,
+  sessionMfaSatisfied,
+} from './access.js'
+export type {
+  DenyWhileImpersonatingAccess,
+  ImpersonationOperation,
+  ImpersonationState,
+} from './access.js'
+export { getOrgMembership, orgManagerRoles, requireOrgRole } from './organizations.js'
