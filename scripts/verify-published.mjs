@@ -68,6 +68,12 @@ const names = only === null ? allNames : allNames.filter((name) => only.includes
 if (names.length === 0) {
   throw new Error(`--only matched no package (have: ${allNames.join(', ')})`)
 }
+// The web consumer snippet type-checks against core helpers. A
+// release line can carry web without core (patch lines), so the type
+// step installs core@latest as a helper — provenance is still
+// asserted only for `names` at the given version.
+const typeNames = names.includes('web') && !names.includes('core') ? ['core', ...names] : names
+const helperDeps = typeNames.length > names.length ? ['@payload-auth-link/core@latest'] : []
 for (const name of names) {
   const id = `@payload-auth-link/${name}`
   const manifest = await registry(`${id.replace('/', '%2f')}/${version}`)
@@ -106,6 +112,7 @@ run('npm', [
   '--no-audit',
   '--no-fund',
   ...names.map((name) => `@payload-auth-link/${name}@${version}`),
+  ...helperDeps,
   ...peerSpecs,
   'react-dom@19',
   'typescript@5',
@@ -158,26 +165,66 @@ writeFileSync(
     2
   )
 )
-writeFileSync(
-  join(consumer, 'consumer.ts'),
-  `import { parseRole, safeRedirectPath, type Role } from '@payload-auth-link/core'
-import { createSessionVerifier, requireRoles } from '@payload-auth-link/web'
-import { authLink } from '@payload-auth-link/plugin'
-import { createAuthMiddleware } from '@payload-auth-link/next'
-import { createAuthRequestMiddleware } from '@payload-auth-link/tanstack-start'
-import { AuthLinkProvider } from '@payload-auth-link/react'
-import { createBetterAuthEngine } from '@payload-auth-link/provider-better-auth'
-import { createAuthJsEngine } from '@payload-auth-link/provider-authjs'
-
-const role: Role = parseRole('admin')._unsafeUnwrap()
-const destination: string = safeRedirectPath('/account')
-const verify = createSessionVerifier({ baseUrl: 'https://example.com' })
-export const guard = (headers: Headers) => requireRoles(headers, verify, { roles: [role] })
-export const middleware = createAuthMiddleware({ sessionCookieNames: ['a'] })
-export const startMiddleware = createAuthRequestMiddleware({ sessionCookieNames: ['a'] })
-export const parts = [authLink, AuthLinkProvider, createBetterAuthEngine, createAuthJsEngine, destination]
-`
-)
+// Per-package consumer snippets; a --only run type-checks only the
+// packages it installed.
+const consumerSnippets = {
+  core: {
+    imports: "import { parseRole, safeRedirectPath, type Role } from '@payload-auth-link/core'",
+    body: [
+      "const role: Role = parseRole('admin')._unsafeUnwrap()",
+      "const destination: string = safeRedirectPath('/account')",
+    ],
+  },
+  web: {
+    imports: "import { createSessionVerifier, requireRoles } from '@payload-auth-link/web'",
+    body: [
+      "const verify = createSessionVerifier({ baseUrl: 'https://example.com' })",
+      'export const guard = (headers: Headers) =>',
+      "  requireRoles(headers, verify, { roles: [parseRole('admin')._unsafeUnwrap()] })",
+    ],
+  },
+  plugin: {
+    imports: "import { authLink } from '@payload-auth-link/plugin'",
+    body: [],
+  },
+  next: {
+    imports: "import { createAuthMiddleware } from '@payload-auth-link/next'",
+    body: ["export const middleware = createAuthMiddleware({ sessionCookieNames: ['a'] })"],
+  },
+  'tanstack-start': {
+    imports: "import { createAuthRequestMiddleware } from '@payload-auth-link/tanstack-start'",
+    body: [
+      'export const startMiddleware =',
+      "  createAuthRequestMiddleware({ sessionCookieNames: ['a'] })",
+    ],
+  },
+  react: {
+    imports: "import { AuthLinkProvider } from '@payload-auth-link/react'",
+    body: [],
+  },
+  'provider-better-auth': {
+    imports: "import { createBetterAuthEngine } from '@payload-auth-link/provider-better-auth'",
+    body: [],
+  },
+  'provider-authjs': {
+    imports: "import { createAuthJsEngine } from '@payload-auth-link/provider-authjs'",
+    body: [],
+  },
+}
+// cross-package wiring keeps at least one multi-package line honest
+// when core+web are both present.
+const hasCore = typeNames.includes('core')
+const consumerLines = typeNames.flatMap((name) => {
+  const snippet = consumerSnippets[name]
+  if (snippet === undefined) {
+    throw new Error(`verify-published: no consumer snippet for ${name}`)
+  }
+  return [snippet.imports, ...snippet.body]
+})
+if (hasCore && !names.includes('web')) {
+  consumerLines.push(`export const stillTyped: string = safeRedirectPath('/account')`)
+}
+writeFileSync(join(consumer, 'consumer.ts'), `${consumerLines.join('\n')}\n`)
 run('npx', ['tsc', '-p', 'tsconfig.json'])
 
 const local = JSON.parse(readFileSync(join(root, 'packages', 'core', 'package.json'), 'utf8'))
