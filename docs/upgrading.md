@@ -127,6 +127,31 @@ for fields it did not inject. The negative behaviour is pinned by
 `e2e/access.spec.ts` (non-admin escalation, admin-panel entry, field
 stripping, manager writes) across all six adapter/example combos.
 
+## 0.3.x → 0.4.0 (organization membership uniqueness)
+
+The memberships collection gains a **compound unique index on
+(user, organization)** (issue #21): two concurrent invite-accepts or
+owner-bootstraps could previously both pass the check-then-insert and
+land duplicate rows.
+
+Upgrade impact:
+
+- **Push mode (dev):** the new index is added on boot. Existing
+  duplicate rows make the index build fail — dedupe first (keep the
+  oldest row per `(user, organization)`), then boot.
+- **Migrations mode:** generate the migration as usual; it must
+  create the unique index AFTER your dedupe step. Creating a unique
+  index over duplicates fails on SQLite and Postgres alike.
+- Fresh installs are unaffected; the sequential duplicate checks
+  remain (the index is the concurrency backstop, not the only guard).
+
+Also in this line: `setEmail` now rewrites linked-identity rows that
+carried the old address, so the admin view no longer shows a stale
+identity email; `@payload-auth-link/next` exports
+`checkAuthCookies(request, options)` — a composable form of the
+optimistic middleware for apps that run their own `proxy.ts`
+pipeline.
+
 ## 0.2.x → 0.3.0
 
 Install-level changes — read before bumping:

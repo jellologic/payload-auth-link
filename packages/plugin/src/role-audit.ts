@@ -20,10 +20,13 @@ export async function auditStoredRoles(wired: WiredOptions, payload: Payload): P
       collection: wired.config.map.usersCollection,
       // `exists` instead of `not_in`: array-field `not_in` semantics
       // vary per adapter, while the per-doc narrowing below is exact.
+      // Pagination stays on (default): `limit` bounds the fetch to
+      // 500 docs and `totalDocs` counts the rest — with
+      // `pagination: false` the limit is ignored (unbounded query)
+      // and the truncation note below could never fire.
       where: { [rolesField]: { exists: true } },
       limit: 500,
       depth: 0,
-      pagination: false,
       overrideAccess: true,
     })
     const counts = new Map<string, number>()

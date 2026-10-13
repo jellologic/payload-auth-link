@@ -182,6 +182,71 @@ describe('organization endpoints (CAP-11)', () => {
     expect(duplicatePending.status).toBe(409)
   })
 
+  it('a concurrent membership race lands exactly one row (compound unique index)', async () => {
+    // Two concurrent creates for the same (user, organization): the
+    // sequential check-then-insert cannot arbitrate this window; the
+    // database-level unique index can (issue #21). Exactly one of the
+    // two attempts survives, and the membership table holds no
+    // duplicates.
+    const member = await payload.find({
+      collection: 'users',
+      where: { email: { equals: 'member@orgs.test' } },
+      limit: 1,
+      overrideAccess: true,
+    })
+    const memberId = String(member.docs[0]?.id)
+    expect(memberId).not.toBe('undefined')
+
+    const races = await Promise.allSettled([
+      payload.create({
+        collection: 'memberships',
+        data: { user: memberId, organization: orgId, role: 'member' },
+        overrideAccess: true,
+      }),
+      payload.create({
+        collection: 'memberships',
+        data: { user: memberId, organization: orgId, role: 'member' },
+        overrideAccess: true,
+      }),
+    ])
+    const fulfilled = races.filter((entry) => entry.status === 'fulfilled').length
+    expect(fulfilled).toBeLessThanOrEqual(1)
+    const rows = await payload.find({
+      collection: 'memberships',
+      where: { user: { equals: memberId } },
+      pagination: false,
+      overrideAccess: true,
+    })
+    expect(rows.totalDocs).toBe(1)
+  })
+
+  it('refuses organization creation while impersonating (req.user is populated)', async () => {
+    // The endpoint verifies the session explicitly, but the
+    // impersonation deny reads `req.user` — proof that Payload's
+    // strategy populates it for custom endpoints too (issue #21).
+    // An operator acting AS a user must not mint organizations that
+    // the user then owns.
+    const impersonated = stub.issue({
+      sessionId: `sess-imp-create-org-${Math.random()}`,
+      providerUserId: 'stub-owner',
+      email: 'owner@orgs.test',
+      expiresAt: new Date(Date.now() + 3600_000),
+      actorProviderUserId: 'stub-outsider',
+    })
+    const response = await call('POST', '/auth-link/organizations', {
+      cookie: impersonated,
+      csrf: true,
+      body: { name: 'Shadow Org', slug: 'shadow-org' },
+    })
+    expect(response.status).toBe(403)
+    expect(((await response.json()) as { error: string }).error).toContain('while impersonating')
+    // And the organization was not created.
+    const list = (await (
+      await call('GET', '/auth-link/organizations', { cookie: impersonated })
+    ).json()) as OrgsBody
+    expect(list.organizations.some((org) => org.slug === 'shadow-org')).toBe(false)
+  })
+
   it('refuses invites from non-managers', async () => {
     const refused = await call('POST', '/auth-link/organizations/invite', {
       cookie: memberCookie(),
