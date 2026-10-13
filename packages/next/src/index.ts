@@ -9,7 +9,7 @@
 export const packageName = '@payload-auth-link/next'
 
 export { useAuthLinkRefresh } from './client.js'
-export { createAuthMiddleware } from './middleware.js'
+export { checkAuthCookies, createAuthMiddleware } from './middleware.js'
 export type { AuthMiddlewareOptions } from './middleware.js'
 export { AuthLinkServerProvider } from './server-provider.js'
 export type { AuthLinkServerProviderProps } from './server-provider.js'

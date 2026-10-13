@@ -1,4 +1,4 @@
-import { expect, test, type Browser, type Page } from '@playwright/test'
+import { expect, test, type APIRequestContext, type Browser, type Page } from '@playwright/test'
 import { DEV_ADMIN_EMAIL, DEV_ADMIN_PASSWORD } from './dev-admin.js'
 
 /**
@@ -43,8 +43,13 @@ type AdminResponse = { status: number; body: unknown }
 async function adminRequest(
   baseURL: string | undefined,
   browser: Browser
-): Promise<{ call: (method: string, path: string, body?: unknown) => Promise<AdminResponse>; close: () => Promise<void> }> {
-  const context = await browser.newContext({ baseURL: baseURL ?? undefined })
+): Promise<{
+  call: (method: string, path: string, body?: unknown) => Promise<AdminResponse>
+  close: () => Promise<void>
+}> {
+  const context = await browser.newContext({
+    ...(baseURL === undefined ? {} : { baseURL }),
+  })
   const page: Page = await context.newPage()
   await page.goto('/admin/login')
   await page.getByLabel(/email/i).fill(DEV_ADMIN_EMAIL)
@@ -60,7 +65,7 @@ async function adminRequest(
             headers: body === undefined ? {} : { 'content-type': 'application/json' },
             ...(body === undefined ? {} : { body: JSON.stringify(body) }),
           })
-          let parsed: unknown = null
+          let parsed: unknown
           try {
             parsed = await response.json()
           } catch {

@@ -238,7 +238,20 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
           deps.payload.update({
             collection,
             id: userId,
-            data: { [deps.map.emailField]: email },
+            data: {
+              [deps.map.emailField]: email,
+              // Keep the linked-identity rows in step (issue #21):
+              // rows carrying the old address are the same identity
+              // re-asserted at the new address; leaving them stale
+              // shows the old email in the admin view and makes the
+              // identity row disagree with the user it belongs to.
+              [deps.map.identitiesField]: existing.identities.map((identity) => ({
+                providerId: identity.providerId,
+                providerUserId: identity.providerUserId,
+                email: identity.email === existing.email ? email : identity.email,
+                linkedAt: identity.linkedAt.toISOString(),
+              })),
+            },
             overrideAccess: true,
           }),
           (cause) => {

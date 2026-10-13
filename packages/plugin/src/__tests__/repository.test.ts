@@ -199,6 +199,48 @@ describe('payload user repository setEmail', () => {
     expect((await users.setEmail(userId, next))._unsafeUnwrap().email).toBe('next@test.dev')
   })
 
+  it('rewrites linked-identity rows carrying the old address (issue #21)', async () => {
+    let written: { data?: Record<string, unknown> } | undefined
+    const users = repository({
+      find: found([linkedDoc]),
+      update: (args: unknown) => {
+        written = args as { data?: Record<string, unknown> }
+        return Promise.resolve({ ...linkedDoc, email: 'next@test.dev' })
+      },
+    })
+    expect((await users.setEmail(userId, next))._unsafeUnwrap().email).toBe('next@test.dev')
+    const identities = written?.data?.identities as Array<Record<string, unknown>>
+    expect(identities).toHaveLength(1)
+    // The row claimed the old address; the write re-asserts the same
+    // identity at the new one.
+    expect(identities[0]?.email).toBe('next@test.dev')
+    expect(identities[0]?.providerUserId).toBe('stub-1')
+    // Unrelated identity rows (different address) stay untouched.
+    const mixedDoc = {
+      ...linkedDoc,
+      identities: [
+        ...linkedDoc.identities,
+        {
+          providerId: 'stub',
+          providerUserId: 'stub-2',
+          email: 'other@test.dev',
+          linkedAt: new Date().toISOString(),
+        },
+      ],
+    }
+    let second: { data?: Record<string, unknown> } | undefined
+    await repository({
+      find: found([mixedDoc]),
+      update: (args: unknown) => {
+        second = args as { data?: Record<string, unknown> }
+        return Promise.resolve({ ...mixedDoc, email: 'next@test.dev' })
+      },
+    }).setEmail(userId, next)
+    const secondIdentities = second?.data?.identities as Array<Record<string, unknown>>
+    expect(secondIdentities[0]?.email).toBe('next@test.dev')
+    expect(secondIdentities[1]?.email).toBe('other@test.dev')
+  })
+
   it('maps unique violations, outages, and unmappable results', async () => {
     const taken = await repository({ find: found([doc]), update: uniqueEmailViolation }).setEmail(
       userId,

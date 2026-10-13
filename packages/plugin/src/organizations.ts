@@ -297,6 +297,12 @@ function membershipsCollection(
 ): CollectionConfig {
   return {
     slug: wired.membershipsCollection,
+    // One membership row per (user, organization): without the
+    // compound unique index, two concurrent invite-accepts (or two
+    // concurrent owner-bootstrap hooks) can both pass the
+    // check-then-insert and land duplicate rows (issue #21). The
+    // database, not the race window, is the arbiter.
+    indexes: [{ fields: ['user', 'organization'], unique: true }],
     admin: {
       description: 'Organization memberships managed by payload-auth-link (CAP-11).',
     },
