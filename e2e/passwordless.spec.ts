@@ -57,9 +57,14 @@ test('Better Auth magic link signs in and provisions the Payload user', async ({
   await expect(page.getByTestId('account-email')).toContainText(email, { timeout: 30_000 })
   const session = await page.request.get('/api/auth-link/session')
   expect(session.ok()).toBe(true)
-  // Replay: the same link must not mint a second session.
+  // Replay: the same link must not mint a second session. Replay over
+  // HTTP rather than a browser navigation: the spent link's error
+  // redirect lands on a signed-out page that bounces to sign-in, and
+  // Firefox reports that collision as NS_BINDING_ABORTED on goto.
+  // page.request shares the context cookie jar, so a wrongly minted
+  // session cookie would still show up in the session check below.
   await page.context().clearCookies()
-  await page.goto(mail.url)
+  await page.request.get(mail.url)
   const replayed = await page.request.get('/api/auth-link/session')
   expect(replayed.status()).toBe(401)
 })
