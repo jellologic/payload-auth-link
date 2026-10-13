@@ -6,8 +6,8 @@ Auth.js/NextAuth) are swappable adapters, users stay first-class
 Payload documents, and Next.js and TanStack Start are both first-class
 framework adapters over one framework-free web core.
 
-Status: published on npm as `@payload-auth-link/*`. 498 unit and
-integration tests and 24 Playwright specs pass on SQLite, Postgres,
+Status: published on npm as `@payload-auth-link/*`. 751 unit and
+integration tests and 33 Playwright specs pass on SQLite, Postgres,
 and Mongo for both frameworks; the SQLite suites run in Chromium,
 Firefox, and WebKit.
 
@@ -24,6 +24,33 @@ Firefox, and WebKit.
 | [`@payload-auth-link/web`](packages/web/README.md)                                   | Framework-free web layer                                          |
 | [`@payload-auth-link/core`](packages/core/README.md)                                 | Framework-free domain and ports                                   |
 
+## Compatibility
+
+Validated set (see [Compatibility](docs/compatibility.md) for the
+full matrix — databases, browsers, capability-by-provider):
+
+|                          | Validated                                     |
+| ------------------------ | --------------------------------------------- |
+| Payload                  | 3.90.2 (Next) · 4.0.0-beta.0 (TanStack Start) |
+| Next.js / TanStack Start | 16.4.0 / 1.168.61                             |
+| Better Auth / Auth.js    | 1.7.7 / `@auth/core` 0.41.3                   |
+| Databases                | SQLite · Postgres · MongoDB                   |
+| Browsers (e2e)           | Chromium · Firefox · WebKit                   |
+
+Sign-in capabilities are declared per provider and fail fast at
+wiring when unsupported — highlights (full matrix in the
+[capabilities guide](docs/guide-capabilities.md)):
+
+| Capability              | Better Auth                      | Auth.js            |
+| ----------------------- | -------------------------------- | ------------------ |
+| Magic link / email OTP  | ✅                               | ✅ (OTP recipe)    |
+| OAuth / OIDC            | ✅                               | ✅ (D6 allow-list) |
+| Passkeys                | ✅                               | — experimental     |
+| Two-factor / MFA policy | ✅                               | —                  |
+| Impersonation           | ✅ (audited)                     | —                  |
+| Phone · anonymous guest | ✅                               | —                  |
+| Organizations · SSO     | ✅ Payload-owned, both providers |
+
 ## Docs
 
 Start with [Getting started](docs/getting-started.md) (four edits to
@@ -31,7 +58,9 @@ signed-in users), then the [Tour](docs/tour.md) and
 [Concepts](docs/concepts.md). Provider specifics live in the
 [Better Auth guide](docs/guide-better-auth.md),
 [Auth.js guide](docs/guide-authjs.md), and
-[TanStack Start guide](docs/guide-tanstack-start.md); also
+[TanStack Start guide](docs/guide-tanstack-start.md); sign-in
+methods beyond passwords in the
+[Capabilities guide](docs/guide-capabilities.md); also
 [Compatibility](docs/compatibility.md),
 [Troubleshooting](docs/troubleshooting.md), and
 [Upgrading](docs/upgrading.md).
@@ -55,3 +84,7 @@ bun run docs:llms    # regenerate llms.txt + llms-full.txt
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).
+
+## License
+
+[MIT](LICENSE) © jellologic

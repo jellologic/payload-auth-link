@@ -26,7 +26,10 @@ const guides = [
     'Four-edit drop-in: install, engine, plugin, routes+UI (Better Auth path).',
   ],
   ['docs/tour.md', 'File-by-file walkthrough of the reference example + screenshots.'],
-  ['docs/concepts.md', 'Ports/adapters, JIT linking, verification gating, session flow, logout.'],
+  [
+    'docs/concepts.md',
+    'Ports/adapters, JIT linking, verification gating, one role system (Payload roles), session flow, logout.',
+  ],
   [
     'docs/guide-better-auth.md',
     'Better Auth provider: secure defaults, passthrough, cookie names.',

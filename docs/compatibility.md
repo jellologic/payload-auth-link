@@ -36,7 +36,7 @@ under bundler resolution for the same reason.
 
 Product code issues only single-document Local API calls, so the
 parity risk sits in Where translation, date serialization, and id
-types — all six suites assert identical behavior (24 specs each:
+types — all six suites assert identical behavior (33 specs each:
 `e2e`, `e2e:postgres`, `e2e:mongo` on Next; `e2e:tanstack`,
 `e2e:tanstack-postgres`, `e2e:tanstack-mongo` on Start). Each
 example's mongo branch disables Payload transactions: several
@@ -53,6 +53,37 @@ suites run Chromium only. Traces are kept on failure; CI retries
 exist as a backstop, but specs pass with retries off. The shipped UI
 is unstyled primitives with no browser-specific APIs beyond `fetch`
 and `location`.
+
+## Sign-in capabilities by provider
+
+Canonical capability matrix (how to wire each row:
+[Capabilities guide](guide-capabilities.md)). Capabilities are
+**declared per provider and checked at wiring** — configuring a
+feature on an undeclared capability throws
+`UnsupportedCapabilityError` at startup, never silently at runtime.
+✅ works · ◐ partial/recipe · — not available.
+
+| Capability                      | Better Auth 1.7.7                    | Auth.js (`@auth/core` 0.41.3) | Notes                                                          |
+| ------------------------------- | ------------------------------------ | ----------------------------- | -------------------------------------------------------------- |
+| Email/password                  | ✅                                   | ✅ credentials service        | Verified-email linking gate on both                            |
+| Magic link                      | ✅ `magicLink`                       | ✅ Email provider             | Single-use; dev mailbox in examples                            |
+| Email OTP                       | ✅ `emailOTP` (native 3-attempt cap) | ✅ recipe helpers             | Auth.js attempts capped by your route                          |
+| OAuth / OIDC                    | ✅ social + `genericOAuth`           | ✅ providers                  | Unverified assertions refused; Auth.js needs the D6 allow-list |
+| One Tap                         | ✅ `oneTap` plugin                   | ◐ JWKS-verifier recipe        | No live-Google automated proof                                 |
+| Passkeys                        | ✅ `@better-auth/passkey`            | — (experimental upstream)     | Session `methods` stay `unknown` (BA marks none)               |
+| Two-factor (TOTP)               | ✅ `twoFactor` (enrollment-mapped)   | —                             | `requireMfaForRoles` throws on Auth.js                         |
+| Suspend + revoke                | ✅                                   | ✅ database strategy only     | Payload verify gate also covers JWTs                           |
+| Impersonation                   | ✅ audited, TTL-bounded              | —                             | Deny layers + audit trail in the plugin                        |
+| Phone sign-in                   | ✅ `phoneNumber`                     | —                             | Links existing users only; never provisions                    |
+| Anonymous / guest               | ✅ `anonymous`                       | —                             | Guest principal, no Payload access                             |
+| Multi-session / bearer / device | ◐ logout sweeps all device sessions  | ◐                             | Admission is explicit (`admitChannels`)                        |
+| Organizations                   | ✅ Payload-owned                     | ✅ Payload-owned              | Provider org stores are never authorization                    |
+| Enterprise SSO domains          | ◐ registered-provider gate           | ◐ registered-provider gate    | Exact verified-domain match required                           |
+| Identity lifecycle events       | ✅                                   | ✅ engine callbacks           | Optional subscription; core works without                      |
+
+Framework support is uniform across the matrix: every row behaves
+the same on Next.js and TanStack Start (one framework-free web
+core), and every e2e spec runs against both examples.
 
 ## Type surface
 

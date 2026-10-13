@@ -162,7 +162,7 @@ guide](guide-tanstack-start.md)):
 ## Test layout
 
 - `packages/*/src/__tests__/` — unit + SQLite-memory integration
-  next to the code (498 tests).
+  next to the code (751 tests).
 - `e2e/` — one Playwright suite against both examples: auth
   flows, session lifecycle, admin inspection, a11y, smoke (24
   specs × 3 databases × 2 frameworks, with the SQLite suites run

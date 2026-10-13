@@ -3,5 +3,13 @@
     "name": "core",
     "path": "packages/core/dist/index.js",
     "limit": "10 kB"
+  },
+  {
+    "name": "core/testing",
+    "path": [
+      "packages/core/dist/testing/index.js",
+      "packages/core/dist/testing/provider-conformance.js"
+    ],
+    "limit": "20 kB"
   }
 ]

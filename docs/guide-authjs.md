@@ -196,6 +196,29 @@ OAuth (database) with credentials in one engine is impossible —
 Auth.js forbids it — so credentials deployments stay JWT while
 OAuth-only deployments may choose either strategy.
 
+### Trusting a provider's verified email
+
+Auth.js creates every OAuth user with `emailVerified: null`, whatever
+the identity provider asserts, so the plugin's verified-email gate
+refuses to link them (401). If you trust specific providers to verify
+emails correctly, allow-list them on the engine:
+
+```ts
+createAuthJsEngine({
+  trustProviderEmailVerification: ['google', 'acme-oidc'],
+  // …
+})
+```
+
+For allow-listed providers only, a profile asserting
+`email_verified === true` for the user's own email stamps
+`emailVerified` through the adapter, so the user can link. Nothing is
+stamped by default, when `email_verified` is false or absent, or for
+providers outside the list. Never combine this with a trusted
+provider's `allowDangerousEmailAccountLinking: true` — dangerous
+linking attaches accounts by email alone, which would defeat the
+verified-email gate; the engine fails fast on that combination.
+
 ## Cookie names (middleware + logout)
 
 ```ts

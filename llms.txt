@@ -6,7 +6,7 @@
 
 - [docs/getting-started.md](./docs/getting-started.md): Four-edit drop-in: install, engine, plugin, routes+UI (Better Auth path).
 - [docs/tour.md](./docs/tour.md): File-by-file walkthrough of the reference example + screenshots.
-- [docs/concepts.md](./docs/concepts.md): Ports/adapters, JIT linking, verification gating, session flow, logout.
+- [docs/concepts.md](./docs/concepts.md): Ports/adapters, JIT linking, verification gating, one role system (Payload roles), session flow, logout.
 - [docs/guide-better-auth.md](./docs/guide-better-auth.md): Better Auth provider: secure defaults, passthrough, cookie names.
 - [docs/guide-authjs.md](./docs/guide-authjs.md): Auth.js provider: credentials service, signup, JWT sessions, 302 contract.
 - [docs/guide-tanstack-start.md](./docs/guide-tanstack-start.md): TanStack Start adapter (Payload v4): mounts, middleware, loaders, guards.

@@ -127,6 +127,119 @@ inferred:
 does not apply to Payload: server-side revocation is immediate. Only
 BA's own client-side reads can lag behind the cache.
 
+### Phase 0 spike findings (2026-10-12)
+
+All six spikes ran throwaway Vitest suites against the installed
+Better Auth 1.7.7 / `@auth/core` 0.41.3 code and our real
+engines/adapters on Payload/SQLite; the spike files were deleted
+afterwards. Verdicts below revise several Phase 0 assumptions.
+
+**S1 — Auth.js Email vs the JWT rule (CAP-1): premise refuted, gate clears.**
+Email imposes no database-strategy requirement: upstream requires only
+an adapter plus `emailMethods` (`@auth/core` `assert.ts:213-226,51-55`),
+and both strategies are first-class in `handle-login.ts`.
+Email+JWT already works end-to-end today (magic link, JWE cookie,
+verified port session, single-use link, zero `aj-sessions` rows), as does
+Email+database; our fail-fast never blocked it because it keys only on
+`type === 'credentials'` (`provider-authjs/src/engine.ts:92-94,171-176`).
+CAP-1 needs zero engine/adapter/callback changes — only a committed
+regression test, guide docs, and example/e2e mail-sink wiring; the bullet
+at CAP-1 must be rewritten and the Credentials+database fail-fast kept
+(upstream's looser rule would issue JWT cookies a database read cannot
+honour). Open policy notes: Email-only JWT silently gets Auth.js's
+30-day `maxAge` (our 1h default is Credentials-only,
+`engine.ts:193-196`), and adding Credentials later forces `jwt`, making
+sessions unrevocable. Nodemailer itself was not exercised (`nodemailer`
+is not installed); the shipped Resend provider was used instead.
+
+**S2 — Auth.js email OTP (CAP-2): refuted as written, proven with one correction.**
+A form POSTing `token`+`email` in the body fails with a `Configuration`
+error: the email callback reads only the query string
+(`@auth/core` `lib/actions/callback/index.ts:205-215`). The same 6-digit
+code succeeds via `GET /callback/<id>?token=…&email=…` (or a POST whose
+action URL carries the query): only `sha256(code+secret)` is stored
+(`send-token.ts:78-82`), consumption is single-use, and sessions issue
+normally on our adapter (`adapter.ts:491-523`). CAP-2's recipe text must
+change accordingly. Rate limiting is genuinely builder-owned — a wrong
+guess neither consumes nor counts against the code, so the recipe should
+set a short `maxAge` (upstream default 24h) plus the verify-path limiter.
+Duplicate codes collide: the hash excludes the identifier and our token
+field is uniquely indexed alone (`collections.ts:78`), so two concurrent
+identical codes throw `AdapterOperationError` — composite
+`(identifier, token)` uniqueness is needed before OTP ships.
+
+**S3 — BA 2FA trusted-device marking (CAP-6): BA marks nothing.**
+The two-factor plugin adds no session field at all
+(`better-auth` `plugins/two-factor/schema.mjs:2-7`); the only signal is
+the user-level `user.twoFactorEnabled`. Freshly verified and
+trusted-device sessions are indistinguishable in schema, rows, and
+`getSession` output (spike-asserted key-set equality), and trusted-device
+state exists only as a signed browser cookie plus a `verification` row.
+CAP-6's "only if BA marks them so" clause must be deleted: mapping
+`twoFactorEnabled` (absent → `'unknown'`, `false` → false, `true` → true)
+gives trusted sessions `mfa: true` and makes `requireMfaForRoles` a
+user-enrollment gate, not per-session proof — per-session proof is
+unsupported on BA 1.7.7. Named false positives: enrollment-rotation
+sessions (spike-proven), other-device pre-enrollment sessions, and
+non-credential sign-ins outside the hook matcher (`index.mjs:245-246`;
+latter two source-proven only). Confirmed: no session exists while 2FA
+is pending, so a half-authenticated user can never be linked.
+
+**S4 — BA sign-in method (PORT-1 `assurance.methods`): no per-session signal.**
+BA core records no method on session or user
+(`@better-auth/core` `session.d.mts:7-16`; `internal-adapter.mjs:247-285`),
+and `account.providerId` is per-linked-account, not per-session. The only
+signal is the opt-in `last-login-method` plugin, which is per-user: an
+older password session reports `"magic-link"` after a later magic-link
+sign-in rewrites the user row (spike-proven), so it cannot populate
+per-session assurance. Without the plugin — or in its default
+unsigned-cookie mode — every method is `'unknown'`. With
+`lastLoginMethod({ storeInDatabase: true })` plus a `customFields`
+declaration, password (`email` → `password`), magic-link, and email-otp
+are reportable; OAuth and passkey are source-verified only
+(`plugins/last-login-method/index.mjs:11,14`); one-tap, phone-otp,
+username, and 2FA-created sessions resolve to `null` (→ `'unknown'`)
+without a `customResolveMethod`. CAP-1's "where BA exposes the sign-in
+method" should read "nowhere, per-session": true per-session methods
+require new PORT-1 scope (a session additionalField stamped from a
+`databaseHooks.session.create` hook), and `lastLoginMethod` must never
+back `access.ts` policies.
+
+**S6 — BA multi-session cookies and revoke (CAP-13b): feasible, by a different route.**
+Multi-session cookie names are per-token dynamic —
+`${sessionToken.name}_multi-${token.toLowerCase()}`
+(`plugins/multi-session/index.mjs:170`) — so the static
+`sessionCookieNames` list (`core/src/ports.ts:189`) can never contain
+them, and the token must never be parsed from the lowercased suffix.
+Today's logout sweep provably leaves other accounts' sessions alive
+server-side after a 200 logout. BA's `revokeDeviceSession` is unusable in
+our order: it requires a live active session (`index.mjs:123`) and
+promotes the next account when the active one is revoked (:152-154).
+The proven recipe is: enumerate with `auth.api.listDeviceSessions`
+(signature-verified, no active session required, `index.mjs:38-54`),
+revoke each returned token through our existing `provider.revokeSession`
+(the same `deleteSession` primitive, `port.ts:138-145`), then expire every
+presented `*_multi-*` cookie with the session-token clearing attributes.
+CAP-13's "BA revoke per token" wording needs this correction, plus a port
+enumeration capability and request headers in the expiry sweep.
+
+**S7 — Official Auth.js adapter suite (Phase 1 conformance): adoptable, with harness work.**
+The suite (`runBasicTests`, 22 cases) is not installed and cannot be
+added as a dependency — it is monorepo-internal to next-auth, so a pinned
+vendored copy is the only route. All 22 cases map onto methods our
+adapter implements (`adapter.ts:259-591`) and an equivalent subset passes
+13/13 on real Payload, so official conformance needs zero production
+changes. Running it verbatim needs a ~60-line `db.*` mapping harness that
+normalizes Payload docs (`auId`, numeric `id`, ISO-string dates,
+`collections.ts:50,58`), `testWebAuthnMethods: true` (else `getAccount`
+is silently skipped), `CUSTOM_MODEL` unset, sequential single-file
+execution, and a no-`id` `db.session` workaround for one strict-equality
+clash (`AdapterSession` has no `id`, `adapter.ts:117-123`). The spike
+read floating upstream `main`; the vendored copy must be re-verified
+against the `@auth/core` 0.41.3 tag. It independently confirms S2's
+duplicate-code finding: verification tokens need composite
+`(identifier, token)` uniqueness before CAP-2.
+
 ## Approach
 
 ### Three layers, three owners
@@ -649,33 +762,43 @@ needs, then capabilities by user value.
   mapped, applied through `UserRepository`, and the
   `revokeSessionsOnPasswordReset` default.
 
-### Phase 3: Passwordless (both providers)
+### Phase 3: Passwordless (both providers) ✅ done
 
 - CAP-1 magic link and CAP-2 email OTP, with the dev mailbox and
   e2e on both frameworks, plus CAP-18 attempt caps on their verify
   routes.
 
-### Phase 4: Federation
+### Phase 4: Federation ✅ done
 
 - CAP-3 generic OAuth with the mock OIDC provider (both providers),
   and CAP-4 One Tap (BA native, Auth.js recipe).
 
-### Phase 5: Strong auth + governance
+### Phase 5: Strong auth + governance ✅ done
 
 - CAP-5 passkeys (BA; virtual authenticator), CAP-6 2FA with the
   `requireMfaForRoles` policy, CAP-7 ban/suspend, and CAP-13
   non-browser channels (multi-session logout, bearer and device
   opt-in).
 
-### Phase 6: Identity extensions (decision-gated)
+### Phase 6: Identity extensions (decision-gated) ✅ done
 
 - CAP-9 phone (D2), CAP-10 anonymous (D3), CAP-16 username, and
   CAP-17 SIWE as a guest principal.
 
-### Phase 7: Tenancy (D1)
+### Phase 7: Tenancy (D1) ✅ done
 
 - CAP-11 Payload-owned organizations (D1), then CAP-15 enterprise SSO
   scoped to verified org domains.
+
+> **Status (Phases 3–7 landed):** wiring is documented in
+> [guide-capabilities.md](guide-capabilities.md). Proofs: BA
+> `capabilities.test.ts` / `oauth.test.ts` / `multi-session.test.ts`
+> integration suites, Auth.js `oauth.test.ts` + `recipes.test.ts`,
+> plugin `integration-organizations.test.ts`, and
+> `e2e/passwordless.spec.ts` + `e2e/security.spec.ts` green on Next
+> and TanStack Start. MFA mapped value is enrollment (S3); username
+> stays provider-side with CAP-14 propagation; SIWE placeholder
+> identities map to no email claim (guest at most).
 
 ## Validation Plan
 

@@ -123,7 +123,11 @@ What this does:
 
 Users stay first-class Payload documents: the admin users list shows
 roles and linked identities, and opening a row shows each identity
-(`better-auth · user@example.com`).
+(`better-auth · user@example.com`). The `roles` / `defaultRole`
+options above are the whole role vocabulary — Payload roles are the
+single authority, and a provider's own role field (such as Better
+Auth's `admin.role`) is never read: see [One role system: Payload
+roles](concepts.md#one-role-system-payload-roles).
 
 ## Edit 4 — Routes, middleware, UI
 
@@ -451,7 +455,7 @@ guide](guide-tanstack-start.md)):
 ## Test layout
 
 - `packages/*/src/__tests__/` — unit + SQLite-memory integration
-  next to the code (498 tests).
+  next to the code (751 tests).
 - `e2e/` — one Playwright suite against both examples: auth
   flows, session lifecycle, admin inspection, a11y, smoke (24
   specs × 3 databases × 2 frameworks, with the SQLite suites run
@@ -520,6 +524,69 @@ Auth enforces it via `requireEmailVerification` (defaulted on by the
 engine); Auth.js credentials carry a builder-stamped `emailVerified`
 through a JWT claim. An unverified identity resolves to 401 at the
 session endpoint — a provider session is not yet a Payload session.
+
+## One role system: Payload roles
+
+There is exactly one role authority: **the `roles` field on the
+Payload user**. Provider role fields — notably Better Auth's
+`admin` plugin, which adds a `role` column to its user table — are
+ignored by design. Nothing in the plugin, the adapters, or the web
+helpers ever reads them: `ProviderSession` carries no roles, and the
+`roles` on every `Session` / `SessionUser` come only from the Payload
+document. Granting someone the BA `admin` role grants them zero
+Payload rights; removing their Payload `admin` role demotes them
+even if the BA row still says `admin`. (BA's own admin endpoints may
+consult the BA role before acting — for example to start an
+impersonation — but that only gates the provider mechanic; the
+resulting session still resolves to the target's Payload roles. If
+you use those endpoints, keep the BA value set by hand for that
+purpose; there is no sync in either direction, deliberately.)
+
+**Where roles live.** You declare the vocabulary once in the plugin
+options — `roles: ['admin', 'user']` plus a `defaultRole` that must
+be one of them — validated fail-fast at config time as canonical
+lowercase slugs (`parseRole` / the branded `Role` type in core). The
+plugin injects a required, multi-select field with exactly those
+options onto your users collection (name `roles`, remappable with
+the `rolesField` option). JIT-provisioned users start with
+`[defaultRole]`; after that you edit roles where you edit any
+Payload data — the admin UI or the Local API. The field requires at
+least one role, so an emptied array can't persist. Because the
+session service reloads the Payload user fresh on every request, a
+role change applies to the very next request on every provider and
+session strategy — no re-login, no token refresh, no sync job.
+
+**How roles are consumed**, in enforcement order:
+
+1. **Payload access control.** The `auth-link` strategy projects the
+   session onto `req.user`, so your collection and field access
+   functions read `req.user.roles` like any Payload-authenticated
+   request. Plugin-owned authorization lives in
+   `plugin/src/access.ts` (CSRF checks and the impersonation deny
+   layer — the roles field itself denies create/update while an
+   operator is impersonating, so an impersonated session can never
+   become a role-escalation path).
+2. **Server authorization** — `requireRoles` in
+   `@payload-auth-link/web` (re-exported by the Next and Start
+   adapters) verifies the live session and requires _every_ listed
+   role, failing closed with `ForbiddenError`; see
+   [Server authorization vs UI hiding](#server-authorization-vs-ui-hiding)
+   below. `RequireRoles` / `useHasRoles` on the client are the same
+   Payload roles, for hiding only.
+
+**How capability policies layer on this** ([capabilities
+guide](guide-capabilities.md)) — still by narrowing or scoping
+Payload roles, never by importing a provider's:
+`policies.requireMfaForRoles` treats a session without MFA
+assurance as missing the listed Payload roles (projected out of the
+session user, unknown assurance failing closed), and Payload-owned
+organizations (decision D1) carry a role _per membership_, checked
+by `requireOrgRole` alongside the global roles above. Provider-side
+role stores (BA `admin.role`, organization-member roles) stay
+storage-compatible data, never Payload authorization.
+
+To make someone an admin: set `roles` on their Payload user. That
+is the only step, on either provider.
 
 ## Session flow (read-time, no webhooks)
 
@@ -727,6 +794,21 @@ the same deny-all access and `baId` id column as core models.
   cookie cache is on, the port disables it per read
   (`disableCookieCache`, `disableRefresh`) — session reads are
   always live, never stale cache.
+
+## Roles: the `admin` plugin's `role` is not Payload authorization
+
+Payload roles are the one role system; the BA `admin` plugin's
+`user.role` is **ignored by design** — see [One role system: Payload
+roles](concepts.md#one-role-system-payload-roles). The plugin's
+extra fields are ordinary storage as far as this adapter is
+concerned: declare `user.role` / `banned` / `banReason` /
+`banExpires` and `session.impersonatedBy` via `customFields` like
+any other plugin fields, and BA's own admin endpoints may consult
+the BA role. But nothing maps it into a session, a `SessionUser`, or
+a Payload access decision — set Payload `roles` to grant rights,
+and treat `banned` the same way (provider-side and optional, never
+the authority). The same applies to the `organization` plugin's
+member roles: storage-compatible, not Payload authorization.
 
 ## Cookie names (middleware + logout)
 
@@ -995,6 +1077,29 @@ Database sessions revoke server-side via `deleteSession`. Mixing
 OAuth (database) with credentials in one engine is impossible —
 Auth.js forbids it — so credentials deployments stay JWT while
 OAuth-only deployments may choose either strategy.
+
+### Trusting a provider's verified email
+
+Auth.js creates every OAuth user with `emailVerified: null`, whatever
+the identity provider asserts, so the plugin's verified-email gate
+refuses to link them (401). If you trust specific providers to verify
+emails correctly, allow-list them on the engine:
+
+```ts
+createAuthJsEngine({
+  trustProviderEmailVerification: ['google', 'acme-oidc'],
+  // …
+})
+```
+
+For allow-listed providers only, a profile asserting
+`email_verified === true` for the user's own email stamps
+`emailVerified` through the adapter, so the user can link. Nothing is
+stamped by default, when `email_verified` is false or absent, or for
+providers outside the list. Never combine this with a trusted
+provider's `allowDangerousEmailAccountLinking: true` — dangerous
+linking attaches accounts by email alone, which would defeat the
+verified-email gate; the engine fails fast on that combination.
 
 ## Cookie names (middleware + logout)
 
@@ -1271,7 +1376,7 @@ absent from denied responses, and both examples render the same
 
 ```bash
 cd examples/tanstack-start && bun run dev        # :3200
-bun run e2e:tanstack                             # SQLite, 24 specs × 3 engines
+bun run e2e:tanstack                             # SQLite, 33 specs × 3 engines
 bun run e2e:tanstack-postgres                    # per-run database
 bun run e2e:tanstack-mongo                       # memory replset
 ```
@@ -1326,7 +1431,7 @@ under bundler resolution for the same reason.
 
 Product code issues only single-document Local API calls, so the
 parity risk sits in Where translation, date serialization, and id
-types — all six suites assert identical behavior (24 specs each:
+types — all six suites assert identical behavior (33 specs each:
 `e2e`, `e2e:postgres`, `e2e:mongo` on Next; `e2e:tanstack`,
 `e2e:tanstack-postgres`, `e2e:tanstack-mongo` on Start). Each
 example's mongo branch disables Payload transactions: several
@@ -1343,6 +1448,37 @@ suites run Chromium only. Traces are kept on failure; CI retries
 exist as a backstop, but specs pass with retries off. The shipped UI
 is unstyled primitives with no browser-specific APIs beyond `fetch`
 and `location`.
+
+## Sign-in capabilities by provider
+
+Canonical capability matrix (how to wire each row:
+[Capabilities guide](guide-capabilities.md)). Capabilities are
+**declared per provider and checked at wiring** — configuring a
+feature on an undeclared capability throws
+`UnsupportedCapabilityError` at startup, never silently at runtime.
+✅ works · ◐ partial/recipe · — not available.
+
+| Capability                      | Better Auth 1.7.7                    | Auth.js (`@auth/core` 0.41.3) | Notes                                                          |
+| ------------------------------- | ------------------------------------ | ----------------------------- | -------------------------------------------------------------- |
+| Email/password                  | ✅                                   | ✅ credentials service        | Verified-email linking gate on both                            |
+| Magic link                      | ✅ `magicLink`                       | ✅ Email provider             | Single-use; dev mailbox in examples                            |
+| Email OTP                       | ✅ `emailOTP` (native 3-attempt cap) | ✅ recipe helpers             | Auth.js attempts capped by your route                          |
+| OAuth / OIDC                    | ✅ social + `genericOAuth`           | ✅ providers                  | Unverified assertions refused; Auth.js needs the D6 allow-list |
+| One Tap                         | ✅ `oneTap` plugin                   | ◐ JWKS-verifier recipe        | No live-Google automated proof                                 |
+| Passkeys                        | ✅ `@better-auth/passkey`            | — (experimental upstream)     | Session `methods` stay `unknown` (BA marks none)               |
+| Two-factor (TOTP)               | ✅ `twoFactor` (enrollment-mapped)   | —                             | `requireMfaForRoles` throws on Auth.js                         |
+| Suspend + revoke                | ✅                                   | ✅ database strategy only     | Payload verify gate also covers JWTs                           |
+| Impersonation                   | ✅ audited, TTL-bounded              | —                             | Deny layers + audit trail in the plugin                        |
+| Phone sign-in                   | ✅ `phoneNumber`                     | —                             | Links existing users only; never provisions                    |
+| Anonymous / guest               | ✅ `anonymous`                       | —                             | Guest principal, no Payload access                             |
+| Multi-session / bearer / device | ◐ logout sweeps all device sessions  | ◐                             | Admission is explicit (`admitChannels`)                        |
+| Organizations                   | ✅ Payload-owned                     | ✅ Payload-owned              | Provider org stores are never authorization                    |
+| Enterprise SSO domains          | ◐ registered-provider gate           | ◐ registered-provider gate    | Exact verified-domain match required                           |
+| Identity lifecycle events       | ✅                                   | ✅ engine callbacks           | Optional subscription; core works without                      |
+
+Framework support is uniform across the matrix: every row behaves
+the same on Next.js and TanStack Start (one framework-free web
+core), and every e2e spec runs against both examples.
 
 ## Type surface
 
@@ -1491,6 +1627,74 @@ First published line. No migration — but confirm before adopting:
   (`ba-*`, `aj-*`); the `users` extension adds `roles` +
   `identities` fields. No host migrations ship — your migration
   tooling owns schema changes (host-owned migrations only, per DNA).
+
+## Session wire contract gains optional facts (PORT-4)
+
+Additive only — no migration, and mixed versions keep working:
+
+- **`SessionUser` and the plugin-level `Session` gain three optional
+  fields**: `assurance` (`{ methods, mfa }`, how the session was
+  proven), `actor` (`{ providerUserId }`, present only while an
+  operator impersonates the user), and `organizationId` (the
+  provider-native active tenant, when one is active). The session
+  endpoint, the Payload auth strategy, the web verifier/`require*`
+  helpers, and the React provider all carry them through.
+- **Old payloads still parse.** A server that predates these fields
+  simply omits them; clients see them as absent. Newer servers omit
+  a field unless it is known — never `null`, never a fabricated
+  default (a stray `null` for `actor`/`organizationId` is accepted
+  and normalized to absent).
+- **`'unknown'` assurance is data, not absence.** When the provider
+  reported assurance but cannot tell the method or MFA state, the
+  values serialize as `'unknown'`. Treat absent and `'unknown'`
+  alike in policy: neither satisfies a requirement (fail closed) —
+  but they stay distinguishable for diagnostics.
+- **Malformed optional facts degrade, never nuke the user.** The
+  client wire parser ignores unknown keys inside
+  `assurance`/`actor` (forward compatibility with newer servers)
+  and degrades a present-but-invalid optional
+  fail-closed-for-policy (`assurance` to `'unknown'`,
+  `actor`/`organizationId` to absent); core identity fields
+  (`id`, `email`, `roles`) stay strict. An impersonation marker
+  still cannot be laundered away server-side: authorization and
+  audit use the plugin's own fail-closed extraction, where a
+  present-but-malformed `actor` on `req.user` still denies and is
+  audited as `actorKind: 'malformed-actor'`.
+
+## Channel admission and impersonation completion (CAP-13a, CAP-8b)
+
+- **`authLink({ admitChannels })` gates session channels.** It
+  defaults to `['cookie']`: a live provider session presented on any
+  other channel (`bearer`, `api-key`, `device`) is refused at
+  verification with the typed `ChannelNotAdmittedError` (401),
+  before any linking. Both shipped adapters report `cookie`, so
+  existing behavior is unchanged. CSRF is unchanged too:
+  state-changing endpoints still always require CSRF proof.
+- **`Session.actor` and `SessionUser.actor` are now resolved.** The
+  plugin looks the impersonating operator up by provider identity:
+  a linked operator appears as
+  `{ kind: 'payload-user', providerUserId, userId }` with the
+  operator's Payload user id. An operator with no linked Payload
+  user stays explicit: `{ kind: 'provider-only', providerUserId }`
+  — fail-closed (the session still verifies and is audit-logged,
+  but the provider id is never presented as a Payload id, and the
+  unresolved state is logged as a warning). `parseSessionUser`
+  accepts the legacy `{ providerUserId }` form and normalizes it to
+  `provider-only`. `ProviderSession.actor` keeps the provider form.
+- **Impersonated Payload operations are audited.** The plugin adds
+  a `beforeOperation` hook to every collection and global that logs
+  `impersonated operation` through `LoggerPort` with actor, target,
+  operation, collection/global, and document id where named.
+- **Impersonation is restricted by default (D5).** On the users
+  collection the plugin now denies admin-panel access and writes to
+  the roles field while an actor is present; reads are unaffected.
+  For your own collections, `denyWhileImpersonating(ops?)` (plugin
+  export) builds a matching `access` map — default denies `admin`,
+  `create`, `update`, `delete`, and `unlock` while impersonating
+  and allows reads — or gate on `isImpersonating(req)` inside your
+  own access functions (fail-closed; `impersonationActorFromRequest`
+  is for attribution only and returns `null` for a malformed actor
+  that still denies).
 
 ## Hardening in the first release line (review backlog)
 
@@ -2413,6 +2617,119 @@ inferred:
 does not apply to Payload: server-side revocation is immediate. Only
 BA's own client-side reads can lag behind the cache.
 
+### Phase 0 spike findings (2026-10-12)
+
+All six spikes ran throwaway Vitest suites against the installed
+Better Auth 1.7.7 / `@auth/core` 0.41.3 code and our real
+engines/adapters on Payload/SQLite; the spike files were deleted
+afterwards. Verdicts below revise several Phase 0 assumptions.
+
+**S1 — Auth.js Email vs the JWT rule (CAP-1): premise refuted, gate clears.**
+Email imposes no database-strategy requirement: upstream requires only
+an adapter plus `emailMethods` (`@auth/core` `assert.ts:213-226,51-55`),
+and both strategies are first-class in `handle-login.ts`.
+Email+JWT already works end-to-end today (magic link, JWE cookie,
+verified port session, single-use link, zero `aj-sessions` rows), as does
+Email+database; our fail-fast never blocked it because it keys only on
+`type === 'credentials'` (`provider-authjs/src/engine.ts:92-94,171-176`).
+CAP-1 needs zero engine/adapter/callback changes — only a committed
+regression test, guide docs, and example/e2e mail-sink wiring; the bullet
+at CAP-1 must be rewritten and the Credentials+database fail-fast kept
+(upstream's looser rule would issue JWT cookies a database read cannot
+honour). Open policy notes: Email-only JWT silently gets Auth.js's
+30-day `maxAge` (our 1h default is Credentials-only,
+`engine.ts:193-196`), and adding Credentials later forces `jwt`, making
+sessions unrevocable. Nodemailer itself was not exercised (`nodemailer`
+is not installed); the shipped Resend provider was used instead.
+
+**S2 — Auth.js email OTP (CAP-2): refuted as written, proven with one correction.**
+A form POSTing `token`+`email` in the body fails with a `Configuration`
+error: the email callback reads only the query string
+(`@auth/core` `lib/actions/callback/index.ts:205-215`). The same 6-digit
+code succeeds via `GET /callback/<id>?token=…&email=…` (or a POST whose
+action URL carries the query): only `sha256(code+secret)` is stored
+(`send-token.ts:78-82`), consumption is single-use, and sessions issue
+normally on our adapter (`adapter.ts:491-523`). CAP-2's recipe text must
+change accordingly. Rate limiting is genuinely builder-owned — a wrong
+guess neither consumes nor counts against the code, so the recipe should
+set a short `maxAge` (upstream default 24h) plus the verify-path limiter.
+Duplicate codes collide: the hash excludes the identifier and our token
+field is uniquely indexed alone (`collections.ts:78`), so two concurrent
+identical codes throw `AdapterOperationError` — composite
+`(identifier, token)` uniqueness is needed before OTP ships.
+
+**S3 — BA 2FA trusted-device marking (CAP-6): BA marks nothing.**
+The two-factor plugin adds no session field at all
+(`better-auth` `plugins/two-factor/schema.mjs:2-7`); the only signal is
+the user-level `user.twoFactorEnabled`. Freshly verified and
+trusted-device sessions are indistinguishable in schema, rows, and
+`getSession` output (spike-asserted key-set equality), and trusted-device
+state exists only as a signed browser cookie plus a `verification` row.
+CAP-6's "only if BA marks them so" clause must be deleted: mapping
+`twoFactorEnabled` (absent → `'unknown'`, `false` → false, `true` → true)
+gives trusted sessions `mfa: true` and makes `requireMfaForRoles` a
+user-enrollment gate, not per-session proof — per-session proof is
+unsupported on BA 1.7.7. Named false positives: enrollment-rotation
+sessions (spike-proven), other-device pre-enrollment sessions, and
+non-credential sign-ins outside the hook matcher (`index.mjs:245-246`;
+latter two source-proven only). Confirmed: no session exists while 2FA
+is pending, so a half-authenticated user can never be linked.
+
+**S4 — BA sign-in method (PORT-1 `assurance.methods`): no per-session signal.**
+BA core records no method on session or user
+(`@better-auth/core` `session.d.mts:7-16`; `internal-adapter.mjs:247-285`),
+and `account.providerId` is per-linked-account, not per-session. The only
+signal is the opt-in `last-login-method` plugin, which is per-user: an
+older password session reports `"magic-link"` after a later magic-link
+sign-in rewrites the user row (spike-proven), so it cannot populate
+per-session assurance. Without the plugin — or in its default
+unsigned-cookie mode — every method is `'unknown'`. With
+`lastLoginMethod({ storeInDatabase: true })` plus a `customFields`
+declaration, password (`email` → `password`), magic-link, and email-otp
+are reportable; OAuth and passkey are source-verified only
+(`plugins/last-login-method/index.mjs:11,14`); one-tap, phone-otp,
+username, and 2FA-created sessions resolve to `null` (→ `'unknown'`)
+without a `customResolveMethod`. CAP-1's "where BA exposes the sign-in
+method" should read "nowhere, per-session": true per-session methods
+require new PORT-1 scope (a session additionalField stamped from a
+`databaseHooks.session.create` hook), and `lastLoginMethod` must never
+back `access.ts` policies.
+
+**S6 — BA multi-session cookies and revoke (CAP-13b): feasible, by a different route.**
+Multi-session cookie names are per-token dynamic —
+`${sessionToken.name}_multi-${token.toLowerCase()}`
+(`plugins/multi-session/index.mjs:170`) — so the static
+`sessionCookieNames` list (`core/src/ports.ts:189`) can never contain
+them, and the token must never be parsed from the lowercased suffix.
+Today's logout sweep provably leaves other accounts' sessions alive
+server-side after a 200 logout. BA's `revokeDeviceSession` is unusable in
+our order: it requires a live active session (`index.mjs:123`) and
+promotes the next account when the active one is revoked (:152-154).
+The proven recipe is: enumerate with `auth.api.listDeviceSessions`
+(signature-verified, no active session required, `index.mjs:38-54`),
+revoke each returned token through our existing `provider.revokeSession`
+(the same `deleteSession` primitive, `port.ts:138-145`), then expire every
+presented `*_multi-*` cookie with the session-token clearing attributes.
+CAP-13's "BA revoke per token" wording needs this correction, plus a port
+enumeration capability and request headers in the expiry sweep.
+
+**S7 — Official Auth.js adapter suite (Phase 1 conformance): adoptable, with harness work.**
+The suite (`runBasicTests`, 22 cases) is not installed and cannot be
+added as a dependency — it is monorepo-internal to next-auth, so a pinned
+vendored copy is the only route. All 22 cases map onto methods our
+adapter implements (`adapter.ts:259-591`) and an equivalent subset passes
+13/13 on real Payload, so official conformance needs zero production
+changes. Running it verbatim needs a ~60-line `db.*` mapping harness that
+normalizes Payload docs (`auId`, numeric `id`, ISO-string dates,
+`collections.ts:50,58`), `testWebAuthnMethods: true` (else `getAccount`
+is silently skipped), `CUSTOM_MODEL` unset, sequential single-file
+execution, and a no-`id` `db.session` workaround for one strict-equality
+clash (`AdapterSession` has no `id`, `adapter.ts:117-123`). The spike
+read floating upstream `main`; the vendored copy must be re-verified
+against the `@auth/core` 0.41.3 tag. It independently confirms S2's
+duplicate-code finding: verification tokens need composite
+`(identifier, token)` uniqueness before CAP-2.
+
 ## Approach
 
 ### Three layers, three owners
@@ -2935,33 +3252,43 @@ needs, then capabilities by user value.
   mapped, applied through `UserRepository`, and the
   `revokeSessionsOnPasswordReset` default.
 
-### Phase 3: Passwordless (both providers)
+### Phase 3: Passwordless (both providers) ✅ done
 
 - CAP-1 magic link and CAP-2 email OTP, with the dev mailbox and
   e2e on both frameworks, plus CAP-18 attempt caps on their verify
   routes.
 
-### Phase 4: Federation
+### Phase 4: Federation ✅ done
 
 - CAP-3 generic OAuth with the mock OIDC provider (both providers),
   and CAP-4 One Tap (BA native, Auth.js recipe).
 
-### Phase 5: Strong auth + governance
+### Phase 5: Strong auth + governance ✅ done
 
 - CAP-5 passkeys (BA; virtual authenticator), CAP-6 2FA with the
   `requireMfaForRoles` policy, CAP-7 ban/suspend, and CAP-13
   non-browser channels (multi-session logout, bearer and device
   opt-in).
 
-### Phase 6: Identity extensions (decision-gated)
+### Phase 6: Identity extensions (decision-gated) ✅ done
 
 - CAP-9 phone (D2), CAP-10 anonymous (D3), CAP-16 username, and
   CAP-17 SIWE as a guest principal.
 
-### Phase 7: Tenancy (D1)
+### Phase 7: Tenancy (D1) ✅ done
 
 - CAP-11 Payload-owned organizations (D1), then CAP-15 enterprise SSO
   scoped to verified org domains.
+
+> **Status (Phases 3–7 landed):** wiring is documented in
+> [guide-capabilities.md](guide-capabilities.md). Proofs: BA
+> `capabilities.test.ts` / `oauth.test.ts` / `multi-session.test.ts`
+> integration suites, Auth.js `oauth.test.ts` + `recipes.test.ts`,
+> plugin `integration-organizations.test.ts`, and
+> `e2e/passwordless.spec.ts` + `e2e/security.spec.ts` green on Next
+> and TanStack Start. MFA mapped value is enrollment (S3); username
+> stays provider-side with CAP-14 propagation; SIWE placeholder
+> identities map to no email claim (guest at most).
 
 ## Validation Plan
 
