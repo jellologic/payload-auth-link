@@ -27,11 +27,16 @@ import { fileURLToPath } from 'node:url'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const version = process.argv[2]
 const expectProvenance = process.argv.includes('--expect-provenance')
+// Releases mix version lines (minors vs patches); `--only a,b` scopes a
+// run to those packages so each line can be verified separately:
+//   bun run verify:published 0.3.0 --expect-provenance --only core,plugin
+const onlyIndex = process.argv.indexOf('--only')
+const only = onlyIndex === -1 ? null : (process.argv[onlyIndex + 1] ?? '').split(',')
 if (version === undefined || !/^\d+\.\d+\.\d+/.test(version)) {
-  throw new Error('usage: bun run verify:published <version> [--expect-provenance]')
+  throw new Error('usage: bun run verify:published <version> [--expect-provenance] [--only a,b]')
 }
 
-const names = [
+const allNames = [
   'core',
   'web',
   'react',
@@ -59,6 +64,10 @@ async function registry(path) {
 step(`1-2. registry manifests for ${version}`)
 const peers = new Map()
 const entryPoints = []
+const names = only === null ? allNames : allNames.filter((name) => only.includes(name))
+if (names.length === 0) {
+  throw new Error(`--only matched no package (have: ${allNames.join(', ')})`)
+}
 for (const name of names) {
   const id = `@payload-auth-link/${name}`
   const manifest = await registry(`${id.replace('/', '%2f')}/${version}`)
