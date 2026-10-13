@@ -10,6 +10,9 @@ export default function SignInPage() {
         <SignInForm />
       </Suspense>
       <p>
+        <Link href="/sign-in/passwordless">Sign in without a password</Link>
+      </p>
+      <p>
         <Link href="/sign-in-authjs">Sign in with Auth.js instead</Link>
       </p>
     </main>

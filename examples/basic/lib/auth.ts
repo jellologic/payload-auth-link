@@ -1,7 +1,10 @@
 import { createBetterAuthEngine } from '@payload-auth-link/provider-better-auth'
+import { passkey } from '@better-auth/passkey'
 import { nextCookies } from 'better-auth/next-js'
+import { anonymous, emailOTP, magicLink, twoFactor } from 'better-auth/plugins'
 import { getPayload, type Payload } from 'payload'
 import { exampleBaseURL } from './auth-cookie-names'
+import { recordDevMail } from './dev-mailbox'
 
 const baseURL = exampleBaseURL
 
@@ -20,13 +23,74 @@ export function loadPayload(): Promise<Payload> {
 
 export const engine = createBetterAuthEngine({
   getPayload: loadPayload,
+  // Plugin-owned user fields the adapter must serve (CAP-10's
+  // anonymous marker). Declared here, generated into ba-users.
+  customFields: {
+    user: [
+      { name: 'isAnonymous', type: 'boolean' },
+      { name: 'twoFactorEnabled', type: 'boolean' },
+    ],
+  },
+  // Plugin-owned models (CAP-5/6), declared so the Payload adapter
+  // serves them; field lists mirror BA's getAuthTables output.
+  customModels: [
+    {
+      model: 'twoFactor',
+      fields: [
+        { name: 'secret', type: 'text', required: true },
+        { name: 'backupCodes', type: 'text', required: true },
+        { name: 'userId', type: 'text', required: true },
+        { name: 'verified', type: 'boolean' },
+        { name: 'failedVerificationCount', type: 'number' },
+        { name: 'lockedUntil', type: 'date' },
+      ],
+    },
+    {
+      model: 'passkey',
+      fields: [
+        { name: 'name', type: 'text' },
+        { name: 'publicKey', type: 'text', required: true },
+        { name: 'userId', type: 'text', required: true },
+        { name: 'credentialID', type: 'text', required: true },
+        { name: 'counter', type: 'number', required: true },
+        { name: 'deviceType', type: 'text', required: true },
+        { name: 'backedUp', type: 'boolean', required: true },
+        { name: 'transports', type: 'text' },
+        { name: 'aaguid', type: 'text' },
+      ],
+    },
+  ],
   options: {
     baseURL,
     secret: process.env.PAYLOAD_SECRET ?? 'local-dev-only-secret-32-chars-min!',
     // Framework cookie plugin, declared by the builder exactly as
     // Better Auth documents: required for cookie handling in Next.js
     // server actions. The engine never touches this list.
-    plugins: [nextCookies()],
+    // Passwordless + guest plugins (CAP-1/2/10): all "mail" lands in
+    // the local dev mailbox — production builders pass real senders.
+    plugins: [
+      magicLink({
+        sendMagicLink: ({ email, url }) => {
+          recordDevMail({ kind: 'magic-link', email, url })
+          return Promise.resolve()
+        },
+      }),
+      emailOTP({
+        sendVerificationOTP: ({ email, otp }) => {
+          recordDevMail({ kind: 'email-otp', email, code: otp })
+          return Promise.resolve()
+        },
+      }),
+      anonymous(),
+      twoFactor(),
+      passkey({
+        rpID: new URL(baseURL).hostname,
+        rpName: 'payload-auth-link example',
+        origin: baseURL,
+      }),
+      // Cookie integration goes LAST so plugin-set cookies forward.
+      nextCookies(),
+    ],
     emailAndPassword: {
       enabled: true,
       // Local example only: no email delivery here, so verification is
@@ -48,6 +112,13 @@ export const engine = createBetterAuthEngine({
       customRules: {
         '/sign-up/email': { window: 60, max: 100 },
         '/sign-in/email': { window: 60, max: 100 },
+        // Verify/send routes are attempt-capped per IP (CAP-18): OTP
+        // guesses and link requests are the brute-force surface.
+        // Generous here (shared-IP dev); production tunes these down
+        // hard and adds per-identifier counters (see the guide).
+        '/sign-in/magic-link': { window: 60, max: 30 },
+        '/email-otp/send-verification-otp': { window: 60, max: 30 },
+        '/sign-in/email-otp': { window: 60, max: 60 },
       },
     },
   },

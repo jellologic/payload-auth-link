@@ -1,5 +1,6 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useAuthLink, UserMenu } from '@payload-auth-link/react'
+import { AccountSecurity } from './-account-security.js'
 
 export const Route = createFileRoute('/_frontend/account')({
   component: AccountPage,
@@ -24,6 +25,7 @@ function AccountPage() {
       <p data-testid="account-email">{user.email}</p>
       <p data-testid="account-roles">{user.roles.join(', ')}</p>
       <UserMenu signOutRedirectTo="/" />
+      <AccountSecurity />
     </>
   )
 }

@@ -93,7 +93,7 @@ test('a second provider identity links onto the same Payload user', async ({ pag
   const signup = await page.request.post('/api/authjs-signup', { data: { email, password } })
   expect(signup.ok()).toBe(true)
   await gotoOwn(page, '/sign-in-authjs')
-  await page.getByLabel(/email/i).fill(email)
+  await page.getByLabel('Email', { exact: true }).fill(email)
   await page.getByLabel(/password/i).fill(password)
   await page.getByRole('button', { name: /^sign in$/i }).click()
   await expect(page.getByTestId('account-email')).toContainText(email, { timeout: 30_000 })

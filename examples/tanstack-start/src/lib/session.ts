@@ -44,3 +44,26 @@ export const requireAdminUser = createServerFn({ method: 'GET' }).handler(() =>
     },
   })
 )
+
+/**
+ * MFA gate for `beforeLoad` (CAP-6): signed-in users whose session
+ * lacks MFA proof bounce to the account page to enroll (step-up).
+ */
+export const requireMfaUser = createServerFn({ method: 'GET' }).handler(() =>
+  requireRoles(getRequest().headers, verifySession, {
+    roles: ['user'],
+    requireMfa: true,
+    onAnonymous: () => {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw redirect({ to: '/sign-in', search: { redirect: '/mfa-only' } })
+    },
+    onDenied: () => {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw notFound()
+    },
+    onMfaRequired: () => {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw redirect({ to: '/account' })
+    },
+  })
+)

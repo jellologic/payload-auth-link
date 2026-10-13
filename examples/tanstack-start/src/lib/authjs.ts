@@ -1,7 +1,14 @@
 import Credentials from '@auth/core/providers/credentials'
-import { createAuthJsCredentials, createAuthJsEngine } from '@payload-auth-link/provider-authjs'
+import Resend from '@auth/core/providers/resend'
+import {
+  createAuthJsCredentials,
+  createAuthJsEngine,
+  emailOtpMaxAgeSeconds,
+  emailOtpVerificationToken,
+} from '@payload-auth-link/provider-authjs'
 import { getPayload, type Payload } from 'payload'
 import { exampleBaseURL } from './auth-base-url'
+import { recordDevMail } from './dev-mailbox.js'
 
 let cachedPayload: Promise<Payload> | undefined
 
@@ -26,6 +33,19 @@ export const authJsEngine = createAuthJsEngine({
     // fail-fasts that combination before Auth.js can 500.
     session: { strategy: 'jwt', maxAge: 3600 },
     providers: [
+      // Email magic link + OTP (CAP-1/2 recipes), delivery captured
+      // by the local dev mailbox — see the Next example's notes.
+      Resend({
+        apiKey: 'dev-mailbox-only',
+        from: 'sign-in@example.com',
+        maxAge: emailOtpMaxAgeSeconds,
+        generateVerificationToken: emailOtpVerificationToken,
+        sendVerificationRequest: ({ identifier, url, token }) => {
+          recordDevMail({ kind: 'magic-link', email: identifier, url })
+          recordDevMail({ kind: 'email-otp', email: identifier, code: token })
+          return Promise.resolve()
+        },
+      }),
       Credentials({
         credentials: {
           email: { label: 'Email', type: 'email' },

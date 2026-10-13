@@ -1,6 +1,7 @@
 {
   "name": "@payload-auth-link/example-tanstack-start",
   "version": "0.0.1",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,13 +13,14 @@
     "generate:importmap": "payload generate:importmap"
   },
   "dependencies": {
+    "@auth/core": "^0.41.0",
+    "@better-auth/passkey": "^1.7.7",
     "@payload-auth-link/core": "workspace:*",
     "@payload-auth-link/plugin": "workspace:*",
     "@payload-auth-link/provider-authjs": "workspace:*",
     "@payload-auth-link/provider-better-auth": "workspace:*",
     "@payload-auth-link/react": "workspace:*",
     "@payload-auth-link/tanstack-start": "workspace:*",
-    "@auth/core": "^0.41.0",
     "@payloadcms/db-mongodb": "4.0.0-beta.0",
     "@payloadcms/db-postgres": "4.0.0-beta.0",
     "@payloadcms/db-sqlite": "4.0.0-beta.0",
@@ -29,7 +31,8 @@
     "better-auth": "^1.7.7",
     "payload": "4.0.0-beta.0",
     "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react-dom": "19.2.6",
+    "tslib": "^2.8.1"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^6.0.1",

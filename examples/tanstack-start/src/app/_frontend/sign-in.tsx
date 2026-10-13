@@ -15,6 +15,9 @@ function SignInPage() {
       <h1>Sign in</h1>
       <SignInForm redirect={redirect} />
       <p>
+        <Link to="/sign-in/passwordless">Sign in without a password</Link>
+      </p>
+      <p>
         <Link to="/sign-in-authjs">Sign in with Auth.js instead</Link>
       </p>
     </>

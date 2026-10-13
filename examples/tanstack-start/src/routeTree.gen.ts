@@ -14,10 +14,13 @@ import { Route as PayloadRouteImport } from './app/_payload'
 import { Route as FrontendIndexRouteImport } from './app/_frontend/index'
 import { Route as FrontendAccountRouteImport } from './app/_frontend/account'
 import { Route as FrontendAdminOnlyRouteImport } from './app/_frontend/admin-only'
+import { Route as FrontendMfaOnlyRouteImport } from './app/_frontend/mfa-only'
 import { Route as FrontendSignInRouteImport } from './app/_frontend/sign-in'
 import { Route as FrontendSignInAuthjsRouteImport } from './app/_frontend/sign-in-authjs'
 import { Route as ApiAuthjsSignupRouteImport } from './app/api.authjs-signup'
 import { Route as ApiDevAutoVerifyRouteImport } from './app/api.dev-auto-verify'
+import { Route as ApiDevMailboxRouteImport } from './app/api.dev-mailbox'
+import { Route as FrontendSignInPasswordlessRouteImport } from './app/_frontend/sign-in_.passwordless'
 import { Route as PayloadAdminIndexRouteImport } from './app/_payload/admin.index'
 import { Route as PayloadAdminSplatRouteImport } from './app/_payload/admin.$'
 import { Route as PayloadApiSplatRouteImport } from './app/_payload/api.$'
@@ -47,6 +50,11 @@ const FrontendAdminOnlyRoute = FrontendAdminOnlyRouteImport.update({
   path: '/admin-only',
   getParentRoute: () => FrontendRoute,
 } as any)
+const FrontendMfaOnlyRoute = FrontendMfaOnlyRouteImport.update({
+  id: '/mfa-only',
+  path: '/mfa-only',
+  getParentRoute: () => FrontendRoute,
+} as any)
 const FrontendSignInRoute = FrontendSignInRouteImport.update({
   id: '/sign-in',
   path: '/sign-in',
@@ -67,6 +75,17 @@ const ApiDevAutoVerifyRoute = ApiDevAutoVerifyRouteImport.update({
   path: '/api/dev-auto-verify',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiDevMailboxRoute = ApiDevMailboxRouteImport.update({
+  id: '/api/dev-mailbox',
+  path: '/api/dev-mailbox',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const FrontendSignInPasswordlessRoute =
+  FrontendSignInPasswordlessRouteImport.update({
+    id: '/sign-in_/passwordless',
+    path: '/sign-in/passwordless',
+    getParentRoute: () => FrontendRoute,
+  } as any)
 const PayloadAdminIndexRoute = PayloadAdminIndexRouteImport.update({
   id: '/admin/',
   path: '/admin/',
@@ -97,10 +116,13 @@ export interface FileRoutesByFullPath {
   '/': typeof FrontendIndexRoute
   '/account': typeof FrontendAccountRoute
   '/admin-only': typeof FrontendAdminOnlyRoute
+  '/mfa-only': typeof FrontendMfaOnlyRoute
   '/sign-in': typeof FrontendSignInRoute
   '/sign-in-authjs': typeof FrontendSignInAuthjsRoute
   '/api/authjs-signup': typeof ApiAuthjsSignupRoute
   '/api/dev-auto-verify': typeof ApiDevAutoVerifyRoute
+  '/api/dev-mailbox': typeof ApiDevMailboxRoute
+  '/sign-in/passwordless': typeof FrontendSignInPasswordlessRoute
   '/admin/$': typeof PayloadAdminSplatRoute
   '/api/$': typeof PayloadApiSplatRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -111,10 +133,13 @@ export interface FileRoutesByTo {
   '/': typeof FrontendIndexRoute
   '/account': typeof FrontendAccountRoute
   '/admin-only': typeof FrontendAdminOnlyRoute
+  '/mfa-only': typeof FrontendMfaOnlyRoute
   '/sign-in': typeof FrontendSignInRoute
   '/sign-in-authjs': typeof FrontendSignInAuthjsRoute
   '/api/authjs-signup': typeof ApiAuthjsSignupRoute
   '/api/dev-auto-verify': typeof ApiDevAutoVerifyRoute
+  '/api/dev-mailbox': typeof ApiDevMailboxRoute
+  '/sign-in/passwordless': typeof FrontendSignInPasswordlessRoute
   '/admin/$': typeof PayloadAdminSplatRoute
   '/api/$': typeof PayloadApiSplatRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -127,11 +152,14 @@ export interface FileRoutesById {
   '/_payload': typeof PayloadRouteWithChildren
   '/_frontend/account': typeof FrontendAccountRoute
   '/_frontend/admin-only': typeof FrontendAdminOnlyRoute
+  '/_frontend/mfa-only': typeof FrontendMfaOnlyRoute
   '/_frontend/sign-in': typeof FrontendSignInRoute
   '/_frontend/sign-in-authjs': typeof FrontendSignInAuthjsRoute
   '/api/authjs-signup': typeof ApiAuthjsSignupRoute
   '/api/dev-auto-verify': typeof ApiDevAutoVerifyRoute
+  '/api/dev-mailbox': typeof ApiDevMailboxRoute
   '/_frontend/': typeof FrontendIndexRoute
+  '/_frontend/sign-in_/passwordless': typeof FrontendSignInPasswordlessRoute
   '/_payload/admin/$': typeof PayloadAdminSplatRoute
   '/_payload/api/$': typeof PayloadApiSplatRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -144,10 +172,13 @@ export interface FileRouteTypes {
     | '/'
     | '/account'
     | '/admin-only'
+    | '/mfa-only'
     | '/sign-in'
     | '/sign-in-authjs'
     | '/api/authjs-signup'
     | '/api/dev-auto-verify'
+    | '/api/dev-mailbox'
+    | '/sign-in/passwordless'
     | '/admin/$'
     | '/api/$'
     | '/api/auth/$'
@@ -158,10 +189,13 @@ export interface FileRouteTypes {
     | '/'
     | '/account'
     | '/admin-only'
+    | '/mfa-only'
     | '/sign-in'
     | '/sign-in-authjs'
     | '/api/authjs-signup'
     | '/api/dev-auto-verify'
+    | '/api/dev-mailbox'
+    | '/sign-in/passwordless'
     | '/admin/$'
     | '/api/$'
     | '/api/auth/$'
@@ -173,11 +207,14 @@ export interface FileRouteTypes {
     | '/_payload'
     | '/_frontend/account'
     | '/_frontend/admin-only'
+    | '/_frontend/mfa-only'
     | '/_frontend/sign-in'
     | '/_frontend/sign-in-authjs'
     | '/api/authjs-signup'
     | '/api/dev-auto-verify'
+    | '/api/dev-mailbox'
     | '/_frontend/'
+    | '/_frontend/sign-in_/passwordless'
     | '/_payload/admin/$'
     | '/_payload/api/$'
     | '/api/auth/$'
@@ -190,6 +227,7 @@ export interface RootRouteChildren {
   PayloadRoute: typeof PayloadRouteWithChildren
   ApiAuthjsSignupRoute: typeof ApiAuthjsSignupRoute
   ApiDevAutoVerifyRoute: typeof ApiDevAutoVerifyRoute
+  ApiDevMailboxRoute: typeof ApiDevMailboxRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiAuthjsSplatRoute: typeof ApiAuthjsSplatRoute
 }
@@ -231,6 +269,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof FrontendAdminOnlyRouteImport
       parentRoute: typeof FrontendRoute
     }
+    '/_frontend/mfa-only': {
+      id: '/_frontend/mfa-only'
+      path: '/mfa-only'
+      fullPath: '/mfa-only'
+      preLoaderRoute: typeof FrontendMfaOnlyRouteImport
+      parentRoute: typeof FrontendRoute
+    }
     '/_frontend/sign-in': {
       id: '/_frontend/sign-in'
       path: '/sign-in'
@@ -258,6 +303,20 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/dev-auto-verify'
       preLoaderRoute: typeof ApiDevAutoVerifyRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/api/dev-mailbox': {
+      id: '/api/dev-mailbox'
+      path: '/api/dev-mailbox'
+      fullPath: '/api/dev-mailbox'
+      preLoaderRoute: typeof ApiDevMailboxRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_frontend/sign-in_/passwordless': {
+      id: '/_frontend/sign-in_/passwordless'
+      path: '/sign-in/passwordless'
+      fullPath: '/sign-in/passwordless'
+      preLoaderRoute: typeof FrontendSignInPasswordlessRouteImport
+      parentRoute: typeof FrontendRoute
     }
     '/_payload/admin/': {
       id: '/_payload/admin/'
@@ -300,17 +359,21 @@ declare module '@tanstack/react-router' {
 interface FrontendRouteChildren {
   FrontendAccountRoute: typeof FrontendAccountRoute
   FrontendAdminOnlyRoute: typeof FrontendAdminOnlyRoute
+  FrontendMfaOnlyRoute: typeof FrontendMfaOnlyRoute
   FrontendSignInRoute: typeof FrontendSignInRoute
   FrontendSignInAuthjsRoute: typeof FrontendSignInAuthjsRoute
   FrontendIndexRoute: typeof FrontendIndexRoute
+  FrontendSignInPasswordlessRoute: typeof FrontendSignInPasswordlessRoute
 }
 
 const FrontendRouteChildren: FrontendRouteChildren = {
   FrontendAccountRoute: FrontendAccountRoute,
   FrontendAdminOnlyRoute: FrontendAdminOnlyRoute,
+  FrontendMfaOnlyRoute: FrontendMfaOnlyRoute,
   FrontendSignInRoute: FrontendSignInRoute,
   FrontendSignInAuthjsRoute: FrontendSignInAuthjsRoute,
   FrontendIndexRoute: FrontendIndexRoute,
+  FrontendSignInPasswordlessRoute: FrontendSignInPasswordlessRoute,
 }
 
 const FrontendRouteWithChildren = FrontendRoute._addFileChildren(
@@ -337,6 +400,7 @@ const rootRouteChildren: RootRouteChildren = {
   PayloadRoute: PayloadRouteWithChildren,
   ApiAuthjsSignupRoute: ApiAuthjsSignupRoute,
   ApiDevAutoVerifyRoute: ApiDevAutoVerifyRoute,
+  ApiDevMailboxRoute: ApiDevMailboxRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiAuthjsSplatRoute: ApiAuthjsSplatRoute,
 }

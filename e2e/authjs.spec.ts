@@ -12,7 +12,7 @@ function uniqueEmail(): string {
 async function signUp(page: Page, email: string): Promise<void> {
   await gotoOwn(page, '/sign-in-authjs')
   await toggleToSignUp(page)
-  await page.getByLabel(/email/i).fill(email)
+  await page.getByLabel('Email', { exact: true }).fill(email)
   await page.getByLabel(/password/i).fill(password)
   await page.getByRole('button', { name: /create account/i }).click()
   await expect(page.getByTestId('account-email')).toContainText(email, { timeout: 30_000 })
@@ -45,7 +45,7 @@ test('auth.js sign-up provisions a Payload user, sign-out revokes, sign-in resto
 
   // Sign back in with the same credentials.
   await gotoOwn(page, '/sign-in-authjs')
-  await page.getByLabel(/email/i).fill(email)
+  await page.getByLabel('Email', { exact: true }).fill(email)
   await page.getByLabel(/password/i).fill(password)
   await page.getByRole('button', { name: /^sign in$/i }).click()
   await expect(page.getByTestId('account-email')).toContainText(email, { timeout: 30_000 })
@@ -58,7 +58,7 @@ test('auth.js wrong passwords fail loudly on the sign-in form', async ({ page })
   await expect(page).toHaveURL(/\/$/)
 
   await gotoOwn(page, '/sign-in-authjs')
-  await page.getByLabel(/email/i).fill(email)
+  await page.getByLabel('Email', { exact: true }).fill(email)
   await page.getByLabel(/password/i).fill('wrong-password-9')
   await page.getByRole('button', { name: /^sign in$/i }).click()
   await expect(page.getByRole('alert')).toBeVisible()
@@ -69,7 +69,7 @@ test('auth.js sign-up with a crafted redirect lands in-app', async ({ page }) =>
   const email = uniqueEmail()
   await gotoOwn(page, '/sign-in-authjs?redirect=//evil.example/phish')
   await toggleToSignUp(page)
-  await page.getByLabel(/email/i).fill(email)
+  await page.getByLabel('Email', { exact: true }).fill(email)
   await page.getByLabel(/password/i).fill(password)
   await page.getByRole('button', { name: /create account/i }).click()
   await expect(page.getByTestId('account-email')).toContainText(email, { timeout: 30_000 })
@@ -98,7 +98,7 @@ test('auth.js duplicate sign-ups reveal nothing and cannot take the account over
   // and fails at sign-in with the generic message.
   await gotoOwn(page, '/sign-in-authjs')
   await toggleToSignUp(page)
-  await page.getByLabel(/email/i).fill(email)
+  await page.getByLabel('Email', { exact: true }).fill(email)
   await page.getByLabel(/password/i).fill('a-different-password-1')
   await page.getByRole('button', { name: /create account/i }).click()
   await expect(page.locator('p[role="alert"]')).toContainText(/sign-in failed/i)

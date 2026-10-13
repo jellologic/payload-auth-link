@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { Suspense } from 'react'
+import { AuthJsEmailForm } from './email-form'
 import { AuthJsSignInForm } from './form'
 
 export default function AuthJsSignInPage() {
@@ -9,6 +10,7 @@ export default function AuthJsSignInPage() {
       <Suspense fallback={<p>Loading…</p>}>
         <AuthJsSignInForm />
       </Suspense>
+      <AuthJsEmailForm />
       <p>
         <Link href="/sign-in">Sign in with Better Auth instead</Link>
       </p>

@@ -1,7 +1,10 @@
 import { createBetterAuthEngine } from '@payload-auth-link/provider-better-auth'
+import { passkey } from '@better-auth/passkey'
+import { anonymous, emailOTP, magicLink, twoFactor } from 'better-auth/plugins'
 import { tanstackStartCookies } from 'better-auth/tanstack-start'
 import { getPayload, type Payload } from 'payload'
 import { exampleBaseURL } from './auth-base-url'
+import { recordDevMail } from './dev-mailbox.js'
 
 const baseURL = exampleBaseURL
 
@@ -20,6 +23,40 @@ export function loadPayload(): Promise<Payload> {
 
 export const engine = createBetterAuthEngine({
   getPayload: loadPayload,
+  customFields: {
+    user: [
+      { name: 'isAnonymous', type: 'boolean' },
+      { name: 'twoFactorEnabled', type: 'boolean' },
+    ],
+  },
+  // Plugin-owned models (CAP-5/6); see the Next example's notes.
+  customModels: [
+    {
+      model: 'twoFactor',
+      fields: [
+        { name: 'secret', type: 'text', required: true },
+        { name: 'backupCodes', type: 'text', required: true },
+        { name: 'userId', type: 'text', required: true },
+        { name: 'verified', type: 'boolean' },
+        { name: 'failedVerificationCount', type: 'number' },
+        { name: 'lockedUntil', type: 'date' },
+      ],
+    },
+    {
+      model: 'passkey',
+      fields: [
+        { name: 'name', type: 'text' },
+        { name: 'publicKey', type: 'text', required: true },
+        { name: 'userId', type: 'text', required: true },
+        { name: 'credentialID', type: 'text', required: true },
+        { name: 'counter', type: 'number', required: true },
+        { name: 'deviceType', type: 'text', required: true },
+        { name: 'backedUp', type: 'boolean', required: true },
+        { name: 'transports', type: 'text' },
+        { name: 'aaguid', type: 'text' },
+      ],
+    },
+  ],
   options: {
     baseURL,
     secret: process.env.PAYLOAD_SECRET ?? 'local-dev-only-secret-32-chars-min!',
@@ -27,7 +64,31 @@ export const engine = createBetterAuthEngine({
     // Better Auth documents: TanStack Start owns cookie I/O here (not
     // Next.js), so this is `tanstackStartCookies()`, never
     // `nextCookies()`. The engine never touches this list.
-    plugins: [tanstackStartCookies()],
+    // Passwordless + guest plugins (CAP-1/2/10): all "mail" lands in
+    // the local dev mailbox — production builders pass real senders.
+    // Cookie integration stays LAST so plugin cookies forward.
+    plugins: [
+      magicLink({
+        sendMagicLink: ({ email, url }) => {
+          recordDevMail({ kind: 'magic-link', email, url })
+          return Promise.resolve()
+        },
+      }),
+      emailOTP({
+        sendVerificationOTP: ({ email, otp }) => {
+          recordDevMail({ kind: 'email-otp', email, code: otp })
+          return Promise.resolve()
+        },
+      }),
+      anonymous(),
+      twoFactor(),
+      passkey({
+        rpID: new URL(baseURL).hostname,
+        rpName: 'payload-auth-link example',
+        origin: baseURL,
+      }),
+      tanstackStartCookies(),
+    ],
     emailAndPassword: {
       enabled: true,
       // Local example only: no email delivery here, so verification is
@@ -49,6 +110,10 @@ export const engine = createBetterAuthEngine({
       customRules: {
         '/sign-up/email': { window: 60, max: 100 },
         '/sign-in/email': { window: 60, max: 100 },
+        // Attempt caps on the passwordless routes (CAP-18).
+        '/sign-in/magic-link': { window: 60, max: 30 },
+        '/email-otp/send-verification-otp': { window: 60, max: 30 },
+        '/sign-in/email-otp': { window: 60, max: 60 },
       },
     },
   },
