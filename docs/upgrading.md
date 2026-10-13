@@ -95,6 +95,38 @@ per deployment after upgrading (idempotent; safe to re-run).
 Already upgraded without it? The composite-key behavior silently
 does not hold on your deployment until you run the reconciliation.
 
+## 0.3.x → 0.3.1 (security default change)
+
+The injected users-collection fields now fail closed
+(security hardening). Previously, Payload's own defaults made every
+authenticated user able to write every field of every user document —
+including `roles`. The new default policy:
+
+- **Writes** to `roles`, `phone`, `suspendedUntil`, `suspendReason`
+  require the **role-manager roles** — the new `roleManagerRoles`
+  option, defaulting to `['admin']`. If your configured `roles` have
+  no `admin`, the plugin refuses to boot without an explicit
+  `roleManagerRoles: [...]`. Editors holding a non-admin role must be
+  named there or they lose the ability to edit roles in the admin
+  panel.
+- **Reads** of `suspendReason`, `suspendedUntil` and `identities` are
+  role-manager only; `identities` writes are denied to REST and the
+  admin panel entirely (the engine manages linking through the Local
+  API, which is unaffected).
+- The **admin panel** is no longer granted to "any signed-in user":
+  the default grant is the role-manager roles. Declare
+  `access: { admin: ... }` on your users collection to restore a
+  wider policy — the plugin wraps your function with the
+  impersonation deny and otherwise leaves it alone.
+- Local-API writes (`overrideAccess`) — the plugin's engine paths and
+  your own scripts — are never restricted by any of this.
+
+If you depended on users editing their own profile fields, declare
+those fields' access explicitly; the plugin never guesses a policy
+for fields it did not inject. The negative behaviour is pinned by
+`e2e/access.spec.ts` (non-admin escalation, admin-panel entry, field
+stripping, manager writes) across all six adapter/example combos.
+
 ## 0.2.x → 0.3.0
 
 Install-level changes — read before bumping:

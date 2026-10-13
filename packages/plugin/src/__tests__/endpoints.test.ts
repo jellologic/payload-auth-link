@@ -35,6 +35,7 @@ async function logoutCookies(
     baseUrl: 'http://auth-link.test',
     roles: ['user'],
     defaultRole: 'user',
+    roleManagerRoles: ['user'],
     providers,
   })
   const endpoint = createEndpoints(wired).find(
@@ -149,6 +150,7 @@ function sessionHandler(
     baseUrl: 'http://auth-link.test',
     roles: ['user'],
     defaultRole: 'user',
+    roleManagerRoles: ['user'],
     providers,
     logger,
   })

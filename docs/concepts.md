@@ -85,6 +85,22 @@ session service reloads the Payload user fresh on every request, a
 role change applies to the very next request on every provider and
 session strategy — no re-login, no token refresh, no sync job.
 
+**Who may edit roles.** The injected `roles` field (and the
+governance fields: `phone`, `suspendedUntil`, `suspendReason`) are
+writable only by the **role-manager roles** — `roleManagerRoles`,
+defaulting to `['admin']` and required at config time when no
+`admin` role exists. Everyone else is denied at field level, so a
+verified self-registered user can never grant themselves a role
+(Payload's field-access default would otherwise allow any
+authenticated user to write any field of any document). Users may
+still read their own roles. `identities` is engine-managed: writes
+are denied for every REST/admin caller, and reads are limited to
+role managers. Payload's Local API with `overrideAccess` (which the
+plugin's own engine paths use) is never restricted — this gates
+REST and the admin panel only. The default admin-panel grant is the
+role-manager roles too, not "any signed-in user"; declare your own
+`access.admin` on the users collection to change it.
+
 **How roles are consumed**, in enforcement order:
 
 1. **Payload access control.** The `auth-link` strategy projects the
@@ -92,9 +108,9 @@ session strategy — no re-login, no token refresh, no sync job.
    functions read `req.user.roles` like any Payload-authenticated
    request. Plugin-owned authorization lives in
    `plugin/src/access.ts` (CSRF checks and the impersonation deny
-   layer — the roles field itself denies create/update while an
-   operator is impersonating, so an impersonated session can never
-   become a role-escalation path).
+   layer — the roles field denies create/update while an operator is
+   impersonating and, on top of the role-manager rule, so an
+   impersonated session can never become a role-escalation path).
 2. **Server authorization** — `requireRoles` in
    `@payload-auth-link/web` (re-exported by the Next and Start
    adapters) verifies the live session and requires _every_ listed
