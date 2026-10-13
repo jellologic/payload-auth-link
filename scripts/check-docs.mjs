@@ -55,6 +55,31 @@ for (const name of present) {
   }
 }
 
+// Peer-range drift (issue #19): the README sentence is generated
+// from package.json — any hand edit fails here.
+for (const name of readdirSync(join(root, 'packages'), { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => entry.name)
+  .sort()) {
+  const manifest = JSON.parse(readFileSync(join(root, 'packages', name, 'package.json'), 'utf8'))
+  const peers = manifest.peerDependencies ?? {}
+  const readmePath = join(root, 'packages', name, 'README.md')
+  if (!existsSync(readmePath) || Object.keys(peers).length === 0) {
+    continue
+  }
+  const readme = readFileSync(readmePath, 'utf8')
+  // Prose may phrase the sentence its own way, but every manifest
+  // range must appear verbatim next to its package name — stale
+  // ranges are exactly the drift this catches.
+  for (const [peer, range] of Object.entries(peers)) {
+    if (!readme.includes(`\`${peer}\``) || !readme.includes(String(range))) {
+      failures.push(
+        `packages/${name}/README.md does not state peer \`${peer}\` ${range} as package.json declares`
+      )
+    }
+  }
+}
+
 if (failures.length > 0) {
   process.stderr.write(
     `docs freshness check failed:\n${failures.map((f) => `- ${f}`).join('\n')}\n`

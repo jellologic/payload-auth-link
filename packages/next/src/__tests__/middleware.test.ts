@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server'
 import { describe, expect, it } from 'vitest'
-import { createAuthMiddleware } from '../middleware.js'
+import { checkAuthCookies, createAuthMiddleware } from '../middleware.js'
 
 const cookieNames = ['better-auth.session_token']
 
@@ -13,6 +13,38 @@ function request(path: string, cookie?: string): NextRequest {
 function isPassThrough(response: Response): boolean {
   return response.headers.get('location') === null
 }
+
+describe('checkAuthCookies (composable form)', () => {
+  it('returns the 303 redirect for anonymous private paths and null for pass-through', () => {
+    const bounced = checkAuthCookies(request('/private'), { sessionCookieNames: cookieNames })
+    expect(bounced?.status).toBe(303)
+    expect(bounced?.headers.get('location')).toContain('/sign-in')
+    expect(
+      checkAuthCookies(request('/private', 'better-auth.session_token=abc'), {
+        sessionCookieNames: cookieNames,
+      })
+    ).toBeNull()
+    expect(
+      checkAuthCookies(request('/'), {
+        sessionCookieNames: cookieNames,
+        publicPaths: ['/'],
+      })
+    ).toBeNull()
+  })
+
+  it('composes with an existing pipeline via ??', () => {
+    const next = (candidate: NextRequest): string => {
+      return (
+        checkAuthCookies(candidate, {
+          sessionCookieNames: cookieNames,
+          publicPaths: ['/'],
+        })?.status.toString() ?? 'passed'
+      )
+    }
+    expect(next(request('/private'))).toBe('303')
+    expect(next(request('/'))).toBe('passed')
+  })
+})
 
 describe('createAuthMiddleware', () => {
   it('passes public string paths without cookies', () => {

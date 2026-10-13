@@ -10,7 +10,7 @@ Part of [payload-auth-link](https://github.com/jellologic/payload-auth-link): an
 npm install @payload-auth-link/plugin
 ```
 
-Peer dependencies: `payload` ^3.0.0 || ^4.0.0-beta.0, `react` ^19.0.0.
+Peer dependencies: `payload` ^3.83.0 || 4.0.0-beta.0, `react` ^19.0.0, `@payloadcms/ui` ^3.83.0 || 4.0.0-beta.0.
 
 ESM-only, Node 20.9 or later.
 

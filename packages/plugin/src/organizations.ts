@@ -102,7 +102,7 @@ function toMembershipRow(doc: unknown): MembershipRow | null {
 
 async function findMemberships(
   payload: Payload,
-  wired: WiredOrganizations,
+  wired: RequireOrgRoleWiring,
   where: Where
 ): Promise<MembershipRow[]> {
   const result = await payload.find({
@@ -141,7 +141,7 @@ export function orgManagerRoles(orgRoles: readonly Role[]): readonly Role[] {
  */
 export async function getOrgMembership(
   payload: Payload,
-  wired: WiredOrganizations,
+  wired: RequireOrgRoleWiring,
   input: { readonly userId: string; readonly organizationId: string }
 ): Promise<MembershipRow | null> {
   const rows = await findMemberships(payload, wired, {
@@ -155,18 +155,44 @@ export async function getOrgMembership(
 }
 
 /**
+ * The wiring `requireOrgRole` needs — a structural subset of
+ * {@link WiredOrganizations}, so builders can pass their plain
+ * config (plain role slugs included) without importing branded
+ * types; the validated wiring from `authLink({ organizations })`
+ * satisfies it as-is.
+ */
+export type RequireOrgRoleWiring = {
+  readonly organizationsCollection: string
+  readonly membershipsCollection: string
+  /** Accepted for call-site convenience; this helper reads only the
+   * two collections. */
+  readonly orgRoles?: readonly string[] | undefined
+  readonly ssoProviders?: readonly unknown[] | undefined
+}
+
+/**
  * Whether the request's user holds one of `roles` in the given
  * organization (CAP-11 `requireOrgRole` building block for builder
- * access functions and route handlers). Fails closed on anonymous
- * requests, unknown orgs, invited (not yet accepted) memberships,
- * and storage errors are the caller's to handle — this reads live
- * membership data on every call, like the strategy reloads users.
+ * access functions and route handlers). Roles are plain slugs and
+ * are parsed fail-closed (`InvalidRoleError` on a bad entry, like
+ * `requireRoles`). Fails closed on anonymous requests, unknown orgs,
+ * and invited (not yet accepted) memberships; storage errors are the
+ * caller's to handle — this reads live membership data on every
+ * call, like the strategy reloads users.
  */
 export async function requireOrgRole(
   req: PayloadRequest,
-  wired: WiredOrganizations,
-  input: { readonly organizationId: string; readonly roles: readonly Role[] }
+  wired: RequireOrgRoleWiring,
+  input: { readonly organizationId: string; readonly roles: readonly string[] }
 ): Promise<boolean> {
+  const roles: Role[] = []
+  for (const raw of input.roles) {
+    const parsed = parseRole(raw)
+    if (parsed.isErr()) {
+      throw parsed.error
+    }
+    roles.push(parsed.value)
+  }
   const userId = requestUserId(req)
   if (userId === null) {
     return false
@@ -175,7 +201,7 @@ export async function requireOrgRole(
     userId,
     organizationId: input.organizationId,
   })
-  return membership !== null && input.roles.some((role) => role === membership.role)
+  return membership !== null && roles.some((role) => role === membership.role)
 }
 
 async function userOrgIds(
@@ -297,6 +323,12 @@ function membershipsCollection(
 ): CollectionConfig {
   return {
     slug: wired.membershipsCollection,
+    // One membership row per (user, organization): without the
+    // compound unique index, two concurrent invite-accepts (or two
+    // concurrent owner-bootstrap hooks) can both pass the
+    // check-then-insert and land duplicate rows (issue #21). The
+    // database, not the race window, is the arbiter.
+    indexes: [{ fields: ['user', 'organization'], unique: true }],
     admin: {
       description: 'Organization memberships managed by payload-auth-link (CAP-11).',
     },

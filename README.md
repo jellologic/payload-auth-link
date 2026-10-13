@@ -61,6 +61,7 @@ signed-in users), then the [Tour](docs/tour.md) and
 [TanStack Start guide](docs/guide-tanstack-start.md); sign-in
 methods beyond passwords in the
 [Capabilities guide](docs/guide-capabilities.md); also
+[Migrating from payload-auth](docs/migrating-from-payload-auth.md); also
 [Compatibility](docs/compatibility.md),
 [Troubleshooting](docs/troubleshooting.md), and
 [Upgrading](docs/upgrading.md).

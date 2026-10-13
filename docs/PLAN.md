@@ -17,7 +17,7 @@ payload-onpage precedent into shippable phases.
   framework imports (lint-proven).
 - Zero `any` at boundaries; generic-preserving option types;
   canonical `Role` type; `Result`-based errors; Zod boundaries.
-- Full e2e: sign-in, callback, webhook sync, logout, admin session
+- Full e2e: sign-in, callback, logout, admin session
   revoke — green in CI before any release.
 - Docs a builder can follow: tour, getting-started, guides, plus
   `llms.txt`/`AGENTS.md` for agent consumers.
@@ -64,7 +64,8 @@ below stay open until then.
 
 - `definePlugin` shape: copy config, append collections/globals,
   merge hooks, chain `onInit`.
-- Users collection extension (identities, roles, sessions views),
+- Users collection extension (identities, roles; sessions views and
+  admin revoke deferred — not planned for v1, see MISSION.md),
   custom `AuthStrategy` delegating to `SessionPort`, unauthenticated-
   by-default endpoints with CSRF guard + `access.ts`, hook appends,
   RSC admin components (`path#Export`).
@@ -112,7 +113,7 @@ plugins })`, session/cookie delegation, no `next/headers` outside
 ### Phase 5 — E2E, CI, release hygiene ✅ DONE
 
 - Playwright against `examples/basic` + fresh DB: sign-in,
-  callback, webhook sync, logout, admin revoke, role-gated access,
+  callback, logout, admin revoke, role-gated access,
   axe on admin UI. Chromium, CI retries, traces on failure.
   ✅ Local e2e green: 10/10 (Better Auth sign-up/in/out + wrong
   password + role gate + users-admin + smoke + 3 Auth.js specs).

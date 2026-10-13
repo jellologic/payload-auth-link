@@ -23,10 +23,28 @@ export function createAuthMiddleware(
   options: AuthMiddlewareOptions
 ): (request: NextRequest) => NextResponse {
   return (request: NextRequest): NextResponse => {
-    const target = decideAuthRedirect(request, options)
-    if (target === null) {
-      return NextResponse.next()
-    }
-    return NextResponse.redirect(target, 303)
+    return checkAuthCookies(request, options) ?? NextResponse.next()
   }
+}
+
+/**
+ * Composable form of the middleware for apps that already run their
+ * own `proxy.ts` (Next 16) / `middleware.ts` pipeline: returns the
+ * 303 sign-in redirect when the request should bounce, `null` when
+ * it may pass through to the next stage. Compose with `??`:
+ *
+ * ```ts
+ * const bounced = checkAuthCookies(request, { signInPath: '/sign-in' })
+ * if (bounced !== null) return bounced
+ * ```
+ */
+export function checkAuthCookies(
+  request: NextRequest,
+  options: AuthRedirectOptions
+): NextResponse | null {
+  const target = decideAuthRedirect(request, options)
+  if (target === null) {
+    return null
+  }
+  return NextResponse.redirect(target, 303)
 }

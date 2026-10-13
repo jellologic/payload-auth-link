@@ -47,7 +47,9 @@ async function adminRequest(
   call: (method: string, path: string, body?: unknown) => Promise<AdminResponse>
   close: () => Promise<void>
 }> {
-  const context = await browser.newContext({ ...(baseURL === undefined ? {} : { baseURL }) })
+  const context = await browser.newContext({
+    ...(baseURL === undefined ? {} : { baseURL }),
+  })
   const page: Page = await context.newPage()
   await page.goto('/admin/login')
   await page.getByLabel(/email/i).fill(DEV_ADMIN_EMAIL)
