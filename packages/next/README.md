@@ -10,7 +10,7 @@ Part of [payload-auth-link](https://github.com/jellologic/payload-auth-link): an
 npm install @payload-auth-link/next
 ```
 
-Peer dependencies: `next` >=15.0.0, `react` ^19.0.0.
+Peer dependencies: `next` ^15.0.0 || ^16.0.0, `react` ^19.0.0.
 
 ESM-only, Node 20.9 or later.
 
