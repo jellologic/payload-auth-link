@@ -343,6 +343,54 @@ function createUsersCollection(wired: WiredOptions, strategy: AuthStrategy): Col
  * hooks or strategies, and throws {@link InvalidConfigError} on field-name
  * collisions instead of silently skipping them.
  */
+/**
+ * Adopt a compatible host `roles` field instead of throwing (a
+ * migration path from plugins that made the Payload user table BE the
+ * provider's user table — those apps already carry a role select).
+ * Compatible means: Payload `select`, `hasMany: true`, and an options
+ * list that covers every configured role (extra options are the
+ * host's business and stay). Adoption imposes the plugin's
+ * governance — required, role-manager write access, self/manager
+ * read, the default — and leaves the host's options, labels, and
+ * admin presentation untouched.
+ */
+function adoptRolesField(host: Field, wired: WiredOptions): SelectField {
+  const slug = wired.config.map.usersCollection
+  const name = wired.config.map.rolesField
+  const fail = (detail: string): never => {
+    throw new InvalidConfigError(
+      `users collection '${slug}' has a '${name}' field this plugin cannot adopt: ${detail} ` +
+        `Make it a multi-select covering every configured role, or rename it and let ` +
+        `the plugin inject '${name}'.`
+    )
+  }
+  if (host.type !== 'select') {
+    fail(`it is a '${host.type}' field, not a select`)
+  }
+  const select = host as SelectField
+  if (select.hasMany !== true) {
+    fail('it is a single-select (hasMany is not true)')
+  }
+  const configured = new Set<string>(wired.config.roles)
+  const declared = new Set<string>(
+    (select.options ?? [])
+      .map((option) => (typeof option === 'string' ? option : option.value))
+      .filter((value): value is string => typeof value === 'string')
+  )
+  const missing = [...configured].filter((role) => !declared.has(role))
+  if (missing.length > 0) {
+    fail(
+      `its options are missing the configured role(s) ${missing.map((r) => `'${r}'`).join(', ')}`
+    )
+  }
+  return {
+    ...select,
+    access: { ...governedWrite(wired), read: readSelfOrManagers(wired) },
+    required: true,
+    ...(select.defaultValue === undefined ? { defaultValue: [wired.config.defaultRole] } : {}),
+  }
+}
+
 export function applyUsersCollection(
   collections: readonly CollectionConfig[] | undefined,
   wired: WiredOptions,
@@ -353,31 +401,45 @@ export function applyUsersCollection(
   if (!existing) {
     return [...(collections ?? []), createUsersCollection(wired, strategy)]
   }
-  const injected = [
-    rolesField(wired),
-    identitiesField(wired),
-    phoneField(wired),
-    suspendedUntilField(wired),
-    suspendReasonField(wired),
-  ]
-  for (const field of injected) {
+  const rolesName = wired.config.map.rolesField
+  const hostRolesField = existing.fields.find((candidate) => fieldName(candidate) === rolesName)
+  // An existing roles-shaped select is ADOPTED (migration from
+  // plugins whose users table carried the role column); anything else
+  // colliding with the plugin's names still fails fast with the
+  // remediation.
+  const roles: Field =
+    hostRolesField === undefined ? rolesField(wired) : adoptRolesField(hostRolesField, wired)
+  const identities = identitiesField(wired)
+  const governance = [phoneField(wired), suspendedUntilField(wired), suspendReasonField(wired)]
+  for (const field of [identities, ...governance]) {
     const collision = existing.fields.find((candidate) => fieldName(candidate) === field.name)
     if (collision) {
+      const remediation =
+        field.name === wired.config.map.identitiesField
+          ? 'rename it or point the collection map elsewhere (the identities array is engine-managed and cannot be adopted)'
+          : 'rename it or point the collection map elsewhere'
       throw new InvalidConfigError(
-        `users collection '${slug}' already has a '${field.name}' field; ` +
-          `rename it or point the collection map elsewhere`
+        `users collection '${slug}' already has a '${field.name}' field; ${remediation}`
       )
     }
   }
   const beforeValidate = existing.hooks?.beforeValidate ?? []
   const afterChange = existing.hooks?.afterChange ?? []
+  const fields =
+    hostRolesField === undefined
+      ? [...existing.fields, roles, identities, ...governance]
+      : [
+          ...existing.fields.map((field) => (field === hostRolesField ? roles : field)),
+          identities,
+          ...governance,
+        ]
   return (collections ?? []).map((collection) =>
     collection.slug === slug
       ? {
           ...existing,
           access: withImpersonationAdminAccess(existing.access, wired),
           auth: withStrategy(existing.auth, strategy),
-          fields: [...existing.fields, ...injected],
+          fields,
           hooks: {
             ...existing.hooks,
             beforeValidate: [...beforeValidate, normalizeUserEmailHook(wired.config.map)],
