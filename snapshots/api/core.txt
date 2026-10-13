@@ -113,6 +113,19 @@ export declare function systemClock(): ClockPort;
 export declare function randomIds(): IdPort;
 /** Silent logger; `child` returns itself. */
 export declare function nullLogger(): LoggerPort;
+/** Was this logger produced by {@link nullLogger}? Lets wiring warn
+ * through a different channel when the configured logger would eat a
+ * message. */
+export declare function isSilentLogger(logger: LoggerPort): boolean;
+/**
+ * Console-backed logger: the plugin's default so refusals and audit
+ * events are visible without configuration. Warn/error go to the
+ * matching console level, info to `console.info`; fields render as a
+ * compact JSON suffix. `debug` stays silent — call sites that need
+ * trace noise should pass a real logger. Messages carry only what
+ * call sites pass: never tokens or secrets.
+ */
+export declare function consoleLogger(): LoggerPort;
 /** No-op tracer; `withSpan` runs the function directly. */
 export declare function nullTracer(): TracerPort;
 
@@ -554,7 +567,7 @@ export { assertUniqueSlugs, denyAllAccess, resolveSlugs } from './collections.js
 export type { DenyAllAccess } from './collections.js';
 export { expiringCookieOptions, hostCookiePrefix, isCookieName, parseCookieHeader, resolveSecureCookies, secureCookiePrefix, serializeCookie, } from './cookies.js';
 export type { SecureCookieEnvironment, SecureCookieRuleInput } from './cookies.js';
-export { nullLogger, nullTracer, randomIds, systemClock } from './defaults.js';
+export { consoleLogger, isSilentLogger, nullLogger, nullTracer, randomIds, systemClock, } from './defaults.js';
 export { emailSchema, parseEmail } from './email.js';
 export type { Email } from './email.js';
 export { parsePhoneNumber, phoneNumberSchema } from './phone.js';

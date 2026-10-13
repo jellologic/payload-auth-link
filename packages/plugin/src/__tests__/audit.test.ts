@@ -2,6 +2,7 @@ import { nullLogger, type LoggerPort } from '@payload-auth-link/core'
 import type { CollectionConfig, GlobalConfig, PayloadRequest } from 'payload'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  composeAuditLogger,
   impersonatedCollectionAuditHook,
   impersonatedGlobalAuditHook,
   withImpersonationAuditCollections,
@@ -116,5 +117,36 @@ describe('impersonation audit hooks (CAP-8b)', () => {
     expect(auditedGlobals[0]?.hooks?.beforeOperation).toHaveLength(1)
     expect(globals[0]?.hooks).toBeUndefined()
     expect(withImpersonationAuditGlobals(undefined, logger)).toEqual([])
+  })
+})
+
+describe('durable audit sink (onAudit)', () => {
+  it('fans every audit event out to the logger and the sink', () => {
+    const { logger, info } = capturingLogger()
+    const events: Array<{ message: string; fields: Record<string, unknown> }> = []
+    const composed = composeAuditLogger(logger, (event) => {
+      events.push(event)
+    })
+    const hook = impersonatedCollectionAuditHook(composed)
+    void hook({
+      args: { id: 7 },
+      collection: { slug: 'posts' },
+      operation: 'deleteByID',
+      req: requestWith(impersonatedUser),
+    } as unknown as Parameters<typeof hook>[0])
+    expect(info).toHaveBeenCalledOnce()
+    expect(events).toHaveLength(1)
+    expect(events[0]?.message).toBe('impersonated operation')
+    expect(events[0]?.fields).toMatchObject({ operation: 'deleteByID', id: '7' })
+  })
+
+  it('keeps non-audit log levels out of the sink', () => {
+    const base = nullLogger()
+    const events: unknown[] = []
+    const composed = composeAuditLogger(base, (event) => events.push(event))
+    composed.warn('not an audit event')
+    composed.error('also not')
+    composed.debug('nothing here either')
+    expect(events).toHaveLength(0)
   })
 })

@@ -19,8 +19,10 @@ while keeping every provider behind a swappable port.
 
 - Users live in a Payload collection. Roles, access control, hooks,
   validation, drafts, and versions behave exactly as in native Payload auth.
-- Admins manage identities, linked accounts, and sessions from the
-  Payload admin — no second dashboard, no out-of-band user store.
+- Admins manage users, roles, and linked identities from the Payload
+  admin — no second dashboard, no out-of-band user store. (Provider
+  session mechanics stay with the provider; the `ba-*`/`aj-*` system
+  collections are engine-managed and hidden from the admin nav.)
 - The plugin follows Payload's plugin contract (`definePlugin`, strategies,
   endpoints, hooks, admin components, host-owned migrations) and never
   reaches around it.
@@ -60,5 +62,7 @@ coverage.
 
 Strict TypeScript, `neverthrow`-style `Result` errors at boundaries,
 Zod-validated inputs, lint-enforced package boundaries, and mandatory e2e:
-every auth flow (sign-in, callback, webhook sync, logout, session revoke)
-is proven against a real Payload app in Playwright before release.
+every auth flow (sign-in, callback, logout, session revoke, role-gated
+access) is proven against a real Payload app in Playwright before
+release. There are no webhooks by design — identity sync is read-time
+via the plugin's session verification (docs/concepts.md).

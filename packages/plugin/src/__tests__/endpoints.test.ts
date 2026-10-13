@@ -89,19 +89,21 @@ describe('logout cookie clearing', () => {
 
 function capturingLogger(): {
   logger: LoggerPort
+  debug: ReturnType<typeof vi.fn>
   warn: ReturnType<typeof vi.fn>
   error: ReturnType<typeof vi.fn>
 } {
+  const debug = vi.fn()
   const warn = vi.fn()
   const error = vi.fn()
   const logger: LoggerPort = {
-    debug: vi.fn(),
+    debug,
     info: vi.fn(),
     warn,
     error,
     child: () => logger,
   }
-  return { logger, warn, error }
+  return { logger, debug, warn, error }
 }
 
 function stubPayload(overrides: {
@@ -198,7 +200,10 @@ describe('session verify logging', () => {
       payload: stubPayload({}),
     } as unknown as PayloadRequest)
     expect(denied.status).toBe(401)
-    expect(logs.warn).toHaveBeenCalledWith('session endpoint verification failed: invalid session')
+    // Plain invalid session = anonymous traffic: debug-level residue,
+    // not a warning (issue #15).
+    expect(logs.debug).toHaveBeenCalledWith('session endpoint verification failed: invalid session')
+    expect(logs.warn).not.toHaveBeenCalled()
     expect(logs.error).not.toHaveBeenCalled()
   })
 
@@ -215,7 +220,7 @@ describe('session verify logging', () => {
       payload: stubPayload({}),
     } as unknown as PayloadRequest)
     expect(denied.status).toBe(401)
-    expect(logs.warn).toHaveBeenCalledWith('session endpoint verification failed: invalid session')
+    expect(logs.debug).toHaveBeenCalledWith('session endpoint verification failed: invalid session')
     expect(logs.error).not.toHaveBeenCalled()
   })
 
@@ -317,7 +322,7 @@ describe('session verify logging', () => {
     } as unknown as PayloadRequest)
     expect(alreadyOut.status).toBe(401)
     expect(alreadyOut.headers.getSetCookie().length).toBeGreaterThan(0)
-    expect(logs.warn).toHaveBeenCalledWith('logout endpoint verification failed: invalid session')
+    expect(logs.debug).toHaveBeenCalledWith('logout endpoint verification failed: invalid session')
 
     const cookie = stub.issue({
       sessionId: 'live-3',

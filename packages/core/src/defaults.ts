@@ -18,6 +18,8 @@ export function randomIds(): IdPort {
   }
 }
 
+const silentLoggers = new WeakSet<object>()
+
 /** Silent logger; `child` returns itself. */
 export function nullLogger(): LoggerPort {
   const logger: LoggerPort = {
@@ -25,6 +27,43 @@ export function nullLogger(): LoggerPort {
     info: () => undefined,
     warn: () => undefined,
     error: () => undefined,
+    child: () => logger,
+  }
+  silentLoggers.add(logger)
+  return logger
+}
+
+/** Was this logger produced by {@link nullLogger}? Lets wiring warn
+ * through a different channel when the configured logger would eat a
+ * message. */
+export function isSilentLogger(logger: LoggerPort): boolean {
+  return silentLoggers.has(logger)
+}
+
+/**
+ * Console-backed logger: the plugin's default so refusals and audit
+ * events are visible without configuration. Warn/error go to the
+ * matching console level, info to `console.info`; fields render as a
+ * compact JSON suffix. `debug` stays silent — call sites that need
+ * trace noise should pass a real logger. Messages carry only what
+ * call sites pass: never tokens or secrets.
+ */
+export function consoleLogger(): LoggerPort {
+  const format = (message: string, fields?: LogFields): string =>
+    fields === undefined || Object.keys(fields).length === 0
+      ? message
+      : `${message} ${JSON.stringify(fields)}`
+  const logger: LoggerPort = {
+    debug: () => undefined,
+    info: (message, fields) => {
+      console.info(format(message, fields))
+    },
+    warn: (message, fields) => {
+      console.warn(format(message, fields))
+    },
+    error: (message, fields) => {
+      console.error(format(message, fields))
+    },
     child: () => logger,
   }
   return logger

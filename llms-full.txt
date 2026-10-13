@@ -25,9 +25,10 @@ bun add @payload-auth-link/core @payload-auth-link/plugin \
   @payload-auth-link/provider-better-auth better-auth
 ```
 
-(`better-auth` ships as a dependency of the provider, but you import
-it yourself for the `nextCookies()` framework plugin in Edit 2, so it
-is a direct dependency too.)
+(`better-auth` is a **peer dependency** of the provider since 0.3.0 —
+validated band `>=1.7.6 <1.8.0` — and you import it yourself for the
+`nextCookies()` framework plugin in Edit 2 anyway, so install it
+directly.)
 
 ## Edit 2 — The engine (`lib/auth.ts`)
 
@@ -641,7 +642,7 @@ roles } }` (`SessionUser` — the versioned wire contract in
 
 The Payload strategy is read-only: it never refreshes provider state,
 so login loops are impossible by construction. Failures at any step
-resolve to anonymous (`{ user: null }` / 401), loudly logged.
+resolve to anonymous (`{ user: null }` / 401), loudly logged (the default console logger; pass `nullLogger()` to mute).
 
 ## Two-layer validation (both frameworks)
 
@@ -1448,9 +1449,11 @@ BA 1.8, installing it forces BA 1.8 under you — so bump satellites
 and core in one commit, run the provider's schema probe (it fails
 fast on unvalidated BA schemas), and never let a satellite drag you
 outside the band: the version assertion will refuse to boot, which
-is the intended outcome. Unprobed satellites (`@better-auth/api-key`,
-`@better-auth/sso`) are **unsupported until probed**: adding one
-meets `UnsupportedSchemaError` with this same fail-fast.
+is the intended outcome. Probed satellites: `@better-auth/passkey`
+and `@better-auth/api-key` (both in the committed schema probe and
+the compat matrix). Unprobed: `@better-auth/sso` is **unsupported
+until probed** — adding it meets `UnsupportedSchemaError` with this
+same fail-fast.
 
 ## Runtimes and frameworks
 
@@ -1651,11 +1654,13 @@ the point.
 
 The same error at **boot** (not login) usually means a Better Auth
 plugin contributes a field or model this adapter has not declared.
-Two satellite packages are known-unprobed today — `@better-auth/api-key`
-and `@better-auth/sso`: composing them fails fast with
-`UnsupportedSchemaError` until support lands; every plugin exported
-by `better-auth/plugins` plus `@better-auth/passkey` is covered by
-the committed schema probe.
+Satellites probed by the committed schema probe (declare their models
+in `customModels` exactly as the probe does, and they work):
+`@better-auth/passkey` and `@better-auth/api-key` (verified end to end
+— see the [API keys recipe](guide-capabilities.md#api-keys)). Still
+unprobed: `@better-auth/sso` — composing it fails fast with
+`UnsupportedSchemaError` until support lands. Every plugin exported
+by `better-auth/plugins` is covered by the probe.
 
 ## `SQLITE_ERROR: no such column: …` (or `42703` on Postgres) at boot or on first use
 
@@ -1859,7 +1864,7 @@ per deployment after upgrading (idempotent; safe to re-run).
 Already upgraded without it? The composite-key behavior silently
 does not hold on your deployment until you run the reconciliation.
 
-## 0.3.x → 0.3.1 (security default change)
+## 0.3.x → 0.4.0 (security default change)
 
 The injected users-collection fields now fail closed
 (security hardening). Previously, Payload's own defaults made every
@@ -1934,6 +1939,25 @@ and a script sketch.
 Upgrade impact: config-time behavior — previously-throwing setups
 with a compatible roles select now boot and adopt it; the adopted
 field gains the role-manager write restriction (roleManagerRoles).
+
+
+## 0.3.x → 0.4.0 (audible by default)
+
+`authLink` now defaults to a **console logger** instead of a silent
+one: session refusals (expired sessions, channels not admitted,
+suspensions, provider errors, a session-shaped cookie that resolves
+to nothing) and the impersonation audit print without
+configuration. Consequences and opt-outs:
+
+- To restore the old silence, pass `logger: nullLogger()` explicitly.
+- Per-request "invalid session" residue (every logged-out page load
+  hitting the session endpoint) logs at debug level, not warn —
+  actionable refusals keep their warning, with reason, provider and
+  channel.
+- New `onAudit` option: a durable sink for impersonation audit
+  events (called in addition to the logger). With an
+  impersonation-capable provider, a silent logger and no `onAudit`,
+  the plugin warns once at startup that audit events are dropped.
 
 ## 0.2.x → 0.3.0
 
@@ -2207,8 +2231,10 @@ while keeping every provider behind a swappable port.
 
 - Users live in a Payload collection. Roles, access control, hooks,
   validation, drafts, and versions behave exactly as in native Payload auth.
-- Admins manage identities, linked accounts, and sessions from the
-  Payload admin — no second dashboard, no out-of-band user store.
+- Admins manage users, roles, and linked identities from the Payload
+  admin — no second dashboard, no out-of-band user store. (Provider
+  session mechanics stay with the provider; the `ba-*`/`aj-*` system
+  collections are engine-managed and hidden from the admin nav.)
 - The plugin follows Payload's plugin contract (`definePlugin`, strategies,
   endpoints, hooks, admin components, host-owned migrations) and never
   reaches around it.
@@ -2248,8 +2274,10 @@ coverage.
 
 Strict TypeScript, `neverthrow`-style `Result` errors at boundaries,
 Zod-validated inputs, lint-enforced package boundaries, and mandatory e2e:
-every auth flow (sign-in, callback, webhook sync, logout, session revoke)
-is proven against a real Payload app in Playwright before release.
+every auth flow (sign-in, callback, logout, session revoke, role-gated
+access) is proven against a real Payload app in Playwright before
+release. There are no webhooks by design — identity sync is read-time
+via the plugin's session verification (docs/concepts.md).
 
 ---
 
@@ -2464,7 +2492,7 @@ payload-onpage precedent into shippable phases.
   framework imports (lint-proven).
 - Zero `any` at boundaries; generic-preserving option types;
   canonical `Role` type; `Result`-based errors; Zod boundaries.
-- Full e2e: sign-in, callback, webhook sync, logout, admin session
+- Full e2e: sign-in, callback, logout, admin session
   revoke — green in CI before any release.
 - Docs a builder can follow: tour, getting-started, guides, plus
   `llms.txt`/`AGENTS.md` for agent consumers.
@@ -2511,7 +2539,8 @@ below stay open until then.
 
 - `definePlugin` shape: copy config, append collections/globals,
   merge hooks, chain `onInit`.
-- Users collection extension (identities, roles, sessions views),
+- Users collection extension (identities, roles; sessions views and
+  admin revoke deferred — not planned for v1, see MISSION.md),
   custom `AuthStrategy` delegating to `SessionPort`, unauthenticated-
   by-default endpoints with CSRF guard + `access.ts`, hook appends,
   RSC admin components (`path#Export`).
@@ -2559,7 +2588,7 @@ plugins })`, session/cookie delegation, no `next/headers` outside
 ### Phase 5 — E2E, CI, release hygiene ✅ DONE
 
 - Playwright against `examples/basic` + fresh DB: sign-in,
-  callback, webhook sync, logout, admin revoke, role-gated access,
+  callback, logout, admin revoke, role-gated access,
   axe on admin UI. Chromium, CI retries, traces on failure.
   ✅ Local e2e green: 10/10 (Better Auth sign-up/in/out + wrong
   password + role gate + users-admin + smoke + 3 Auth.js specs).
@@ -4067,7 +4096,8 @@ released.
 ## Scope Notes
 
 This project handles authentication sessions, cookies, and identity
-webhooks. Out of scope: vulnerabilities in Payload CMS itself, in
+linking (there are no webhooks; identity sync is read-time). Out of
+scope: vulnerabilities in Payload CMS itself, in
 identity providers (Better Auth, Auth.js, WorkOS, Clerk), or in host
 applications consuming this plugin — report those upstream.
 

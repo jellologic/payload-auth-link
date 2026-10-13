@@ -499,24 +499,52 @@ export function createPayloadDatabaseAdapter(
       ): Promise<Record<string, unknown> | null> => {
         const payload = await payloadOf()
         const { where, postFilter } = translateWhereClause(clauses)
-        const found: unknown = await payload.find({
-          collection: collectionFor(slugs, model),
-          where,
-          limit: postFilter ? joinLimitDefault : 1,
-          depth,
-          pagination: false,
-          overrideAccess: true,
-        })
-        let rows = narrowDocList(found, `findOne ${model}`).map((doc) =>
-          toBaRow(dateFields, model, doc, select)
-        )
-        if (join) {
-          rows = await applyJoin(payload, slugs, dateFields, depth, rows, join, customNames)
+        if (postFilter === undefined) {
+          const found: unknown = await payload.find({
+            collection: collectionFor(slugs, model),
+            where,
+            limit: 1,
+            depth,
+            pagination: false,
+            overrideAccess: true,
+          })
+          let rows = narrowDocList(found, `findOne ${model}`).map((doc) =>
+            toBaRow(dateFields, model, doc, select)
+          )
+          if (join) {
+            rows = await applyJoin(payload, slugs, dateFields, depth, rows, join, customNames)
+          }
+          return rows[0] ?? null
         }
-        if (postFilter) {
-          rows = rows.filter(postFilter)
+        // Post-filtered queries page through the source with a stable
+        // sort (issue #18): a fixed window can be all contains-match
+        // decoys with the exact match past it.
+        const filter = postFilter
+        const pageSize = joinLimitDefault
+        for (let page = 1; ; page += 1) {
+          const found: unknown = await payload.find({
+            collection: collectionFor(slugs, model),
+            where,
+            limit: pageSize,
+            page,
+            sort: 'id',
+            depth,
+            overrideAccess: true,
+          })
+          let rows = narrowDocList(found, `findOne ${model}`).map((doc) =>
+            toBaRow(dateFields, model, doc, select)
+          )
+          if (join) {
+            rows = await applyJoin(payload, slugs, dateFields, depth, rows, join, customNames)
+          }
+          const match = rows.find((row) => filter(row))
+          if (match !== undefined) {
+            return match
+          }
+          if (rows.length < pageSize) {
+            return null
+          }
         }
-        return rows[0] ?? null
       }
 
       return {
@@ -590,15 +618,52 @@ export function createPayloadDatabaseAdapter(
             const payload = await payloadOf()
             const { where: translated, postFilter } = translateWhereClause(where ?? [])
             const skip = offset ?? 0
+            const sort =
+              sortBy === undefined
+                ? undefined
+                : `${sortBy.direction === 'desc' ? '-' : ''}${baFieldToPayload(sortBy.field)}`
+            // A post-filtered query (case-insensitive `eq` becomes a
+            // contains-match) can over-match: a fixed window of
+            // `skip + limit` rows may be all decoys, so real matches
+            // past it vanish and offsets count unfiltered rows
+            // (issue #18). Page through the source — with a stable
+            // sort when the caller gave none — until `skip + limit`
+            // FILTERED rows are collected or the source is exhausted.
+            if (postFilter !== undefined) {
+              const filter = postFilter
+              const pageSize = joinLimitDefault
+              const matched: T[] = []
+              const need = skip + limit
+              let page = 1
+              while (matched.length < need) {
+                const found: unknown = await payload.find({
+                  collection: collectionFor(slugs, key),
+                  where: translated,
+                  limit: pageSize,
+                  page,
+                  ...(sort !== undefined ? { sort } : { sort: 'id' }),
+                  depth,
+                  overrideAccess: true,
+                })
+                let rows = narrowDocList(found, `findMany ${key}`).map((doc) =>
+                  toBaRow(dateFields, key, doc, select)
+                )
+                if (join) {
+                  rows = await applyJoin(payload, slugs, dateFields, depth, rows, join, customNames)
+                }
+                matched.push(...(rows.filter((row) => filter(row)) as T[]))
+                if (rows.length < pageSize) {
+                  break
+                }
+                page += 1
+              }
+              return asModelRow<T[]>(matched.slice(skip, skip + limit))
+            }
             const found: unknown = await payload.find({
               collection: collectionFor(slugs, key),
               where: translated,
               limit: skip + limit,
-              ...(sortBy === undefined
-                ? {}
-                : {
-                    sort: `${sortBy.direction === 'desc' ? '-' : ''}${baFieldToPayload(sortBy.field)}`,
-                  }),
+              ...(sort === undefined ? {} : { sort }),
               depth,
               pagination: false,
               overrideAccess: true,
@@ -608,9 +673,6 @@ export function createPayloadDatabaseAdapter(
             )
             if (join) {
               rows = await applyJoin(payload, slugs, dateFields, depth, rows, join, customNames)
-            }
-            if (postFilter) {
-              rows = rows.filter(postFilter)
             }
             return asModelRow<T[]>(rows.slice(skip, skip + limit))
           } catch (error) {

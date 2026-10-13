@@ -71,6 +71,9 @@ export default buildConfig({
       baseUrl,
       roles: ['admin', 'user'],
       defaultRole: 'user',
+      // API keys (Better Auth @better-auth/api-key) present as a
+      // distinct session channel; cookie remains the default.
+      admitChannels: ['cookie', 'api-key'],
       // Both providers live side by side: Better Auth at /api/auth,
       // Auth.js at /api/authjs. The session service asks each in turn.
       providers: [betterAuthProvider, authJsProvider],

@@ -10,7 +10,7 @@ Part of [payload-auth-link](https://github.com/jellologic/payload-auth-link): an
 npm install @payload-auth-link/tanstack-start
 ```
 
-Peer dependencies: `@tanstack/react-router` ^1.0.0, `@tanstack/react-start` ^1.120.0, `react` ^19.0.0.
+Peer dependencies: `@tanstack/react-router` ^1.170.0, `@tanstack/react-start` ^1.140.2, `react` ^19.0.0.
 
 ESM-only, Node 20.9 or later.
 

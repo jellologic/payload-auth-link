@@ -1,4 +1,5 @@
 import { createBetterAuthEngine } from '@payload-auth-link/provider-better-auth'
+import { apiKey } from '@better-auth/api-key'
 import { passkey } from '@better-auth/passkey'
 import { nextCookies } from 'better-auth/next-js'
 import { anonymous, emailOTP, magicLink, twoFactor } from 'better-auth/plugins'
@@ -65,6 +66,7 @@ export const engine = createBetterAuthEngine({
         rpName: 'payload-auth-link example',
         origin: baseURL,
       }),
+      apiKey({ defaultPrefix: 'bock_', enableMetadata: true, enableSessionForAPIKeys: true }),
       // Cookie integration goes LAST so plugin-set cookies forward.
       nextCookies(),
     ],
