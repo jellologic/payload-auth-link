@@ -1,5 +1,70 @@
 # @payload-auth-link/provider-better-auth
 
+## 0.4.0
+
+### Minor Changes
+
+- [#34](https://github.com/jellologic/payload-auth-link/pull/34) [`b993397`](https://github.com/jellologic/payload-auth-link/commit/b99339781343100ec5ccb8a80c9a9bd61dd36dba) Thanks [@jellologic](https://github.com/jellologic)! - Derive `customFields`/`customModels` from Better Auth's own schema
+  (issue [#17](https://github.com/jellologic/payload-auth-link/issues/17)). New `deriveBetterAuthSchema(options)` (built on
+  `getAuthTables` from `better-auth/db` — the same source the adapter
+  validates against, so a derived declaration cannot disagree with
+  what BA asks for), `declarationsFromTables(tables)` for the pure
+  step, and `createBetterAuthEngine({ autoDeclare: true })`, which
+  derives and merges **under** the builder's explicit declarations —
+  a hand-pinned field always wins, the derived remainder fills the
+  gaps. Semantics: arrays/unknown BA types map to JSON; enum-valued
+  attributes stay text (BA owns value validation); a BA `defaultValue`
+  keeps the column nullable; renames (`modelName`/`fieldName`) throw
+  with a declare-by-hand pointer. Strict hand-declared mode is
+  unchanged. `examples/basic` switches to `autoDeclare: true`; the
+  capabilities guide documents the recipe and the snapshot-test drift
+  alarm.
+
+  Upgrade impact: none — `autoDeclare` is opt-in and hand declarations
+  are unchanged.
+
+### Patch Changes
+
+- [#31](https://github.com/jellologic/payload-auth-link/pull/31) [`e087162`](https://github.com/jellologic/payload-auth-link/commit/e087162c6a1ec8651b0a3f3d104f879b6f0871d0) Thanks [@jellologic](https://github.com/jellologic)! - `@better-auth/api-key` support, verified and probed (issue [#16](https://github.com/jellologic/payload-auth-link/issues/16)): the
+  satellite works end to end once the `apikey` model is declared —
+  create/list through BA's endpoints, `x-api-key` requests resolve
+  through the plugin session, and Payload REST sees the user behind the
+  key (invalid keys 401). The committed schema probe now includes the
+  satellite (like `@better-auth/passkey`), so BA bumps that change its
+  schema fail the probe, not a user's boot; the compat matrix runs it
+  via the BA axis. Docs: troubleshooting and compatibility stop calling
+  the satellite unsupported; the capabilities guide gains an API-keys
+  recipe (declaration, `enableSessionForAPIKeys`, `admitChannels`), the
+  security posture — a key session carries its owner's Payload roles,
+  so an admin's key is an admin credential — and the MFA note
+  (`requireMfaForRoles` stays withheld from key sessions, which report
+  `assurance.mfa: false`). `examples/basic` wires the satellite and a
+  new e2e spec covers create → session → Payload REST → invalid key.
+
+  Upgrade impact: none for existing databases. Adopting API keys is
+  opt-in: declare the model, enable key sessions, admit the channel.
+
+- [#30](https://github.com/jellologic/payload-auth-link/pull/30) [`99942ec`](https://github.com/jellologic/payload-auth-link/commit/99942ec5ac32ab03860fb81acbaac44c9696e76b) Thanks [@jellologic](https://github.com/jellologic)! - Adapter fix: a case-insensitive `eq` (translated to a contains-match
+  plus an in-memory exact filter) no longer loses rows to pagination.
+  Previously `findMany` fetched a single `skip + limit` window and
+  `findOne` a fixed 100-row window, then filtered — decoy rows that
+  merely contain the search text could fill the window, so real matches
+  past it vanished (empty findMany pages, false-null findOne) and
+  offsets counted unfiltered rows.
+
+  Now, when a post-filter is in play, both operations page through the
+  source with a stable sort until `skip + limit` **filtered** rows are
+  collected (or the source is exhausted), so offsets count filtered
+  rows and results are complete. Non-filtered queries are unchanged.
+  Pinned by tests planting 150 contains-match decoys ahead of the real
+  row (beyond both the page size and the old fixed window).
+
+  Upgrade impact: none for the database; queries return complete,
+  correctly-offset results.
+
+- Updated dependencies [[`59ebe9c`](https://github.com/jellologic/payload-auth-link/commit/59ebe9c9ec0a2f21917873a100b8f2f14d4da008)]:
+  - @payload-auth-link/core@0.4.0
+
 ## 0.3.0
 
 ### Minor Changes

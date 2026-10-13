@@ -1,5 +1,147 @@
 # @payload-auth-link/plugin
 
+## 0.4.0
+
+### Minor Changes
+
+- [#33](https://github.com/jellologic/payload-auth-link/pull/33) [`97feee9`](https://github.com/jellologic/payload-auth-link/commit/97feee90d5ff3a06dfc6c77f7ff85d176272b13f) Thanks [@jellologic](https://github.com/jellologic)! - Adopt an existing roles field instead of throwing (issue [#20](https://github.com/jellologic/payload-auth-link/issues/20)) — the
+  migration path from `payload-auth`-style schemas where the Payload
+  users table already carries a role column. A compatible field at the
+  configured `rolesField` (Payload `select`, `hasMany: true`, options
+  covering every configured role) is taken over: the plugin imposes
+  required-ness, the default, and its governed write access, while the
+  host's options, labels, and extra roles survive. Incompatible shapes
+  fail at config time naming the exact remediation; `rolesField:
+'role'` remapping against an existing `role` column now works.
+
+  Alongside: **docs/migrating-from-payload-auth.md** — the runbook for
+  moving data from `payload-auth` (users → `ba-users` with `baId` =
+  old id, `user_accounts` → `ba-accounts` with password hashes and
+  OAuth tokens verbatim, identity pre-linking, plugin-model foreign-key
+  rewrites, session/verification drop policy, `advanced.cookiePrefix`
+  continuity) with a script sketch, plus the prominent
+  `req.user`-is-the-session-projection note.
+
+  Upgrade impact: config-time behavior — setups that previously failed
+  with a roles-field collision now boot and adopt the field, which
+  gains the role-manager write restriction; no database change.
+
+- [#28](https://github.com/jellologic/payload-auth-link/pull/28) [`59ebe9c`](https://github.com/jellologic/payload-auth-link/commit/59ebe9c9ec0a2f21917873a100b8f2f14d4da008) Thanks [@jellologic](https://github.com/jellologic)! - The plugin is audible by default (issue [#15](https://github.com/jellologic/payload-auth-link/issues/15)): `authLink({ logger })`
+  now defaults to a **console logger** instead of the silent one, so
+  session refusals (expired, channel not admitted, suspended,
+  provider errors, a session-shaped cookie that resolves to nothing)
+  and the impersonation audit actually land somewhere without
+  configuration. `nullLogger()` remains the explicit opt-out.
+
+  - Core adds `consoleLogger()` (info/warn/error to the matching
+    console level, fields as a JSON suffix, debug stays silent) and
+    `isSilentLogger()`.
+  - New `onAudit` option: a durable sink called with every
+    impersonation audit event, in addition to the logger — "audited"
+    should survive log rotation. With an impersonation-capable
+    provider, a silent logger, and no `onAudit`, the plugin warns once
+    at startup through the console that audit events are being
+    dropped.
+  - The per-request "verification failed: invalid session" residue
+    (every anonymous request) moved to debug level; every actionable
+    refusal keeps its warning with reason, provider, and channel.
+  - README's impersonation row now says what auditing means.
+
+  Upgrade impact: default-behaviour change — servers will print
+  warnings for refused sessions by default. Pass
+  `logger: nullLogger()` to restore silence; pass `onAudit` to make
+  the impersonation audit durable.
+
+- [#32](https://github.com/jellologic/payload-auth-link/pull/32) [`b8d3a19`](https://github.com/jellologic/payload-auth-link/commit/b8d3a1923e128af9611725a891937203f0181409) Thanks [@jellologic](https://github.com/jellologic)! - Docs-drift sweep (issue [#19](https://github.com/jellologic/payload-auth-link/issues/19)) plus one developer-experience widening:
+
+  - `requireOrgRole` accepts **plain role slugs and plain wiring**:
+    roles are parsed fail-closed (`InvalidRoleError` on a bad entry,
+    like `requireRoles`), and the wiring parameter is a structural
+    subset (`organizationsCollection` + `membershipsCollection`, extra
+    fields accepted) — the capabilities guide's snippet now
+    type-checks as written, and the validated wiring from
+    `authLink({ organizations })` still satisfies it.
+  - README peer ranges are generated from the manifests and
+    `check-docs` now fails when a README states a peer range the
+    manifest does not (the drift that started this issue).
+  - getting-started says `better-auth` is a peer (since 0.3.0), not a
+    bundled dependency; MISSION.md no longer promises admin session
+    views or webhook sync (none exist, by design); SECURITY.md and
+    PLAN.md drop webhook wording; PLAN.md marks sessions views/admin
+    revoke as deferred so PLAN and MISSION agree.
+
+  Upgrade impact: none — the `requireOrgRole` signature is widened, so
+  existing call sites (including branded-role callers) compile
+  unchanged.
+
+- [#29](https://github.com/jellologic/payload-auth-link/pull/29) [`179e561`](https://github.com/jellologic/payload-auth-link/commit/179e56120a07cde1878d368099fe496296bc8e9f) Thanks [@jellologic](https://github.com/jellologic)! - Verified fixes from the code-read sweep (issue [#21](https://github.com/jellologic/payload-auth-link/issues/21)):
+
+  - **Organization membership uniqueness.** The memberships collection
+    gains a compound **unique index on `(user, organization)`**: two
+    concurrent invite-accepts (or owner-bootstrap hooks) could
+    previously both pass the check-then-insert and land duplicate rows.
+    Existing databases with duplicates must dedupe before the index
+    builds (see docs/upgrading.md).
+  - **`setEmail` keeps identity rows in step.** Changing a user's email
+    now rewrites linked-identity rows that carried the old address, so
+    the admin users view no longer shows a stale identity email.
+  - **Role-config audit is bounded and its truncation note is
+    reachable.** The startup audit no longer passes `pagination: false`
+    (which ignored the 500-doc limit and made the truncation message
+    unreachable); the note now fires when more users exist than were
+    scanned.
+  - **Impersonation in custom endpoints: proven, not assumed.** The
+    "is `req.user` populated here?" doubt is settled by a test — the
+    organization-create endpoint's impersonation deny fires on a real
+    impersonated session.
+  - **`checkAuthCookies(request, options)`** (next): composable form of
+    the optimistic middleware — returns the 303 sign-in redirect or
+    `null` — for apps that run their own `proxy.ts` (Next 16) /
+    `middleware.ts` pipeline.
+
+  Upgrade impact: new unique index on the memberships collection
+  (dedupe existing duplicates first — per-adapter notes in
+  docs/upgrading.md); `setEmail` now also writes the `identities` array
+  when address-bearing rows change; the startup role audit's query
+  shape changes (bounded, paginated).
+
+### Patch Changes
+
+- [`78bc505`](https://github.com/jellologic/payload-auth-link/commit/78bc5056399e265d6e0743feefee65c1e02b7662) Thanks [@jellologic](https://github.com/jellologic)! - Security hardening: the injected users-collection fields now fail
+  closed by default. Payload's own collection defaults give every
+  authenticated user write access to every field, which is the wrong
+  default for fields that decide privileges. The new defaults:
+
+  - **`roleManagerRoles`** (new option) names the roles that govern
+    the auth system. Defaults to `['admin']` when an `admin` role is
+    configured; **required at config time when it is not** (the plugin
+    refuses to guess who manages roles).
+  - `roles`, `phone`, `suspendedUntil` and `suspendReason` field
+    writes: role-manager roles only, with the existing
+    deny-while-impersonating rule on top. Local-API
+    (`overrideAccess`) writes — the plugin's own engine paths and
+    your own scripts — are never restricted.
+  - Field reads: `suspendReason` and `suspendedUntil` are
+    role-manager only (matching the documented "never exposed");
+    `identities` too (engine-managed rows carry provider ids and
+    emails); every user still reads their own `roles` (and phone).
+  - `identities` writes are denied for every REST/admin caller —
+    linking happens through the plugin only.
+  - The default admin-panel grant is the role-manager roles, not "any
+    signed-in user". A builder `access.admin` on the users collection
+    still wins (wrapped with the impersonation deny, as before).
+
+  Upgrade impact: default-behaviour change — REST/admin writers other
+  than the manager roles lose write access to the injected fields, and
+  non-managers no longer read `identities`/`suspension` fields. Hosts
+  whose editors use a non-admin role must pass
+  `roleManagerRoles: [...]`. Docs updated (getting-started, concepts,
+  capabilities guide); negative e2e specs added on every adapter.
+  Schema snapshots unchanged (access functions are not DB shape).
+
+- Updated dependencies [[`59ebe9c`](https://github.com/jellologic/payload-auth-link/commit/59ebe9c9ec0a2f21917873a100b8f2f14d4da008)]:
+  - @payload-auth-link/core@0.4.0
+
 ## 0.3.0
 
 ### Minor Changes

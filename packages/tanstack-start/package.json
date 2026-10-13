@@ -1,6 +1,6 @@
 {
   "name": "@payload-auth-link/tanstack-start",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "payload-auth-link TanStack Start adapter: server routes, request middleware, session server functions, hydration.",
   "license": "MIT",
   "repository": {
