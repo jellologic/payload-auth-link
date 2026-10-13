@@ -161,10 +161,18 @@ describe('autoDeclare engine boot', () => {
   beforeAll(async () => {
     // The engine resolves Payload lazily, so the collections-only
     // pass needs no instance; the wired engine below gets the real one.
+    // The mixed core+satellite plugin array needs the loose
+    // BetterAuthPlugin[] typing at the 1.7.6 floor (its plugin
+    // registry literals are narrower); BA's runtime accepts it on the
+    // whole validated line.
     const options = {
       baseURL: ORIGIN,
       secret: 'x'.repeat(32),
-      plugins: [organization(), admin(), apiKey({ enableSessionForAPIKeys: true })],
+      plugins: [
+        organization(),
+        admin(),
+        apiKey({ enableSessionForAPIKeys: true }),
+      ] as unknown as import('better-auth').BetterAuthPlugin[],
     }
     const collectionsEngine = createBetterAuthEngine({
       autoDeclare: true,
