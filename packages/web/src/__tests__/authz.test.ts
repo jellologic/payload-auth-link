@@ -2,6 +2,7 @@ import {
   ForbiddenError,
   InvalidConfigError,
   InvalidRoleError,
+  MfaRequiredError,
   SessionInvalidError,
   type SessionUser,
 } from '@payload-auth-link/core'
@@ -80,6 +81,43 @@ describe('requireRoles', () => {
       requireRoles(new Headers(), stubVerify(member), { roles: ['admin'], onDenied })
     ).rejects.toThrow('not-found')
     expect(onDenied).toHaveBeenCalledWith(member)
+  })
+})
+
+describe('requireRoles MFA (CAP-6)', () => {
+  const mfaAdmin: SessionUser = {
+    ...admin,
+    assurance: { methods: ['password'], mfa: true },
+  }
+  const withheldAdmin: SessionUser = {
+    ...member,
+    assurance: { methods: 'unknown', mfa: 'unknown' },
+    mfaRequired: true,
+  }
+
+  it('throws MfaRequiredError when requireMfa is set and proof is missing or unknown', async () => {
+    await expect(
+      requireRoles(new Headers(), stubVerify(admin), { roles: ['admin'], requireMfa: true })
+    ).rejects.toBeInstanceOf(MfaRequiredError)
+    await expect(
+      requireRoles(new Headers(), stubVerify(mfaAdmin), { roles: ['admin'], requireMfa: true })
+    ).resolves.toBe(mfaAdmin)
+    await expect(
+      requireRoles(new Headers(), stubVerify(admin), { roles: ['admin'] })
+    ).resolves.toBe(admin)
+  })
+
+  it('surfaces withheld roles as a step-up error, not a flat forbidden', async () => {
+    const onMfaRequired = vi.fn((): never => {
+      throw new Error('step-up')
+    })
+    await expect(
+      requireRoles(new Headers(), stubVerify(withheldAdmin), {
+        roles: ['admin'],
+        onMfaRequired,
+      })
+    ).rejects.toThrow('step-up')
+    expect(onMfaRequired).toHaveBeenCalledWith(withheldAdmin)
   })
 })
 

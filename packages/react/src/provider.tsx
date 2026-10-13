@@ -12,9 +12,10 @@ import {
 import {
   defaultSessionEndpointPath,
   type HttpFetch,
+  type SessionGuest,
   type SessionUser,
 } from '@payload-auth-link/core'
-import { fetchSessionUser, revokeSession } from './session.js'
+import { fetchSession, revokeSession } from './session.js'
 
 /** Session state: unknown until the first load settles. */
 export type AuthLinkStatus = 'loading' | 'authenticated' | 'anonymous'
@@ -22,6 +23,12 @@ export type AuthLinkStatus = 'loading' | 'authenticated' | 'anonymous'
 /** What `useAuthLink` returns: user, status, refresh, honest sign-out. */
 export type AuthLinkContextValue = {
   readonly user: SessionUser | null
+  /**
+   * The anonymous guest principal (CAP-10), present instead of a
+   * user while the provider session is anonymous. Never carries
+   * roles or access — a stable key for anonymous app state only.
+   */
+  readonly guest: SessionGuest | null
   readonly status: AuthLinkStatus
   /** Re-read the session endpoint (call after sign-in or role changes). */
   readonly refresh: () => Promise<void>
@@ -58,7 +65,17 @@ function snapshotKey(user: SessionUser | null | undefined): string {
   if (user === null) {
     return 'null'
   }
-  return JSON.stringify([user.id, user.collection, user.email, [...user.roles].sort()])
+  // PORT-4 facts are part of the value: a re-run loader reporting a
+  // new actor/assurance/tenant for the same user must still sync.
+  return JSON.stringify([
+    user.id,
+    user.collection,
+    user.email,
+    [...user.roles].sort(),
+    user.assurance ?? null,
+    user.actor ?? null,
+    user.organizationId ?? null,
+  ])
 }
 
 function statusFor(user: SessionUser | null): AuthLinkStatus {
@@ -81,6 +98,7 @@ export function AuthLinkProvider({
   initialUser = undefined,
 }: AuthLinkProviderProps): ReactNode {
   const [user, setUser] = useState<SessionUser | null>(initialUser ?? null)
+  const [guest, setGuest] = useState<SessionGuest | null>(null)
   const [status, setStatus] = useState<AuthLinkStatus>(
     initialUser === undefined ? 'loading' : statusFor(initialUser)
   )
@@ -97,20 +115,22 @@ export function AuthLinkProvider({
   }
 
   const loadSession = useCallback(
-    () => fetchSessionUser(sessionEndpoint, fetchImpl),
+    () => fetchSession(sessionEndpoint, fetchImpl),
     [sessionEndpoint, fetchImpl]
   )
 
   const refresh = useCallback(async () => {
     const current = await loadSession()
-    setUser(current)
-    setStatus(current === null ? 'anonymous' : 'authenticated')
+    setUser(current.user)
+    setGuest(current.guest)
+    setStatus(current.user === null ? 'anonymous' : 'authenticated')
   }, [loadSession])
 
   const signOut = useCallback(async () => {
     const revoked = await revokeSession(sessionEndpoint, fetchImpl)
     if (revoked) {
       setUser(null)
+      setGuest(null)
       setStatus('anonymous')
     }
     return revoked
@@ -126,8 +146,9 @@ export function AuthLinkProvider({
     void (async () => {
       const current = await loadSession()
       if (!cancelled) {
-        setUser(current)
-        setStatus(current === null ? 'anonymous' : 'authenticated')
+        setUser(current.user)
+        setGuest(current.guest)
+        setStatus(current.user === null ? 'anonymous' : 'authenticated')
       }
     })()
     return () => {
@@ -136,8 +157,8 @@ export function AuthLinkProvider({
   }, [initialUser, loadSession])
 
   const value = useMemo<AuthLinkContextValue>(
-    () => ({ user, status, refresh, signOut }),
-    [user, status, refresh, signOut]
+    () => ({ user, guest, status, refresh, signOut }),
+    [user, guest, status, refresh, signOut]
   )
   return <AuthLinkContext.Provider value={value}>{children}</AuthLinkContext.Provider>
 }

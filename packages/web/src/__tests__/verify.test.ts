@@ -79,6 +79,34 @@ describe('createSessionVerifier', () => {
     })
   })
 
+  it('surfaces PORT-4 facts and still accepts old payloads without them', async () => {
+    const rich = {
+      ...user,
+      assurance: { methods: ['magic-link'], mfa: 'unknown' },
+      actor: { kind: 'provider-only', providerUserId: 'operator-1' },
+      organizationId: 'org-1',
+    }
+    const headersWithCookie = headers({ cookie: 'a=b' })
+    const richVerify = createSessionVerifier({ fetchImpl: stubFetch(jsonResponse({ user: rich })) })
+    await expect(richVerify(headersWithCookie)).resolves.toEqual(rich)
+    // An older server omits the optional fields; the user still verifies.
+    const oldVerify = createSessionVerifier({ fetchImpl: stubFetch(jsonResponse({ user })) })
+    await expect(oldVerify(headersWithCookie)).resolves.toEqual(user)
+  })
+
+  it('degrades malformed PORT-4 facts instead of nuking the verified user', async () => {
+    // Forward-compat wire parsing: a malformed optional actor
+    // degrades to absent and malformed assurance to 'unknown'
+    // (fail-closed for policy) — server authz never uses this
+    // parser, so no impersonation marker is laundered server-side.
+    const tampered = { ...user, actor: { providerUserId: '' }, assurance: 'strong' }
+    const verify = createSessionVerifier({ fetchImpl: stubFetch(jsonResponse({ user: tampered })) })
+    await expect(verify(headers({ cookie: 'a=b' }))).resolves.toEqual({
+      ...user,
+      assurance: { methods: 'unknown', mfa: 'unknown' },
+    })
+  })
+
   it('skips the fetch without cookies', async () => {
     const fetchImpl = stubFetch(jsonResponse({ user }))
     const verify = createSessionVerifier({ fetchImpl })
