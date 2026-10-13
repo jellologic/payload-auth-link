@@ -17,9 +17,10 @@ bun add @payload-auth-link/core @payload-auth-link/plugin \
   @payload-auth-link/provider-better-auth better-auth
 ```
 
-(`better-auth` ships as a dependency of the provider, but you import
-it yourself for the `nextCookies()` framework plugin in Edit 2, so it
-is a direct dependency too.)
+(`better-auth` is a **peer dependency** of the provider since 0.3.0 —
+validated band `>=1.7.6 <1.8.0` — and you import it yourself for the
+`nextCookies()` framework plugin in Edit 2 anyway, so install it
+directly.)
 
 ## Edit 2 — The engine (`lib/auth.ts`)
 

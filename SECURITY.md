@@ -18,6 +18,7 @@ released.
 ## Scope Notes
 
 This project handles authentication sessions, cookies, and identity
-webhooks. Out of scope: vulnerabilities in Payload CMS itself, in
+linking (there are no webhooks; identity sync is read-time). Out of
+scope: vulnerabilities in Payload CMS itself, in
 identity providers (Better Auth, Auth.js, WorkOS, Clerk), or in host
 applications consuming this plugin — report those upstream.
