@@ -26,6 +26,10 @@ export function createServices(wired: WiredOptions, payload: Payload) {
     ids: wired.ids,
     depth: wired.depth,
     userFields: wired.userFields,
+    // B11: reads drop stored roles outside the configured set, so a
+    // removed role stops granting at the next session, not after an
+    // unrelated user-doc write.
+    configuredRoles: new Set(wired.config.roles),
   })
   const orgs = wired.organizations
   const sessions = createSessionService({

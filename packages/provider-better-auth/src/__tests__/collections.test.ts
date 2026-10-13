@@ -93,6 +93,27 @@ describe('createBetterAuthCollections', () => {
     expect(byName.get('email')).toMatchObject({ type: 'email' })
   })
 
+  it('keeps ba-users.name NOT NULL while accepting BA empty-string writes (B2)', () => {
+    const collections = createBetterAuthCollections()
+    const users = collections.find((collection) => collection.slug === 'ba-users')
+    const name = (users?.fields ?? []).find((field) => 'name' in field && field.name === 'name')
+    // The physical column must stay NOT NULL (0.1.1 shape): dropping
+    // `required` forced a SQLite table rebuild that wedged upgrades.
+    expect(name).toMatchObject({ type: 'text', required: true })
+    // The custom validator is what lets BA's `name: ""` writes through.
+    const validate = name !== undefined && 'validate' in name ? name.validate : undefined
+    expect(typeof validate).toBe('function')
+    if (typeof validate === 'function') {
+      // Field validate receives (value, options); ours reads value only.
+      const check = validate as (value: unknown) => unknown
+      expect(check('')).toBe(true)
+      expect(check('Ada')).toBe(true)
+      expect(check(undefined)).toBe(true)
+      expect(check(null)).not.toBe(true)
+      expect(check(42)).not.toBe(true)
+    }
+  })
+
   it('builds custom model collections with baId and default slugs', () => {
     expect(defaultCustomSlug('organization')).toBe('ba-organization')
     const collections = createBetterAuthCollections({

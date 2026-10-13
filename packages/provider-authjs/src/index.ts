@@ -3,7 +3,9 @@
  * credentials service, `IdentityProviderPort`, session cookie names, and
  * the composition engine.
  */
-export { createAuthJsAdapter } from './adapter.js'
+export { createAuthJsAdapter, verificationTokenKey } from './adapter.js'
+export { reconcileAuthJsMongoIndexes } from './mongo-indexes.js'
+export type { MongoIndexReconcileOptions, MongoIndexReconcileReport } from './mongo-indexes.js'
 export type { AuthJsAdapterDeps } from './adapter.js'
 export { createAuthLinkCallbacks, createAuthLinkEvents, emailVerifiedClaim } from './callbacks.js'
 export type { AuthLinkCallbacks, AuthLinkEvents, AuthLinkTrustOptions } from './callbacks.js'
@@ -28,7 +30,7 @@ export type {
   RegisteredCredentialsUser,
   RegisterCredentialsUserInput,
 } from './credentials.js'
-export { createAuthJsEngine } from './engine.js'
+export { assertAuthJsCoreVersion, createAuthJsEngine, supportedAuthJsBand } from './engine.js'
 export type { AuthJsEngine, AuthJsEngineInput } from './engine.js'
 export { AdapterMappingError, AdapterOperationError, WeakPasswordError } from './errors.js'
 export { authJsCapabilities, createAuthJsProvider } from './port.js'

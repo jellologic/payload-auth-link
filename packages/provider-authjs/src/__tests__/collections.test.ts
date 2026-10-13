@@ -71,7 +71,11 @@ describe('createAuthJsCollections', () => {
     )
     const fieldNamed = (name: string) =>
       (tokens?.fields ?? []).find((field) => 'name' in field && field.name === name)
-    expect(fieldNamed('key')).toMatchObject({ unique: true, required: true })
+    expect(fieldNamed('key')).toMatchObject({ unique: true })
+    // Upgrade safety (B2/B6): `key` arrived in 0.2.0 and must never be
+    // DB-required — a NOT NULL addition breaks pre-0.2.0 databases on
+    // every adapter. This assertion is the tripwire.
+    expect(fieldNamed('key')).not.toMatchObject({ required: true })
     expect(fieldNamed('token')).not.toMatchObject({ unique: true })
   })
 

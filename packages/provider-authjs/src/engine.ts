@@ -1,11 +1,14 @@
 import {
+  assertSupportedVersion,
   createIdentityEventEmitter,
   InvalidConfigError,
   normalizeBaseUrl,
   nullLogger,
+  readInstalledVersion,
   resolveOrigin,
   resolveSlugs,
   type LoggerPort,
+  type VersionRange,
 } from '@payload-auth-link/core'
 import { Auth, type AuthConfig } from '@auth/core'
 import type { CollectionConfig, Payload } from 'payload'
@@ -283,7 +286,35 @@ export function anchorRequestOrigin(request: Request, baseURL: string | undefine
  * `docs/SPRINT.md` Accepted risks); the mitigation is this short default
  * window plus explicit `maxAge` tuning per deployment.
  */
+/**
+ * @auth/core versions this release validated (Phase-1 bisect): the
+ * 0.41 line is the tested band (floor 0.41.0), and 0.x minors add
+ * `Adapter` methods (the `keyof Adapter` pin alarms on them), so an
+ * unvalidated 0.x minor fails here, typed and before any DB write.
+ * Widened only by the compatibility matrix, never by optimism.
+ */
+export const supportedAuthJsBand: readonly VersionRange[] = [
+  { min: '0.41.0', maxExclusive: '0.42.0' },
+]
+
+/** Wiring contract, split out for tests: the @auth/core assertion. */
+export function assertAuthJsCoreVersion(installedVersion: string | null, logger: LoggerPort): void {
+  if (installedVersion === null) {
+    logger.warn(
+      'payload-auth-link: could not read the installed @auth/core version; skipping the supported-version assertion'
+    )
+    return
+  }
+  assertSupportedVersion('@auth/core', installedVersion, supportedAuthJsBand)
+}
+
 export function createAuthJsEngine(input: AuthJsEngineInput): AuthJsEngine {
+  // Fail at wiring time on an unvalidated @auth/core version, before
+  // any collection write (B3).
+  assertAuthJsCoreVersion(
+    readInstalledVersion('@auth/core', import.meta.url),
+    input.logger ?? nullLogger()
+  )
   const slugs: AuthJsCollectionSlugs = resolveSlugs(defaultAuthJsSlugs, input.slugs)
   const adapter = createAuthJsAdapter({ getPayload: input.getPayload, slugs, depth: input.depth })
   const trustedProviders = input.trustProviderEmailVerification ?? []

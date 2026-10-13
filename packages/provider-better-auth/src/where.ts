@@ -1,3 +1,4 @@
+import { assertNever } from '@payload-auth-link/core'
 import type { Where } from 'payload'
 import type { CleanedWhere } from 'better-auth/adapters'
 import { UnsupportedOperatorError } from './errors.js'
@@ -85,10 +86,16 @@ function clauseToWhere(clause: CleanedWhere): {
         throw new UnsupportedOperatorError(`${operator} insensitive`)
       }
       return { where: { [field]: { [operator]: value } } }
-    default:
-      // `contains`/`starts_with`/`ends_with` have no exact Payload
-      // equivalent; failing loud beats a silently wrong translation.
+    case 'contains':
+    case 'starts_with':
+    case 'ends_with':
+      // No exact Payload equivalent; failing loud beats a silently
+      // wrong translation.
       throw new UnsupportedOperatorError(operator)
+    default:
+      // A newly added Better Auth operator must fail typecheck here
+      // (B17), never reach a request as a generic runtime throw.
+      return assertNever(operator)
   }
 }
 

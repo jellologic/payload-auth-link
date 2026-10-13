@@ -1,10 +1,13 @@
 import {
   InvalidConfigError,
+  assertSupportedVersion,
   isRecord,
   nullLogger,
+  readInstalledVersion,
   resolveSlugs,
   type IdentityProviderPort,
   type LoggerPort,
+  type VersionRange,
 } from '@payload-auth-link/core'
 import { betterAuth, type BetterAuthOptions, type BetterAuthPlugin } from 'better-auth'
 import type { CollectionConfig, Payload } from 'payload'
@@ -245,10 +248,40 @@ function reportRiskyLinkingSettings(
  * delete, account delete → core `IdentityEvent`s on the port's
  * `onIdentityEvent`), preserving any builder-supplied hooks.
  */
+/**
+ * better-auth versions this release validated (Phase-1 bisect): the
+ * type-level floor is 1.7.6 (BA's adapter `modelKey` types), and the
+ * band admits only the validated 1.7 line — BA satellites force
+ * minors (B12), so an unvalidated minor must fail here, typed and
+ * before any DB write, never as a missing adapter method
+ * mid-request. Widened only by the compatibility matrix, never by
+ * optimism.
+ */
+export const supportedBetterAuthBand: readonly VersionRange[] = [
+  { min: '1.7.6', maxExclusive: '1.8.0' },
+]
+
+/** Wiring contract, split out for tests: the BA version assertion. */
+export function assertBetterAuthVersion(installedVersion: string | null, logger: LoggerPort): void {
+  if (installedVersion === null) {
+    logger.warn(
+      'payload-auth-link: could not read the installed better-auth version; skipping the supported-version assertion'
+    )
+    return
+  }
+  assertSupportedVersion('better-auth', installedVersion, supportedBetterAuthBand)
+}
+
 export function createBetterAuthEngine<
   TOptions extends Omit<BetterAuthOptions, 'database'>,
   TPlugins extends readonly BetterAuthPlugin[] | undefined,
 >(input: BetterAuthEngineInput<TOptions> & { options: { plugins?: TPlugins } }) {
+  // Fail at wiring time on an unvalidated better-auth version, before
+  // any collection write or schema validation (B3/B12).
+  assertBetterAuthVersion(
+    readInstalledVersion('better-auth', import.meta.url),
+    input.logger ?? nullLogger()
+  )
   const slugs: BetterAuthCollectionSlugs = resolveSlugs(defaultBetterAuthSlugs, input.slugs)
   const database = createPayloadDatabaseAdapter({
     getPayload: input.getPayload,

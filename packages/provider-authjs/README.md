@@ -7,10 +7,10 @@ Part of [payload-auth-link](https://github.com/jellologic/payload-auth-link): an
 ## Install
 
 ```bash
-npm install @payload-auth-link/provider-authjs
+npm install @payload-auth-link/provider-authjs @auth/core@0.41
 ```
 
-Peer dependencies: `payload` ^3.0.0 || ^4.0.0-beta.0.
+Peer dependencies: `@auth/core` (validated band `>=0.41.0 <0.42.0`) and `payload` `^3.83.0 || 4.0.0-beta.0`. Install `@auth/core` yourself — the raw core, not the `next-auth` wrapper. The engine asserts the installed version at wiring time (`UnsupportedVersionError` before any database write); 0.x minors add `Adapter` methods, so an unvalidated one must not float in. See the [compatibility matrix](https://github.com/jellologic/payload-auth-link/blob/main/docs/compatibility.md).
 
 ESM-only, Node 20.9 or later.
 

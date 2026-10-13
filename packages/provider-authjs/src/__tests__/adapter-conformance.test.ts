@@ -27,7 +27,7 @@ import type {
 } from '@auth/core/adapters'
 import { sqliteAdapter } from '@payloadcms/db-sqlite'
 import { buildConfig, getPayload, type Payload, type SanitizedConfig } from 'payload'
-import { beforeAll, describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, expectTypeOf, it } from 'vitest'
 import { createAuthJsAdapter } from '../adapter.js'
 import { createAuthJsCollections } from '../collections.js'
 import { AdapterOperationError } from '../errors.js'
@@ -37,7 +37,7 @@ const FUTURE = new Date('2027-01-01T00:00:00.000Z')
 const LATER = new Date('2027-06-01T00:00:00.000Z')
 
 type AdapterMethod = keyof Adapter
-const REQUIRED_METHODS: readonly AdapterMethod[] = [
+const REQUIRED_METHODS = [
   'createUser',
   'getUser',
   'getUserByEmail',
@@ -57,7 +57,41 @@ const REQUIRED_METHODS: readonly AdapterMethod[] = [
   'getAuthenticator',
   'listAuthenticatorsByUserId',
   'updateAuthenticatorCounter',
-]
+] as const satisfies readonly AdapterMethod[]
+
+describe('Adapter inventory alarm (B22)', () => {
+  it('pins keyof Adapter: a new upstream method fails typecheck here', () => {
+    // Every `Adapter` method in @auth/core is optional, so an
+    // upstream addition (the `consumeOne` class of break) typechecks
+    // silently everywhere except this pin. If this fails after an
+    // @auth/core bump: implement the new method (or consciously
+    // leave it unimplemented and document why), extend
+    // REQUIRED_METHODS + its conformance case, then update the pin.
+    expectTypeOf<keyof Adapter>().toEqualTypeOf<
+      | 'createUser'
+      | 'getUser'
+      | 'getUserByEmail'
+      | 'getUserByAccount'
+      | 'updateUser'
+      | 'deleteUser'
+      | 'linkAccount'
+      | 'unlinkAccount'
+      | 'getAccount'
+      | 'createSession'
+      | 'getSessionAndUser'
+      | 'updateSession'
+      | 'deleteSession'
+      | 'createVerificationToken'
+      | 'useVerificationToken'
+      | 'createAuthenticator'
+      | 'getAuthenticator'
+      | 'listAuthenticatorsByUserId'
+      | 'updateAuthenticatorCounter'
+    >()
+    expectTypeOf<(typeof REQUIRED_METHODS)[number]>().toEqualTypeOf<keyof Adapter>()
+    expect(REQUIRED_METHODS).toHaveLength(19)
+  })
+})
 
 let payload: Payload
 let adapter: Adapter

@@ -1,4 +1,5 @@
 import {
+  assertNever,
   assertUniqueSlugs,
   denyAllAccess,
   InvalidConfigError,
@@ -163,6 +164,9 @@ function toPayloadField(field: BetterAuthCustomField): Field {
     case 'json':
       return { ...shared, type: 'json' }
   }
+  // A new custom-field type must fail typecheck here (B17), never
+  // produce an undefined Payload field at boot.
+  return assertNever(field.type)
 }
 
 function checkCustomFields(
@@ -238,11 +242,24 @@ export function createBetterAuthCollections(
       'Better Auth user',
       [
         { name: 'email', type: 'email', required: true, unique: true, index: true },
-        // Not `required`: BA passwordless flows create users with
-        // `name: ""` (magic-link does exactly this), and Payload's
-        // required-text validation rejects empty strings — the row
-        // must accept what BA itself writes.
-        { name: 'name', type: 'text' },
+        // `required: true` keeps the physical column NOT NULL exactly
+        // as 0.1.1 shipped it (B2: making it optional forced a SQLite
+        // table rebuild that wedged upgraded databases). BA
+        // passwordless flows create users with `name: ""`, which
+        // Payload's default required-text validation rejects — so a
+        // custom `validate` (which replaces the default in Payload)
+        // accepts any string including "", while the column itself
+        // never changes. Absent on partial updates is fine; a create
+        // without a name still hits the NOT NULL constraint.
+        {
+          name: 'name',
+          type: 'text',
+          required: true,
+          validate: (value: unknown) =>
+            typeof value === 'string' || value === undefined
+              ? true
+              : 'name must be a string (empty is allowed)',
+        },
         { name: 'emailVerified', type: 'checkbox', required: true, defaultValue: false },
         { name: 'image', type: 'text' },
         ...extra('user'),

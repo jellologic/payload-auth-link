@@ -4,6 +4,7 @@ import {
   parseEmail,
   parseRole,
   systemClock,
+  type LoggerPort,
 } from '@payload-auth-link/core'
 import { describe, expect, it } from 'vitest'
 import {
@@ -58,6 +59,38 @@ const doc = () => ({
   updatedAt: '2026-01-02T00:00:00.000Z',
 })
 
+describe('degradation warnings (B20)', () => {
+  it('warns once per kind per logger, however many rows are corrupt', () => {
+    const warnings: string[] = []
+    const base = nullLogger()
+    const logger: LoggerPort = {
+      ...base,
+      warn: (message) => {
+        warnings.push(message)
+      },
+      child: () => logger,
+    }
+    const context = { ...ctx(), logger }
+    for (let index = 0; index < 5; index += 1) {
+      toUserRecord(doc(), context)
+    }
+    // Five corrupt docs, one warning per distinct degradation kind.
+    expect(warnings.length).toBeGreaterThan(0)
+    expect(new Set(warnings).size).toBe(warnings.length)
+    // A different logger (new composition root) warns again.
+    const second: string[] = []
+    const logger2: LoggerPort = {
+      ...base,
+      warn: (message) => {
+        second.push(message)
+      },
+      child: () => logger2,
+    }
+    toUserRecord(doc(), { ...ctx(), logger: logger2 })
+    expect(second).toEqual(warnings)
+  })
+})
+
 describe('toUserRecord', () => {
   it('narrows a full doc, normalizing email and dropping bad parts', () => {
     const record = toUserRecord(doc(), ctx())
@@ -104,6 +137,49 @@ describe('toUserRecord', () => {
   it('grandfathers undefined roles to the default for legacy docs', () => {
     const record = toUserRecord({ ...doc(), roles: undefined }, ctx())
     expect(record?.roles).toEqual(['user'])
+  })
+})
+
+describe('configured-role membership (B11)', () => {
+  function configuredCtx(configured: readonly string[]): MappingContext {
+    return { ...ctx(), configuredRoles: new Set(configured.map(role)) }
+  }
+
+  it('drops stored roles outside the configured set at read time', () => {
+    // Doc stores ['admin', 'editor']; config removed 'editor'.
+    const record = toUserRecord({ ...doc(), roles: ['admin', 'editor'] }, configuredCtx(['admin']))
+    expect(record?.roles).toEqual(['admin'])
+  })
+
+  it('warns once per removed role, naming it', () => {
+    const warnings: string[] = []
+    const base = nullLogger()
+    const logger: LoggerPort = {
+      ...base,
+      warn: (message) => {
+        warnings.push(message)
+      },
+      child: () => logger,
+    }
+    const context = { ...configuredCtx(['admin']), logger }
+    for (let index = 0; index < 3; index += 1) {
+      toUserRecord({ ...doc(), roles: ['admin', 'editor', 'owner'] }, context)
+    }
+    const editorWarnings = warnings.filter((message) => message.includes("'editor'"))
+    const ownerWarnings = warnings.filter((message) => message.includes("'owner'"))
+    expect(editorWarnings).toHaveLength(1)
+    expect(ownerWarnings).toHaveLength(1)
+  })
+
+  it('denies the record when every stored role is unconfigured', () => {
+    // Nothing stored grants anything configured: no default upgrade.
+    const record = toUserRecord({ ...doc(), roles: ['editor'] }, configuredCtx(['admin']))
+    expect(record).toBeNull()
+  })
+
+  it('leaves format-only narrowing for callers without the configured set', () => {
+    const record = toUserRecord({ ...doc(), roles: ['admin', 'editor'] }, ctx())
+    expect(record?.roles).toEqual(['admin', 'editor'])
   })
 })
 

@@ -77,7 +77,16 @@ export function createAuthJsCollections(options?: AuthJsCollectionsOptions): Col
     { name: 'expires', type: 'date', required: true },
   ]
   const verificationTokenFields: Field[] = [
-    { name: 'key', type: 'text', required: true, unique: true },
+    // Not `required` (upgrade safety, B2/B6): this column was added in
+    // 0.2.0, and a NOT NULL addition breaks every pre-0.2.0 database —
+    // SQLite push recreates the table (losing rows), Postgres
+    // migrations fail on existing NULLs. Unique indexes tolerate
+    // NULLs on SQLite/Postgres, the adapter always writes `key` on
+    // create, and the read path (`useVerificationToken`) finds rows
+    // by `(identifier, token)`, so pre-0.2.0 rows with a NULL key
+    // keep working until they are consumed. Never re-add `required`
+    // without a backfill migration.
+    { name: 'key', type: 'text', unique: true },
     { name: 'identifier', type: 'text', required: true },
     { name: 'token', type: 'text', required: true },
     { name: 'expires', type: 'date', required: true },

@@ -26,7 +26,11 @@ export {
   getBetterAuthSessionCookieNames,
 } from './cookies.js'
 export type { BetterAuthCookieOptions } from './cookies.js'
-export { createBetterAuthEngine } from './engine.js'
+export {
+  assertBetterAuthVersion,
+  createBetterAuthEngine,
+  supportedBetterAuthBand,
+} from './engine.js'
 export { createIdentityEventBus } from './events.js'
 export type { IdentityEventBus } from './events.js'
 export type { BetterAuthEngine, BetterAuthEngineInput } from './engine.js'

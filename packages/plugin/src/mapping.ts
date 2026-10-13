@@ -39,6 +39,15 @@ export type MappingContext = {
         readonly suspendReasonField: string
       }
     | undefined
+  /**
+   * Roles the site currently configures (B11 role-config safety).
+   * When present, stored roles outside this set are dropped at read
+   * time — a removed role must stop granting access at the very next
+   * session, not after some future user-doc write happens to rewrite
+   * the column. The plugin always passes it; direct mapping callers
+   * may omit it to keep the format-only narrowing.
+   */
+  readonly configuredRoles?: ReadonlySet<Role> | undefined
 }
 
 const defaultUserFields = {
@@ -47,28 +56,48 @@ const defaultUserFields = {
   suspendReasonField: 'suspendReason',
 } as const
 
+// Stored-row degradation warnings aggregate once per message per
+// logger (B20): a corrupt column on ten thousand rows is one alert
+// an operator can act on, not ten thousand lines that train them to
+// ignore the log. Keyed by logger instance so each composition root
+// (and each test) gets its own first warning.
+const warnedByLogger = new WeakMap<LoggerPort, Set<string>>()
+
+function warnOnce(ctx: MappingContext, message: string): void {
+  let warned = warnedByLogger.get(ctx.logger)
+  if (warned === undefined) {
+    warned = new Set<string>()
+    warnedByLogger.set(ctx.logger, warned)
+  }
+  if (warned.has(message)) {
+    return
+  }
+  warned.add(message)
+  ctx.logger.warn(message)
+}
+
 function toIdentityRow(row: unknown, email: string, ctx: MappingContext): LinkedIdentity | null {
   if (!isRecord(row)) {
-    ctx.logger.warn('dropping malformed identity row: not an object')
+    warnOnce(ctx, 'dropping malformed identity row: not an object')
     return null
   }
   const providerId = providerIdSchema.safeParse(row.providerId)
   if (!providerId.success) {
-    ctx.logger.warn('dropping identity row: invalid providerId')
+    warnOnce(ctx, 'dropping identity row: invalid providerId')
     return null
   }
   if (typeof row.providerUserId !== 'string' || row.providerUserId === '') {
-    ctx.logger.warn('dropping identity row: invalid providerUserId')
+    warnOnce(ctx, 'dropping identity row: invalid providerUserId')
     return null
   }
   const parsedEmail = parseEmail(row.email ?? email)
   if (parsedEmail.isErr()) {
-    ctx.logger.warn('dropping identity row: invalid email')
+    warnOnce(ctx, 'dropping identity row: invalid email')
     return null
   }
   const linkedAt = toDate(row.linkedAt)
   if (!linkedAt) {
-    ctx.logger.warn('dropping identity row: invalid linkedAt')
+    warnOnce(ctx, 'dropping identity row: invalid linkedAt')
     return null
   }
   return {
@@ -85,26 +114,35 @@ function toIdentityRow(row: unknown, email: string, ctx: MappingContext): Linked
  * least one valid role, otherwise the record is denied (`null`) —
  * upgrading an emptied or corrupt roles array to the default would
  * mint access the stored data does not grant.
+ *
+ * With `configuredRoles` (B11), stored roles outside the configured
+ * set are dropped here, so removing a role from `authLink({ roles })`
+ * stops granting it on the next session — with one warning per
+ * removed role, so the operator learns which stored values drifted.
  */
 function toRoles(value: unknown, ctx: MappingContext): readonly Role[] | null {
   if (value === undefined) {
     return [ctx.defaultRole]
   }
   if (!Array.isArray(value)) {
-    ctx.logger.warn('cannot map user doc: roles field is not an array')
+    warnOnce(ctx, 'cannot map user doc: roles field is not an array')
     return null
   }
   const roles: Role[] = []
   for (const entry of value) {
     const parsed = parseRole(entry)
     if (parsed.isErr()) {
-      ctx.logger.warn('dropping invalid role entry')
+      warnOnce(ctx, 'dropping invalid role entry')
+      continue
+    }
+    if (ctx.configuredRoles !== undefined && !ctx.configuredRoles.has(parsed.value)) {
+      warnOnce(ctx, `dropping role '${parsed.value}': not in the configured roles set`)
       continue
     }
     roles.push(parsed.value)
   }
   if (roles.length === 0) {
-    ctx.logger.warn('cannot map user doc: no valid roles')
+    warnOnce(ctx, 'cannot map user doc: no valid roles')
     return null
   }
   return roles
@@ -118,23 +156,23 @@ function toRoles(value: unknown, ctx: MappingContext): readonly Role[] | null {
  */
 export function toUserRecord(doc: unknown, ctx: MappingContext): UserRecord | null {
   if (!isRecord(doc)) {
-    ctx.logger.warn('cannot map user doc: not an object')
+    warnOnce(ctx, 'cannot map user doc: not an object')
     return null
   }
   const rawId = doc.id
   if ((typeof rawId !== 'string' && typeof rawId !== 'number') || rawId === '') {
-    ctx.logger.warn('cannot map user doc: invalid id')
+    warnOnce(ctx, 'cannot map user doc: invalid id')
     return null
   }
   const email = parseEmail(doc[ctx.map.emailField])
   if (email.isErr()) {
-    ctx.logger.warn('cannot map user doc: invalid email')
+    warnOnce(ctx, 'cannot map user doc: invalid email')
     return null
   }
   const createdAt = toDate(doc.createdAt)
   const updatedAt = toDate(doc.updatedAt)
   if (!createdAt || !updatedAt) {
-    ctx.logger.warn('cannot map user doc: invalid timestamps')
+    warnOnce(ctx, 'cannot map user doc: invalid timestamps')
     return null
   }
   const roles = toRoles(doc[ctx.map.rolesField], ctx)
@@ -145,7 +183,7 @@ export function toUserRecord(doc: unknown, ctx: MappingContext): UserRecord | nu
   const identities: LinkedIdentity[] = []
   if (rawIdentities !== undefined) {
     if (!Array.isArray(rawIdentities)) {
-      ctx.logger.warn('identities field is not an array; treating as empty')
+      warnOnce(ctx, 'identities field is not an array; treating as empty')
     } else {
       for (const row of rawIdentities) {
         const identity = toIdentityRow(row, email.value, ctx)
@@ -166,7 +204,7 @@ export function toUserRecord(doc: unknown, ctx: MappingContext): UserRecord | nu
     if (parsedPhone.isOk()) {
       phone = parsedPhone.value
     } else {
-      ctx.logger.warn('dropping invalid stored phone value')
+      warnOnce(ctx, 'dropping invalid stored phone value')
     }
   }
   // Suspension (CAP-7): a present-but-unparseable date fails CLOSED —
@@ -177,7 +215,7 @@ export function toUserRecord(doc: unknown, ctx: MappingContext): UserRecord | nu
   if (rawSuspended !== undefined && rawSuspended !== null) {
     suspendedUntil = toDate(rawSuspended)
     if (!suspendedUntil) {
-      ctx.logger.warn('cannot map user doc: invalid suspendedUntil')
+      warnOnce(ctx, 'cannot map user doc: invalid suspendedUntil')
       return null
     }
   }
@@ -202,7 +240,7 @@ export function toUserRecord(doc: unknown, ctx: MappingContext): UserRecord | nu
  */
 export function firstResultRecord(result: unknown, ctx: MappingContext): UserRecord | null {
   if (!isRecord(result) || !Array.isArray(result.docs)) {
-    ctx.logger.warn('cannot map find result: missing docs array')
+    warnOnce(ctx, 'cannot map find result: missing docs array')
     return null
   }
   const docs: unknown[] = result.docs

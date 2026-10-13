@@ -36,6 +36,8 @@ export type PayloadUserRepositoryDeps = {
   readonly depth: number
   /** Governance/identity field names (CAP-7/CAP-9); defaults apply when omitted. */
   readonly userFields?: MappingContext['userFields']
+  /** Configured role set (B11); reads drop stored roles outside it. */
+  readonly configuredRoles?: ReadonlySet<Role> | undefined
 }
 
 function isEmailUniqueViolation(error: unknown, emailField: string): boolean {
@@ -62,6 +64,7 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
     logger: deps.logger,
     clock: deps.clock,
     ...(deps.userFields === undefined ? {} : { userFields: deps.userFields }),
+    ...(deps.configuredRoles === undefined ? {} : { configuredRoles: deps.configuredRoles }),
   }
   const phoneField = deps.userFields?.phoneField ?? 'phone'
   const collection = deps.map.usersCollection

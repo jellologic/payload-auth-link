@@ -1,4 +1,9 @@
-import { InvalidConfigError, type LoggerPort } from '@payload-auth-link/core'
+import {
+  InvalidConfigError,
+  readInstalledVersion,
+  UnsupportedVersionError,
+  type LoggerPort,
+} from '@payload-auth-link/core'
 import type { AuthConfig } from '@auth/core'
 import Credentials from '@auth/core/providers/credentials'
 import { readFileSync } from 'node:fs'
@@ -7,9 +12,45 @@ import { fileURLToPath } from 'node:url'
 import type { Payload } from 'payload'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { defaultAuthJsSlugs } from '../collections.js'
-import { anchorRequestOrigin, createAuthJsEngine, type AuthJsEngineInput } from '../engine.js'
+import {
+  anchorRequestOrigin,
+  assertAuthJsCoreVersion,
+  createAuthJsEngine,
+  type AuthJsEngineInput,
+} from '../engine.js'
 
 const SECRET = 'authjs-engine-test-secret!!'
+
+describe('@auth/core version assertion (Phase 1)', () => {
+  it('throws a typed, actionable error outside the validated band', () => {
+    // 0.40.x predates the tested 0.41 line; 0.42.0 is an unvalidated
+    // minor that may add Adapter methods (the keyof pin alarms).
+    for (const version of ['0.40.0', '0.42.0', '1.0.0']) {
+      expect(() => assertAuthJsCoreVersion(version, spyLogger().logger)).toThrow(
+        UnsupportedVersionError
+      )
+    }
+  })
+
+  it('accepts the validated 0.41 line', () => {
+    for (const version of ['0.41.0', '0.41.3']) {
+      expect(() => assertAuthJsCoreVersion(version, spyLogger().logger)).not.toThrow()
+    }
+  })
+
+  it('warns instead of guessing when the manifest is unreadable', () => {
+    const { logger, warn } = spyLogger()
+    expect(() => assertAuthJsCoreVersion(null, logger)).not.toThrow()
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0]?.[0])).toContain('skipping the supported-version assertion')
+  })
+
+  it('passes for the actually-installed @auth/core (self-test of the band)', () => {
+    const installed = readInstalledVersion('@auth/core', import.meta.url)
+    expect(installed).not.toBeNull()
+    expect(() => assertAuthJsCoreVersion(installed, spyLogger().logger)).not.toThrow()
+  })
+})
 
 function credentialsProvider(): AuthConfig['providers'][number] {
   return Credentials({

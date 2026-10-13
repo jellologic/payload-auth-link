@@ -42,16 +42,17 @@
   },
   "dependencies": {
     "@payload-auth-link/core": "workspace:*",
-    "better-auth": "^1.0.0",
     "neverthrow": "^8.2.0"
   },
   "peerDependencies": {
-    "payload": "^3.0.0 || ^4.0.0-beta.0"
+    "better-auth": ">=1.7.6 <1.8.0",
+    "payload": "^3.83.0 || 4.0.0-beta.0"
   },
   "devDependencies": {
     "@better-auth/passkey": "^1.7.7",
     "@payload-auth-link/plugin": "workspace:*",
     "@payloadcms/db-sqlite": "3.90.2",
+    "better-auth": "1.7.7",
     "payload": "3.90.2"
   },
   "publishConfig": {

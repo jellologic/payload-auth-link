@@ -1,11 +1,17 @@
-import { InvalidConfigError, wellKnownProviderIds, type LoggerPort } from '@payload-auth-link/core'
+import {
+  InvalidConfigError,
+  readInstalledVersion,
+  UnsupportedVersionError,
+  wellKnownProviderIds,
+  type LoggerPort,
+} from '@payload-auth-link/core'
 import { admin } from 'better-auth/plugins'
 import { magicLink } from 'better-auth/plugins/magic-link'
 import { organization } from 'better-auth/plugins/organization'
 import type { Payload } from 'payload'
 import { describe, expect, it, vi } from 'vitest'
 import { defaultBetterAuthSlugs } from '../collections.js'
-import { createBetterAuthEngine } from '../engine.js'
+import { assertBetterAuthVersion, createBetterAuthEngine } from '../engine.js'
 import { UnsupportedSchemaError } from '../errors.js'
 
 const getPayload = (): Promise<Payload> => Promise.reject(new Error('no Payload in unit test'))
@@ -25,6 +31,37 @@ function spyLogger(): { logger: LoggerPort; warn: ReturnType<typeof vi.fn> } {
 function warnedSettings(warn: ReturnType<typeof vi.fn>): string {
   return warn.mock.calls.map((call) => String(call[0])).join('\n')
 }
+
+describe('better-auth version assertion (Phase 1)', () => {
+  it('throws a typed, actionable error outside the validated band', () => {
+    // 1.6.33 is the known-bad build (modelKey); 1.8.0 is an
+    // unvalidated minor — satellites will force it someday (B12).
+    for (const version of ['1.6.33', '1.8.0', '2.0.0']) {
+      expect(() => assertBetterAuthVersion(version, spyLogger().logger)).toThrow(
+        UnsupportedVersionError
+      )
+    }
+  })
+
+  it('accepts the validated 1.7 line', () => {
+    for (const version of ['1.7.6', '1.7.7']) {
+      expect(() => assertBetterAuthVersion(version, spyLogger().logger)).not.toThrow()
+    }
+  })
+
+  it('warns instead of guessing when the manifest is unreadable', () => {
+    const { logger, warn } = spyLogger()
+    expect(() => assertBetterAuthVersion(null, logger)).not.toThrow()
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0]?.[0])).toContain('skipping the supported-version assertion')
+  })
+
+  it('passes for the actually-installed better-auth (self-test of the band)', () => {
+    const installed = readInstalledVersion('better-auth', import.meta.url)
+    expect(installed).not.toBeNull()
+    expect(() => assertBetterAuthVersion(installed, spyLogger().logger)).not.toThrow()
+  })
+})
 
 describe('createBetterAuthEngine', () => {
   it('requires email verification unless explicitly opted out', () => {

@@ -7,10 +7,12 @@ Part of [payload-auth-link](https://github.com/jellologic/payload-auth-link): an
 ## Install
 
 ```bash
-npm install @payload-auth-link/provider-better-auth
+npm install @payload-auth-link/provider-better-auth better-auth@1.7
 ```
 
-Peer dependencies: `payload` ^3.0.0 || ^4.0.0-beta.0.
+Peer dependencies: `better-auth` (validated band `>=1.7.6 <1.8.0`) and `payload` `^3.83.0 || 4.0.0-beta.0`. Install `better-auth` yourself — you configure its server, so you already import it.
+
+**Better Auth lockstep:** `better-auth` and every `@better-auth/*` satellite you enable (e.g. `@better-auth/passkey`) move together, and only within the validated band — satellites peer-lock to exact BA minors and will otherwise force an unvalidated core under you. The engine asserts the installed version at wiring time (`UnsupportedVersionError` before any database write); see the [compatibility matrix](https://github.com/jellologic/payload-auth-link/blob/main/docs/compatibility.md).
 
 ESM-only, Node 20.9 or later.
 

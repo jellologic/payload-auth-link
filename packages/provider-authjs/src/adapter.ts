@@ -129,7 +129,7 @@ function toSession(doc: Record<string, unknown>): AdapterSession {
  * unlike a delimiter join. Lookups still query `identifier` + `token`
  * directly, so rows written before this field existed remain consumable.
  */
-function verificationTokenKey(identifier: string, token: string): string {
+export function verificationTokenKey(identifier: string, token: string): string {
   return JSON.stringify([identifier, token])
 }
 
