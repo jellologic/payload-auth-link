@@ -1,8 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 import { dropDatabase, fixtureClient, loadFixtureDump, targetFromEnv } from './harness.js'
-import { spawn } from 'node:child_process'
 import { introspectDatabase } from '../../../packages/migrate/src/doctor/database.js'
-import type { DoctorReport } from '../../../packages/migrate/src/doctor/types.js'
+import { runDoctor } from '../../../packages/migrate/src/doctor/run-doctor.js'
 
 /**
  * Doctor database introspection against the real fixture dump
@@ -49,58 +48,27 @@ describe.skipIf(!canReachPostgres)('doctor: database introspection', () => {
     expect(finding.orphans).toEqual([])
   })
 
-  test('the doctor flags unverified users as the JIT-link risk', async () => {
-    // Through the CLI, like an app runs it: the config import must
-    // resolve the fixture app's own dependency tree.
-    const { password, port, user } = targetFromEnv(database)
-    const databaseUrl = `postgres://${user}:${password}@localhost:${port}/${database}`
-    const cliPath = new URL('../../../packages/migrate/src/cli.ts', import.meta.url).pathname
-    const configPath = new URL('../payload.config.ts', import.meta.url).pathname
-    let stderr = ''
-    const report = await new Promise<DoctorReport>((resolvePromise, reject) => {
-      const timer = setTimeout(() => reject(new Error('doctor CLI timed out')), 280_000)
-      const done = (resolveWith: DoctorReport): void => {
-        clearTimeout(timer)
-        resolvePromise(resolveWith)
-      }
-      const child = spawn('bun', [cliPath, 'doctor', '--config', configPath, '--json'], {
-        cwd: process.cwd(),
-        env: {
-          ...process.env,
-          DATABASE_URL: databaseUrl,
-          // The child resolves the kit's workspace imports from the
-          // package's own node_modules; hand it the paths explicitly so
-          // a fresh CI checkout resolves them the way the runner does.
-          NODE_PATH: [
-            new URL('../../../packages/migrate/node_modules', import.meta.url).pathname,
-            new URL('../../../node_modules', import.meta.url).pathname,
-          ].join(':'),
-        },
+  test(
+    'the doctor flags unverified users as the JIT-link risk',
+    // A cold CI cache pays the whole fixture dependency transform once.
+    { timeout: 300_000 },
+    async () => {
+      // In-process on purpose: the config import must resolve the
+      // fixture app's own dependency tree (vite transforms it), and a
+      // spawned `bun cli.ts` cannot resolve the kit's workspace imports
+      // from a fresh CI checkout (bun's isolated-install symlinks are
+      // invisible to its own ESM resolver there).
+      const { password, port, user } = targetFromEnv(database)
+      const databaseUrl = `postgres://${user}:${password}@localhost:${port}/${database}`
+      const report = await runDoctor({
+        configPath: new URL('../payload.config.ts', import.meta.url).pathname,
+        srcDir: new URL('../src', import.meta.url).pathname,
+        databaseUrl,
       })
-      let stdout = ''
-      child.stdout.on('data', (chunk: Buffer) => {
-        stdout += String(chunk)
-      })
-      child.on('error', (error) => {
-        clearTimeout(timer)
-        reject(error)
-      })
-      child.on('close', () => {
-        const start = stdout.indexOf('{')
-        if (start < 0) {
-          clearTimeout(timer)
-          reject(new Error(`doctor CLI printed no JSON: ${stderr.slice(0, 400)}`))
-          return
-        }
-        done(JSON.parse(stdout.slice(start)) as DoctorReport)
-      })
-      child.stderr.on('data', (chunk: Buffer) => {
-        stderr += String(chunk)
-      })
-    })
-    expect(report.database?.unverifiedUsers).toBe(2)
-    expect(report.warnings.map((issue) => issue.code)).toContain('unverified-users')
-    // Orphans would be blockers; the fixture is clean.
-    expect(report.blockers.map((issue) => issue.code)).not.toContain('orphan-rows')
-  })
+      expect(report.database?.unverifiedUsers).toBe(2)
+      expect(report.warnings.map((issue) => issue.code)).toContain('unverified-users')
+      // Orphans would be blockers; the fixture is clean.
+      expect(report.blockers.map((issue) => issue.code)).not.toContain('orphan-rows')
+    }
+  )
 })
