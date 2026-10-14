@@ -124,6 +124,24 @@ async function findProviderSession(
 }
 
 /**
+ * Per-`Headers`-identity verification cache. Payload runs the auth
+ * strategy for every /api request AND the endpoint handler verifies
+ * again — one refused request used to walk the providers (and warn)
+ * three times (issue #42). The same request flows the same
+ * `req.headers` object to both callers, so memoizing on that identity
+ * resolves once per request; a new request brings a new headers
+ * object and a fresh verification.
+ */
+type SessionVerifyError =
+  | SessionInvalidError
+  | SessionExpiredError
+  | ChannelNotAdmittedError
+  | UserSuspendedError
+  | RepositoryError
+
+const verificationCache = new WeakMap<object, ResultAsync<Session, SessionVerifyError>>()
+
+/**
  * `SessionPort` bridging provider sessions to Payload users. Provider state
  * is never touched (no refresh, no writes); Payload users are provisioned
  * just-in-time and idempotently at verification, so no signup ordering can
@@ -132,17 +150,19 @@ async function findProviderSession(
 export function createSessionService(deps: SessionServiceDeps): SessionPort {
   const admitChannels: readonly SessionChannel[] = deps.admitChannels ?? ['cookie']
   return {
-    verify(
-      headers: Headers
-    ): ResultAsync<
-      Session,
-      | SessionInvalidError
-      | SessionExpiredError
-      | ChannelNotAdmittedError
-      | UserSuspendedError
-      | RepositoryError
-    > {
-      return ResultAsync.fromPromise<FoundProviderSession | null, SessionInvalidError>(
+    verify(headers: Headers): ResultAsync<Session, SessionVerifyError> {
+      // One resolution per request (issue #42): the auth strategy and
+      // the endpoint handler see the same `req.headers` reference for
+      // a single request, so the memoized result collapses their
+      // repeated verifications — one provider walk, one set of logs.
+      const cached = verificationCache.get(headers)
+      if (cached !== undefined) {
+        return cached
+      }
+      const result: ResultAsync<Session, SessionVerifyError> = ResultAsync.fromPromise<
+        FoundProviderSession | null,
+        SessionInvalidError
+      >(
         findProviderSession(deps, headers),
         (cause) => new SessionInvalidError(`verification failed: ${String(cause)}`)
       ).andThen((found) => {
@@ -379,6 +399,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionPort {
             }
           )
       })
+      verificationCache.set(headers, result)
+      return result
     },
 
     guest(headers: Headers): ResultAsync<GuestPrincipal | null, RepositoryError> {
