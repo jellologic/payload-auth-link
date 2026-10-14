@@ -123,6 +123,18 @@ beforeAll(async () => {
       ],
       suspendedUntil: '2031-01-01T00:00:00.000Z',
       suspendReason: 'internal note: fraud investigation',
+      linkable: true,
+    },
+  })
+  // Simulates a document created outside the plugin (pre-upgrade row,
+  // or an attacker before the fix): no linkable marker.
+  await payload.create({
+    collection: 'users',
+    data: {
+      email: 'unproven@test.dev',
+      password: 'AttackerKnows-1',
+      roles: ['user'],
+      linkable: false,
     },
   })
 }, 60_000)
@@ -233,6 +245,61 @@ describe('injected field access defaults', () => {
       data: { roles: ['user'] },
       overrideAccess: true,
     })
+  })
+
+  it('a non-manager cannot create users over REST (GHSA-98hq-hh6v-2p2r)', async () => {
+    const session = await loginAs('plain@test.dev', 'correct-horse-battery')
+    const created = await rest('POST', '/users', {
+      jar: session.jar,
+      body: { email: 'victim@test.dev', password: 'AttackerKnows-1' },
+    })
+    expect(created.status).toBe(403)
+  })
+
+  it('a non-manager sees only their own document in the list', async () => {
+    const session = await loginAs('plain@test.dev', 'correct-horse-battery')
+    const list = await rest('GET', '/users?depth=0&limit=10', { jar: session.jar })
+    expect(list.status).toBe(200)
+    const docs = (list.body as { docs: Array<Record<string, unknown>> }).docs
+    expect(docs.length).toBe(1)
+    expect(docs[0]?.email).toBe('plain@test.dev')
+    void docs
+  })
+
+  it('an unproven pre-existing document is never JIT-linked', async () => {
+    await loginAs('unproven@test.dev', 'AttackerKnows-1')
+    const linked = stub.issue({
+      sessionId: 'sess-unproven-link',
+      providerUserId: 'unproven-identity',
+      email: 'unproven@test.dev',
+      expiresAt: new Date(Date.now() + 3600_000),
+    })
+    const response = await rest('GET', '/auth-link/session', { jar: linked })
+    // The verified provider identity carries the same email as the
+    // unproven document, yet the link is refused: no session.
+    expect(response.status).toBe(401)
+  })
+
+  it('a proven (manager-created) document IS linked — migration path intact', async () => {
+    const admin = await loginAs('admin@test.dev', 'correct-horse-battery')
+    const created = await rest('POST', '/users', {
+      jar: admin.jar,
+      body: { email: 'proven@test.dev', password: 'ImportedKnows-1' },
+    })
+    expect(created.status).toBe(201)
+    // The marker hook proved the manager-created document.
+    const linked = stub.issue({
+      sessionId: 'sess-proven-link',
+      providerUserId: 'proven-identity',
+      email: 'proven@test.dev',
+      expiresAt: new Date(Date.now() + 3600_000),
+    })
+    const response = await rest('GET', '/auth-link/session', { jar: linked })
+    expect(response.status).toBe(200)
+    const body = response.body as { user: { email: string; id: string } }
+    expect(body.user.email).toBe('proven@test.dev')
+    const createdDoc = (created.body as { doc: { id: string } }).doc
+    expect(body.user.id).toBe(String(createdDoc.id))
   })
 
   it('config fails fast when no admin role exists and none is named', async () => {

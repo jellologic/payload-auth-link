@@ -176,6 +176,13 @@ export declare function withImpersonationAuditGlobals(globals: readonly GlobalCo
 // ===== collections.d.ts =====
 import type { AuthStrategy, CollectionConfig, Field } from 'payload';
 import type { WiredOptions } from './options.js';
+/**
+ * `req.context` key the plugin sets on engine-driven Local-API creates
+ * (JIT provisioning, credentials registration): proof the document was
+ * created by payload-auth-link itself, from a verified provider
+ * identity.
+ */
+export declare const linkableCreateMarker = "payload-auth-link:create";
 /** Field name when the field variant has one (`collapsible` has none). */
 export declare function fieldName(field: Field): string | undefined;
 export declare function applyUsersCollection(collections: readonly CollectionConfig[] | undefined, wired: WiredOptions, strategy: AuthStrategy): CollectionConfig[];

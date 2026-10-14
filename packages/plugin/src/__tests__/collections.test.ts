@@ -30,6 +30,7 @@ describe('applyUsersCollection', () => {
       'phone',
       'suspendedUntil',
       'suspendReason',
+      'linkable',
     ])
     expect(users?.auth).toMatchObject({ strategies: [{ name: strategyName }] })
     expect(users?.hooks?.beforeValidate).toHaveLength(1)
@@ -53,6 +54,7 @@ describe('applyUsersCollection', () => {
       'phone',
       'suspendedUntil',
       'suspendReason',
+      'linkable',
     ])
     expect(users?.hooks?.beforeValidate).toHaveLength(2)
     expect(users?.hooks?.beforeValidate?.[0]).toBe(hook)
@@ -165,6 +167,82 @@ describe('applyUsersCollection', () => {
       >
       expect(role.required).toBe(true)
       expect(typeof (role.access as { create?: unknown }).create).toBe('function')
+    })
+  })
+
+  describe('JIT-linking proof marker (GHSA-98hq-hh6v-2p2r)', () => {
+    function usersOf(result: ReturnType<typeof applyUsersCollection>) {
+      return result[0] as CollectionConfig
+    }
+    function markerHookOf(users: CollectionConfig) {
+      const hook = users.hooks?.beforeChange?.[0]
+      expect(hook).toBeTypeOf('function')
+      return hook as (args: {
+        operation: string
+        data: Record<string, unknown>
+        req: { user?: unknown; context?: Record<string, unknown> }
+      }) => void
+    }
+
+    it('injects the linkable field (manager-write, manager-read)', () => {
+      const { options, strategy } = wired()
+      const users = usersOf(applyUsersCollection([], options, strategy))
+      const field = users.fields.find((f) => fieldName(f) === 'linkable') as Record<string, unknown>
+      expect(field?.defaultValue).toBe(false)
+      const access = field.access as { update?: unknown; read?: unknown }
+      expect(typeof access.update).toBe('function')
+      expect(typeof access.read).toBe('function')
+    })
+
+    it('marks manager-created and engine-marked creates proven; plain creates unproven', () => {
+      const { options, strategy } = wired()
+      const hook = markerHookOf(usersOf(applyUsersCollection([], options, strategy)))
+      const manager = { user: { id: '1', email: 'a@b.co', roles: ['admin'] } }
+      const plain = { user: { id: '2', email: 'p@b.co', roles: ['user'] } }
+      const data: Record<string, unknown> = { email: 'x@y.z' }
+
+      hook({ operation: 'create', data, req: { ...manager, context: {} } })
+      expect(data.linkable).toBe(true)
+
+      const data2: Record<string, unknown> = { email: 'x@y.z' }
+      hook({
+        operation: 'create',
+        data: data2,
+        req: { user: undefined, context: { 'payload-auth-link:create': true } },
+      })
+      expect(data2.linkable).toBe(true)
+
+      const data3: Record<string, unknown> = { email: 'x@y.z' }
+      hook({ operation: 'create', data: data3, req: plain })
+      expect(data3.linkable).toBe(false)
+
+      const data4: Record<string, unknown> = { email: 'x@y.z', linkable: true }
+      hook({ operation: 'create', data: data4, req: plain })
+      expect(data4.linkable).toBe(true)
+    })
+
+    it('fills collection-level create/read defaults; host-declared wins', () => {
+      const { options, strategy } = wired()
+      const existing: CollectionConfig = {
+        slug: 'users',
+        fields: [],
+        access: { create: () => true, read: () => true },
+      }
+      const users = usersOf(applyUsersCollection([existing], options, strategy))
+      const access = users.access as Record<string, unknown>
+      // Host-declared functions pass through untouched.
+      expect(access.create).toBe(existing.access?.create)
+      expect(access.read).toBe(existing.access?.read)
+      // Undeclared keys are gap-filled with the fail-closed defaults.
+      const empty: CollectionConfig = { slug: 'users', fields: [] }
+      const filled = usersOf(applyUsersCollection([empty], options, strategy))
+      const gapAccess = filled.access as {
+        create?: (args: { req: { user?: unknown } }) => boolean
+        read?: unknown
+      }
+      expect(gapAccess.create?.({ req: { user: { roles: ['admin'] } } })).toBe(true)
+      expect(gapAccess.create?.({ req: { user: { roles: ['user'] } } })).toBe(false)
+      expect(gapAccess.read).toBeTypeOf('function')
     })
   })
 

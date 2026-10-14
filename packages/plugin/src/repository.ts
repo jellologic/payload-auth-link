@@ -1,5 +1,6 @@
 import { err, ok, ResultAsync } from 'neverthrow'
 import {
+  isRecord,
   RepositoryError,
   UserExistsError,
   type ClockPort,
@@ -16,6 +17,7 @@ import {
   type UserRepository,
 } from '@payload-auth-link/core'
 import { ValidationError, type Payload, type Where } from 'payload'
+import { linkableCreateMarker } from './collections.js'
 import {
   firstResultRecord,
   singleResultRecord,
@@ -94,7 +96,41 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
     },
 
     findByEmail(email: Email): ResultAsync<UserRecord | null, RepositoryError> {
-      return findOne('findByEmail', { [deps.map.emailField]: { equals: email } })
+      // JIT-linking proof gate (GHSA-98hq-hh6v-2p2r): email-based
+      // resolution may only return documents PROVEN to own that email
+      // — the plugin's `linkable` marker (set on plugin-managed and
+      // role-manager creates; the migration runbook sets it for
+      // imports) or Payload's own verified flag. An unproven document
+      // (say, one a stranger pre-created with a victim's email and
+      // their own password) is invisible here: the link is refused
+      // with a logged reason instead of attaching a verified identity
+      // to it.
+      return ResultAsync.fromPromise<unknown, RepositoryError>(
+        deps.payload.find({
+          collection,
+          where: { [deps.map.emailField]: { equals: email } },
+          limit: 1,
+          depth: deps.depth,
+          pagination: false,
+          overrideAccess: true,
+        }),
+        (cause) => new RepositoryError('findByEmail', { cause })
+      ).map((found) => {
+        const doc: unknown = (found as { docs?: unknown[] }).docs?.[0]
+        if (!isRecord(doc)) {
+          return null
+        }
+        if (doc.linkable !== true && doc._verified !== true) {
+          const docId =
+            typeof doc.id === 'string' || typeof doc.id === 'number' ? String(doc.id) : ''
+          deps.logger.warn(
+            'email link refused: pre-existing document is not marked linkable (was it created outside payload-auth-link?)',
+            { email, userId: docId }
+          )
+          return null
+        }
+        return singleResultRecord(doc, ctx)
+      })
     },
 
     findByPhone(phone: PhoneNumber): ResultAsync<UserRecord | null, RepositoryError> {
@@ -120,6 +156,9 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
           // their provider, but the password field exists on every auth
           // collection and local-enabled ones require it.
           data: toNewUserData(input, ctx, deps.ids.newId()),
+          // Proves plugin-managed creation, so the linkable marker hook
+          // marks the document as owning its email (JIT linking proof).
+          context: { [linkableCreateMarker]: true },
           overrideAccess: true,
         }),
         (cause) => {
@@ -141,45 +180,69 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
       userId: UserId,
       ref: ProviderIdentityRef
     ): ResultAsync<UserRecord, RepositoryError> {
-      return findOne('linkIdentity:read', { id: { equals: userId } }).andThen((existing) => {
-        if (!existing) {
-          return err(new RepositoryError(`linkIdentity: user not found: ${userId}`))
-        }
-        if (
-          existing.identities.some(
-            (identity) =>
-              identity.providerId === ref.providerId &&
-              identity.providerUserId === ref.providerUserId
+      // A document holding a provider identity AND a local password can
+      // be signed into by two independent credential owners. The
+      // JIT-linking proof gate keeps strangers from arriving here, but
+      // a legit local password (host-managed local auth) is worth
+      // surfacing to the operator on every link.
+      const passwordWarning: ResultAsync<true, RepositoryError> = ResultAsync.fromPromise(
+        deps.payload.findByID({
+          collection,
+          id: userId,
+          depth: 0,
+          overrideAccess: true,
+        }),
+        () => new RepositoryError('linkIdentity:password-check')
+      ).map((doc) => {
+        if (isRecord(doc) && typeof doc.hash === 'string' && doc.hash !== '') {
+          deps.logger.warn(
+            'identity linked to a document that also holds a local password; ensure both credential owners are the same person',
+            { userId, providerId: ref.providerId }
           )
-        ) {
-          deps.logger.info('identity already linked', { userId, providerId: ref.providerId })
-          return ok(existing)
         }
-        const rows = [
-          ...existing.identities.map((identity) => ({
-            providerId: identity.providerId,
-            providerUserId: identity.providerUserId,
-            email: identity.email,
-            linkedAt: identity.linkedAt.toISOString(),
-          })),
-          toIdentityData(ref, existing.email, deps.clock),
-        ]
-        return ResultAsync.fromPromise<unknown, RepositoryError>(
-          deps.payload.update({
-            collection,
-            id: userId,
-            data: { [deps.map.identitiesField]: rows },
-            overrideAccess: true,
-          }),
-          (cause) => new RepositoryError('linkIdentity:update', { cause })
-        ).andThen((doc) => {
-          const record = singleResultRecord(doc, ctx)
-          if (!record) {
-            return err(new RepositoryError('linkIdentity: unmappable result'))
-          }
-          return ok(record)
-        })
+        return true
       })
+      return passwordWarning.andThen(() =>
+        findOne('linkIdentity:read', { id: { equals: userId } }).andThen((existing) => {
+          if (!existing) {
+            return err(new RepositoryError(`linkIdentity: user not found: ${userId}`))
+          }
+          if (
+            existing.identities.some(
+              (identity) =>
+                identity.providerId === ref.providerId &&
+                identity.providerUserId === ref.providerUserId
+            )
+          ) {
+            deps.logger.info('identity already linked', { userId, providerId: ref.providerId })
+            return ok(existing)
+          }
+          const rows = [
+            ...existing.identities.map((identity) => ({
+              providerId: identity.providerId,
+              providerUserId: identity.providerUserId,
+              email: identity.email,
+              linkedAt: identity.linkedAt.toISOString(),
+            })),
+            toIdentityData(ref, existing.email, deps.clock),
+          ]
+          return ResultAsync.fromPromise<unknown, RepositoryError>(
+            deps.payload.update({
+              collection,
+              id: userId,
+              data: { [deps.map.identitiesField]: rows },
+              overrideAccess: true,
+            }),
+            (cause) => new RepositoryError('linkIdentity:update', { cause })
+          ).andThen((doc) => {
+            const record = singleResultRecord(doc, ctx)
+            if (!record) {
+              return err(new RepositoryError('linkIdentity: unmappable result'))
+            }
+            return ok(record)
+          })
+        })
+      )
     },
 
     unlinkIdentity(

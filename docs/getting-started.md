@@ -122,6 +122,15 @@ single authority, and a provider's own role field (such as Better
 Auth's `admin.role`) is never read: see [One role system: Payload
 roles](concepts.md#one-role-system-payload-roles).
 
+**Who creates users and who gets linked.** Collection-level `create`
+on the users collection defaults to role-manager-only and `read` to
+self + role managers (no user enumeration) — declare your own
+`access` to change either. JIT linking attaches a verified provider
+identity by email only to documents PROVEN to own that email (the
+plugin's `linkable` marker, set automatically on plugin-managed and
+manager creates); anything else is refused until a role manager marks
+it. See [concepts](concepts.md#one-role-system-payload-roles).
+
 **Who edits roles.** The injected fields fail closed by default:
 `roles`, `phone`, `suspendedUntil` and `suspendReason` are writable
 only by the role-manager roles (`roleManagerRoles`, defaulting to

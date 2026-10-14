@@ -8,7 +8,9 @@ import {
 import type {
   ArrayField,
   AuthStrategy,
+  CheckboxField,
   CollectionAfterChangeHook,
+  CollectionBeforeChangeHook,
   CollectionConfig,
   DateField,
   Field,
@@ -81,14 +83,6 @@ function denyAdminWhileImpersonating(
   }
 }
 
-/** Wrap a collection's access with the admin-panel default above. */
-function withImpersonationAdminAccess(
-  access: CollectionConfig['access'],
-  wired: WiredOptions
-): CollectionAccess {
-  return { ...access, admin: denyAdminWhileImpersonating(access?.admin, wired) }
-}
-
 /**
  * Governance writes (roles, phone, suspension) on injected fields:
  * role-manager roles only, with the impersonation deny on top. The
@@ -111,6 +105,93 @@ function readSelfOrManagers(wired: WiredOptions): FieldAccess {
 /** Read access: role managers only (operator-facing data). */
 function readManagersOnly(wired: WiredOptions): FieldAccess {
   return ({ req }) => isRoleManager(req, wired)
+}
+
+/**
+ * `req.context` key the plugin sets on engine-driven Local-API creates
+ * (JIT provisioning, credentials registration): proof the document was
+ * created by payload-auth-link itself, from a verified provider
+ * identity.
+ */
+export const linkableCreateMarker = 'payload-auth-link:create'
+
+/**
+ * Fill collection-level `create`/`read` defaults on the users
+ * collection (GHSA-98hq-hh6v-2p2r): Payload's own defaults give every
+ * authenticated user create and list access to every user document,
+ * which enabled pre-account hijack through JIT email linking and user
+ * enumeration. Gaps are filled per key; a host-declared function is
+ * never overridden.
+ */
+function withDefaultUserAccess(
+  access: CollectionConfig['access'],
+  wired: WiredOptions
+): CollectionAccess {
+  const filled: CollectionAccess = { ...access }
+  if (filled.create === undefined) {
+    const decide = ({ req }: { req: Parameters<typeof isImpersonating>[0] }) =>
+      !isImpersonating(req) && isRoleManager(req, wired)
+    filled.create = decide
+  }
+  if (filled.read === undefined) {
+    // Managers see every user; everyone else is constrained to their
+    // own document (list and find alike) — user enumeration was the
+    // targeting step of the pre-account hijack.
+    filled.read = ({ req }) => {
+      if (isRoleManager(req, wired)) {
+        return true
+      }
+      const user = req.user
+      if (isRecord(user) && typeof user.email === 'string' && user.email !== '') {
+        return { [wired.config.map.emailField]: { equals: user.email } }
+      }
+      return false
+    }
+  }
+  filled.admin = denyAdminWhileImpersonating(filled.admin, wired)
+  return filled
+}
+
+/**
+ * The JIT-linking proof marker (GHSA-98hq-hh6v-2p2r): a document is
+ * linked by email only when something has proven it owns that email.
+ * The plugin sets the marker on engine-driven creates (verified
+ * provider identity) and on role-manager creates (admin/import
+ * workflows); documents created any other way — or created outside
+ * the plugin — start unproven and are never JIT-linked until a role
+ * manager marks them. Plain-user creates are refused at the
+ * collection level, so the flag cannot be self-granted.
+ */
+function linkableMarkerHook(wired: WiredOptions): CollectionBeforeChangeHook {
+  return ({ operation, data, req }) => {
+    if (operation !== 'create') {
+      return
+    }
+    const proven =
+      isRoleManager(req, wired) ||
+      (isRecord(req.context) && req.context[linkableCreateMarker] === true)
+    if (proven) {
+      data.linkable = true
+    } else if (data.linkable === undefined) {
+      data.linkable = false
+    }
+  }
+}
+
+function linkableField(wired: WiredOptions): CheckboxField {
+  return {
+    name: 'linkable',
+    type: 'checkbox',
+    defaultValue: false,
+    // The JIT-linking proof: writing it is a role-manager decision
+    // (it grants linking to whatever email the document carries);
+    // users never read it.
+    access: { ...governedWrite(wired), read: readManagersOnly(wired) },
+    admin: {
+      description:
+        'Set when payload-auth-link (or a role manager) proved this document owns its email. JIT linking refuses documents without it.',
+    },
+  }
 }
 
 function rolesField(wired: WiredOptions): SelectField {
@@ -313,7 +394,7 @@ function createUsersCollection(wired: WiredOptions, strategy: AuthStrategy): Col
   const { map } = wired.config
   return {
     slug: map.usersCollection,
-    access: withImpersonationAdminAccess(undefined, wired),
+    access: withDefaultUserAccess(undefined, wired),
     admin: {
       useAsTitle: map.emailField,
       defaultColumns: [map.emailField, map.rolesField],
@@ -329,9 +410,11 @@ function createUsersCollection(wired: WiredOptions, strategy: AuthStrategy): Col
       phoneField(wired),
       suspendedUntilField(wired),
       suspendReasonField(wired),
+      linkableField(wired),
     ],
     hooks: {
       beforeValidate: [normalizeUserEmailHook(map)],
+      beforeChange: [linkableMarkerHook(wired)],
       afterChange: [suspendRevokeHook(wired)],
     },
   }
@@ -410,7 +493,12 @@ export function applyUsersCollection(
   const roles: Field =
     hostRolesField === undefined ? rolesField(wired) : adoptRolesField(hostRolesField, wired)
   const identities = identitiesField(wired)
-  const governance = [phoneField(wired), suspendedUntilField(wired), suspendReasonField(wired)]
+  const governance = [
+    phoneField(wired),
+    suspendedUntilField(wired),
+    suspendReasonField(wired),
+    linkableField(wired),
+  ]
   for (const field of [identities, ...governance]) {
     const collision = existing.fields.find((candidate) => fieldName(candidate) === field.name)
     if (collision) {
@@ -437,12 +525,13 @@ export function applyUsersCollection(
     collection.slug === slug
       ? {
           ...existing,
-          access: withImpersonationAdminAccess(existing.access, wired),
+          access: withDefaultUserAccess(existing.access, wired),
           auth: withStrategy(existing.auth, strategy),
           fields,
           hooks: {
             ...existing.hooks,
             beforeValidate: [...beforeValidate, normalizeUserEmailHook(wired.config.map)],
+            beforeChange: [...(existing.hooks?.beforeChange ?? []), linkableMarkerHook(wired)],
             afterChange: [...afterChange, suspendRevokeHook(wired)],
           },
         }
