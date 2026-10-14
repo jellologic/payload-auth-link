@@ -60,5 +60,13 @@
     "@types/pg": "^8.15.4",
     "better-auth": "1.7.7",
     "payload": "3.90.2"
+  },
+  "peerDependencies": {
+    "payload": "^3.83.0 || 4.0.0-beta.0"
+  },
+  "peerDependenciesMeta": {
+    "payload": {
+      "optional": false
+    }
   }
 }

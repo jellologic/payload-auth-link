@@ -30,7 +30,21 @@ const loadFixtureConfig = async (path: string): Promise<unknown> => {
   return config
 }
 
-describe('doctor: in-process fixture report (exact blocker list)', () => {
+// The fixture app owns its dependency tree (it mirrors an unmigrated
+// payload-auth app), so its node_modules are installed separately (the
+// test:fixture script and the migration-fixture CI job do it). When
+// they are absent — a bare `bun run check` — the fixture-backed tests
+// skip instead of failing on the unresolvable imports.
+const canLoadFixture = await (async () => {
+  try {
+    await import(fixtureConfigPath)
+    return true
+  } catch {
+    return false
+  }
+})()
+
+describe.skipIf(!canLoadFixture)('doctor: in-process fixture report (exact blocker list)', () => {
   let report: DoctorReport
   test('runDoctor lists exactly the blockers the importer would hit', async () => {
     report = await runDoctor({

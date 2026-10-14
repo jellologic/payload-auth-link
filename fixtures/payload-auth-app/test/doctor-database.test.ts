@@ -56,7 +56,13 @@ describe.skipIf(!canReachPostgres)('doctor: database introspection', () => {
     const databaseUrl = `postgres://${user}:${password}@localhost:${port}/${database}`
     const cliPath = new URL('../../../packages/migrate/src/cli.ts', import.meta.url).pathname
     const configPath = new URL('../payload.config.ts', import.meta.url).pathname
+    let stderr = ''
     const report = await new Promise<DoctorReport>((resolvePromise, reject) => {
+      const timer = setTimeout(() => reject(new Error('doctor CLI timed out')), 280_000)
+      const done = (resolveWith: DoctorReport): void => {
+        clearTimeout(timer)
+        resolvePromise(resolveWith)
+      }
       const child = spawn('bun', [cliPath, 'doctor', '--config', configPath, '--json'], {
         cwd: process.cwd(),
         env: { ...process.env, DATABASE_URL: databaseUrl },
@@ -65,10 +71,21 @@ describe.skipIf(!canReachPostgres)('doctor: database introspection', () => {
       child.stdout.on('data', (chunk: Buffer) => {
         stdout += String(chunk)
       })
-      child.on('error', reject)
+      child.on('error', (error) => {
+        clearTimeout(timer)
+        reject(error)
+      })
       child.on('close', () => {
         const start = stdout.indexOf('{')
-        resolvePromise(JSON.parse(stdout.slice(start)) as DoctorReport)
+        if (start < 0) {
+          clearTimeout(timer)
+          reject(new Error(`doctor CLI printed no JSON: ${stderr.slice(0, 400)}`))
+          return
+        }
+        done(JSON.parse(stdout.slice(start)) as DoctorReport)
+      })
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderr += String(chunk)
       })
     })
     expect(report.database?.unverifiedUsers).toBe(2)
