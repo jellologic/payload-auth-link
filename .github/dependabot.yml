@@ -9,11 +9,26 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
-    # Effect 4 renames the APIs the interop test pins; migrating that
-    # test is deliberate work, not a routine bump.
+    # Toolchain majors are curated migrations (typescript-eslint does
+    # not support TS 7 yet; vitest 5, mongodb 7, size-limit 14 and
+    # @types/node 26 each need their own pass), not routine bumps.
     ignore:
       - dependency-name: effect
-        versions: [">=4.0.0-0"]
+        versions: ['>=4.0.0-0']
+      - dependency-name: typescript
+        versions: ['>=7.0.0-0']
+      - dependency-name: vitest
+        versions: ['>=5.0.0-0']
+      - dependency-name: '@vitest/*'
+        versions: ['>=5.0.0-0']
+      - dependency-name: mongodb
+        versions: ['>=7.0.0-0']
+      - dependency-name: '@types/node'
+        versions: ['>=23.0.0-0']
+      - dependency-name: size-limit
+        versions: ['>=12.0.0-0']
+      - dependency-name: '@size-limit/*'
+        versions: ['>=12.0.0-0']
     # Payload v4 prereleases (internal builds, canaries, betas) move
     # only via the manual exact pin + compat validation (the version
     # assertion refuses them; see docs/compatibility.md) — never as a
