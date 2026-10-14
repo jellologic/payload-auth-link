@@ -8,6 +8,8 @@ import {
   UserExistsError,
   type Email,
   type UserRepository,
+  nullLogger,
+  type LoggerPort,
 } from '@payload-auth-link/core'
 import { ValidationError, type Payload } from 'payload'
 import { describe, expect, it, vi } from 'vitest'
@@ -27,6 +29,7 @@ const userId = defineUserId('user-1')
 const ref = { providerId: defineProviderId('stub'), providerUserId: 'stub-1' }
 
 const doc = {
+  linkable: true,
   id: 'user-1',
   email: 'linked@test.dev',
   roles: ['user'],
@@ -54,7 +57,7 @@ type PayloadStub = {
   update?: (args: unknown) => Promise<unknown>
 }
 
-function repository(stub: PayloadStub): UserRepository {
+function repository(stub: PayloadStub, logger?: LoggerPort): UserRepository {
   const wired = wireOptions({
     baseUrl: 'http://auth-link.test',
     roles: ['user', 'admin'],
@@ -65,13 +68,13 @@ function repository(stub: PayloadStub): UserRepository {
   return createPayloadUserRepository({
     payload: {
       find: stub.find ?? rejecting,
-      findByID: stub.findByID ?? rejecting,
+      findByID: stub.findByID ?? (() => Promise.resolve({})),
       create: stub.create ?? rejecting,
       update: stub.update ?? rejecting,
     } as unknown as Payload,
     map: wired.config.map,
     defaultRole: wired.config.defaultRole,
-    logger: wired.logger,
+    logger: logger ?? wired.logger,
     clock: wired.clock,
     ids: wired.ids,
     depth: wired.depth,
@@ -174,6 +177,37 @@ describe('payload user repository linkIdentity', () => {
         ref
       )
     )
+  })
+})
+
+describe('findByEmail linkability gate (GHSA-98hq-hh6v-2p2r)', () => {
+  it('returns unproven documents as null, with a logged reason', async () => {
+    const unproven = { ...doc, linkable: false }
+    const { logger, warn } = (() => {
+      const warnings: string[] = []
+      const base = nullLogger()
+      const l: LoggerPort = {
+        ...base,
+        warn: (message) => warnings.push(message),
+        child: () => l,
+      }
+      return { logger: l, warn: warnings }
+    })()
+    const users = repository(
+      { find: found([unproven]), findByID: () => Promise.resolve({}) },
+      logger
+    )
+    expect((await users.findByEmail(email('linked@test.dev')))._unsafeUnwrap()).toBeNull()
+    expect(warn.some((message) => message.includes('not marked linkable'))).toBe(true)
+  })
+
+  it('returns documents Payload itself verified', async () => {
+    const verified = { ...doc, linkable: false, _verified: true }
+    const users = repository({
+      find: found([verified]),
+      findByID: () => Promise.resolve({}),
+    })
+    expect((await users.findByEmail(email('linked@test.dev')))._unsafeUnwrap()?.id).toBe('user-1')
   })
 })
 

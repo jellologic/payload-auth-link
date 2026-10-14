@@ -85,6 +85,20 @@ session service reloads the Payload user fresh on every request, a
 role change applies to the very next request on every provider and
 session strategy — no re-login, no token refresh, no sync job.
 
+**Who may be linked by email (the JIT-linking proof).** A verified
+provider identity is attached by email only to a document PROVEN to
+own that email: the plugin's `linkable` marker (set automatically on
+plugin-managed creates and role-manager creates; a role manager can
+toggle it per user) or Payload's own verified flag (`auth.verify`).
+Documents created outside the plugin — pre-upgrade rows, imports that
+skipped the marker, or a stranger's pre-created placeholder — are
+never JIT-linked until a role manager marks them. Unproven documents
+also cannot be created by end users: collection-level `create` on the
+users collection defaults to role-manager-only, and collection-level
+`read` defaults to self + role managers (no user enumeration), unless
+the host declared those access functions itself. When the document
+holds a local password too, every link logs a warning.
+
 **Who may edit roles.** The injected `roles` field (and the
 governance fields: `phone`, `suspendedUntil`, `suspendReason`) are
 writable only by the **role-manager roles** — `roleManagerRoles`,

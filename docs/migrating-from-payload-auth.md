@@ -66,6 +66,13 @@ across providers and strategies.
 
 ## Migration script (sketch)
 
+The script below is a **sketch**, not a shipped tool: review it
+against your schema, run it with a dry-run flag of your own, and keep
+the backup. (The `linkable: true` marks in step 3 are what allow JIT
+email linking for imported users — without the marker, a returning
+user's first provider sign-in is refused until a role manager marks
+them.)
+
 Run this ONCE from the new app (Payload Local API, `overrideAccess`
 everywhere). Read the old tables directly (same database) or from an
 export. Order matters: users → accounts → links → plugin models.
@@ -120,6 +127,7 @@ for (const old of oldUsers) {
     id: old.id,
     data: {
       roles: old.role ?? ['user'], // your adopted roles field
+      linkable: true, // PROOF of email ownership (required for JIT linking)
       identities: links.map((a) => ({
         providerId: a.providerId === 'credential' ? 'better-auth' : a.providerId,
         providerUserId: String(a.userId),

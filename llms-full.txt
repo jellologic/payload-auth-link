@@ -130,6 +130,15 @@ single authority, and a provider's own role field (such as Better
 Auth's `admin.role`) is never read: see [One role system: Payload
 roles](concepts.md#one-role-system-payload-roles).
 
+**Who creates users and who gets linked.** Collection-level `create`
+on the users collection defaults to role-manager-only and `read` to
+self + role managers (no user enumeration) — declare your own
+`access` to change either. JIT linking attaches a verified provider
+identity by email only to documents PROVEN to own that email (the
+plugin's `linkable` marker, set automatically on plugin-managed and
+manager creates); anything else is refused until a role manager marks
+it. See [concepts](concepts.md#one-role-system-payload-roles).
+
 **Who edits roles.** The injected fields fail closed by default:
 `roles`, `phone`, `suspendedUntil` and `suspendReason` are writable
 only by the role-manager roles (`roleManagerRoles`, defaulting to
@@ -568,6 +577,20 @@ least one role, so an emptied array can't persist. Because the
 session service reloads the Payload user fresh on every request, a
 role change applies to the very next request on every provider and
 session strategy — no re-login, no token refresh, no sync job.
+
+**Who may be linked by email (the JIT-linking proof).** A verified
+provider identity is attached by email only to a document PROVEN to
+own that email: the plugin's `linkable` marker (set automatically on
+plugin-managed creates and role-manager creates; a role manager can
+toggle it per user) or Payload's own verified flag (`auth.verify`).
+Documents created outside the plugin — pre-upgrade rows, imports that
+skipped the marker, or a stranger's pre-created placeholder — are
+never JIT-linked until a role manager marks them. Unproven documents
+also cannot be created by end users: collection-level `create` on the
+users collection defaults to role-manager-only, and collection-level
+`read` defaults to self + role managers (no user enumeration), unless
+the host declared those access functions itself. When the document
+holds a local password too, every link logs a warning.
 
 **Who may edit roles.** The injected `roles` field (and the
 governance fields: `phone`, `suspendedUntil`, `suspendReason`) are
@@ -1863,6 +1886,35 @@ throws) when the `key` index build is still in flight. Run it once
 per deployment after upgrading (idempotent; safe to re-run).
 Already upgraded without it? The composite-key behavior silently
 does not hold on your deployment until you run the reconciliation.
+
+## 0.3.x → 0.5.0 (JIT-linking proof + users create/read defaults)
+
+Two more fail-closed defaults on the users collection (see the
+published advisory for the attack they close):
+
+- **JIT linking requires proof of email ownership.** A verified
+  provider identity is attached by email only to documents carrying
+  the plugin's `linkable` marker (set automatically on
+  plugin-managed and role-manager creates; role managers can toggle
+  it) or Payload's own verified flag. Documents created outside the
+  plugin start unproven: their returning users are refused (401, with
+  a logged reason) until a role manager marks them linkable or the
+  document is deleted. **Runbook note:** the payload-auth migration
+  script marks imported users `linkable: true`.
+- **Collection-level `create` defaults to role-manager-only** and
+  **`read` to self + role managers** (no user enumeration) — both
+  only where the host hasn't declared that access function itself.
+  Hosts whose end users self-register through Payload REST/local
+  forms (rather than through a provider) must declare
+  `access: { create: ... }` or route registration through the
+  provider.
+
+Upgrade impact: default-behaviour change — non-managers can no
+longer create users over REST or list other users; unproven
+pre-existing documents are refused at JIT linking until marked.
+Negative e2e specs cover the refusal, the proven/imported path, the
+create block, and self-only listing on all six adapter/example
+combos.
 
 ## 0.3.x → 0.4.0 (security default change)
 

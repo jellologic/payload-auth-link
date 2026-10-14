@@ -95,6 +95,35 @@ per deployment after upgrading (idempotent; safe to re-run).
 Already upgraded without it? The composite-key behavior silently
 does not hold on your deployment until you run the reconciliation.
 
+## 0.3.x → 0.5.0 (JIT-linking proof + users create/read defaults)
+
+Two more fail-closed defaults on the users collection (see the
+published advisory for the attack they close):
+
+- **JIT linking requires proof of email ownership.** A verified
+  provider identity is attached by email only to documents carrying
+  the plugin's `linkable` marker (set automatically on
+  plugin-managed and role-manager creates; role managers can toggle
+  it) or Payload's own verified flag. Documents created outside the
+  plugin start unproven: their returning users are refused (401, with
+  a logged reason) until a role manager marks them linkable or the
+  document is deleted. **Runbook note:** the payload-auth migration
+  script marks imported users `linkable: true`.
+- **Collection-level `create` defaults to role-manager-only** and
+  **`read` to self + role managers** (no user enumeration) — both
+  only where the host hasn't declared that access function itself.
+  Hosts whose end users self-register through Payload REST/local
+  forms (rather than through a provider) must declare
+  `access: { create: ... }` or route registration through the
+  provider.
+
+Upgrade impact: default-behaviour change — non-managers can no
+longer create users over REST or list other users; unproven
+pre-existing documents are refused at JIT linking until marked.
+Negative e2e specs cover the refusal, the proven/imported path, the
+create block, and self-only listing on all six adapter/example
+combos.
+
 ## 0.3.x → 0.4.0 (security default change)
 
 The injected users-collection fields now fail closed

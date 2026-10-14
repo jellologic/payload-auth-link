@@ -81,6 +81,73 @@ async function adminRequest(
   }
 }
 
+test('a non-manager cannot create users, and sees only themselves in the list (GHSA-98hq-hh6v-2p2r)', async ({
+  page,
+}) => {
+  const api = page.request
+  const email = `e2e-jit-1-${Date.now()}@example.com`
+  const user = await signUpVerified(api, email)
+
+  // The pre-account-hijack entry point: REST-creating a Payload user
+  // with a chosen email + password.
+  const attempt = await api.post('/api/users', {
+    data: { email: `victim-${Date.now()}@example.com`, password: 'AttackerKnows-1' },
+  })
+  expect(attempt.status()).toBe(403)
+
+  // Enumeration residual: the list is constrained to the caller.
+  const list = await api.get('/api/users?depth=0&limit=10')
+  expect(list.ok()).toBe(true)
+  const docs = (await list.json()) as { docs: Array<{ email: string }> }
+  expect(docs.docs.length).toBe(1)
+  expect(docs.docs[0]?.email).toBe(email)
+  void user
+})
+
+test('an unproven pre-created document is never JIT-linked; a proven one is', async ({
+  page,
+  browser,
+}) => {
+  const api = page.request
+  const admin = await adminRequest(test.info().project.use.baseURL, browser)
+
+  // Manager creates a document for a future member (the import/admin
+  // workflow). The marker hook proves it: linkable defaults to true.
+  const victimEmail = `e2e-jit-victim-${Date.now()}@example.com`
+  const created = await admin.call('POST', '/api/users', {
+    email: victimEmail,
+    password: 'ImportedKnows-1',
+  })
+  expect(created.status).toBe(201)
+  const doc = created.body as { doc: { id: string; linkable?: boolean } }
+  expect(doc.doc.linkable).toBe(true)
+
+  // A role manager can withdraw the proof: the document becomes
+  // unproven, and JIT linking must refuse it.
+  const unprove = await admin.call('PATCH', `/api/users/${doc.doc.id}`, {
+    linkable: false,
+  })
+  expect(unprove.status).toBe(200)
+  const signup = await api.post('/api/auth/sign-up/email', {
+    data: { name: victimEmail, email: victimEmail, password: 'e2e-test-password-1' },
+  })
+  expect(signup.ok()).toBe(true)
+  await api.post('/api/dev-auto-verify', { data: { email: victimEmail } })
+  const denied = await api.get('/api/auth-link/session')
+  expect(denied.status()).toBe(401)
+
+  // Restore the proof: the SAME verified identity now links to the
+  // SAME document — the import/migration path stays intact.
+  const restore = await admin.call('PATCH', `/api/users/${doc.doc.id}`, {
+    linkable: true,
+  })
+  expect(restore.status).toBe(200)
+  const linked = await api.get('/api/auth-link/session')
+  expect(linked.ok()).toBe(true)
+  const session = (await linked.json()) as { user: { id: string; roles: string[] } }
+  expect(session.user.id).toBe(String(doc.doc.id))
+})
+
 test('a plain user cannot grant themselves roles', async ({ page }) => {
   const api = page.request
   const email = `e2e-esc-1-${Date.now()}@example.com`
