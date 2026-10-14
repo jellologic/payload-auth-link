@@ -124,7 +124,7 @@
     },
     "packages/plugin": {
       "name": "@payload-auth-link/plugin",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
         "neverthrow": "^8.2.0",
