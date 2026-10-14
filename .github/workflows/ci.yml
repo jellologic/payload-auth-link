@@ -24,7 +24,9 @@ jobs:
   # internal-only PRs add an empty one (`bunx changeset --empty`). The
   # Version Packages PR is exempt: it consumes the changesets by design.
   changeset:
-    if: github.event_name == 'pull_request' && github.head_ref != 'changeset-release/main'
+    # Dependency bumps are internal-only (the lockfile diff is their
+    # record; the compat matrix is their gate), like Version PRs.
+    if: github.event_name == 'pull_request' && github.head_ref != 'changeset-release/main' && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
