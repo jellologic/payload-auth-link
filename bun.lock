@@ -108,7 +108,7 @@
     },
     "packages/migrate": {
       "name": "@payload-auth-link/migrate",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "bin": {
         "payload-auth-link-migrate": "./dist/cli.js",
       },
@@ -149,7 +149,7 @@
     },
     "packages/plugin": {
       "name": "@payload-auth-link/plugin",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
         "neverthrow": "^8.2.0",
@@ -192,7 +192,7 @@
     },
     "packages/provider-better-auth": {
       "name": "@payload-auth-link/provider-better-auth",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
         "neverthrow": "^8.2.0",
