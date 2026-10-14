@@ -117,6 +117,23 @@
         "effect": "^3.0.0",
       },
     },
+    "packages/migrate": {
+      "name": "@payload-auth-link/migrate",
+      "version": "0.1.0",
+      "bin": {
+        "payload-auth-link-migrate": "./dist/cli.js",
+      },
+      "dependencies": {
+        "@payload-auth-link/core": "workspace:*",
+        "pg": "^8.16.3",
+      },
+      "devDependencies": {
+        "@payload-auth-link/plugin": "workspace:*",
+        "@payload-auth-link/provider-better-auth": "workspace:*",
+        "@types/node": "^22",
+        "@types/pg": "^8.15.4",
+      },
+    },
     "packages/next": {
       "name": "@payload-auth-link/next",
       "version": "0.3.0",
@@ -654,6 +671,8 @@
     "@payload-auth-link/example-tanstack-start": ["@payload-auth-link/example-tanstack-start@workspace:examples/tanstack-start"],
 
     "@payload-auth-link/fixture-payload-auth": ["@payload-auth-link/fixture-payload-auth@workspace:fixtures/payload-auth-app"],
+
+    "@payload-auth-link/migrate": ["@payload-auth-link/migrate@workspace:packages/migrate"],
 
     "@payload-auth-link/next": ["@payload-auth-link/next@workspace:packages/next"],
 

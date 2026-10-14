@@ -101,18 +101,19 @@ describe('fixture contract: a real payload-auth 1.9.4 database', () => {
     expect(bobRoles).toEqual(['frontPlugin', 'user'])
   })
 
-  test('magic-link verification row exists and is unexpired', async () => {
-    const rows = await client.query(
-      'SELECT identifier, expires_at FROM verifications WHERE expires_at > now()'
-    )
-    expect(rows.rows.length).toBeGreaterThanOrEqual(1)
+  test('magic-link verification row exists', async () => {
+    // The committed dump is a point-in-time snapshot: short-lived rows
+    // (5-minute magic links) age past expiry on disk. The contract is
+    // that the flow RAN — a row with an identifier — not that its
+    // expiry is still in the future.
+    const rows = await client.query('SELECT identifier, expires_at FROM verifications')
+    expect(rows.rows.length).toBe(1)
     expect(rows.rows[0]?.identifier).toBeTruthy()
   })
 
-  test('active sessions exist', async () => {
-    const rows = await client.query(
-      'SELECT token, user_id, expires_at FROM sessions WHERE expires_at > now()'
-    )
+  test('sessions exist for every user', async () => {
+    // Same point-in-time rule: sessions carry their dump-time expiry.
+    const rows = await client.query('SELECT token, user_id, expires_at FROM sessions')
     expect(rows.rows.length).toBe(6)
     expect(new Set(rows.rows.map((row) => row.user_id)).size).toBe(4)
   })

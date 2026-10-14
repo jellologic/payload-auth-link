@@ -9,6 +9,10 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
   test: {
     include: ['fixtures/*/test/**/*.test.ts'],
+    // payload-auth's dist uses directory imports Bun tolerates and
+    // Node's loader does not; tests that import its modules need the
+    // transform (the main vitest.config.ts sets the same).
+    server: { deps: { inline: [/payload-auth/] } },
     // Loading the dump and (later) booting Payload against it is slow.
     testTimeout: 120_000,
     hookTimeout: 120_000,

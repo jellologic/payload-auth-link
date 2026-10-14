@@ -6,18 +6,17 @@
   "packageManager": "bun@1.4.2",
   "workspaces": [
     "packages/*",
-    "examples/*",
-    "fixtures/*"
+    "examples/*"
   ],
   "scripts": {
-    "build": "bun run clean && tsc -b packages/core packages/plugin packages/react packages/web packages/next packages/tanstack-start packages/provider-better-auth packages/provider-authjs",
+    "build": "bun run clean && tsc -b packages/core packages/plugin packages/react packages/web packages/next packages/tanstack-start packages/provider-better-auth packages/provider-authjs packages/migrate",
     "clean": "rm -rf packages/*/dist",
     "typecheck": "tsc -p tsconfig.test.json",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "test:fixture": "vitest run -c vitest.migration.config.ts",
+    "test:fixture": "bun install --cwd fixtures/payload-auth-app && vitest run -c vitest.migration.config.ts",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
     "check": "bun run format:check && bun run build && bun run lint && bun run typecheck && bun run coverage && bun run size && bun run api:check && bun run schema:check && bun run consumer:check",

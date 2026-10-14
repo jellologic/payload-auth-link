@@ -1,0 +1,59 @@
+{
+  "name": "@payload-auth-link/migrate",
+  "version": "0.1.0",
+  "description": "payload-auth-link migration kit: read-only doctor/preflight, the payload-auth importer, and exporters.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jellologic/payload-auth-link.git",
+    "directory": "packages/migrate"
+  },
+  "homepage": "https://github.com/jellologic/payload-auth-link/tree/main/packages/migrate#readme",
+  "bugs": {
+    "url": "https://github.com/jellologic/payload-auth-link/issues"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "bin": {
+    "payload-auth-link-migrate": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "!dist/*.tsbuildinfo",
+    "src",
+    "!src/**/__tests__",
+    "!dist/**/__tests__",
+    "!dist/**/__fixtures__",
+    "!src/**/__fixtures__"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@payload-auth-link/core": "workspace:*",
+    "pg": "^8.16.3"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "devDependencies": {
+    "@payload-auth-link/plugin": "workspace:*",
+    "@payload-auth-link/provider-better-auth": "workspace:*",
+    "@types/node": "^22",
+    "@types/pg": "^8.15.4"
+  }
+}

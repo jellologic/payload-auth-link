@@ -2,6 +2,11 @@ import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
   test: {
+    // payload-auth's dist uses directory imports (`export * from
+    // "./better-auth"`), which Bun tolerates and Node's ESM loader does
+    // not; the doctor loads real payload-auth configs, so vitest must
+    // transform the package instead of externalizing it.
+    server: { deps: { inline: [/payload-auth/] } },
     include: [
       'packages/*/src/**/*.test.ts',
       'packages/*/src/**/*.test.tsx',
@@ -15,7 +20,15 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['packages/*/src/**/*.ts', 'packages/*/src/**/*.tsx'],
-      exclude: ['**/__tests__/**', '**/*.test.*', '**/__fixtures__/**'],
+      exclude: [
+        '**/__tests__/**',
+        '**/*.test.*',
+        '**/__fixtures__/**',
+        // The doctor's database introspection is proven against the
+        // payload-auth fixture in the migration-fixture CI job (it
+        // needs a live Postgres; `check` stays service-free).
+        'packages/migrate/src/doctor/database.ts',
+      ],
       thresholds: {
         lines: 80,
         functions: 80,
