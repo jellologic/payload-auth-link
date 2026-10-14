@@ -34,6 +34,49 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
+## 0.6.x → 0.7.0 (account controls on every strategy; provider-owned documents)
+
+Three default-behaviour changes, all fail-closed. The full
+credential-path matrix now lives in
+[security-model.md](security-model.md).
+
+1. **Suspension is enforced on every strategy, at request time.**
+   Previously only the `auth-link` strategy checked `suspendedUntil`;
+   a user with a local password (Payload's own `login` / local JWT /
+   API key) kept working after being suspended. Now `beforeLogin`
+   refuses the local sign-in (401), and a request-time gate on every
+   collection and global refuses any request carrying a suspended
+   account's local JWT or API key (401) — including `refresh-token`,
+   and including GraphQL. Nothing to migrate; sites that suspended
+   users get the behaviour the field always promised.
+
+2. **`policies.requireMfaForRoles` now applies to local credentials.**
+   Local sessions have no MFA proof, so a role listed in the policy is
+   withheld from local-strategy sessions (JWT, API key) at request
+   time — before access checks read the roles. Local login itself is
+   NOT blocked; the session simply loses the gated role. The
+   `/access` permission map is truthful for the users collection;
+   host collections' maps can still overstate (their access functions
+   are the host's) but no operation honors it.
+
+3. **Provider-linked documents are provider-owned** (new default, new
+   option `allowLocalCredentialsForLinkedDocs`, default `false`):
+   once a document holds linked provider identities, local sign-in is
+   refused (403) and the forgot/reset-password flow is refused (403,
+   no token is issued) for it. A local password on such a document
+   would bypass the provider's MFA, bans, rate limits, and
+   revocation. Documents WITHOUT linked identities — operator
+   accounts, imports not yet linked — keep local credentials and the
+   recovery flow exactly as before. This affects the
+   payload-auth migration runbook: an imported user's password works
+   until their provider identity links; after that the provider owns
+   the credential. Sites needing both credentials alive during a
+   migration window set `allowLocalCredentialsForLinkedDocs: true`
+   and remove it when the migration completes.
+
+No schema changes; no backfill. The credential-path matrix test
+(`integration-credential-paths.test.ts`) pins all three.
+
 ## 0.1.1 → 0.2.0
 
 What changed in the database (and nothing else did — provider

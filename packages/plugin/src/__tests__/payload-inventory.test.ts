@@ -93,6 +93,7 @@ describe('payload import inventory (Phase 3)', () => {
       next: [],
       'tanstack-start': [],
       plugin: [
+        'APIError',
         'Access',
         'ArrayField',
         'AuthStrategy',

@@ -5,17 +5,21 @@ import {
   readInstalledVersion,
   type VersionRange,
 } from '@payload-auth-link/core'
-import type { Config, Plugin } from 'payload'
+import type { CollectionConfig, Config, GlobalConfig, Plugin } from 'payload'
 import {
   composeAuditLogger,
   withImpersonationAuditCollections,
   withImpersonationAuditGlobals,
 } from './audit.js'
-import { applyUsersCollection } from './collections.js'
+import {
+  applyUsersCollection,
+  accountControlsGateHook,
+  accountControlsGlobalGateHook,
+} from './collections.js'
 import { createEndpoints } from './endpoints.js'
 import { subscribeIdentityEvents } from './lifecycle.js'
 import { applyOrganizationCollections, createOrganizationEndpoints } from './organizations.js'
-import { wireOptions, type AuthLinkPluginOptions } from './options.js'
+import { wireOptions, type AuthLinkPluginOptions, type WiredOptions } from './options.js'
 import { auditStoredRoles } from './role-audit.js'
 import { createAuthLinkStrategy, strategyName } from './strategy.js'
 
@@ -35,6 +39,53 @@ export const supportedPayloadBand: readonly VersionRange[] = [
 
 function readPayloadVersion(): string | null {
   return readInstalledVersion('payload', import.meta.url)
+}
+
+/**
+ * Request-time account controls (GHSA-f4hj) on every collection the
+ * users assembly does not already cover: a suspended user's local JWT
+ * or API key is refused on the next request, and `requireMfaForRoles`
+ * roles are withheld from local sessions before any access check
+ * reads them. Without this, a host collection with permissive access
+ * would stay a suspended session's fallback surface. The users
+ * collection carries the same hook from its own assembly and is
+ * skipped here.
+ */
+function withAccountControls(
+  collections: readonly CollectionConfig[] | undefined,
+  wired: WiredOptions
+): CollectionConfig[] {
+  const gate = accountControlsGateHook(wired)
+  const usersSlug = wired.config.map.usersCollection
+  return (collections ?? []).map((collection) =>
+    collection.slug === usersSlug
+      ? collection
+      : {
+          ...collection,
+          hooks: {
+            ...collection.hooks,
+            beforeOperation: [...(collection.hooks?.beforeOperation ?? []), gate],
+          },
+        }
+  )
+}
+
+/**
+ * The same controls for globals: a suspended session must not read or
+ * write global data either.
+ */
+function withAccountControlsGlobals(
+  globals: readonly GlobalConfig[] | undefined,
+  wired: WiredOptions
+): GlobalConfig[] {
+  const gate = accountControlsGlobalGateHook(wired)
+  return (globals ?? []).map((global) => ({
+    ...global,
+    hooks: {
+      ...global.hooks,
+      beforeOperation: [...(global.hooks?.beforeOperation ?? []), gate],
+    },
+  }))
 }
 
 /**
@@ -75,13 +126,19 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
     // `beforeOperation` hook that logs operations performed while an
     // operator impersonates the request's user (see `audit.ts`).
     collections: withImpersonationAuditCollections(
-      applyOrganizationCollections(
-        applyUsersCollection(config.collections, wired, strategy),
+      withAccountControls(
+        applyOrganizationCollections(
+          applyUsersCollection(config.collections, wired, strategy),
+          wired
+        ),
         wired
       ),
       auditLogger
     ),
-    globals: withImpersonationAuditGlobals(config.globals, auditLogger),
+    globals: withAccountControlsGlobals(
+      withImpersonationAuditGlobals(config.globals, auditLogger),
+      wired
+    ),
     endpoints: [
       ...(config.endpoints ?? []),
       ...createEndpoints(wired),

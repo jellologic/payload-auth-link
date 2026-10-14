@@ -224,6 +224,17 @@ for (const member of oldMembers) {
 - **Rollback:** the old tables are untouched, so rolling back is a
   deploy revert — new sign-ups since cutover exist only in `ba-*`
   rows and would need the script reversed.
+- **Local passwords die when the provider identity links.** A
+  migrated user's carried-over password keeps working until their
+  `ba-accounts` row links to the Payload document; from that moment
+  the document is provider-owned — local sign-in and the
+  forgot/reset-password flow are refused for it (GHSA-f4hj: a local
+  password would bypass the provider's MFA, bans, and revocation).
+  That is the intended end state; users sign in through the
+  provider. If your cutover needs both credentials alive for a
+  window, set `allowLocalCredentialsForLinkedDocs: true` in the
+  plugin options and remove it when the window closes. Break-glass
+  operator accounts (no linked identities) are unaffected.
 
 ## Verify before cutover
 

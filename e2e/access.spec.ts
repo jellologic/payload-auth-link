@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Browser, type Page } from '@playwright/test'
-import { DEV_ADMIN_EMAIL, DEV_ADMIN_PASSWORD } from './dev-admin.js'
+import { adminContext } from './admin-session.js'
 
 /**
  * Injected-field access defaults: a plain,
@@ -41,8 +41,13 @@ type AdminResponse = { status: number; body: unknown }
  * clients file as secure and withhold on plain http, and mutating
  * requests without an `Origin` header fail the CSRF check. Running
  * `fetch` in the page fixes both — the browser parses the cookie and
- * stamps the origin — and the page itself proves authentication via
- * the real admin login form (the pattern users-admin.spec.ts keeps).
+ * stamps the origin.
+ *
+ * The session comes from the global-setup admin login
+ * (`admin-session.ts`): Payload's login read-modify-writes the user's
+ * `sessions` array, so concurrent admin logins drop one another's
+ * session (observed as spurious 403s) — specs never log the admin in
+ * themselves.
  */
 async function adminRequest(
   baseURL: string | undefined,
@@ -51,15 +56,9 @@ async function adminRequest(
   call: (method: string, path: string, body?: unknown) => Promise<AdminResponse>
   close: () => Promise<void>
 }> {
-  const context = await browser.newContext({
-    ...(baseURL === undefined ? {} : { baseURL }),
-  })
+  const context = await adminContext(browser, baseURL)
   const page: Page = await context.newPage()
-  await page.goto('/admin/login')
-  await page.getByLabel(/email/i).fill(DEV_ADMIN_EMAIL)
-  await page.getByRole('textbox', { name: /password/i }).fill(DEV_ADMIN_PASSWORD)
-  await page.getByRole('button', { name: 'Login', exact: true }).click()
-  await page.waitForURL('**/admin', { timeout: 15_000 })
+  await page.goto('/admin')
   return {
     async call(method, path, body) {
       const result = await page.evaluate(
@@ -122,7 +121,7 @@ test('an unproven pre-created document is never JIT-linked; a proven one is', as
     email: victimEmail,
     password: 'ImportedKnows-1',
   })
-  expect(created.status).toBe(201)
+  expect(created.status, `manager create failed: ${JSON.stringify(created.body)}`).toBe(201)
   const doc = created.body as { doc: { id: string; linkable?: boolean } }
   expect(doc.doc.linkable).toBe(true)
 
@@ -131,7 +130,7 @@ test('an unproven pre-created document is never JIT-linked; a proven one is', as
   const unprove = await admin.call('PATCH', `/api/users/${doc.doc.id}`, {
     linkable: false,
   })
-  expect(unprove.status).toBe(200)
+  expect(unprove.status, `unprove failed: ${JSON.stringify(unprove.body)}`).toBe(200)
   const signup = await api.post('/api/auth/sign-up/email', {
     data: { name: victimEmail, email: victimEmail, password: 'e2e-test-password-1' },
   })

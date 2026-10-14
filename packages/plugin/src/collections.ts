@@ -6,19 +6,25 @@ import {
   toDate,
 } from '@payload-auth-link/core'
 import type {
+  Access,
   ArrayField,
   AuthStrategy,
   CheckboxField,
   CollectionAfterChangeHook,
   CollectionBeforeChangeHook,
+  CollectionBeforeOperationHook,
   CollectionConfig,
   DateField,
   Field,
   FieldAccess,
   FieldAccessArgs,
+  GlobalBeforeOperationHook,
   SelectField,
   TextField,
+  PayloadRequest,
+  Where,
 } from 'payload'
+import { APIError } from 'payload'
 import { isImpersonating } from './access.js'
 import type { WiredOptions } from './options.js'
 import { normalizeUserEmailHook } from './hooks.js'
@@ -129,8 +135,9 @@ function withDefaultUserAccess(
 ): CollectionAccess {
   const filled: CollectionAccess = { ...access }
   if (filled.create === undefined) {
-    const decide = ({ req }: { req: Parameters<typeof isImpersonating>[0] }) =>
-      !isImpersonating(req) && isRoleManager(req, wired)
+    const decide = ({ req }: { req: Parameters<typeof isImpersonating>[0] }) => {
+      return !isImpersonating(req) && isRoleManager(req, wired)
+    }
     filled.create = decide
   }
   if (filled.read === undefined) {
@@ -282,6 +289,326 @@ function emailField(wired: WiredOptions): Field {
   }
 }
 
+/**
+ * Is the document currently suspended (CAP-7)? Shared by the login
+ * gate and the request-time constraints.
+ */
+function suspensionActive(doc: unknown, wired: WiredOptions): boolean {
+  if (!isRecord(doc)) {
+    return false
+  }
+  const suspendedUntil = toDate(doc.suspendedUntil)
+  return isSuspendedAt(suspendedUntil, wired.clock.now())
+}
+
+/**
+ * Local sign-in refusal for suspended users (GHSA-f4hj): Payload's
+ * local strategy never consulted the plugin, so a suspended user with
+ * a local password could still sign in. Payload's `beforeLogin` only
+ * refuses when a hook THROWS (a falsy return keeps the login), so the
+ * refusal is a typed `APIError`. `resetPassword` runs `beforeLogin`
+ * too, which refuses the reset flow for suspended users with it.
+ */
+function accountControlsLoginHook(
+  wired: WiredOptions
+): NonNullable<CollectionConfig['hooks']>['beforeLogin'] extends (infer F)[] | undefined
+  ? F
+  : never {
+  return ({ user }) => {
+    if (suspensionActive(user, wired)) {
+      throw new APIError('Account suspended', 401)
+    }
+    // Provider-owned documents (GHSA-f4hj): once a document holds
+    // linked provider identities, the provider owns its credential —
+    // a local password would bypass the provider's MFA, bans, rate
+    // limits, and revocation. Local sign-in is refused unless the
+    // host opted in. Documents without identities (operator
+    // accounts, pre-link imports) are unaffected.
+    if (wired.allowLocalCredentialsForLinkedDocs) {
+      return
+    }
+    const identities: unknown = isRecord(user) ? user[wired.config.map.identitiesField] : undefined
+    if (Array.isArray(identities) && identities.length > 0) {
+      throw new APIError(
+        'Local sign-in is unavailable for provider-linked accounts; use your identity provider',
+        403
+      )
+    }
+  }
+}
+
+/**
+ * Self-service password issuance for provider-linked documents is
+ * refused (GHSA-f4hj): Payload's forgot/reset-password flow runs with
+ * `overrideAccess`, so the 0.6.0 password-write strip never saw it,
+ * and a provider-provisioned user could mint a local credential for
+ * their own document from their own inbox. The gate resolves the
+ * target document (by email for `forgotPassword`, by the reset token
+ * for `resetPassword` — Payload matches the stored token directly)
+ * and refuses documents holding linked identities. Hosts who want the
+ * previous behaviour set `allowLocalCredentialsForLinkedDocs`.
+ */
+function passwordIssueGuardHook(wired: WiredOptions): CollectionBeforeOperationHook {
+  const usersCollection = wired.config.map.usersCollection
+  return async ({ args, operation, req }) => {
+    if (operation !== 'forgotPassword' && operation !== 'resetPassword') {
+      return args
+    }
+    if (wired.allowLocalCredentialsForLinkedDocs) {
+      return args
+    }
+    const data: unknown = isRecord(args) ? args.data : undefined
+    const email = isRecord(data) && typeof data.email === 'string' ? data.email : undefined
+    const token = isRecord(data) && typeof data.token === 'string' ? data.token : undefined
+    let where: Where | undefined
+    if (operation === 'forgotPassword' && email !== undefined && email !== '') {
+      where = { [wired.config.map.emailField]: { equals: email } }
+    }
+    if (operation === 'resetPassword' && token !== undefined && token !== '') {
+      where = { resetPasswordToken: { equals: token } }
+    }
+    if (where === undefined) {
+      return args
+    }
+    const found = await req.payload.find({
+      collection: usersCollection,
+      where,
+      limit: 1,
+      depth: 0,
+      pagination: false,
+      overrideAccess: true,
+    })
+    const doc: unknown = (found as { docs?: unknown[] }).docs?.[0]
+    if (!isRecord(doc)) {
+      // Unknown target: an existing document is not being attacked —
+      // Payload's own response (enumeration-neutral) stands.
+      return args
+    }
+    const identities: unknown = doc[wired.config.map.identitiesField]
+    if (!Array.isArray(identities) || identities.length === 0) {
+      return args
+    }
+    const docId = typeof doc.id === 'string' || typeof doc.id === 'number' ? String(doc.id) : ''
+    wired.logger.warn('local password reset refused: document holds linked identities', {
+      userId: docId,
+      operation,
+    })
+    throw new APIError(
+      'Password reset is unavailable for provider-linked accounts; use your identity provider',
+      403
+    )
+  }
+}
+
+/**
+ * Fresh, per-request account status for the request's user. The local
+ * JWT carries a login-time snapshot; suspension must be seen the
+ * moment an operator sets it, so the document is re-read (one read
+ * per request, memoized on `req.context` — every collection's gate
+ * shares the result).
+ */
+const ACCOUNT_STATUS_KEY = 'payload-auth-link:account-status'
+/**
+ * In-flight sentinel: the status read is a users-collection read, so
+ * it re-enters the very gates that ask for it. An inner application
+ * seeing the sentinel skips (the outer computation always concludes
+ * and stores the result — or throws, ending the request).
+ */
+const ACCOUNT_STATUS_INFLIGHT = 'payload-auth-link:account-status-inflight'
+
+type AccountStatus = { readonly suspended: boolean; readonly failed?: boolean }
+
+async function requestAccountStatus(
+  req: PayloadRequest,
+  wired: WiredOptions
+): Promise<AccountStatus> {
+  const memo: Record<string, unknown> | undefined = isRecord(req.context) ? req.context : undefined
+  if (memo !== undefined) {
+    const cached = memo[ACCOUNT_STATUS_KEY]
+    if (isRecord(cached) && typeof cached.suspended === 'boolean') {
+      return cached as AccountStatus
+    }
+    if (memo[ACCOUNT_STATUS_INFLIGHT] === true) {
+      // Re-entrant status read (the check itself reads the users
+      // collection): let it through — the outer computation owns the
+      // decision for this request.
+      return { suspended: false }
+    }
+  }
+  // Not a request pipeline (access functions invoked directly with a
+  // fabricated request carry no payload): there is nothing to govern.
+  if (
+    !isRecord(req.payload) ||
+    typeof (req.payload as Record<string, unknown>).findByID !== 'function'
+  ) {
+    return { suspended: false }
+  }
+  const user = req.user
+  let status: AccountStatus
+  if (memo !== undefined) {
+    memo[ACCOUNT_STATUS_INFLIGHT] = true
+  }
+  try {
+    const doc: unknown = await req.payload.findByID({
+      collection: wired.config.map.usersCollection,
+      id: String(isRecord(user) ? user.id : ''),
+      depth: 0,
+      overrideAccess: true,
+    })
+    status = { suspended: suspensionActive(doc, wired) }
+  } catch (cause) {
+    // Fail closed: an unreadable account state must never wave a
+    // request through. The same storage failure fails the operation
+    // itself, so this only changes who reports it.
+    wired.logger.error('account status check failed; refusing the request', { cause })
+    status = { suspended: false, failed: true }
+  } finally {
+    if (memo !== undefined) {
+      memo[ACCOUNT_STATUS_INFLIGHT] = false
+    }
+  }
+  if (memo !== undefined) {
+    memo[ACCOUNT_STATUS_KEY] = status
+  }
+  return status
+}
+
+/**
+ * Account controls for the request's user, evaluated once per request
+ * and shared by the operation gate and the access wrappers: fresh
+ * suspension state (the local JWT carries a login-time snapshot) plus
+ * the MFA projection for non-provider sessions. Returns the decision;
+ * callers translate it (throw / refuse).
+ */
+async function applyAccountControls(
+  req: PayloadRequest,
+  wired: WiredOptions,
+  gated: ReadonlySet<string>
+): Promise<'ok' | 'suspended' | 'failed'> {
+  const user = req.user
+  // Local API calls without a request user (the plugin's own engine
+  // paths run `overrideAccess` with no `req.user`) are unaffected.
+  if (!isRecord(user)) {
+    return 'ok'
+  }
+  // Only the plugin's users collection is governed; Payload's
+  // strategies stamp the source collection on the resolved user
+  // (`local-jwt`, `api-key`), as does the auth-link strategy.
+  if (user.collection !== wired.config.map.usersCollection) {
+    return 'ok'
+  }
+  const status = await requestAccountStatus(req, wired)
+  if (status.failed) {
+    return 'failed'
+  }
+  if (status.suspended) {
+    return 'suspended'
+  }
+  if (gated.size === 0 || user._strategy === strategyName) {
+    return 'ok'
+  }
+  if (Array.isArray(user.roles)) {
+    user.roles = user.roles.filter(
+      (role): role is string => typeof role === 'string' && !gated.has(role)
+    )
+  }
+  return 'ok'
+}
+
+function throwOnAccountDecision(decision: 'ok' | 'suspended' | 'failed'): void {
+  if (decision === 'failed') {
+    throw new APIError('Account status could not be verified', 503)
+  }
+  if (decision === 'suspended') {
+    throw new APIError('Account suspended', 401)
+  }
+}
+
+/**
+ * Request-time account controls on EVERY strategy (GHSA-f4hj): the
+ * `auth-link` strategy enforces suspension and the MFA projection at
+ * verification, but Payload's local JWT and API-key strategies resolve
+ * `req.user` without consulting the plugin — and `beforeLogin` does
+ * nothing for a token minted before the control applied. This hook
+ * runs in `beforeOperation` (which Payload evaluates BEFORE access
+ * control) on every collection and global, so a suspended user's next
+ * request is refused outright and `requireMfaForRoles` roles are
+ * withheld from local sessions (which have no MFA proof — fail
+ * closed) before any access check reads them. Provider sessions carry
+ * the strategy's own projection and keep their proof.
+ */
+export function accountControlsGateHook(wired: WiredOptions): CollectionBeforeOperationHook {
+  const gated = new Set<string>(wired.requireMfaForRoles)
+  return async ({ req }) => {
+    throwOnAccountDecision(await applyAccountControls(req, wired, gated))
+  }
+}
+
+/**
+ * The same account controls for Payload globals: a suspended user's
+ * local JWT must not read or write global data either. Shares the
+ * per-request status memo with the collection gate.
+ */
+export function accountControlsGlobalGateHook(wired: WiredOptions): GlobalBeforeOperationHook {
+  const gated = new Set<string>(wired.requireMfaForRoles)
+  return async ({ req }) => {
+    throwOnAccountDecision(await applyAccountControls(req, wired, gated))
+  }
+}
+
+/**
+ * Access-layer belt for the users collection (GHSA-f4hj): the
+ * `/access` map and `docAccess` run access functions WITHOUT any
+ * collection operation, so the operation gate never sees them. Every
+ * users-collection access decision therefore applies the account
+ * controls first — a suspended account holds no grant, and the MFA
+ * projection lands before manager checks read the roles (making
+ * `canAccessAdmin` truthful for policy roles held locally). Host
+ * collections keep their own access functions (their operations are
+ * gated above; only their permission MAP can overstate for a local
+ * session, which no operation then honors).
+ */
+function withAccountControlledAccess(
+  access: CollectionAccess | undefined,
+  wired: WiredOptions
+): CollectionAccess {
+  const gated = new Set<string>(wired.requireMfaForRoles)
+  const controlled: CollectionAccess = { ...access }
+  // Per-key access types are narrower intersections (Payload allows
+  // fn arrays for some keys); the belt stores supertype `Access` fns
+  // through a widened record.
+  const slots = controlled as Record<string, Access | undefined>
+  const guard =
+    (existing: Access): Access =>
+    async (args) => {
+      const decision = await applyAccountControls(args.req, wired, gated)
+      // An access decision refuses; it never throws (the /access map
+      // and docAccess must render for the caller, grantless).
+      if (decision === 'failed') {
+        throw new APIError('Account status could not be verified', 503)
+      }
+      if (decision === 'suspended') {
+        return false
+      }
+      return existing(args)
+    }
+  for (const key of ['create', 'read', 'update', 'delete', 'admin', 'unlock'] as const) {
+    const existing = access?.[key]
+    if (existing !== undefined) {
+      slots[key] = guard(existing)
+      continue
+    }
+    // Unfilled mutation keys: install Payload's own default
+    // (`Boolean(user)`) under the belt, so the permission map cannot
+    // overstate for a suspended session. `read`/`create`/`admin` are
+    // always filled by `withDefaultUserAccess` before this runs.
+    if (key === 'update' || key === 'delete' || key === 'unlock') {
+      slots[key] = guard(({ req }) => Boolean(req.user))
+    }
+  }
+  return controlled
+}
+
 function rolesField(wired: WiredOptions): SelectField {
   return {
     name: wired.config.map.rolesField,
@@ -379,7 +706,7 @@ function suspendedUntilField(wired: WiredOptions): DateField {
     access: { ...governedWrite(wired), read: readManagersOnly(wired) },
     admin: {
       description:
-        'Suspended until this instant (payload-auth-link CAP-7). While in the future, every provider session for this user is refused; clear it or let it lapse to readmit.',
+        'Suspended until this instant (payload-auth-link CAP-7). While in the future, every session for this user is refused — provider sessions, local sign-in, and any local JWT or API key already held; clear it or let it lapse to readmit.',
       date: { pickerAppearance: 'dayAndTime' },
     },
   }
@@ -482,7 +809,7 @@ function createUsersCollection(wired: WiredOptions, strategy: AuthStrategy): Col
   const { map } = wired.config
   return {
     slug: map.usersCollection,
-    access: withDefaultUserAccess(undefined, wired),
+    access: withAccountControlledAccess(withDefaultUserAccess(undefined, wired), wired),
     admin: {
       useAsTitle: map.emailField,
       defaultColumns: [map.emailField, map.rolesField],
@@ -504,7 +831,12 @@ function createUsersCollection(wired: WiredOptions, strategy: AuthStrategy): Col
     ],
     hooks: {
       beforeValidate: [normalizeUserEmailHook(map)],
-      beforeOperation: [passwordGuardHook(wired)],
+      beforeOperation: [
+        passwordGuardHook(wired),
+        passwordIssueGuardHook(wired),
+        accountControlsGateHook(wired),
+      ],
+      beforeLogin: [accountControlsLoginHook(wired)],
       beforeChange: [linkableMarkerHook(wired)],
       afterChange: [suspendRevokeHook(wired)],
     },
@@ -648,13 +980,19 @@ export function applyUsersCollection(
     collection.slug === slug
       ? {
           ...existing,
-          access: withDefaultUserAccess(existing.access, wired),
+          access: withAccountControlledAccess(withDefaultUserAccess(existing.access, wired), wired),
           auth: withStrategy(existing.auth, strategy),
           fields,
           hooks: {
             ...existing.hooks,
             beforeValidate: [...beforeValidate, normalizeUserEmailHook(wired.config.map)],
-            beforeOperation: [...(existing.hooks?.beforeOperation ?? []), passwordGuardHook(wired)],
+            beforeOperation: [
+              ...(existing.hooks?.beforeOperation ?? []),
+              passwordGuardHook(wired),
+              passwordIssueGuardHook(wired),
+              accountControlsGateHook(wired),
+            ],
+            beforeLogin: [...(existing.hooks?.beforeLogin ?? []), accountControlsLoginHook(wired)],
             beforeChange: [...(existing.hooks?.beforeChange ?? []), linkableMarkerHook(wired)],
             afterChange: [...afterChange, suspendRevokeHook(wired)],
           },

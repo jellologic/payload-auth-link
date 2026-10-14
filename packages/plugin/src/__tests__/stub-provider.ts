@@ -2,6 +2,7 @@ import { okAsync } from 'neverthrow'
 import {
   defineProviderId,
   parseEmail,
+  type Capability,
   type IdentityProviderPort,
   type ProviderSession,
   type SessionChannel,
@@ -20,18 +21,20 @@ type StubSessionRow = {
   readonly actorProviderUserId?: string | undefined
   /** Anonymous guest session (CAP-10). */
   readonly anonymous?: boolean | undefined
+  /** Session carries a satisfied MFA proof (CAP-6). */
+  readonly mfaSatisfied?: boolean | undefined
 }
 
 /**
  * In-memory identity provider for tests. Sessions live in a `Map` keyed by
  * the `al_stub_session` cookie value.
  */
-export function createStubProvider() {
+export function createStubProvider(options?: { readonly capabilities?: readonly Capability[] }) {
   const sessions = new Map<string, StubSessionRow>()
 
   const provider: IdentityProviderPort = {
     id: defineProviderId('stub'),
-    capabilities: new Set(),
+    capabilities: new Set<Capability>(options?.capabilities ?? []),
     sessionCookieNames: [stubCookieName],
     getSession: (headers) => {
       const cookie = headers.get('cookie') ?? ''
@@ -56,7 +59,10 @@ export function createStubProvider() {
           phone: null,
           anonymous: found.anonymous ?? false,
         },
-        assurance: { methods: 'unknown', mfa: 'unknown' },
+        assurance:
+          found.mfaSatisfied === true
+            ? { methods: ['password'], mfa: true }
+            : { methods: 'unknown', mfa: 'unknown' },
         actor:
           found.actorProviderUserId === undefined
             ? null
@@ -85,6 +91,7 @@ export function createStubProvider() {
       channel: input.channel,
       actorProviderUserId: input.actorProviderUserId,
       anonymous: input.anonymous,
+      mfaSatisfied: input.mfaSatisfied,
     })
     return `${stubCookieName}=${input.sessionId}`
   }
