@@ -25,6 +25,12 @@ export default tseslint.config(
       // B19: the consumer fixture typechecks built dist types under its
       // own tsconfig (skipLibCheck off); it is not part of any lint project.
       'scripts/consumer-fixture/**',
+      // The payload-auth fixture mirrors a THIRD-PARTY app layout
+      // (payload-auth 1.9.4 + Better Auth 1.6) that our lint rules
+      // would reject on sight; it is a generator for the committed
+      // dump, not shipped code. It stays prettier-formatted, runs only
+      // through the migration CI job, and imports no workspace code.
+      'fixtures/**',
       'snapshots/**',
     ],
   },
@@ -38,7 +44,11 @@ export default tseslint.config(
           // not compile); the default project keeps the explicit
           // `--no-ignore` fixture run from failing on type info instead
           // of the boundary rule under test.
-          allowDefaultProject: ['vitest.config.ts', 'packages/web/src/__fixtures__/*.ts'],
+          allowDefaultProject: [
+            'vitest.config.ts',
+            'vitest.migration.config.ts',
+            'packages/web/src/__fixtures__/*.ts',
+          ],
         },
         tsconfigRootDir: import.meta.dirname,
       },

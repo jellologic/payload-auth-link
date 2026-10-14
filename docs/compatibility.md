@@ -172,3 +172,52 @@ composition surface for every schema ecosystem:
   typechecks against Zod 4.0.0 and the built package passes a
   runtime probe on 4.0.0 (Better Auth's own `^4.5.4` requirement
   will float most real trees higher).
+
+## payload-auth parity (migration, issues #49–#59)
+
+An app coming from [`payload-auth`](https://www.npmjs.com/package/payload-auth)
+(the Better Auth-as-Payload-users plugin) maps onto this package
+feature by feature. Each row names the payload-auth feature, its
+payload-auth-link equivalent, and the support status; migration
+issues are linked where they close a gap. The contract behind every
+"adopt/import" claim is the **payload-auth fixture database** — a real
+dump produced by running payload-auth 1.9.4 itself
+(`fixtures/dumps/`, `fixtures/payload-auth-app/`), loaded by the
+`migration-fixture` CI job. The public
+[migrating-from-payload-auth guide](migrating-from-payload-auth.md)
+is generated from these artifacts, never maintained by hand.
+
+| payload-auth feature                                    | payload-auth-link equivalent                                                                    | Status                          | Notes & issues                                                                          |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------- | --------------------------------------------------------------------------------------- |
+| Email+password sign-in                                  | `createBetterAuthEngine` with `emailAndPassword`                                                | full                            | Same Better Auth engine; hashes are portable (fixture pins the hash shape)              |
+| Email verification                                      | Engine default `requireEmailVerification: true`                                                 | full (stricter default)         | 0.7.0 requires opt-out; payload-auth defaulted off                                      |
+| Social OAuth sign-in                                    | `socialProviders` through the engine                                                            | full                            |                                                                                         |
+| Magic link / email OTP / anonymous / passkey            | The same Better Auth plugins, `autoDeclare`d                                                    | full                            | passkey probed (`@better-auth/passkey`)                                                 |
+| Two-factor                                              | BA `twoFactor` plugin + `policies.requireMfaForRoles` projection                                | partial                         | MFA assurance is capability-gated (see the capabilities guide); admin step-up view: #55 |
+| Organization plugin (orgs/members/invites)              | BA organization plugin via `autoDeclare`/`customModels`; payload-auth-link adds role governance | partial → full with #49         | Adopt the app's business collections without row moves (#49)                            |
+| Users collection IS the BA user table                   | Separate link: identities live in plugin-injected fields on the users document                  | via #49 (adopt) or #50 (import) | Zero row moves with `schemaMap` (#49); reversible copy otherwise (#50)                  |
+| API keys (`@better-auth/api-key`)                       | Engine `autoDeclare` + Payload REST authentication by key                                       | full                            | Probed satellite; key→session bridge becomes `authLinkServer` (#54)                     |
+| `jwt` plugin + `jwks`                                   | Engine `autoDeclare` of the `jwks` model                                                        | full                            | Carried verbatim by the importer (#50)                                                  |
+| OIDC provider (`oidcProvider`)                          | Removed upstream in BA 1.7 → `@better-auth/oauth-provider`                                      | gap (app-side schema move)      | Journey issue #60 documents the 1:1 data map                                            |
+| `@better-auth/sso`, device authorization, subscriptions | Not probed — the engine fails fast with `UnsupportedSchemaError`                                | unsupported until probed        | See the Better Auth lockstep rule above                                                 |
+| Admin login/signup views                                | `admin: { loginView: 'provider' }` views                                                        | gap → #55                       | Since 0.7.0 linked documents refuse Payload local login by design                       |
+| Admin forgot/reset views                                | Provider-flow forgot/reset views                                                                | gap → #55                       | Provider-linked documents refuse the Payload reset flow (GHSA-f4hj)                     |
+| Admin invitations (`admin-invitations`)                 | Role-manager governance (create operator accounts, invite to roles)                             | partial                         | payload-auth's admin-invite collection is superseded by role governance                 |
+| `defaultAdminRole` / `adminRoles`                       | `roles` + `roleManagerRoles` plugin options                                                     | full                            |                                                                                         |
+| `requireAdminInviteForSignUp`                           | `policies` + JIT-link rules (verified-email gate)                                               | partial                         | Sign-up surface is the provider's; unverified emails never link                         |
+| `getPayloadAuth(config)`                                | `getPayload({ config })`                                                                        | codemod → #53                   |                                                                                         |
+| `payload.betterAuth.api.*`                              | `authLinkServer(payload)` supported session API; opt-in shim meanwhile                          | shim → #53, API → #54           | The shim goes through the same suspension/MFA gate — no back door                       |
+| `payload.betterAuth.handler`                            | `auth.handler` via the framework adapter (`createRouteHandlers`)                                | full                            |                                                                                         |
+| Admin views (user/account/session lists)                | Payload admin on the users collection + `ba-*`/adopted collections                              | full with #49                   | Adopted collections keep their admin config (#49)                                       |
+| `saveToJWT` field flags                                 | Payload-native (Payload owns the session JWT)                                                   | full                            |                                                                                         |
+| `hidePluginCollections`                                 | `collectionsAccess` (default deny-all) + hidden admin on engine collections                     | full                            |                                                                                         |
+| Role values like `frontPlugin` (stored as-is)           | `roleValues` map at the storage edge                                                            | gap → #56                       | No `ALTER TYPE` rename required                                                         |
+| Full user document on `req.user`                        | `reqUser: 'document'` (opt-in; projection by default)                                           | gap → #57                       |                                                                                         |
+| Legacy session cookies at cutover                       | `legacySessions: { until }` read-only coexistence window                                        | gap → #51                       | Cookie names exposed through the cookie helpers                                         |
+| Uninstall / off-ramp                                    | Tested uninstall job + `migrate export`                                                         | gap → #58                       |                                                                                         |
+| Session carry across cutover                            | Importer `--sessions=carry` (default) + coexistence window                                      | gap → #50/#51                   |                                                                                         |
+
+Rows move to **full** only when the fixture CI job proves them: the
+fixture boots (#49), old passwords sign in (#50), legacy cookies hold
+across the switch (#51), and the doctor's report matches the known
+blocker list (#52).
