@@ -205,8 +205,7 @@ async function main(
       return 3
     }
     const sessionsFlag = flags.get('sessions')
-    const sessions =
-      sessionsFlag === 'drop' ? ('drop' as const) : ('carry' as const)
+    const sessions = sessionsFlag === 'drop' ? ('drop' as const) : ('carry' as const)
     const importOptions: ImportCommandOptions = {
       configPath: new URL(configFlag, `file://${process.cwd()}/`).pathname,
       databaseUrl,

@@ -1,0 +1,505 @@
+/**
+ * Issue #50 acceptance, against the real payload-auth dump: the
+ * importer is runnable, reversible, and honest — dry-run by default,
+ * `--apply` writes a manifest and never touches the source tables,
+ * `verify` checks both sides, `rollback` undoes exactly the manifest,
+ * `finalize` marks the point of no return, and an old password signs
+ * in after the copy.
+ */
+import { apiKey as apiKeyPlugin } from '@better-auth/api-key'
+import { postgresAdapter } from '@payloadcms/db-postgres'
+import { nextCookies } from 'better-auth/next-js'
+import { jwt, magicLink, organization } from 'better-auth/plugins'
+import { authLink } from '@payload-auth-link/plugin'
+import { createBetterAuthEngine } from '@payload-auth-link/provider-better-auth'
+import { readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { buildConfig, getPayload, type CollectionConfig, type Payload } from 'payload'
+import { afterAll, beforeAll, describe, expect, test } from 'vitest'
+import { fileURLToPath } from 'node:url'
+
+// Runtime-computed specifier: the typecheck project never reaches into
+// fixtures/.
+const harnessPath = fileURLToPath(
+  new URL('../../../../fixtures/payload-auth-app/test/harness.ts', import.meta.url)
+)
+type Harness = {
+  dropDatabase: (database: string) => Promise<void>
+  expectedCounts: Readonly<Record<string, number>>
+  fixtureClient: (database: string) => Client
+  loadFixtureDump: (prefix: string) => Promise<string>
+  targetFromEnv: (database: string) => {
+    host: string
+    port: number
+    user: string
+    password: string
+  }
+}
+const harness = (await import(harnessPath)) as Harness
+import {
+  finalizeManifest,
+  readManifest,
+  rollbackImport,
+  verifyImport,
+  writeManifest,
+  defaultManifestPath,
+} from '../importer/lifecycle.js'
+import { runFromPayloadAuth } from '../importer/run-import.js'
+import type { Client } from 'pg'
+
+const PASSWORD = 'FixturePassw0rd!'
+const ORIGIN = 'http://localhost:3100'
+
+const adoptSchemaSql = readFileSync(
+  new URL('../../../../fixtures/payload-auth-app/test/adopt-schema.sql', import.meta.url),
+  'utf8'
+)
+// The ba-* target tables, generated from the catalog of a scratch
+// payload boot (see the file header). Push stays OFF for the same
+// reason as adopt mode: drizzle's rename heuristics prompt on the
+// payload-auth layout.
+const targetSchemaSql = readFileSync(
+  new URL('../../../../fixtures/payload-auth-app/test/import-target-schema.sql', import.meta.url),
+  'utf8'
+)
+
+// The transitional app: the source layout stays (loose, inert), the
+// engine's ba-* collections are the target, and the plugin rides the
+// host users collection with the adopted role field.
+const hostCollections: CollectionConfig[] = [
+  {
+    slug: 'users',
+    auth: true,
+    fields: [
+      { name: 'email', type: 'email', required: true, index: true },
+      { name: 'emailVerified', type: 'checkbox', defaultValue: false },
+      { name: 'name', type: 'text' },
+      { name: 'image', type: 'text' },
+      { name: 'department', type: 'text' },
+      {
+        name: 'role',
+        type: 'select',
+        hasMany: true,
+        options: ['user', 'admin', 'staff', 'frontPlugin'],
+        defaultValue: ['user'],
+        required: true,
+      },
+    ],
+  },
+  {
+    slug: 'accounts',
+    fields: [
+      { name: 'user', type: 'relationship', relationTo: 'users', required: true, index: true },
+      { name: 'accountId', type: 'text', required: true, index: true },
+      { name: 'providerId', type: 'text', required: true, index: true },
+      { name: 'password', type: 'text' },
+      { name: 'accessToken', type: 'text' },
+      { name: 'refreshToken', type: 'text' },
+      { name: 'idToken', type: 'text' },
+      { name: 'accessTokenExpiresAt', type: 'date' },
+      { name: 'refreshTokenExpiresAt', type: 'date' },
+      { name: 'scope', type: 'text' },
+    ],
+  },
+  {
+    slug: 'sessions',
+    fields: [
+      { name: 'user', type: 'relationship', relationTo: 'users', required: true, index: true },
+      { name: 'token', type: 'text', required: true, unique: true, index: true },
+      { name: 'expiresAt', type: 'date', required: true },
+      { name: 'ipAddress', type: 'text' },
+      { name: 'userAgent', type: 'text' },
+      { name: 'activeOrganization', type: 'relationship', relationTo: 'organizations' },
+    ],
+  },
+  {
+    slug: 'verifications',
+    fields: [
+      { name: 'identifier', type: 'text', required: true, index: true },
+      { name: 'value', type: 'text', required: true },
+      { name: 'expiresAt', type: 'date', required: true },
+    ],
+  },
+  {
+    slug: 'apiKeys',
+    fields: [
+      { name: 'configId', type: 'text', required: true },
+      { name: 'name', type: 'text' },
+      { name: 'start', type: 'text' },
+      { name: 'prefix', type: 'text' },
+      { name: 'key', type: 'text', required: true },
+      { name: 'referenceId', type: 'text', required: true, index: true },
+      { name: 'refillInterval', type: 'number' },
+      { name: 'refillAmount', type: 'number' },
+      { name: 'lastRefillAt', type: 'date' },
+      { name: 'enabled', type: 'checkbox', defaultValue: true },
+      { name: 'rateLimitEnabled', type: 'checkbox', defaultValue: true },
+      { name: 'rateLimitTimeWindow', type: 'number' },
+      { name: 'rateLimitMax', type: 'number' },
+      { name: 'requestCount', type: 'number' },
+      { name: 'remaining', type: 'number' },
+      { name: 'lastRequest', type: 'date' },
+      { name: 'expiresAt', type: 'date' },
+      { name: 'permissions', type: 'text' },
+      { name: 'metadata', type: 'text' },
+    ],
+  },
+  {
+    slug: 'organizations',
+    fields: [
+      { name: 'name', type: 'text', required: true },
+      { name: 'slug', type: 'text', required: true, unique: true, index: true },
+      { name: 'logo', type: 'text' },
+      { name: 'metadata', type: 'json' },
+      {
+        name: 'billing',
+        type: 'group',
+        fields: [
+          { name: 'plan', type: 'text', defaultValue: 'free' },
+          { name: 'seats', type: 'number', defaultValue: 5 },
+        ],
+      },
+      { name: 'tags', type: 'array', fields: [{ name: 'label', type: 'text' }] },
+      { name: 'owner', type: 'relationship', relationTo: 'users' },
+    ],
+  },
+  {
+    slug: 'members',
+    fields: [
+      {
+        name: 'organization',
+        type: 'relationship',
+        relationTo: 'organizations',
+        required: true,
+        index: true,
+      },
+      { name: 'user', type: 'relationship', relationTo: 'users', required: true, index: true },
+      { name: 'role', type: 'text' },
+    ],
+  },
+  {
+    slug: 'invitations',
+    fields: [
+      {
+        name: 'organization',
+        type: 'relationship',
+        relationTo: 'organizations',
+        required: true,
+        index: true,
+      },
+      { name: 'email', type: 'email', required: true, index: true },
+      { name: 'role', type: 'text' },
+      { name: 'status', type: 'text', defaultValue: 'pending' },
+      { name: 'expiresAt', type: 'date', required: true },
+      { name: 'inviter', type: 'relationship', relationTo: 'users', index: true },
+    ],
+  },
+  {
+    slug: 'jwks',
+    fields: [
+      { name: 'publicKey', type: 'text', required: true },
+      { name: 'privateKey', type: 'text', required: true },
+    ],
+  },
+]
+
+const canReachPostgres = await (async () => {
+  try {
+    const probe = harness.fixtureClient('postgres')
+    await probe.connect()
+    await probe.end()
+    return true
+  } catch {
+    return false
+  }
+})()
+
+describe.skipIf(!canReachPostgres)(
+  'from-payload-auth: runnable, reversible importer (issue #50)',
+  () => {
+    let database: string
+    let payload: Payload
+    let latePayload: Payload | undefined
+    let manifestPath: string
+    let connectionString: string
+
+    const engine = createBetterAuthEngine({
+      getPayload: () => {
+        if (latePayload === undefined) {
+          throw new Error('Payload not ready')
+        }
+        return Promise.resolve(latePayload)
+      },
+      autoDeclare: true,
+      options: {
+        baseURL: ORIGIN,
+        secret: 'import-secret-import-secret-import!',
+        emailAndPassword: { enabled: true, requireEmailVerification: false },
+        advanced: { cookiePrefix: 'bl' },
+        plugins: [
+          magicLink({ sendMagicLink: async () => {} }),
+          organization({ sendInvitationEmail: async () => {} }),
+          apiKeyPlugin({ enableMetadata: true }),
+          jwt(),
+          nextCookies(),
+        ],
+        rateLimit: { enabled: false },
+      },
+    })
+
+    beforeAll(async () => {
+      database = await harness.loadFixtureDump('pal_import')
+      const target = harness.targetFromEnv(database)
+      connectionString = `postgres://${target.user}:${target.password}@${target.host}:${target.port}/${database}`
+      const schema = harness.fixtureClient(database)
+      await schema.connect()
+      await schema.query(adoptSchemaSql)
+      await schema.query(targetSchemaSql)
+      await schema.end()
+
+      const config = await buildConfig({
+        secret: 'import-secret-import-secret-import!',
+        serverURL: ORIGIN,
+        telemetry: false,
+        logger: { options: { level: 'silent' } },
+        admin: { user: 'users' },
+        db: postgresAdapter({ push: false, pool: { connectionString } }),
+        collections: [...hostCollections, ...engine.collections],
+        plugins: [
+          authLink({
+            baseUrl: ORIGIN,
+            roles: ['user', 'admin', 'staff', 'front-plugin'],
+            defaultRole: 'user',
+            rolesField: 'role',
+            roleManagerRoles: ['admin'],
+            roleValues: { 'front-plugin': 'frontPlugin' },
+            providers: [engine.provider],
+          }),
+        ],
+      })
+      payload = await getPayload({ config })
+      latePayload = payload
+      await engine.auth.$context
+      manifestPath = join(tmpdir(), `pal-import-${Date.now()}.json`)
+    }, 240_000)
+
+    afterAll(async () => {
+      // Release Payload's pool before the database goes away, or the
+      // forced termination surfaces as unhandled pg errors.
+      await payload.db.destroy?.()
+      await harness.dropDatabase(database)
+    })
+
+    async function sourceCounts(): Promise<Record<string, number>> {
+      const client = harness.fixtureClient(database)
+      await client.connect()
+      const counts: Record<string, number> = {}
+      for (const table of Object.keys(harness.expectedCounts)) {
+        const counted = await client.query(`SELECT count(*)::int AS n FROM ${table}`)
+        counts[table] = (counted.rows[0] as { n: number } | undefined)?.n ?? -1
+      }
+      await client.end()
+      return counts
+    }
+
+    test('dry run is the default: nothing is written', async () => {
+      const before = await sourceCounts()
+      const outcome = await runFromPayloadAuth({
+        configPath: 'unused',
+        databaseUrl: connectionString,
+        apply: false,
+        sessions: 'carry',
+        manifestPath,
+        loadPayload: () => Promise.resolve(payload),
+      })
+      expect(outcome.exitCode).toBe(0)
+      const after = await sourceCounts()
+      // The dry run writes nothing anywhere.
+      for (const table of Object.keys(before)) {
+        expect(after[table], table).toBe(before[table])
+      }
+      const baUsers = await payload.count({ collection: 'ba-users', overrideAccess: true })
+      expect(baUsers.totalDocs).toBe(0)
+      expect(outcome.plan.unmappable).toEqual([])
+      expect(outcome.unverified).toEqual(['bob@example.com', 'dave@example.com'])
+    })
+
+    test('--apply copies every row and records the manifest; hashes carry verbatim', async () => {
+      const outcome = await runFromPayloadAuth({
+        configPath: 'unused',
+        databaseUrl: connectionString,
+        apply: true,
+        sessions: 'carry',
+        manifestPath,
+        loadPayload: () => Promise.resolve(payload),
+      })
+      expect(outcome.exitCode).toBe(0)
+      expect(outcome.result?.created ?? 0).toBeGreaterThan(10)
+      // Counts: one ba-user + accounts + carried sessions + verifications
+      // + api keys + jwks + orgs/members/invitations.
+      for (const [slug, expected] of [
+        ['ba-users', harness.expectedCounts.users],
+        ['ba-accounts', harness.expectedCounts.accounts],
+        ['ba-sessions', harness.expectedCounts.sessions],
+        ['ba-verifications', harness.expectedCounts.verifications],
+        ['ba-apikey', harness.expectedCounts.api_keys],
+        ['ba-jwks', harness.expectedCounts.jwks],
+        ['ba-organization', harness.expectedCounts.organizations],
+        ['ba-member', harness.expectedCounts.members],
+        ['ba-invitation', harness.expectedCounts.invitations],
+      ] as const) {
+        const counted = await payload.count({ collection: slug, overrideAccess: true })
+        expect(counted.totalDocs, slug).toBe(expected)
+      }
+      const manifest = readManifest(manifestPath)
+      expect(manifest?.created.length).toBeGreaterThan(10)
+      expect(manifest?.options.sessions).toBe('carry')
+      expect(manifest?.finalized).toBe(false)
+      // Password hashes copied verbatim.
+      const client = harness.fixtureClient(database)
+      await client.connect()
+      const sourceHash = await client.query(
+        "SELECT password FROM accounts WHERE provider_id = 'credential' ORDER BY id LIMIT 1"
+      )
+      await client.end()
+      const accounts = await payload.find({
+        collection: 'ba-accounts',
+        where: { providerId: { equals: 'credential' } },
+        depth: 0,
+        overrideAccess: true,
+      })
+      const hashes = new Set(accounts.docs.map((doc) => String(doc.password)))
+      expect(hashes.has(String((sourceHash.rows[0] as { password: string }).password))).toBe(true)
+      // The linkable proof comes from VERIFIED emails only.
+      const users = await payload.find({ collection: 'ba-users', depth: 0, overrideAccess: true })
+      const bob = users.docs.find((doc) => doc.email === 'bob@example.com')
+      const alice = users.docs.find((doc) => doc.email === 'alice@example.com')
+      expect(alice?.emailVerified).toBe(true)
+      expect(bob?.emailVerified).toBe(false)
+      const hostDocs = await payload.find({
+        collection: 'users',
+        where: { email: { in: ['alice@example.com', 'bob@example.com'] } },
+        depth: 0,
+        overrideAccess: true,
+      })
+      for (const doc of hostDocs.docs) {
+        if (doc.email === 'alice@example.com') {
+          expect(doc.linkable).toBe(true)
+          expect(doc.linkableEmail).toBe('alice@example.com')
+        } else {
+          expect(doc.linkable).toBe(false)
+        }
+      }
+    })
+
+    test('verify checks both sides and passes', async () => {
+      const result = await verifyImport({
+        payload,
+        sourceConnectionString: connectionString,
+      })
+      expect(result.issues).toEqual([])
+      expect(result.ok).toBe(true)
+    })
+
+    test('rollback undoes exactly the manifest; the source is unchanged', async () => {
+      const before = await sourceCounts()
+      const manifest = readManifest(manifestPath)
+      expect(manifest).not.toBeNull()
+      if (manifest === null) {
+        throw new Error('unreachable')
+      }
+      const undone = await rollbackImport({ payload, manifest })
+      expect(undone.deleted).toBe(manifest.created.length)
+      // Every ba-* collection is empty again, and the host users' field
+      // writes are restored.
+      for (const slug of [
+        'ba-users',
+        'ba-accounts',
+        'ba-sessions',
+        'ba-verifications',
+        'ba-apikey',
+        'ba-jwks',
+        'ba-organization',
+        'ba-member',
+        'ba-invitation',
+      ]) {
+        const counted = await payload.count({ collection: slug, overrideAccess: true })
+        expect(counted.totalDocs, slug).toBe(0)
+      }
+      const hostDocs = await payload.find({
+        collection: 'users',
+        depth: 0,
+        overrideAccess: true,
+      })
+      for (const doc of hostDocs.docs) {
+        expect(doc.linkable, String(doc.email)).toBe(false)
+        expect(doc.identities).toEqual([])
+      }
+      // The source tables were never modified.
+      const after = await sourceCounts()
+      for (const table of Object.keys(before)) {
+        expect(after[table], table).toBe(before[table])
+      }
+    })
+
+    test('re-apply and finalize close the run', async () => {
+      const outcome = await runFromPayloadAuth({
+        configPath: 'unused',
+        databaseUrl: connectionString,
+        apply: true,
+        sessions: 'carry',
+        manifestPath,
+        loadPayload: () => Promise.resolve(payload),
+      })
+      expect(outcome.exitCode).toBe(0)
+      const manifest = readManifest(manifestPath)
+      expect(manifest?.finalized).toBe(false)
+      if (manifest === null) {
+        throw new Error('unreachable')
+      }
+      const finalized = finalizeManifest(manifest, manifestPath)
+      expect(finalized.finalized).toBe(true)
+      expect(readManifest(manifestPath)?.finalized).toBe(true)
+      // Rollback is no longer possible after finalize.
+      await expect(rollbackImport({ payload, manifest: finalized })).rejects.toThrow(
+        /no longer possible/
+      )
+    })
+
+    test('an old password signs in on the new stack', async () => {
+      const response = await engine.auth.handler(
+        new Request(`${ORIGIN}/api/auth/sign-in/email`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', origin: ORIGIN },
+          body: JSON.stringify({ email: 'carol@example.com', password: PASSWORD }),
+        })
+      )
+      expect(response.status).toBe(200)
+    })
+
+    test('verify remains green after the re-apply', async () => {
+      const result = await verifyImport({ payload, sourceConnectionString: connectionString })
+      expect(result.ok, JSON.stringify(result.issues)).toBe(true)
+    })
+
+    test('manifest bookkeeping round-trips through the helpers', () => {
+      const path = join(tmpdir(), `pal-import-${Date.now()}-x.json`)
+      const manifest = {
+        version: 1 as const,
+        createdAt: new Date().toISOString(),
+        sourceDatabase: 'postgres://***@db',
+        options: { sessions: 'carry' as const },
+        created: [],
+        fieldWrites: [],
+        finalized: false,
+        sourceCounts: {},
+        totals: {},
+      }
+      writeManifest(manifest, path)
+      expect(readManifest(path)?.version).toBe(1)
+      // defaultManifestPath is the documented location
+      expect(defaultManifestPath).toBe('payload-auth-link-migration.json')
+    })
+  }
+)

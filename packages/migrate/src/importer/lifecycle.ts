@@ -202,7 +202,10 @@ export async function verifyImport(options: {
         brokenKeys += 1
         continue
       }
-      if (!baUserIds.has(String(record.userId))) {
+      // The satellite's user reference is `referenceId` on BA 1.7's own
+      // schema and `userId` in 1.6-era layouts.
+      const owner = record.referenceId ?? record.userId
+      if (!baUserIds.has(String(owner))) {
         brokenKeys += 1
       }
     }
@@ -281,6 +284,11 @@ export async function rollbackImport(options: {
   readonly log?: (message: string) => void
 }): Promise<{ deleted: number; restored: number }> {
   const { payload, manifest, log = () => {} } = options
+  if (manifest.finalized) {
+    // The point of no return: after `finalize`, the manifest's rows are
+    // the migration's history, not a TODO to undo.
+    throw new Error('the migration is finalized; rollback is no longer possible')
+  }
   let deleted = 0
   for (const row of [...manifest.created].reverse()) {
     try {

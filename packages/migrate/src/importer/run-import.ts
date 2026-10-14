@@ -102,9 +102,7 @@ async function buildPlan(options: ImportCommandOptions): Promise<{
 }
 
 /** The `from-payload-auth` command: dry-run plan, or `--apply` + manifest. */
-export async function runFromPayloadAuth(
-  options: ImportCommandOptions
-): Promise<{
+export async function runFromPayloadAuth(options: ImportCommandOptions): Promise<{
   exitCode: number
   result?: ImportResult
   plan: ImportPlan

@@ -43,6 +43,16 @@ export async function openSource(connectionString: string): Promise<Client> {
   return client
 }
 
+/** The columns one table actually has (customized layouts drop columns). */
+async function columnsOf(client: Client, table: string): Promise<Set<string>> {
+  const result = await client.query(
+    `SELECT column_name FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = $1`,
+    [table]
+  )
+  return new Set(result.rows.map((row) => String((row as { column_name: unknown }).column_name)))
+}
+
 async function tableExists(client: Client, table: string): Promise<boolean> {
   const result = await client.query(
     `SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1`,
@@ -172,6 +182,11 @@ export async function findOrphans(client: Client): Promise<readonly Unmappable[]
       tableExists(client, check.target),
     ])
     if (!exists[0] || !exists[1]) {
+      continue
+    }
+    // Customized layouts drop columns; a missing reference column is
+    // not an orphan farm.
+    if (!(await columnsOf(client, check.table)).has(check.column)) {
       continue
     }
     const result = await client.query(

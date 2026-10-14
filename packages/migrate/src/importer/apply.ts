@@ -408,7 +408,9 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
       'start',
       'prefix',
       'key',
-      'user_id',
+      // payload-auth stores the satellite's userId as referenceId
+      // (the #49 field map's source side).
+      'reference_id',
       'refill_interval',
       'refill_amount',
       'last_refill_at',
@@ -437,7 +439,11 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
               ...(textOrNull(row.start) === undefined ? {} : { start: textOrNull(row.start) }),
               ...(textOrNull(row.prefix) === undefined ? {} : { prefix: textOrNull(row.prefix) }),
               key: String(row.key),
-              userId: String(row.user_id),
+              // The satellite's user reference arrives as referenceId in
+              // payload-auth layouts; BA 1.7's own schema names it the
+              // same, so the target field is offered both names.
+              userId: String(row.reference_id),
+              referenceId: String(row.reference_id),
               ...(numberOrNull(row.refill_interval) === undefined
                 ? {}
                 : { refillInterval: numberOrNull(row.refill_interval) }),

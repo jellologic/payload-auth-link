@@ -319,6 +319,9 @@ describe.skipIf(!canReachPostgres)(
     }, 180_000)
 
     afterAll(async () => {
+      // Release Payload's pool before the database goes away, or the
+      // forced termination surfaces as unhandled pg errors.
+      await payload.db.destroy?.()
       await harness.dropDatabase(database)
     })
 
