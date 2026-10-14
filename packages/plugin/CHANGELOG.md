@@ -1,5 +1,21 @@
 # @payload-auth-link/plugin
 
+## 0.5.1
+
+### Patch Changes
+
+- [#44](https://github.com/jellologic/payload-auth-link/pull/44) [`31aa536`](https://github.com/jellologic/payload-auth-link/commit/31aa536734771829d8aeda8256d7b5c91569069b) Thanks [@jellologic](https://github.com/jellologic)! - One session resolution per request (issue [#42](https://github.com/jellologic/payload-auth-link/issues/42)): the auth strategy and
+  the endpoint handler verify the same `req.headers` reference for a
+  single request, so each refused request walked the providers (and
+  logged its warnings) three times. Verification results are now
+  memoized on the headers identity — one provider walk, one set of
+  logs, one resolution per request; a new request brings new headers
+  and a fresh verification. The guest read is unchanged.
+
+  Upgrade impact: none — refused requests now log each warning once
+  instead of three times, and refused requests stop paying repeated
+  provider round-trips.
+
 ## 0.5.0
 
 ### Minor Changes
