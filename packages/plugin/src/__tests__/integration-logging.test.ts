@@ -14,8 +14,11 @@ import {
   type Payload,
   type SanitizedConfig,
 } from 'payload'
-import { beforeAll, describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { okAsync } from 'neverthrow'
 import { authLink } from '../index.js'
+import { wireOptions } from '../options.js'
+import { createServices } from '../services.js'
 import { createStubProvider, stubCookieName } from './stub-provider.js'
 
 const ORIGIN = 'http://auth-link.test'
@@ -24,6 +27,7 @@ const SECRET = 'refusal-logging-secret-32-chars!'
 let config: SanitizedConfig
 let payload: Payload
 const stub = createStubProvider()
+const getCount = vi.fn(() => okAsync(null))
 const warnings: string[] = []
 const logger: LoggerPort = {
   ...consoleLogger(),
@@ -65,6 +69,65 @@ beforeAll(async () => {
   })
   payload = await getPayload({ config })
 }, 60_000)
+
+describe('one resolution per request (issue #42)', () => {
+  it('verifies the same headers once: one provider read, one warning', async () => {
+    const countConfig = await buildConfig({
+      secret: SECRET,
+      serverURL: ORIGIN,
+      db: sqliteAdapter({ client: { url: ':memory:' } }),
+      telemetry: false,
+      logger: { options: { level: 'silent' } },
+      admin: { user: 'users' },
+      collections: [{ slug: 'users', auth: true, fields: [] }],
+      plugins: [
+        authLink({
+          baseUrl: ORIGIN,
+          roles: ['admin', 'user'],
+          defaultRole: 'user',
+          providers: [
+            {
+              ...stub.provider,
+              getSession: (headers: Headers) => {
+                getCount()
+                return stub.provider.getSession(headers)
+              },
+            },
+          ],
+        }),
+      ],
+    })
+    const countPayload = await getPayload({ config: countConfig })
+    const wired = wireOptions({
+      baseUrl: ORIGIN,
+      roles: ['admin', 'user'],
+      defaultRole: 'user',
+      providers: [
+        {
+          ...stub.provider,
+          getSession: (headers: Headers) => {
+            getCount()
+            return stub.provider.getSession(headers)
+          },
+        },
+      ],
+      logger,
+    })
+    const { sessions } = createServices(wired, countPayload)
+
+    // The auth strategy and the endpoint handler see the SAME
+    // `headers` reference for one request; both verifications must
+    // collapse into one provider walk and one warning.
+    const headers = new Headers({ cookie: `${stubCookieName}=stale-garbage` })
+    const first = await sessions.verify(headers)
+    const second = await sessions.verify(headers)
+    expect(first.isErr() && second.isErr()).toBe(true)
+    expect(getCount).toHaveBeenCalledTimes(1)
+    expect(
+      warnings.filter((message) => message.includes('no provider session resolved'))
+    ).toHaveLength(1)
+  })
+})
 
 describe('refusal logging (default-audible logger)', () => {
   it('warns when a session-shaped cookie resolves to nothing (stale config or cookie)', async () => {
