@@ -64,6 +64,58 @@ in access functions, `/api/users/me` on the client) or extend the
 projection yourself. This is deliberate: the projection is stable
 across providers and strategies.
 
+## Renaming camelCase role values (e.g. `frontPlugin`)
+
+payload-auth apps commonly carry camelCase select values — `user /
+admin / staff / frontPlugin`. payload-auth-link roles are canonical
+lowercase slugs, so adopting a field whose stored values are
+camelCase fails the role validation (`roles.3: role must be lowercase
+alphanumeric with - or _`). With `frontplugin` (lowercased) adoption
+succeeds — so the migration is a rename of the stored values, done
+once, in the database:
+
+1. **Find every enum type carrying the value** (payload-auth apps
+   have one for the users table, one for the `_users_v` versions
+   table, and one for `admin_invitations`):
+
+   ```sql
+   SELECT t.typname, e.enumlabel
+   FROM pg_type t
+   JOIN pg_enum e ON t.oid = e.enumtypid
+   WHERE e.enumlabel = 'frontPlugin';
+   ```
+
+2. **Rename the enum label once per type** — a native-enum rename
+   rewrites every stored row using that type in the same statement
+   (the users table, the versions table, and invitations all at
+   once; no per-row UPDATE needed):
+
+   ```sql
+   ALTER TYPE enum_users_role RENAME VALUE 'frontPlugin' TO 'front-plugin';
+   -- repeat for each typname from step 1
+   ```
+
+   If your role column is plain text instead of a native enum, run
+   the per-row updates yourself:
+   `UPDATE users SET role = 'front-plugin' WHERE role = 'frontPlugin';`
+   (and the same for the `_users_v` snapshot tables).
+
+3. **Grep the app for the old value** — access functions, seed
+   scripts, tests, and any client code comparing against it:
+
+   ```sh
+   grep -rn "frontPlugin" src/ tests/
+   ```
+
+   payload-auth-link projects roles canonically on `req.user.roles`
+   (`front-plugin`), so checks that compare the canonical slug keep
+   working; checks still comparing the camelCase literal must be
+   updated in this pass.
+
+After the rename, the roles-field adoption succeeds unchanged
+(`rolesField: 'role'`), and the plugin's governed write access
+applies to the adopted field.
+
 ## Migration script (sketch)
 
 The script below is a **sketch**, not a shipped tool: review it
