@@ -25,12 +25,14 @@ describe('applyUsersCollection', () => {
     const users = result[0]
     expect(users?.slug).toBe('users')
     expect(users?.fields.map((field) => fieldName(field))).toEqual([
+      'email',
       'roles',
       'identities',
       'phone',
       'suspendedUntil',
       'suspendReason',
       'linkable',
+      'linkableEmail',
     ])
     expect(users?.auth).toMatchObject({ strategies: [{ name: strategyName }] })
     expect(users?.hooks?.beforeValidate).toHaveLength(1)
@@ -50,11 +52,13 @@ describe('applyUsersCollection', () => {
     expect(users?.fields.map((field) => fieldName(field))).toEqual([
       'nickname',
       'roles',
+      'email',
       'identities',
       'phone',
       'suspendedUntil',
       'suspendReason',
       'linkable',
+      'linkableEmail',
     ])
     expect(users?.hooks?.beforeValidate).toHaveLength(2)
     expect(users?.hooks?.beforeValidate?.[0]).toBe(hook)
@@ -243,6 +247,80 @@ describe('applyUsersCollection', () => {
       expect(gapAccess.create?.({ req: { user: { roles: ['admin'] } } })).toBe(true)
       expect(gapAccess.create?.({ req: { user: { roles: ['user'] } } })).toBe(false)
       expect(gapAccess.read).toBeTypeOf('function')
+    })
+  })
+
+  describe('email/password fail-closed guards (GHSA-8524)', () => {
+    const usersOf = (result: ReturnType<typeof applyUsersCollection>) =>
+      result[0] as CollectionConfig
+    it('injects the email field with fail-closed update access', () => {
+      const { options, strategy } = wired()
+      const users = usersOf(applyUsersCollection([], options, strategy))
+      const email = users.fields.find((f) => fieldName(f) === 'email') as {
+        access?: { update?: (args: { req: { user?: unknown }; doc?: unknown }) => boolean }
+      }
+      const req = (roles: string[]) => ({ user: { roles } })
+      const doc = { identities: [{ providerId: 'stub', providerUserId: '1' }] }
+      expect(email.access?.update?.({ req: req(['admin']), doc })).toBe(true)
+      expect(email.access?.update?.({ req: req(['user']), doc })).toBe(false)
+      expect(email.access?.update?.({ req: req(['user']), doc: { identities: [] } })).toBe(true)
+    })
+
+    it('strips password writes from non-managers in beforeOperation; managers keep them', () => {
+      const { options, strategy } = wired()
+      const users = usersOf(applyUsersCollection([], options, strategy))
+      const hook = users.hooks?.beforeOperation?.[0] as (args: {
+        args: { data: Record<string, unknown> }
+        operation: string
+        req: { user?: unknown }
+      }) => unknown
+      const plain = {
+        args: { data: { password: 'X-1', name: 'n' } },
+        operation: 'update',
+        req: { user: { roles: ['user'] } },
+      }
+      const stripped = hook(plain) as { data: Record<string, unknown> }
+      expect(stripped.data.password).toBeUndefined()
+      expect(stripped.data.name).toBe('n')
+      const manager = {
+        args: { data: { password: 'X-1' } },
+        operation: 'update',
+        req: { user: { roles: ['admin'] } },
+      }
+      const kept = hook(manager) as { data: Record<string, unknown> }
+      expect(kept.data.password).toBe('X-1')
+    })
+
+    it('gap-fills a host email field that lacks update access; host-declared wins', () => {
+      const { options, strategy } = wired()
+      const unguarded: CollectionConfig = {
+        slug: 'users',
+        fields: [{ name: 'email', type: 'email', required: true }],
+      }
+      const users = usersOf(applyUsersCollection([unguarded], options, strategy))
+      const email = users.fields.find((f) => fieldName(f) === 'email') as {
+        access?: { update?: unknown }
+      }
+      expect(typeof email.access?.update).toBe('function')
+
+      const declared: CollectionConfig = {
+        slug: 'users',
+        fields: [
+          {
+            name: 'email',
+            type: 'email',
+            required: true,
+            access: { update: () => true },
+          },
+        ],
+      }
+      const kept = usersOf(applyUsersCollection([declared], options, strategy))
+      const keptEmail = kept.fields.find((f) => fieldName(f) === 'email') as {
+        access?: { update?: unknown }
+      }
+      expect(keptEmail.access?.update).toBe(
+        declared.fields[0] && (declared.fields[0] as { access: { update: unknown } }).access.update
+      )
     })
   })
 

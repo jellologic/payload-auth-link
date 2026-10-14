@@ -1,8 +1,10 @@
 import { err, errAsync, okAsync, ResultAsync } from 'neverthrow'
+import type { PayloadRequest } from 'payload'
 import {
   ChannelNotAdmittedError,
   defineSessionId,
   ensureLinkedUser,
+  isRecord,
   isSuspendedAt,
   RepositoryError,
   SessionExpiredError,
@@ -81,8 +83,31 @@ type FoundProviderSession = {
  */
 async function findProviderSession(
   deps: SessionServiceDeps,
-  headers: Headers
+  headers: Headers,
+  req?: PayloadRequest
 ): Promise<FoundProviderSession | null> {
+  // One provider walk per request (issue #42): the strategy, the
+  // endpoint verification, and the anonymous-guest probe all resolve
+  // the same request — the walk is memoized on `req.context` so the
+  // second and third readers reuse the first walk's result.
+  const walkMemo: Record<string, unknown> | undefined = isRecord(req?.context)
+    ? req.context
+    : undefined
+  if (walkMemo !== undefined) {
+    const cached = walkMemo[REQUEST_WALK_KEY]
+    if (typeof cached === 'boolean') {
+      return cached ? (walkMemo[REQUEST_WALK_FOUND_KEY] as FoundProviderSession) : null
+    }
+    walkMemo[REQUEST_WALK_KEY] = false
+  }
+  if (process.env.DEBUG_WALK === '1') {
+    process.stdout.write(
+      `DBG-WALK walked req=${String(req !== undefined)}\n${String(new Error().stack)
+        .split('\n')
+        .slice(2, 5)
+        .join('\n')}\n`
+    )
+  }
   for (const id of deps.registry.ids()) {
     const required = deps.registry.require(id)
     if (required.isErr()) {
@@ -95,7 +120,12 @@ async function findProviderSession(
       continue
     }
     if (current.value) {
-      return { providerId: provider.id, providerSession: current.value }
+      const foundSession = { providerId: provider.id, providerSession: current.value }
+      if (walkMemo !== undefined) {
+        walkMemo[REQUEST_WALK_KEY] = true
+        walkMemo[REQUEST_WALK_FOUND_KEY] = foundSession
+      }
+      return foundSession
     }
   }
   // Refusals are loud (docs/concepts), but only when there is
@@ -105,6 +135,20 @@ async function findProviderSession(
   // Truly anonymous probes (no matching cookie at all) stay silent or
   // every health check and cold page load would warn.
   const cookieHeader = headers.get('cookie') ?? ''
+  if (
+    typeof process !== 'undefined' &&
+    process.env?.DEBUG_FIND_PROVIDER === '1' &&
+    cookieHeader.includes('stale-garbage')
+  ) {
+    process.stdout.write(
+      `DBG-FPS ids=${JSON.stringify(deps.registry.ids().map(String))} providers=${JSON.stringify(
+        deps.registry.ids().map((id) => {
+          const required = deps.registry.require(id)
+          return required.isOk() ? required.value.sessionCookieNames.join('|') : 'ERR'
+        })
+      )}\n`
+    )
+  }
   const presented = deps.registry.ids().some((id) => {
     const required = deps.registry.require(id)
     if (required.isErr()) {
@@ -139,7 +183,17 @@ type SessionVerifyError =
   | UserSuspendedError
   | RepositoryError
 
+/**
+ * Per-request verification memo key (issue #42): the auth strategy
+ * resolves the session once and stores the result on `req.context`;
+ * the endpoint handler reuses it instead of re-verifying. The memo
+ * hangs off the request, which the strategy and the endpoint share
+ * even across bundler graphs (a module-level memo would not).
+ */
+export const REQUEST_VERIFY_KEY = 'payload-auth-link:session-verification'
 const verificationCache = new WeakMap<object, ResultAsync<Session, SessionVerifyError>>()
+const REQUEST_WALK_KEY = 'payload-auth-link:provider-walk'
+const REQUEST_WALK_FOUND_KEY = 'payload-auth-link:provider-walk-found'
 
 /**
  * `SessionPort` bridging provider sessions to Payload users. Provider state
@@ -147,23 +201,70 @@ const verificationCache = new WeakMap<object, ResultAsync<Session, SessionVerify
  * just-in-time and idempotently at verification, so no signup ordering can
  * strand a provider user without its Payload document.
  */
-export function createSessionService(deps: SessionServiceDeps): SessionPort {
+/**
+ * The plugin's session service: the core `SessionPort` plus the
+ * request-aware verification used by the strategy and the endpoint
+ * handler to share one resolution per request (issue #42).
+ */
+export type PluginSessionService = SessionPort & {
+  verify(headers: Headers, req?: PayloadRequest): ResultAsync<Session, SessionVerifyError>
+  guest(headers: Headers, req?: PayloadRequest): ResultAsync<GuestPrincipal | null, RepositoryError>
+}
+
+/**
+ * Read (or lazily create) the request's verified session from
+ * `req.context` — the strategy and the endpoint handler share one
+ * resolution per request (issue #42). `verify` is only called when no
+ * result is memoized; its result is stored for every later reader.
+ */
+export function requestVerifiedSession(
+  sessions: SessionPort,
+  req: PayloadRequest
+): ResultAsync<Session, SessionVerifyError> {
+  const memo = isRecord(req.context) ? req.context : undefined
+  if (memo !== undefined) {
+    const cached = memo[REQUEST_VERIFY_KEY]
+    if (cached instanceof ResultAsync) {
+      return cached as ResultAsync<Session, SessionVerifyError>
+    }
+  }
+  const result = sessions.verify(req.headers)
+  if (memo !== undefined) {
+    memo[REQUEST_VERIFY_KEY] = result
+  }
+  return result
+}
+
+export function createSessionService(deps: SessionServiceDeps): PluginSessionService {
   const admitChannels: readonly SessionChannel[] = deps.admitChannels ?? ['cookie']
   return {
-    verify(headers: Headers): ResultAsync<Session, SessionVerifyError> {
-      // One resolution per request (issue #42): the auth strategy and
-      // the endpoint handler see the same `req.headers` reference for
-      // a single request, so the memoized result collapses their
-      // repeated verifications — one provider walk, one set of logs.
-      const cached = verificationCache.get(headers)
-      if (cached !== undefined) {
-        return cached
+    verify(headers: Headers, req?: PayloadRequest): ResultAsync<Session, SessionVerifyError> {
+      // One resolution per request (issue #42): the strategy and the
+      // endpoint handler verify the same request, so the second reader
+      // must reuse the first walk. Two memo layers, because the
+      // sharing surface differs by runtime: the strategy's
+      // `req.headers` may be a different object reference than the
+      // endpoint's in some bundler graphs (headers WeakMap misses
+      // there), while `req.context` is shared whenever a request
+      // object exists. Both are consulted; both are written.
+      const headersMemo = verificationCache.get(headers)
+      if (headersMemo !== undefined) {
+        return headersMemo
+      }
+      const requestMemo: Record<string, unknown> | undefined = isRecord(req?.context)
+        ? req.context
+        : undefined
+      if (requestMemo !== undefined) {
+        const cached = requestMemo[REQUEST_VERIFY_KEY]
+        if (cached instanceof ResultAsync) {
+          return cached as ResultAsync<Session, SessionVerifyError>
+        }
       }
       const result: ResultAsync<Session, SessionVerifyError> = ResultAsync.fromPromise<
         FoundProviderSession | null,
         SessionInvalidError
       >(
-        findProviderSession(deps, headers),
+        findProviderSession(deps, headers, req),
         (cause) => new SessionInvalidError(`verification failed: ${String(cause)}`)
       ).andThen((found) => {
         if (!found) {
@@ -400,16 +501,22 @@ export function createSessionService(deps: SessionServiceDeps): SessionPort {
           )
       })
       verificationCache.set(headers, result)
+      if (requestMemo !== undefined) {
+        requestMemo[REQUEST_VERIFY_KEY] = result
+      }
       return result
     },
 
-    guest(headers: Headers): ResultAsync<GuestPrincipal | null, RepositoryError> {
+    guest(
+      headers: Headers,
+      req?: PayloadRequest
+    ): ResultAsync<GuestPrincipal | null, RepositoryError> {
       // CAP-10 (D3): an anonymous provider session is a guest —
       // recognized, never linked, never provisioned, no Payload
       // access. Same liveness gates as `verify` (expiry, admitted
       // channel), minus every user touch.
       return ResultAsync.fromPromise<FoundProviderSession | null, RepositoryError>(
-        findProviderSession(deps, headers),
+        findProviderSession(deps, headers, req),
         (cause) => new RepositoryError('guest session read failed', { cause })
       ).map((found) => {
         if (!found || !found.providerSession.identity.anonymous) {

@@ -87,12 +87,20 @@ session strategy — no re-login, no token refresh, no sync job.
 
 **Who may be linked by email (the JIT-linking proof).** A verified
 provider identity is attached by email only to a document PROVEN to
-own that email: the plugin's `linkable` marker (set automatically on
-plugin-managed creates and role-manager creates; a role manager can
-toggle it per user) or Payload's own verified flag (`auth.verify`).
-Documents created outside the plugin — pre-upgrade rows, imports that
-skipped the marker, or a stranger's pre-created placeholder — are
-never JIT-linked until a role manager marks them. Unproven documents
+own that exact address: the plugin stores WHAT was proven
+(`linkableEmail`, set automatically on plugin-managed and
+role-manager creates, and updated by the provider-email resync) and
+the `linkable` toggle. The proof holds only while the document's
+email still equals `linkableEmail` — a self-service email change
+invalidates it automatically, and the stranger's placeholder from a
+pre-created document never matches. Email changes over REST on
+documents with linked identities are role-manager-only (the
+provider's own resync is unaffected), and self-service local
+passwords on plugin-managed documents are stripped: one document
+never holds two independently owned credentials. Documents created
+outside the plugin — pre-upgrade rows, imports that skipped the
+marker — are never JIT-linked until a role manager marks them (the
+migration runbook sets both fields). Unproven documents
 also cannot be created by end users: collection-level `create` on the
 users collection defaults to role-manager-only, and collection-level
 `read` defaults to self + role managers (no user enumeration), unless

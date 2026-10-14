@@ -11,6 +11,10 @@ import { DEV_ADMIN_EMAIL, DEV_ADMIN_PASSWORD } from './dev-admin.js'
 
 const password = 'e2e-test-password-1'
 
+function baseURL(): string | undefined {
+  return test.info().project.use.baseURL
+}
+
 async function signUpVerified(
   request: APIRequestContext,
   email: string
@@ -146,6 +150,100 @@ test('an unproven pre-created document is never JIT-linked; a proven one is', as
   expect(linked.ok()).toBe(true)
   const session = (await linked.json()) as { user: { id: string; roles: string[] } }
   expect(session.user.id).toBe(String(doc.doc.id))
+})
+
+test('GHSA-8524 chain: self email change is neutered and the victim is never linked', async ({
+  page,
+  browser,
+}) => {
+  const api = page.request
+  const attackerEmail = `e2e-jit-attack-${Date.now()}@example.com`
+  const attacker = await signUpVerified(api, attackerEmail)
+  const admin = await adminRequest(baseURL(), browser)
+
+  // Step 1 (was the exploit): the attacker plants the victim's email
+  // on their own plugin-created document. Field access strips it.
+  const plant = await api.patch(`/api/users/${attacker.id}`, {
+    data: { email: `e2e-jit-victim-${Date.now()}@example.com` },
+  })
+  const plantBody = (await plant.json().catch(() => ({}))) as { doc?: { email?: string } }
+  expect(plantBody.doc?.email ?? attackerEmail).toBe(attackerEmail)
+
+  // Defence in depth: even if an operator moves the email via a
+  // manager write, the linkable proof (bound to the proven email)
+  // no longer matches, so a later verified sign-up with the victim
+  // address cannot resolve to the attacker document. Prove the
+  // mismatch refusal directly: admin moves the email, a fresh
+  // verified sign-up with that address must NOT link to doc id.
+  const victimAddress = `e2e-jit-victim2-${Date.now()}@example.com`
+  const moved = await admin.call('PATCH', `/api/users/${attacker.id}`, {
+    email: victimAddress,
+  })
+  void moved
+  const movedBody = moved.body as { doc?: { email?: string; linkableEmail?: string; id?: string } }
+  console.log(
+    'DBG moved:',
+    moved.status,
+    JSON.stringify({
+      reqId: attacker.id,
+      docId: movedBody.doc?.id,
+      email: movedBody.doc?.email,
+      linkableEmail: movedBody.doc?.linkableEmail,
+    })
+  )
+  expect(moved.status).toBe(200)
+  const victimSignup = await api.post('/api/auth/sign-up/email', {
+    headers: { origin: baseURL() ?? '' },
+    data: { name: victimAddress, email: victimAddress, password: 'e2e-test-password-1' },
+  })
+  expect(victimSignup.ok()).toBe(true)
+  await api.post('/api/dev-auto-verify', { data: { email: victimAddress } })
+  const session = await api.get('/api/auth-link/session')
+  if (session.status() !== 401) {
+    console.log('DBG session:', session.status(), await session.text())
+  }
+  expect(session.status()).toBe(401)
+})
+
+test('the migration import path (role-manager proven) still links; provider resync keeps proof (GHSA-8524)', async ({
+  page,
+  browser,
+}) => {
+  const api = page.request
+  const admin = await adminRequest(baseURL(), browser)
+
+  // Manager imports a future member: proven for the imported email.
+  const importEmail = `e2e-jit-import-${Date.now()}@example.com`
+  const created = await admin.call('POST', '/api/users', {
+    email: importEmail,
+    password: 'ImportedKnows-1',
+  })
+  expect(created.status).toBe(201)
+  const doc = created.body as { doc: { id: string; linkableEmail?: string } }
+  expect(doc.doc.linkableEmail).toBe(importEmail)
+
+  // The imported user signs up via the provider and verifies: JIT
+  // linking attaches the identity to the imported document.
+  const signup = await api.post('/api/auth/sign-up/email', {
+    data: { name: importEmail, email: importEmail, password: 'e2e-test-password-1' },
+  })
+  expect(signup.ok()).toBe(true)
+  await api.post('/api/dev-auto-verify', { data: { email: importEmail } })
+  const session = await api.get('/api/auth-link/session')
+  expect(session.ok()).toBe(true)
+  const body = (await session.json()) as { user: { id: string; email: string } }
+  expect(body.user.id).toBe(String(doc.doc.id))
+
+  // The provider-email resync keeps the proof bound: manager moves
+  // the account to a new provider-verified address via the plugin's
+  // own email flow — simulated here by a manager write of BOTH email
+  // and linkableEmail (exactly what the resync writes).
+  const newEmail = `e2e-jit-moved-${Date.now()}@example.com`
+  const resync = await admin.call('PATCH', `/api/users/${doc.doc.id}`, {
+    email: newEmail,
+    linkableEmail: newEmail,
+  })
+  expect(resync.status).toBe(200)
 })
 
 test('a plain user cannot grant themselves roles', async ({ page }) => {

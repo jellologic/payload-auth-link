@@ -129,6 +129,24 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
           )
           return null
         }
+        // GHSA-8524: the linkable proof is bound to the email it was
+        // granted for. A self-service email change moves the document
+        // email away from the proven address — the proof no longer
+        // holds and the link is refused (the plugin's own
+        // provider-email resync keeps the two in step).
+        if (doc.linkable === true) {
+          const provenEmail = typeof doc.linkableEmail === 'string' ? doc.linkableEmail : ''
+          const docEmail = typeof doc.email === 'string' ? doc.email : ''
+          if (provenEmail === '' || provenEmail.toLowerCase() !== docEmail.toLowerCase()) {
+            const docId =
+              typeof doc.id === 'string' || typeof doc.id === 'number' ? String(doc.id) : ''
+            deps.logger.warn(
+              'email link refused: linkable proof does not match the document email (unproven email change?)',
+              { email, userId: docId }
+            )
+            return null
+          }
+        }
         return singleResultRecord(doc, ctx)
       })
     },
@@ -186,12 +204,18 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
       // a legit local password (host-managed local auth) is worth
       // surfacing to the operator on every link.
       const passwordWarning: ResultAsync<true, RepositoryError> = ResultAsync.fromPromise(
-        deps.payload.findByID({
-          collection,
-          id: userId,
-          depth: 0,
-          overrideAccess: true,
-        }),
+        // Best-effort: a probe outage must never block the link.
+        deps.payload
+          .findByID({
+            collection,
+            id: userId,
+            depth: 0,
+            overrideAccess: true,
+            // `hash` is a hidden field: without this the check never
+            // sees it and the warning could not fire (GHSA-8524).
+            showHiddenFields: true,
+          })
+          .catch(() => null),
         () => new RepositoryError('linkIdentity:password-check')
       ).map((doc) => {
         if (isRecord(doc) && typeof doc.hash === 'string' && doc.hash !== '') {
@@ -303,6 +327,10 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
             id: userId,
             data: {
               [deps.map.emailField]: email,
+              // The provider verified this new address before the
+              // resync: the linkable proof moves with it (GHSA-8524).
+              linkable: true,
+              linkableEmail: email,
               // Keep the linked-identity rows in step (issue #21):
               // rows carrying the old address are the same identity
               // re-asserted at the new address; leaving them stale
