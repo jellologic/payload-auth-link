@@ -27,7 +27,7 @@
     "@payloadcms/db-sqlite": "4.0.0-beta.0",
     "@payloadcms/tanstack-start": "4.0.0-beta.0",
     "@payloadcms/ui": "4.0.0-beta.0",
-    "@tanstack/react-router": "1.170.41",
+    "@tanstack/react-router": "1.170.42",
     "@tanstack/react-start": "1.168.61",
     "better-auth": "^1.7.7",
     "payload": "4.0.0-beta.0",
