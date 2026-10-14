@@ -30,6 +30,10 @@ updates:
       tanstack:
         patterns:
           - '@tanstack/*'
+      react:
+        patterns:
+          - react
+          - react-dom
       dev-tools:
         dependency-type: development
         # Effect 4 renames the APIs the interop test pins
