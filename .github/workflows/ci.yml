@@ -212,6 +212,11 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
+      # The kit's suites boot real Payload configs through the built
+      # workspace packages (dist), and the fixture app installs its own
+      # dependency tree.
+      - run: bun run build
+      - run: bun install --cwd fixtures/payload-auth-app
       - run: bun run test:fixture
 
   release-check:

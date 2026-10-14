@@ -1,0 +1,215 @@
+// ===== cli.d.ts =====
+#!/usr/bin/env bun
+type StdSink = {
+    readonly write: (chunk: string) => void;
+};
+declare function main(argv: readonly string[], out?: StdSink, err?: StdSink): Promise<number>;
+export { main as cliMain };
+
+// ===== doctor/bands.d.ts =====
+import { type VersionRange } from '@payload-auth-link/core';
+import type { VersionFinding } from './types.js';
+/**
+ * The bands the doctor checks against. These mirror the authoritative
+ * constants — `supportedPayloadBand` (packages/plugin) and
+ * `supportedBetterAuthBand` (packages/provider-better-auth) — and a
+ * unit test asserts the copies never drift from them, so the doctor
+ * cannot promise a band the runtime would refuse.
+ */
+export declare const payloadBand: readonly VersionRange[];
+export declare const betterAuthBand: readonly VersionRange[];
+/** Next is a peer of the Next adapter; the doctor reports it informationally. */
+export declare const nextBand: readonly VersionRange[];
+/** Band checks for the three upstreams that gate a migration. */
+export declare function checkVersions(fromUrl: string): VersionFinding[];
+
+// ===== doctor/database.d.ts =====
+import type { DatabaseFinding } from './types.js';
+export declare function introspectDatabase(connectionString: string): Promise<DatabaseFinding>;
+
+// ===== doctor/plugins.d.ts =====
+import type { PluginFinding } from './types.js';
+export declare function classifyPlugins(ids: readonly string[]): PluginFinding[];
+/** Plugin ids proven live by the collections payload-auth built. */
+export declare function pluginsFromCollectionSlugs(slugs: readonly string[]): string[];
+/**
+ * Plugin ids found by scanning the config source for plugin factory
+ * calls. Regex on purpose: the loaded config cannot reveal these
+ * (closure-held options), and the doctor must not execute app code
+ * beyond loading its config module.
+ */
+export declare function pluginsFromConfigSource(configSource: string): string[];
+
+// ===== doctor/run-doctor.d.ts =====
+import type { BehaviourChange, DoctorReport } from './types.js';
+/**
+ * The read-only doctor (issue #52): point it at a payload-auth app and
+ * get the exact list of what breaks before touching anything. It loads
+ * the app's config module, inspects the users collection and Better
+ * Auth plugins, scans the source tree for call sites that must
+ * migrate, and (with a database URL) reports row counts, unverified
+ * users, and orphans. It never writes.
+ */
+export type DoctorOptions = {
+    /** Absolute or cwd-relative path to the app's payload config. */
+    readonly configPath: string;
+    /** Source directory to scan. Defaults to the config's directory. */
+    readonly srcDir?: string | undefined;
+    /** Postgres connection string. Defaults to `DATABASE_URL`. */
+    readonly databaseUrl?: string | undefined;
+    /** Config loader, injectable for tests. Defaults to dynamic import. */
+    readonly loadModule?: ((path: string) => Promise<unknown>) | undefined;
+};
+/**
+ * Behaviour changes in payload-auth-link 0.7.0 that a payload-auth app
+ * feels on day one. Static by nature; kept next to the doctor so the
+ * report is one artifact.
+ */
+export declare const behaviourChanges: readonly BehaviourChange[];
+/**
+ * Detect payload-auth in the built config. The plugin stamps
+ * `config.custom.hasBetterAuthPlugin = true` when it runs; older or
+ * future builds that instead expose `pluginOptions` on the plugin
+ * function are honored too.
+ */
+export declare function findPayloadAuthPlugin(config: unknown): {
+    pluginOptions: Record<string, unknown>;
+} | null;
+/**
+ * The Better Auth plugin ids the app declared. Reads them off
+ * `betterAuthOptions.plugins` when a pluginOptions object is visible;
+ * callers otherwise derive them from the built collections and the
+ * config source (see {@link pluginsFromCollectionSlugs} and
+ * {@link pluginsFromConfigSource}).
+ */
+export declare function betterAuthPluginIds(pluginOptions: Record<string, unknown>): string[];
+/** The users collection slug the payload-auth app configured. */
+export declare function usersSlugOf(pluginOptions: Record<string, unknown>): string;
+/** Collection slugs of the built config. */
+export declare function collectionSlugs(config: unknown): string[];
+export declare function runDoctor(options: DoctorOptions): Promise<DoctorReport>;
+
+// ===== doctor/source-scan.d.ts =====
+import type { SourceFinding } from './types.js';
+/**
+ * The fields the auth-link strategy projects onto `req.user` by
+ * default (`reqUser: 'projection'`). Anything else a payload-auth app
+ * reads off `req.user` is `undefined` under the projection — silent
+ * access-control drift — until `reqUser: 'document'` lands (#57).
+ */
+export declare const projectedUserFields: ReadonlySet<string>;
+export declare function scanSource(srcDir: string): SourceFinding[];
+
+// ===== doctor/types.d.ts =====
+/**
+ * The doctor's report shape (issue #52): read-only findings, every
+ * one carrying a stable machine code so tests (and the guide) assert
+ * exact blocker lists instead of prose.
+ */
+/** A finding the doctor is confident about: fix it before migrating. */
+export type DoctorIssue = {
+    /** Stable machine code — e.g. `better-auth-out-of-band`. */
+    readonly code: string;
+    /** Human detail: what was found, what closes it. */
+    readonly detail: string;
+};
+/** One upstream dependency against its supported band. */
+export type VersionFinding = {
+    readonly name: string;
+    /** `null` when no manifest resolved (exotic bundling). */
+    readonly installed: string | null;
+    /** The supported band, human-readable. */
+    readonly band: string;
+    readonly status: 'ok' | 'warning' | 'blocker' | 'unknown';
+    readonly detail: string;
+};
+/** One Better Auth plugin's migration posture. */
+export type PluginFinding = {
+    /** The plugin's `id` (or the satellite package name). */
+    readonly id: string;
+    readonly status: 'supported' | 'auto-declarable' | 'unprobed' | 'unsupported' | 'removed-upstream';
+    readonly detail: string;
+};
+/** The users collection, as the migration will meet it. */
+export type UsersFinding = {
+    /** Collection slug (payload-auth's `users` by default). */
+    readonly slug: string;
+    readonly roleField: {
+        readonly name: string;
+        readonly type: string;
+        readonly hasMany: boolean;
+        /** Declared select values, when the field is a select. */
+        readonly values: readonly string[];
+        /** Values that are not canonical lowercase slugs. */
+        readonly nonCanonical: readonly string[];
+    } | null;
+    /** Payload's own email+password local strategy is active. */
+    readonly localStrategy: boolean;
+    /** Host fields colliding with the plugin's injected field names. */
+    readonly collisions: readonly string[];
+    readonly notes: readonly string[];
+};
+/** One source-scan category with the files that matched. */
+export type SourceFinding = {
+    readonly kind: 'payload-auth-import' | 'better-auth-accessor' | 'get-payload-auth' | 'ba-internals' | 'req-user-field';
+    readonly files: readonly string[];
+    /** For `req-user-field`: every field read off `req.user`. */
+    readonly fields: readonly string[];
+    readonly detail: string;
+};
+/** Database state, as far as a read-only connection can see. */
+export type DatabaseFinding = {
+    readonly tables: readonly {
+        readonly name: string;
+        readonly rows: number;
+    }[];
+    /** Users with `emailVerified = false` — they will not JIT-link. */
+    readonly unverifiedUsers: number | null;
+    readonly orphans: readonly {
+        readonly kind: string;
+        readonly count: number;
+    }[];
+};
+/** Default-behaviour changes in payload-auth-link 0.7.0 that bite. */
+export type BehaviourChange = {
+    readonly title: string;
+    readonly detail: string;
+};
+/** The full read-only doctor report (`--json` prints this object). */
+export type DoctorReport = {
+    readonly versions: readonly VersionFinding[];
+    readonly plugins: readonly PluginFinding[];
+    readonly users: UsersFinding | null;
+    readonly source: readonly SourceFinding[];
+    readonly database: DatabaseFinding | null;
+    readonly behaviourChanges: readonly BehaviourChange[];
+    readonly blockers: readonly DoctorIssue[];
+    readonly warnings: readonly DoctorIssue[];
+};
+
+// ===== doctor/users.d.ts =====
+import type { DoctorIssue, UsersFinding } from './types.js';
+/** Find the payload-auth-shaped users collection (or the app's own users slug). */
+export declare function findUsersCollection(config: unknown, usersSlug: string): Record<string, unknown> | null;
+export declare function localStrategyOn(collection: Record<string, unknown>): boolean;
+export declare function analyzeUsersCollection(collection: Record<string, unknown> | null, rolesFieldName: string): {
+    finding: UsersFinding | null;
+    issues: DoctorIssue[];
+};
+export declare function injectedFieldNamesForDocs(): readonly string[];
+
+// ===== index.d.ts =====
+/**
+ * Public API of `@payload-auth-link/migrate` (issues #49–#59). The
+ * CLI is the primary surface; these exports let tools and tests run
+ * the doctor in-process and consume its typed report.
+ */
+export { runDoctor, behaviourChanges, findPayloadAuthPlugin, betterAuthPluginIds, usersSlugOf, } from './doctor/run-doctor.js';
+export type { DoctorOptions } from './doctor/run-doctor.js';
+export { checkVersions, payloadBand, betterAuthBand, nextBand } from './doctor/bands.js';
+export { classifyPlugins } from './doctor/plugins.js';
+export { scanSource, projectedUserFields } from './doctor/source-scan.js';
+export { analyzeUsersCollection, findUsersCollection, localStrategyOn } from './doctor/users.js';
+export { introspectDatabase } from './doctor/database.js';
+export { cliMain } from './cli.js';
+export type { BehaviourChange, DatabaseFinding, DoctorIssue, DoctorReport, PluginFinding, SourceFinding, UsersFinding, VersionFinding, } from './doctor/types.js';

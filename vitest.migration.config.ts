@@ -8,7 +8,16 @@ import { defineConfig } from 'vitest/config'
  */
 export default defineConfig({
   test: {
-    include: ['fixtures/*/test/**/*.test.ts'],
+    include: [
+      'fixtures/*/test/**/*.test.ts',
+      // The migration kit's own Postgres-backed suites.
+      'packages/migrate/src/__tests__/adopt-boot.test.ts',
+      'packages/migrate/src/__tests__/importer.test.ts',
+    ],
+    // payload-auth's dist uses directory imports Bun tolerates and
+    // Node's loader does not; tests that import its modules need the
+    // transform (the main vitest.config.ts sets the same).
+    server: { deps: { inline: [/payload-auth/] } },
     // Loading the dump and (later) booting Payload against it is slow.
     testTimeout: 120_000,
     hookTimeout: 120_000,

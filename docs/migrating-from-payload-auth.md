@@ -10,6 +10,25 @@ while Payload owns `users`. There is no compatibility layer
 This page is the runbook; the script sketch below is a starting
 point, not a turnkey migration — review it against your schema.
 
+## Step 0: run the doctor (read-only preflight)
+
+Before touching anything, get the exact list of what will break:
+
+```sh
+bunx @payload-auth-link/migrate doctor --config ./src/payload.config.ts --src ./src
+```
+
+It reads the config, the users collection, the Better Auth plugins,
+your sources, and (with `--database-url` or `DATABASE_URL`) the
+database — and reports version bands, plugin support, users-collection
+collisions and role values, the 0.7.0 behaviour changes that will
+bite, every call site that must migrate, and per-table row counts with
+unverified users and orphans. `--json` gives tools the same findings
+with stable machine codes; exit codes are `0` clean, `1` blockers,
+`2` warnings only. Fix the blockers it names before writing anything —
+every later step in this guide assumes the doctor's blocker list is
+clear.
+
 ## What moves where
 
 | payload-auth                                              | payload-auth-link                                                                                                                                    |
