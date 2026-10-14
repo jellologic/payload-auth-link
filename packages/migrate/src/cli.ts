@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 /**
  * The `@payload-auth-link/migrate` CLI (issues #49–#59). Today: the
  * read-only `doctor` (#52). The importer and exporters ride the same
@@ -10,6 +11,13 @@
  */
 import { runDoctor } from './doctor/run-doctor.js'
 import type { DoctorReport } from './doctor/types.js'
+import {
+  runFinalize,
+  runFromPayloadAuth,
+  runRollback,
+  runVerify,
+  type ImportCommandOptions,
+} from './importer/run-import.js'
 
 type ParsedArgs = {
   readonly command: string | null
@@ -50,13 +58,26 @@ function usage(): string {
 
 Commands:
   doctor --config ./src/payload.config.ts [--src ./src] [--json] [--database-url URL]
+  from-payload-auth --config ./src/payload.config.ts [--apply] [--sessions=carry|drop]
+                    [--manifest ./payload-auth-link-migration.json] [--database-url URL] [--json]
+  verify            --config ./src/payload.config.ts [--database-url URL] [--json]
+  rollback          --config ./src/payload.config.ts [--manifest ...]
+  finalize          [--manifest ...]
 
   doctor is read-only: it loads the config, inspects the users
   collection and Better Auth plugins, scans sources for call sites
   that must migrate, and (with a database URL) reports row counts,
   unverified users, and orphans.
 
-Exit codes: 0 clean, 1 blockers, 2 warnings only, 3 usage errors.
+  from-payload-auth is a DRY RUN by default: it prints planned row
+  counts per model, collisions, and anything unmappable. --apply
+  writes the payload-auth-link collections through the Payload Local
+  API, records every created row and field change in the manifest,
+  and never modifies the source tables. verify checks both sides;
+  rollback undoes exactly the manifest; finalize marks it read-only
+  so the legacy tables may be dropped later, in their own migration.
+
+Exit codes: 0 clean, 1 blockers/mismatch, 2 warnings only, 3 usage errors.
 `
 }
 
@@ -164,9 +185,61 @@ async function main(
     out.write(usage())
     return command === null && argv.length === 0 ? 3 : 0
   }
-  if (command !== 'doctor') {
+  const importCommands = ['from-payload-auth', 'verify', 'rollback', 'finalize']
+  if (command !== 'doctor' && !importCommands.includes(command)) {
     err.write(`unknown command '${command}'\n\n${usage()}`)
     return 3
+  }
+  if (importCommands.includes(command)) {
+    const configFlag = flags.get('config')
+    if (typeof configFlag !== 'string' || configFlag === '') {
+      err.write(`${command} requires --config <path to payload.config.ts>\n`)
+      return 3
+    }
+    const databaseUrl =
+      typeof flags.get('database-url') === 'string'
+        ? (flags.get('database-url') as string)
+        : (process.env.DATABASE_URL ?? '')
+    if ((command === 'from-payload-auth' || command === 'verify') && databaseUrl === '') {
+      err.write(`${command} requires --database-url or DATABASE_URL\n`)
+      return 3
+    }
+    const sessionsFlag = flags.get('sessions')
+    const sessions =
+      sessionsFlag === 'drop' ? ('drop' as const) : ('carry' as const)
+    const importOptions: ImportCommandOptions = {
+      configPath: new URL(configFlag, `file://${process.cwd()}/`).pathname,
+      databaseUrl,
+      apply: flags.get('apply') === true,
+      sessions,
+      ...(typeof flags.get('manifest') === 'string'
+        ? { manifestPath: flags.get('manifest') as string }
+        : {}),
+      ...(typeof flags.get('slugs') === 'string'
+        ? { slugsJson: flags.get('slugs') as string }
+        : {}),
+      json: flags.get('json') === true,
+    }
+    if (command === 'from-payload-auth') {
+      const outcome = await runFromPayloadAuth(importOptions)
+      if (outcome.plan.unmappable.length > 0) {
+        err.write(
+          `ABORT: ${outcome.plan.unmappable.length} unmappable row(s); nothing was silently skipped\n`
+        )
+        return 1
+      }
+      return 0
+    }
+    if (command === 'verify') {
+      const result = await runVerify(importOptions)
+      return result.ok ? 0 : 1
+    }
+    if (command === 'rollback') {
+      await runRollback(importOptions)
+      return 0
+    }
+    await runFinalize(importOptions)
+    return 0
   }
   const configPath = flags.get('config')
   if (typeof configPath !== 'string' || configPath === '') {
