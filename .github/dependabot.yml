@@ -9,6 +9,15 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # Payload v4 prereleases (internal builds, canaries, betas) move
+    # only via the manual exact pin + compat validation (the version
+    # assertion refuses them; see docs/compatibility.md) — never as a
+    # routine float.
+    ignore:
+      - dependency-name: payload
+        versions: [">=4.0.0-0"]
+      - dependency-name: "@payloadcms/*"
+        versions: [">=4.0.0-0"]
     groups:
       payload:
         patterns:
@@ -23,3 +32,8 @@ updates:
           - '@tanstack/*'
       dev-tools:
         dependency-type: development
+        # Effect 4 renames the APIs the interop test pins
+        # (Effect.either, standardSchemaV1); migrating the test to
+        # Effect 4 is deliberate work, not a routine bump.
+        exclude-patterns:
+          - effect
