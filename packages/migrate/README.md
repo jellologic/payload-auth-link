@@ -45,3 +45,6 @@ blockers it must report — and none it must not.
 Requires Bun (`bunx`): the doctor loads the app's config module with
 Bun's module loader, which tolerates the directory imports
 payload-auth's dist uses.
+
+Peers: `payload` ^3.83.0 || 4.0.0-beta.0 (the import commands boot the
+app's own Payload instance; the doctor itself only reads).
