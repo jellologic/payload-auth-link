@@ -83,151 +83,99 @@ in access functions, `/api/users/me` on the client) or extend the
 projection yourself. This is deliberate: the projection is stable
 across providers and strategies.
 
-## Renaming camelCase role values (e.g. `frontPlugin`)
+## Keeping camelCase role values (e.g. `frontPlugin`) — no rename needed
 
 payload-auth apps commonly carry camelCase select values — `user /
 admin / staff / frontPlugin`. payload-auth-link roles are canonical
-lowercase slugs, so adopting a field whose stored values are
-camelCase fails the role validation (`roles.3: role must be lowercase
-alphanumeric with - or _`). With `frontplugin` (lowercased) adoption
-succeeds — so the migration is a rename of the stored values, done
-once, in the database:
-
-1. **Find every enum type carrying the value** (payload-auth apps
-   have one for the users table, one for the `_users_v` versions
-   table, and one for `admin_invitations`):
-
-   ```sql
-   SELECT t.typname, e.enumlabel
-   FROM pg_type t
-   JOIN pg_enum e ON t.oid = e.enumtypid
-   WHERE e.enumlabel = 'frontPlugin';
-   ```
-
-2. **Rename the enum label once per type** — a native-enum rename
-   rewrites every stored row using that type in the same statement
-   (the users table, the versions table, and invitations all at
-   once; no per-row UPDATE needed):
-
-   ```sql
-   ALTER TYPE enum_users_role RENAME VALUE 'frontPlugin' TO 'front-plugin';
-   -- repeat for each typname from step 1
-   ```
-
-   If your role column is plain text instead of a native enum, run
-   the per-row updates yourself:
-   `UPDATE users SET role = 'front-plugin' WHERE role = 'frontPlugin';`
-   (and the same for the `_users_v` snapshot tables).
-
-3. **Grep the app for the old value** — access functions, seed
-   scripts, tests, and any client code comparing against it:
-
-   ```sh
-   grep -rn "frontPlugin" src/ tests/
-   ```
-
-   payload-auth-link projects roles canonically on `req.user.roles`
-   (`front-plugin`), so checks that compare the canonical slug keep
-   working; checks still comparing the camelCase literal must be
-   updated in this pass.
-
-After the rename, the roles-field adoption succeeds unchanged
-(`rolesField: 'role'`), and the plugin's governed write access
-applies to the adopted field.
-
-## Migration script (sketch)
-
-The script below is a **sketch**, not a shipped tool: review it
-against your schema, run it with a dry-run flag of your own, and keep
-the backup. (The `linkable: true` marks in step 3 are what allow JIT
-email linking for imported users — without the marker, a returning
-user's first provider sign-in is refused until a role manager marks
-them.)
-
-Run this ONCE from the new app (Payload Local API, `overrideAccess`
-everywhere). Read the old tables directly (same database) or from an
-export. Order matters: users → accounts → links → plugin models.
+lowercase slugs inside the plugin; the **role value map** keeps the
+stored form exactly as it is:
 
 ```ts
-import { getPayload } from 'payload'
-import config from './payload.config'
-
-const payload = await getPayload({ config })
-
-// 1. Users: one ba-users row per old user; baId = the old id.
-for (const old of oldUsers) {
-  await payload.create({
-    collection: 'ba-users',
-    data: {
-      baId: String(old.id), // text id: the old Payload id
-      email: old.email,
-      name: old.name ?? '',
-      emailVerified: old.emailVerified === true,
-      createdAt: old.createdAt,
-      updatedAt: old.updatedAt,
-      // plugin fields you used on payload-auth (e.g. twoFactorEnabled,
-      // isAnonymous) map onto your customFields declarations 1:1
-    },
-    overrideAccess: true,
-  })
-}
-
-// 2. Accounts: password hashes and OAuth tokens carry over verbatim.
-for (const account of oldAccounts) {
-  await payload.create({
-    collection: 'ba-accounts',
-    data: {
-      baId: crypto.randomUUID(),
-      accountId: String(account.accountId), // OAuth subject id
-      providerId: account.providerId, // 'credential', 'google', ...
-      userId: String(account.userId), // -> ba-users.baId (the old id)
-      password: account.password, // credential hash: unchanged
-      accessToken: account.accessToken ?? undefined,
-      // ...remaining token columns you used
-    },
-    overrideAccess: true,
-  })
-}
-
-// 3. Identity links: pre-populate users.identities[] so the first
-// sign-in does not depend on JIT email linking.
-for (const old of oldUsers) {
-  const links = oldAccounts.filter((a) => String(a.userId) === String(old.id))
-  await payload.update({
-    collection: 'users',
-    id: old.id,
-    data: {
-      roles: old.role ?? ['user'], // your adopted roles field
-      // PROOF of email ownership (required for JIT linking) — BOTH:
-      linkable: true,
-      linkableEmail: old.email,
-      identities: links.map((a) => ({
-        providerId: a.providerId === 'credential' ? 'better-auth' : a.providerId,
-        providerUserId: String(a.userId),
-        email: old.email,
-        linkedAt: new Date().toISOString(),
-      })),
-    },
-    overrideAccess: true,
-  })
-}
-
-// 4. Plugin models: rewrite foreign keys to baId text ids.
-for (const member of oldMembers) {
-  await payload.create({
-    collection: 'ba-members',
-    data: {
-      baId: crypto.randomUUID(),
-      organizationId: orgIdMap.get(String(member.organizationId))!,
-      userId: String(member.userId),
-      role: member.role,
-      createdAt: member.createdAt,
-    },
-    overrideAccess: true,
-  })
-}
-// ...invitations, apikeys (referenceId), jwks the same way.
+authLink({
+  roles: ['user', 'admin', 'staff', 'front-plugin'],
+  rolesField: 'role', // adopt the host select
+  roleValues: { 'front-plugin': 'frontPlugin' }, // canonical → stored
+})
 ```
+
+Inside the plugin everything is canonical — `requireRoles(['front-plugin'])`,
+`policies.requireMfaForRoles`, the role-manager checks. At the storage
+edge — field reads, governed writes, and the injected select's
+options — values are translated both ways, so the database never
+changes and admin edits keep storing `frontPlugin`. Keys must be
+declared roles and stored values must be unique; both fail at config
+time.
+
+`req.user` is the session projection by default (`{ id, collection,
+email, roles }` plus assurance fields). Access functions reading other
+fields off it keep working unchanged with
+`authLink({ reqUser: 'document' })` — the full document loads once per
+request and the projected, security-relevant fields stay authoritative
+on top of it (#57).
+
+`req.user.roles` carries canonical roles by default. Access functions
+that compare the stored literal (`req.user.roles.includes('frontPlugin')`)
+can keep working unchanged with
+`projectRolesAs: 'stored'` — the MFA gate and role governance always
+run on canonical roles regardless; this option shapes the projection
+only. The doctor lists every non-canonical stored value so the map is
+complete before you boot.
+
+## The importer: `from-payload-auth` (#50)
+
+The sketch below became a runnable, reversible CLI. In the NEW app
+(the one booting payload-auth-link with its own `ba-*` collections on
+the same database):
+
+```sh
+# 1. The plan. Dry run by default: planned counts per model,
+#    unmappable rows, unverified users. Nothing is written.
+bunx @payload-auth-link/migrate from-payload-auth \
+  --config ./src/payload.config.ts --database-url $DATABASE_URL
+
+# 2. The copy. Writes the ba-* rows through Payload's Local API,
+#    records every created row and field change in the manifest
+#    (./payload-auth-link-migration.json), and never touches the
+#    source tables.
+bunx @payload-auth-link/migrate from-payload-auth \
+  --config ./src/payload.config.ts --database-url $DATABASE_URL --apply
+
+# 3. The check. Counts per model, one target row per source user,
+#    every credential account resolving to its user with its hash,
+#    every API key and member/invitation resolving. Non-zero exit on
+#    any mismatch.
+bunx @payload-auth-link/migrate verify \
+  --config ./src/payload.config.ts --database-url $DATABASE_URL
+
+# 4. The undo (any time before finalize). Deletes exactly the rows the
+#    manifest created and restores every captured field value.
+bunx @payload-auth-link/migrate rollback --config ./src/payload.config.ts
+
+# 5. The point of no return. Marks the manifest finalized; only now
+#    are the legacy tables eligible to be dropped — in a separate,
+#    later migration. Nothing is dropped for you.
+bunx @payload-auth-link/migrate finalize
+```
+
+What it copies: users (with `linkable` + `linkableEmail` granted from
+VERIFIED emails only — unverified users are reported and never
+linked), credential accounts with their password hashes VERBATIM,
+OAuth accounts with their tokens, magic-link verifications, API keys
+with hash/prefix/metadata/rate-limit state, jwks, and the organization
+plugin's rows (orgs, members, invitations) with references remapped.
+`--sessions=carry` (the default) copies the session table so nobody is
+logged out — keep the same `advanced.cookiePrefix` and the existing
+cookies keep working; `--sessions=drop` starts everyone fresh instead.
+
+It is idempotent and resumable: every target row carries a
+deterministic `baId` derived from the source id, so a re-run after a
+crash finds its own earlier rows and skips them. Unmappable data
+(orphaned references) aborts the run — nothing is silently skipped.
+
+The importer's target slugs default to `ba-users`, `ba-accounts`,
+`ba-sessions`, `ba-verifications`, `ba-apikey`, `ba-jwks`,
+`ba-organization`, `ba-member`, `ba-invitation`; pass `--slugs` (JSON)
+if your engine wiring overrides them.
 
 ## Session and verification policy
 

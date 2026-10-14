@@ -40,6 +40,19 @@ export type MappingContext = {
       }
     | undefined
   /**
+   * Stored value → canonical role (issue #56). Present when the site
+   * maps role values; reads translate through it before validation, so
+   * a payload-auth layout keeps storing e.g. `frontPlugin` while the
+   * plugin reasons about `front-plugin`.
+   */
+  readonly roleValuesReverse?: Readonly<Record<string, string>> | undefined
+  /**
+   * Canonical role → stored value (issue #56); present for writes.
+   * Unmapped roles store their canonical form, so this is total when
+   * present.
+   */
+  readonly roleValues?: Readonly<Record<string, string>> | undefined
+  /**
    * Roles the site currently configures (B11 role-config safety).
    * When present, stored roles outside this set are dropped at read
    * time — a removed role must stop granting access at the very next
@@ -130,7 +143,11 @@ function toRoles(value: unknown, ctx: MappingContext): readonly Role[] | null {
   }
   const roles: Role[] = []
   for (const entry of value) {
-    const parsed = parseRole(entry)
+    // Storage edge (issue #56): translate the stored value to its
+    // canonical role before validating.
+    const canonical: unknown =
+      ctx.roleValuesReverse === undefined ? entry : (ctx.roleValuesReverse[String(entry)] ?? entry)
+    const parsed = parseRole(canonical)
     if (parsed.isErr()) {
       warnOnce(ctx, 'dropping invalid role entry')
       continue
@@ -264,14 +281,16 @@ export function singleResultRecord(doc: unknown, ctx: MappingContext): UserRecor
  */
 export function toNewUserData(
   input: NewUser,
-  ctx: Pick<MappingContext, 'map' | 'clock' | 'userFields'>,
+  ctx: Pick<MappingContext, 'map' | 'clock' | 'userFields' | 'roleValues'>,
   password: string
 ): Record<string, unknown> {
   const phoneField = (ctx.userFields ?? defaultUserFields).phoneField
   return {
     [ctx.map.emailField]: input.email,
     password,
-    [ctx.map.rolesField]: [...input.roles],
+    // Storage edge (issue #56): canonical roles go in as their stored
+    // values.
+    [ctx.map.rolesField]: input.roles.map((role) => ctx.roleValues?.[role] ?? role),
     [ctx.map.identitiesField]:
       input.identity === undefined ? [] : [toIdentityData(input.identity, input.email, ctx.clock)],
     ...(input.phone === undefined ? {} : { [phoneField]: input.phone }),

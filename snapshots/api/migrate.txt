@@ -198,6 +198,260 @@ export declare function analyzeUsersCollection(collection: Record<string, unknow
 };
 export declare function injectedFieldNamesForDocs(): readonly string[];
 
+// ===== importer/apply.d.ts =====
+import type { Payload } from 'payload';
+import { type ImportManifest, type ImportResult, type PlanRow } from './types.js';
+/**
+ * Apply side (issue #50): copy payload-auth rows into the
+ * payload-auth-link collections through the Payload Local API.
+ *
+ * - Password hashes, OAuth tokens, API-key hashes, and jwks carry over
+ *   VERBATIM (payload-auth used Better Auth's own hashing).
+ * - `linkable` + `linkableEmail` are granted from VERIFIED emails only;
+ *   unverified users are reported by the plan, never linked.
+ * - Sessions default to `carry` so nobody is logged out: the carried
+ *   rows keep their tokens, and with the same `advanced.cookiePrefix`
+ *   the existing cookies keep working.
+ * - Idempotent and resumable: every target row carries a deterministic
+ *   `baId` derived from the source id (`acct-<source id>`), so a
+ *   re-run after a crash finds its own earlier rows and skips them.
+ * - Every created row and every field write lands in the manifest, so
+ *   `rollback` is exact and the source tables stay untouched.
+ */
+export type ApplyOptions = {
+    readonly payload: Payload;
+    readonly sourceConnectionString: string;
+    readonly apply: boolean;
+    readonly sessions: 'carry' | 'drop';
+    readonly manifest: ImportManifest | null;
+    /** Written (merged) on `apply`; required when `apply` is true. */
+    readonly manifestPath: string;
+    readonly sourceCounts: Readonly<Record<string, number>>;
+    readonly sourceDatabase: string;
+    /** Target collection slugs; defaults must match the engine wiring. */
+    readonly slugs?: Readonly<Record<string, string>> | undefined;
+    /** Injectable clock for deterministic `linkedAt` stamps. */
+    readonly now?: () => Date;
+    readonly log?: (message: string) => void;
+};
+export declare function applyImport(options: ApplyOptions): Promise<ImportResult>;
+/** Collapse per-row plan entries into one line per model (dry-run print). */
+export declare function summarizePlanRows(rows: readonly PlanRow[]): PlanRow[];
+
+// ===== importer/lifecycle.d.ts =====
+import type { Payload } from 'payload';
+import type { ImportManifest } from './types.js';
+/**
+ * Manifest lifecycle (issue #50): `verify` checks both sides, `rollback`
+ * undoes exactly what the manifest records, and `finalize` marks the
+ * manifest so the source tables may be dropped — by the operator, as a
+ * separate later step.
+ */
+export declare const defaultManifestPath = "payload-auth-link-migration.json";
+export declare function readManifest(path: string): ImportManifest | null;
+export declare function writeManifest(manifest: ImportManifest, path: string): void;
+export type VerifyIssue = {
+    readonly code: string;
+    readonly detail: string;
+};
+export type VerifyResult = {
+    readonly ok: boolean;
+    readonly issues: readonly VerifyIssue[];
+    readonly checks: readonly {
+        readonly name: string;
+        readonly passed: boolean;
+    }[];
+};
+/**
+ * Verify (issue #50): per-model counts match, every source user has
+ * exactly one target row, every credential account resolves to its
+ * user, every API key carries its hash with a resolvable owner, and
+ * every member/invitation references an existing org and user. Exits
+ * non-zero on any mismatch (the caller maps `ok` to the exit code).
+ */
+export declare function verifyImport(options: {
+    readonly payload: Payload;
+    readonly sourceConnectionString: string;
+    readonly slugs?: Readonly<Record<string, string>> | undefined;
+}): Promise<VerifyResult>;
+/**
+ * Rollback (issue #50): delete the created rows in reverse order and
+ * restore every captured field value. The manifest records exactly
+ * what to undo — nothing else is touched, and the source tables were
+ * never modified.
+ */
+export declare function rollbackImport(options: {
+    readonly payload: Payload;
+    readonly manifest: ImportManifest;
+    readonly log?: (message: string) => void;
+}): Promise<{
+    deleted: number;
+    restored: number;
+}>;
+/** Finalize (issue #50): the point of no return — mark the manifest. */
+export declare function finalizeManifest(manifest: ImportManifest, path: string): ImportManifest;
+
+// ===== importer/run-import.d.ts =====
+import { type VerifyResult } from './lifecycle.js';
+import { type ImportManifest, type ImportPlan, type ImportResult } from './types.js';
+/**
+ * The import commands (issue #50): `from-payload-auth` (dry-run by
+ * default, `--apply` writes), `verify`, `rollback`, `finalize`.
+ *
+ * Dry run prints planned row counts per model, collisions, and
+ * anything unmappable; unmappable data aborts `--apply` before any
+ * write. The manifest records every created row and field change;
+ * source tables are never modified — `finalize` only marks the
+ * manifest, and dropping them stays the operator's later step.
+ */
+export type ImportCommandOptions = {
+    readonly configPath: string;
+    readonly databaseUrl: string;
+    readonly apply: boolean;
+    readonly sessions: 'carry' | 'drop';
+    readonly manifestPath?: string | undefined;
+    readonly slugsJson?: string | undefined;
+    readonly json?: boolean;
+    readonly log?: (message: string) => void;
+    readonly loadPayload?: (configPath: string) => Promise<import('payload').Payload>;
+};
+/** The `from-payload-auth` command: dry-run plan, or `--apply` + manifest. */
+export declare function runFromPayloadAuth(options: ImportCommandOptions): Promise<{
+    exitCode: number;
+    result?: ImportResult;
+    plan: ImportPlan;
+    unverified: readonly string[];
+}>;
+/** The `verify` command. */
+export declare function runVerify(options: ImportCommandOptions): Promise<VerifyResult>;
+/** The `rollback` command. */
+export declare function runRollback(options: ImportCommandOptions): Promise<{
+    deleted: number;
+    restored: number;
+}>;
+/** The `finalize` command. */
+export declare function runFinalize(options: ImportCommandOptions): Promise<ImportManifest>;
+
+// ===== importer/source.d.ts =====
+import { Client } from 'pg';
+import type { Unmappable } from './types.js';
+/**
+ * Read side (issue #50): the payload-auth layout, straight from
+ * Postgres. Rows are read with plain SELECTs — the source tables are
+ * never modified until `finalize` (which only marks the manifest; the
+ * drop itself stays the operator's step).
+ */
+/** One payload-auth source user with its role rows and accounts. */
+export type SourceUser = {
+    readonly id: string;
+    readonly email: string;
+    readonly name: string | null;
+    readonly emailVerified: boolean;
+    readonly image: string | null;
+    readonly createdAt: Date;
+    readonly updatedAt: Date;
+    /** Stored role values from the `users_role` child table. */
+    readonly roles: readonly string[];
+    readonly accounts: readonly SourceAccount[];
+};
+export type SourceAccount = {
+    readonly id: string;
+    readonly accountId: string;
+    readonly providerId: string;
+    readonly password: string | null;
+    readonly accessToken: string | null;
+    readonly refreshToken: string | null;
+    readonly idToken: string | null;
+    readonly scope: string | null;
+    readonly accessTokenExpiresAt: Date | null;
+    readonly refreshTokenExpiresAt: Date | null;
+};
+export type SourceRow = Record<string, unknown>;
+export declare function openSource(connectionString: string): Promise<Client>;
+export declare function countTables(client: Client, tables: readonly string[]): Promise<Record<string, number>>;
+/** Every source user, with role rows and accounts attached. */
+export declare function readSourceUsers(client: Client): Promise<SourceUser[]>;
+/** Rows of one flat plugin table (sessions, verifications, apiKeys, jwks, …). */
+export declare function readFlatRows(client: Client, table: string, columns: readonly string[]): Promise<SourceRow[]>;
+/**
+ * Members and invitations reference organizations and users by numeric
+ * id; the importer remaps to the target's baIds. Orphaned references
+ * are unmappable — they abort the run rather than skip silently.
+ */
+export declare function findOrphans(client: Client): Promise<readonly Unmappable[]>;
+/** Users whose email never verified — reported, never granted `linkable`. */
+export declare function unverifiedEmails(users: readonly SourceUser[]): readonly string[];
+
+// ===== importer/types.d.ts =====
+/**
+ * Importer manifest (issue #50): every row created and every field
+ * changed, so `rollback` is exact. The manifest is the run's contract —
+ * `verify`, `rollback`, and `finalize` all read it.
+ */
+export type CreatedRow = {
+    /** Target collection slug. */
+    readonly collection: string;
+    /** Payload document id of the created row. */
+    readonly id: string | number;
+    /** The source identity this row was created for (dedupe on resume). */
+    readonly sourceKey: string;
+};
+export type FieldWrite = {
+    readonly collection: string;
+    readonly id: string | number;
+    readonly field: string;
+    /** The prior value, JSON-serialized, restored by rollback. */
+    readonly before: string | null;
+};
+export type ImportManifest = {
+    readonly version: 1;
+    readonly createdAt: string;
+    readonly sourceDatabase: string;
+    readonly options: {
+        readonly sessions: 'carry' | 'drop';
+    };
+    readonly created: CreatedRow[];
+    readonly fieldWrites: FieldWrite[];
+    readonly finalized: boolean;
+    /** Counts per source table at plan time (the rollback baseline). */
+    readonly sourceCounts: Readonly<Record<string, number>>;
+    /** Cumulative plan totals (rows created + skipped across resumes). */
+    readonly totals: Readonly<Record<string, number>>;
+};
+/** Per-model plan row for the dry run. */
+export type PlanRow = {
+    readonly model: string;
+    readonly sourceTable: string;
+    readonly targetCollection: string;
+    readonly rows: number;
+    readonly skipped: number;
+    readonly unmappable: readonly string[];
+};
+/** Why a row cannot be imported — the run aborts rather than skips. */
+export type Unmappable = {
+    readonly model: string;
+    readonly key: string;
+    readonly reason: string;
+};
+export type ImportPlan = {
+    readonly rows: readonly PlanRow[];
+    readonly unmappable: readonly Unmappable[];
+    readonly sessions: 'carry' | 'drop';
+    readonly warnings: readonly string[];
+};
+export type ImportResult = {
+    readonly created: number;
+    readonly skipped: number;
+    readonly fieldWrites: number;
+    readonly plan: ImportPlan;
+};
+/** The models the importer copies. */
+export type TargetModel = 'user' | 'session' | 'account' | 'verification' | 'apikey' | 'jwks' | 'organization' | 'member' | 'invitation';
+/** Target slugs with the known models always present (index-safe). */
+export type TargetSlugMap = Record<TargetModel, string> & Record<string, string>;
+/** Default target slugs; must match the app's engine wiring. */
+export declare const defaultTargetSlugs: TargetSlugMap;
+
 // ===== index.d.ts =====
 /**
  * Public API of `@payload-auth-link/migrate` (issues #49–#59). The
@@ -211,5 +465,9 @@ export { classifyPlugins } from './doctor/plugins.js';
 export { scanSource, projectedUserFields } from './doctor/source-scan.js';
 export { analyzeUsersCollection, findUsersCollection, localStrategyOn } from './doctor/users.js';
 export { introspectDatabase } from './doctor/database.js';
+export { runFromPayloadAuth, runVerify, runRollback, runFinalize } from './importer/run-import.js';
+export { applyImport, summarizePlanRows } from './importer/apply.js';
+export { readManifest, writeManifest, verifyImport, rollbackImport, finalizeManifest, defaultManifestPath, type VerifyIssue, type VerifyResult, } from './importer/lifecycle.js';
+export { defaultTargetSlugs, type CreatedRow, type TargetModel, type TargetSlugMap, type FieldWrite, type ImportManifest, type ImportPlan, type ImportResult, type PlanRow, type Unmappable, } from './importer/types.js';
 export { cliMain } from './cli.js';
 export type { BehaviourChange, DatabaseFinding, DoctorIssue, DoctorReport, PluginFinding, SourceFinding, UsersFinding, VersionFinding, } from './doctor/types.js';

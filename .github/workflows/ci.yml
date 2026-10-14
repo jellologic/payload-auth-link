@@ -18,6 +18,9 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
+      # The migration kit's doctor runs its fixture-backed suites here
+      # (the fixture app owns its dependency tree).
+      - run: bun install --cwd fixtures/payload-auth-app
       - run: bun run check
 
   # Every user-facing PR carries a changeset (see CONTRIBUTING.md);

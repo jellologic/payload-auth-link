@@ -30,6 +30,8 @@ export function createServices(wired: WiredOptions, payload: Payload) {
     // removed role stops granting at the next session, not after an
     // unrelated user-doc write.
     configuredRoles: new Set(wired.config.roles),
+    roleValues: wired.roleValues,
+    roleValuesReverse: wired.roleValuesReverse,
   })
   const orgs = wired.organizations
   const sessions: PluginSessionService = createSessionService({

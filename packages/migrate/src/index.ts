@@ -16,6 +16,30 @@ export { classifyPlugins } from './doctor/plugins.js'
 export { scanSource, projectedUserFields } from './doctor/source-scan.js'
 export { analyzeUsersCollection, findUsersCollection, localStrategyOn } from './doctor/users.js'
 export { introspectDatabase } from './doctor/database.js'
+export { runFromPayloadAuth, runVerify, runRollback, runFinalize } from './importer/run-import.js'
+export { applyImport, summarizePlanRows } from './importer/apply.js'
+export {
+  readManifest,
+  writeManifest,
+  verifyImport,
+  rollbackImport,
+  finalizeManifest,
+  defaultManifestPath,
+  type VerifyIssue,
+  type VerifyResult,
+} from './importer/lifecycle.js'
+export {
+  defaultTargetSlugs,
+  type CreatedRow,
+  type TargetModel,
+  type TargetSlugMap,
+  type FieldWrite,
+  type ImportManifest,
+  type ImportPlan,
+  type ImportResult,
+  type PlanRow,
+  type Unmappable,
+} from './importer/types.js'
 export { cliMain } from './cli.js'
 export type {
   BehaviourChange,

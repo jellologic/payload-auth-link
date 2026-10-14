@@ -58,15 +58,51 @@ export type BetterAuthCustomModel = {
   readonly fields: readonly BetterAuthCustomField[]
 }
 
+/**
+ * One adopted model (issue #49): the engine serves a Better Auth model
+ * from an EXISTING Payload collection instead of creating its own
+ * `ba-*` collection — the "adopt, don't replace" path for apps whose
+ * auth rows already live in Payload (payload-auth layout).
+ */
+export type BetterAuthAdoptedModel = {
+  /** The host collection slug that backs the model. */
+  readonly slug: string
+  /**
+   * Better Auth field name → host Payload field name, for fields the
+   * host renamed. Most payload-auth layouts rename only the
+   * relationship fields (`userId` → `user`); everything unmapped keeps
+   * its Better Auth name. Renamed fields read and write as ids: the
+   * adapter reads them at depth 0 and writes the id the host's
+   * relationship expects, coercing to the Payload id type.
+   */
+  readonly fields?: Readonly<Record<string, string>> | undefined
+}
+
+/**
+ * Adopted models by Better Auth model name — core keys (`user`,
+ * `session`, `account`, `verification`, `rateLimit`) and plugin models
+ * (`organization`, `member`, `invitation`, `apikey`, `jwks`, …) alike.
+ */
+export type BetterAuthSchemaMap = Readonly<Record<string, BetterAuthAdoptedModel>>
+
 /** Slug overrides and access for {@link createBetterAuthCollections}. */
 export type BetterAuthCollectionsOptions = {
   /** Override any default slug. Unmentioned models keep their defaults. */
   readonly slugs?: Partial<BetterAuthCollectionSlugs> | undefined
   /**
+   * Adopt existing collections for these models: the engine creates no
+   * collection for them, forces no access, and serves the model from
+   * the host slug (issue #49). The host keeps its access, hooks,
+   * versions, and admin config; its extra fields are invisible to
+   * Better Auth and preserved because the adapter writes partial
+   * updates only.
+   */
+  readonly schemaMap?: BetterAuthSchemaMap | undefined
+  /**
    * Access control for the system collections. Defaults to deny-all: these
    * tables hold credential material (hashes, tokens) and the adapter writes
    * with `overrideAccess`, so no API access is needed. Builders may open
-   * `read` for operations debugging.
+   * `read` for operations debugging. Never applied to adopted models.
    */
   readonly access?: BetterAuthCollectionsAccess | undefined
   /** Custom fields appended to core-model collections. */
@@ -207,10 +243,16 @@ export function createBetterAuthCollections(
   const slugs: BetterAuthCollectionSlugs = resolveSlugs(defaultBetterAuthSlugs, options?.slugs)
   const customFields = options?.customFields ?? {}
   const customModels = options?.customModels ?? []
+  const schemaMap = options?.schemaMap ?? {}
+  validateSchemaMap(schemaMap, {
+    coreModels: Object.keys(betterAuthCoreFields),
+    customModels: customModels.map((entry) => entry.model),
+  })
   assertUniqueSlugs(
     {
       ...slugs,
       ...Object.fromEntries(customModels.map((entry) => [entry.model, customModelSlug(entry)])),
+      ...Object.fromEntries(Object.entries(schemaMap).map(([model, entry]) => [model, entry.slug])),
     },
     'Better Auth collections'
   )
@@ -236,96 +278,163 @@ export function createBetterAuthCollections(
     checkCustomFields(`customFields.${model}`, declared, betterAuthCoreFields[model])
     return declared.map(toPayloadField)
   }
-  return [
-    base(
-      slugs.user,
-      'Better Auth user',
-      [
-        { name: 'email', type: 'email', required: true, unique: true, index: true },
-        // `required: true` keeps the physical column NOT NULL exactly
-        // as 0.1.1 shipped it (B2: making it optional forced a SQLite
-        // table rebuild that wedged upgraded databases). BA
-        // passwordless flows create users with `name: ""`, which
-        // Payload's default required-text validation rejects — so a
-        // custom `validate` (which replaces the default in Payload)
-        // accepts any string including "", while the column itself
-        // never changes. Absent on partial updates is fine; a create
-        // without a name still hits the NOT NULL constraint.
-        {
-          name: 'name',
-          type: 'text',
-          required: true,
-          validate: (value: unknown) =>
-            typeof value === 'string' || value === undefined
-              ? true
-              : 'name must be a string (empty is allowed)',
-        },
-        { name: 'emailVerified', type: 'checkbox', required: true, defaultValue: false },
-        { name: 'image', type: 'text' },
-        ...extra('user'),
-      ],
-      options?.access
-    ),
-    base(
-      slugs.session,
-      'Better Auth session',
-      [
-        { name: 'userId', type: 'text', required: true, index: true },
-        { name: 'token', type: 'text', required: true, unique: true, index: true },
-        { name: 'expiresAt', type: 'date', required: true },
-        { name: 'ipAddress', type: 'text' },
-        { name: 'userAgent', type: 'text' },
-        ...extra('session'),
-      ],
-      options?.access
-    ),
-    base(
-      slugs.account,
-      'Better Auth account',
-      [
-        { name: 'userId', type: 'text', required: true, index: true },
-        { name: 'accountId', type: 'text', required: true, index: true },
-        { name: 'providerId', type: 'text', required: true, index: true },
-        { name: 'password', type: 'text' },
-        { name: 'accessToken', type: 'text' },
-        { name: 'refreshToken', type: 'text' },
-        { name: 'idToken', type: 'text' },
-        { name: 'accessTokenExpiresAt', type: 'date' },
-        { name: 'refreshTokenExpiresAt', type: 'date' },
-        { name: 'scope', type: 'text' },
-        ...extra('account'),
-      ],
-      options?.access
-    ),
-    base(
-      slugs.verification,
-      'Better Auth verification',
-      [
-        { name: 'identifier', type: 'text', required: true, index: true },
-        { name: 'value', type: 'text', required: true },
-        { name: 'expiresAt', type: 'date', required: true },
-        ...extra('verification'),
-      ],
-      options?.access
-    ),
-    base(
-      slugs.rateLimit,
-      'Better Auth rate limit',
-      [
-        { name: 'key', type: 'text', required: true, unique: true, index: true },
-        { name: 'count', type: 'number', required: true },
-        { name: 'lastRequest', type: 'number', required: true },
-        ...extra('rateLimit'),
-      ],
-      options?.access
-    ),
-    ...customModels.map((entry) =>
+  const adopted = (model: string): boolean => schemaMap[model] !== undefined
+  // Adopted models contribute NO collection: the host's existing
+  // collection (its access, hooks, versions, admin config, and any
+  // host-only fields) is the storage — that is the whole point of
+  // adopting (issue #49).
+  const core: [model: BetterAuthModelKey, collection: CollectionConfig][] = [
+    [
+      'user',
       base(
-        customModelSlug(entry),
-        entry.label ?? `Better Auth ${entry.model}`,
-        entry.fields.map(toPayloadField),
+        slugs.user,
+        'Better Auth user',
+        [
+          { name: 'email', type: 'email', required: true, unique: true, index: true },
+          // `required: true` keeps the physical column NOT NULL exactly
+          // as 0.1.1 shipped it (B2: making it optional forced a SQLite
+          // table rebuild that wedged upgraded databases). BA
+          // passwordless flows create users with `name: ""`, which
+          // Payload's default required-text validation rejects — so a
+          // custom `validate` (which replaces the default in Payload)
+          // accepts any string including "", while the column itself
+          // never changes. Absent on partial updates is fine; a create
+          // without a name still hits the NOT NULL constraint.
+          {
+            name: 'name',
+            type: 'text',
+            required: true,
+            validate: (value: unknown) =>
+              typeof value === 'string' || value === undefined
+                ? true
+                : 'name must be a string (empty is allowed)',
+          },
+          { name: 'emailVerified', type: 'checkbox', required: true, defaultValue: false },
+          { name: 'image', type: 'text' },
+          ...extra('user'),
+        ],
         options?.access
-      )
-    ),
+      ),
+    ],
+    [
+      'session',
+      base(
+        slugs.session,
+        'Better Auth session',
+        [
+          { name: 'userId', type: 'text', required: true, index: true },
+          { name: 'token', type: 'text', required: true, unique: true, index: true },
+          { name: 'expiresAt', type: 'date', required: true },
+          { name: 'ipAddress', type: 'text' },
+          { name: 'userAgent', type: 'text' },
+          ...extra('session'),
+        ],
+        options?.access
+      ),
+    ],
+    [
+      'account',
+      base(
+        slugs.account,
+        'Better Auth account',
+        [
+          { name: 'userId', type: 'text', required: true, index: true },
+          { name: 'accountId', type: 'text', required: true, index: true },
+          { name: 'providerId', type: 'text', required: true, index: true },
+          { name: 'password', type: 'text' },
+          { name: 'accessToken', type: 'text' },
+          { name: 'refreshToken', type: 'text' },
+          { name: 'idToken', type: 'text' },
+          { name: 'accessTokenExpiresAt', type: 'date' },
+          { name: 'refreshTokenExpiresAt', type: 'date' },
+          { name: 'scope', type: 'text' },
+          ...extra('account'),
+        ],
+        options?.access
+      ),
+    ],
+    [
+      'verification',
+      base(
+        slugs.verification,
+        'Better Auth verification',
+        [
+          { name: 'identifier', type: 'text', required: true, index: true },
+          { name: 'value', type: 'text', required: true },
+          { name: 'expiresAt', type: 'date', required: true },
+          ...extra('verification'),
+        ],
+        options?.access
+      ),
+    ],
+    [
+      'rateLimit',
+      base(
+        slugs.rateLimit,
+        'Better Auth rate limit',
+        [
+          { name: 'key', type: 'text', required: true, unique: true, index: true },
+          { name: 'count', type: 'number', required: true },
+          { name: 'lastRequest', type: 'number', required: true },
+          ...extra('rateLimit'),
+        ],
+        options?.access
+      ),
+    ],
   ]
+  return [
+    ...core.filter(([model]) => !adopted(model)).map(([, collection]) => collection),
+    ...customModels
+      .filter((entry) => !adopted(entry.model))
+      .map((entry) =>
+        base(
+          customModelSlug(entry),
+          entry.label ?? `Better Auth ${entry.model}`,
+          entry.fields.map(toPayloadField),
+          options?.access
+        )
+      ),
+  ]
+}
+
+/**
+ * Validate an adoption map at wiring time (issue #49): models must be
+ * known (core or declared custom), entries must name a slug, and field
+ * maps must not rename reserved names. The host collection's own
+ * fields are validated once the Payload instance exists (the adapter's
+ * first use) — wiring time has no collections to compare against.
+ */
+export function validateSchemaMap(
+  schemaMap: BetterAuthSchemaMap,
+  known: { readonly coreModels: readonly string[]; readonly customModels: readonly string[] }
+): void {
+  const core = new Set(known.coreModels)
+  const custom = new Set(known.customModels)
+  for (const [model, entry] of Object.entries(schemaMap)) {
+    if (!core.has(model) && !custom.has(model)) {
+      throw new InvalidConfigError(
+        `schemaMap model "${model}" is neither a core model nor a declared custom model; declare it in customModels (with its fields) or drop the entry`
+      )
+    }
+    if (typeof entry.slug !== 'string' || entry.slug === '') {
+      throw new InvalidConfigError(`schemaMap model "${model}" must adopt a non-empty slug`)
+    }
+    for (const [from, to] of Object.entries(entry.fields ?? {})) {
+      if (from === '' || to === '') {
+        throw new InvalidConfigError(
+          `schemaMap model "${model}" field map must use non-empty names ("${from}" → "${to}")`
+        )
+      }
+      if (from === to) {
+        throw new InvalidConfigError(
+          `schemaMap model "${model}" maps "${from}" to itself; drop the entry (unmapped fields keep their name)`
+        )
+      }
+      if (to === 'id' || to === 'baId' || from === 'id') {
+        throw new InvalidConfigError(
+          `schemaMap model "${model}" field map may not rename "${from}" to "${to}": ids are owned by the id strategy, not the field map`
+        )
+      }
+    }
+  }
 }

@@ -7,28 +7,46 @@ import { UnsupportedOperatorError } from './errors.js'
  * Better Auth addresses rows by `id`; Payload owns the document `id`, so the
  * adapter persists the provider id in `baId`. Every other field maps 1:1 —
  * the adapter rejects renamed models/fields at startup, so physical names
- * always equal the canonical Better Auth names here.
+ * always equal the canonical Better Auth names here. Adopted models
+ * (issue #49) pass a per-model resolver instead: `id` resolves to the
+ * document `id` under `idStrategy: 'payload'`, and renamed fields
+ * resolve through the schema map.
  */
 export function baFieldToPayload(field: string): string {
   return field === 'id' ? 'baId' : field
 }
 
+/** Per-model field resolution for adopted models (see baFieldToPayload). */
+export type FieldResolver = (field: string) => string
+
 /**
  * Payload `Where` values must be JSON: `Date` instances become ISO strings.
  * Arrays map element-wise (`in`/`not_in`); anything else passes through.
+ * `coerceValue` lets adopted models retype id values (a numeric Payload
+ * relationship wants a number where Better Auth hands over a string).
  */
-function toPayloadValue(value: unknown): unknown {
-  if (value instanceof Date) {
-    return value.toISOString()
+function toPayloadValue(
+  value: unknown,
+  coerceValue?: (field: string, value: unknown) => unknown,
+  field?: string
+): unknown {
+  const coerced =
+    coerceValue !== undefined && field !== undefined ? coerceValue(field, value) : value
+  if (coerced instanceof Date) {
+    return coerced.toISOString()
   }
-  if (Array.isArray(value)) {
-    const entries: unknown[] = value
+  if (Array.isArray(coerced)) {
+    const entries: unknown[] = coerced
     return entries.map((entry) => (entry instanceof Date ? entry.toISOString() : entry))
   }
-  return value
+  return coerced
 }
 
-function clauseToWhere(clause: CleanedWhere): {
+function clauseToWhere(
+  clause: CleanedWhere,
+  mapField?: FieldResolver,
+  coerceValue?: (field: string, value: unknown) => unknown
+): {
   where: Where
   postFilter?: (row: Record<string, unknown>) => boolean
 } {
@@ -37,7 +55,7 @@ function clauseToWhere(clause: CleanedWhere): {
   // the contract rather than guessing.
   const operator = clause.operator ?? 'eq'
   const mode = clause.mode ?? 'sensitive'
-  const field = baFieldToPayload(clause.field)
+  const field = mapField === undefined ? baFieldToPayload(clause.field) : mapField(clause.field)
   if (clause.value === null) {
     if (operator === 'eq') {
       return { where: { [field]: { exists: false } } }
@@ -47,7 +65,7 @@ function clauseToWhere(clause: CleanedWhere): {
     }
     throw new UnsupportedOperatorError(`${operator} with null`)
   }
-  const value = toPayloadValue(clause.value)
+  const value = toPayloadValue(clause.value, coerceValue, clause.field)
   switch (operator) {
     case 'eq': {
       if (mode === 'insensitive' && typeof clause.value === 'string') {
@@ -109,13 +127,17 @@ function clauseToWhere(clause: CleanedWhere): {
  * not `baId`) and exacts case-insensitive equality; it is `undefined`
  * when the Payload query alone is exact.
  */
-export function translateWhereClause(clauses: readonly CleanedWhere[]): {
+export function translateWhereClause(
+  clauses: readonly CleanedWhere[],
+  mapField?: FieldResolver,
+  coerceValue?: (field: string, value: unknown) => unknown
+): {
   where: Where
   postFilter: ((row: Record<string, unknown>) => boolean) | undefined
 } {
   const postFilters: ((row: Record<string, unknown>) => boolean)[] = []
   const conditions = clauses.map((clause) => {
-    const translated = clauseToWhere(clause)
+    const translated = clauseToWhere(clause, mapField, coerceValue)
     if (translated.postFilter) {
       postFilters.push(translated.postFilter)
     }
