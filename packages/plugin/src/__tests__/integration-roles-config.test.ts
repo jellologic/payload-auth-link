@@ -83,6 +83,7 @@ describe('role-config change between boots (B11)', () => {
         password: 'correct-horse-battery',
         roles: ['editor'],
         linkable: true,
+        linkableEmail: 'editor-only@test.dev',
       },
     })
     await bootA.create({
@@ -92,6 +93,7 @@ describe('role-config change between boots (B11)', () => {
         password: 'correct-horse-battery',
         roles: ['admin', 'editor'],
         linkable: true,
+        linkableEmail: 'admin-editor@test.dev',
       },
     })
     await bootA.db.destroy?.()

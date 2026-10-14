@@ -9,6 +9,7 @@ import {
 } from './access.js'
 import { toPayloadUser } from './mapping.js'
 import type { WiredOptions } from './options.js'
+import { requestVerifiedSession } from './session.js'
 import { createServices } from './services.js'
 
 /**
@@ -152,13 +153,13 @@ export function createEndpoints(wired: WiredOptions): Endpoint[] {
       method: 'get',
       handler: async (req) => {
         const { users, sessions } = services(req)
-        const verified = await sessions.verify(req.headers)
+        const verified = await requestVerifiedSession(sessions, req)
         if (verified.isErr()) {
           logVerifyFailure(wired.logger, 'session endpoint', verified.error)
           // CAP-10 (D3): a live anonymous provider session is a guest,
           // not a failed login — report it distinctly so apps can key
           // anonymous state on it. Guests never get a Payload user.
-          const guest = sessions.guest === undefined ? null : await sessions.guest(req.headers)
+          const guest = sessions.guest === undefined ? null : await sessions.guest(req.headers, req)
           if (guest !== null && guest.isOk() && guest.value !== null) {
             return jsonResponse(
               {
@@ -203,7 +204,7 @@ export function createEndpoints(wired: WiredOptions): Endpoint[] {
           return forbidden('csrf check failed')
         }
         const { sessions } = services(req)
-        const verified = await sessions.verify(req.headers)
+        const verified = await requestVerifiedSession(sessions, req)
         if (verified.isErr()) {
           // Idempotent logout: no live session, but a stale cookie may
           // remain — expire it so the browser stops presenting it.

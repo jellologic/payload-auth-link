@@ -172,6 +172,12 @@ function linkableMarkerHook(wired: WiredOptions): CollectionBeforeChangeHook {
       (isRecord(req.context) && req.context[linkableCreateMarker] === true)
     if (proven) {
       data.linkable = true
+      // Proof is bound to the email: an email change that is not the
+      // plugin's own provider-email sync invalidates it automatically
+      // (the guard compares the two on every lookup).
+      if (typeof data.email === 'string' && data.email !== '') {
+        data.linkableEmail = data.email
+      }
     } else if (data.linkable === undefined) {
       data.linkable = false
     }
@@ -191,6 +197,88 @@ function linkableField(wired: WiredOptions): CheckboxField {
       description:
         'Set when payload-auth-link (or a role manager) proved this document owns its email. JIT linking refuses documents without it.',
     },
+  }
+}
+
+/**
+ * The email the `linkable` proof was granted for (GHSA-8524). The
+ * proof holds only while the document's email still equals it — a
+ * self-service email change therefore invalidates linking until a
+ * role manager re-proves the new address. The plugin's own
+ * provider-email resync keeps the proof in step (repository
+ * `setEmail`).
+ */
+function linkableEmailField(wired: WiredOptions): TextField {
+  return {
+    name: 'linkableEmail',
+    type: 'text',
+    access: { ...governedWrite(wired), read: readManagersOnly(wired) },
+    admin: {
+      description:
+        'The email the linkable proof was granted for. JIT linking requires it to match the document email.',
+    },
+  }
+}
+
+/**
+ * Email changes over REST on documents with linked identities are
+ * role-manager-only (GHSA-8524): a self-service email change on a
+ * linked document would move a proven, linkable identity surface onto
+ * an unverified address. Documents without linked identities are the
+ * owner's to rename (nothing links to them by email yet). The
+ * plugin's provider-email resync runs with `overrideAccess` and is
+ * unaffected.
+ */
+function emailUpdateAccess(wired: WiredOptions): FieldAccess {
+  return ({ req, doc }) => {
+    if (isImpersonating(req)) {
+      return false
+    }
+    if (isRoleManager(req, wired)) {
+      return true
+    }
+    const identities = isRecord(doc) ? doc[wired.config.map.identitiesField] : undefined
+    const hasIdentities = Array.isArray(identities) && identities.length > 0
+    return !hasIdentities
+  }
+}
+
+/**
+ * Self-service local passwords are fail-closed (GHSA-8524): a
+ * provider-provisioned user must not be able to mint a Payload local
+ * credential for their document, which would bypass Better Auth's
+ * MFA, bans, rate limits, and verification. Non-manager password
+ * writes are stripped in beforeOperation (before Payload's update
+ * reads `data.password`); role managers may set passwords, and hosts
+ * who declare their own password field access keep it.
+ */
+function passwordGuardHook(
+  wired: WiredOptions
+): NonNullable<CollectionConfig['hooks']>['beforeOperation'] extends (infer F)[] | undefined
+  ? F
+  : never {
+  return ({ args, operation, req }) => {
+    if (operation !== 'update') {
+      return args
+    }
+    const data = isRecord(args) ? args.data : undefined
+    if (!isRecord(data) || data.password === undefined) {
+      return args
+    }
+    if (isImpersonating(req) || !isRoleManager(req, wired)) {
+      const stripped = { ...data }
+      delete stripped.password
+      return { ...args, data: stripped }
+    }
+    return args
+  }
+}
+
+function emailField(wired: WiredOptions): Field {
+  return {
+    name: wired.config.map.emailField,
+    type: 'email',
+    access: { update: emailUpdateAccess(wired) },
   }
 }
 
@@ -405,15 +493,18 @@ function createUsersCollection(wired: WiredOptions, strategy: AuthStrategy): Col
       strategies: [strategy],
     },
     fields: [
+      emailField(wired),
       rolesField(wired),
       identitiesField(wired),
       phoneField(wired),
       suspendedUntilField(wired),
       suspendReasonField(wired),
       linkableField(wired),
+      linkableEmailField(wired),
     ],
     hooks: {
       beforeValidate: [normalizeUserEmailHook(map)],
+      beforeOperation: [passwordGuardHook(wired)],
       beforeChange: [linkableMarkerHook(wired)],
       afterChange: [suspendRevokeHook(wired)],
     },
@@ -498,7 +589,33 @@ export function applyUsersCollection(
     suspendedUntilField(wired),
     suspendReasonField(wired),
     linkableField(wired),
+    linkableEmailField(wired),
   ]
+  // Email gap-fill (GHSA-8524): when the host's users collection has
+  // no email field in its config (Payload injects the base field at
+  // sanitize time), the plugin injects one carrying the fail-closed
+  // update access; when the host declares one, its access wins and
+  // only an absent update access is gap-filled.
+  const hostEmailField = existing.fields.find(
+    (candidate) => fieldName(candidate) === wired.config.map.emailField
+  )
+  let email: Field
+  if (hostEmailField === undefined) {
+    email = emailField(wired)
+  } else if (
+    isRecord((hostEmailField as { access?: Record<string, unknown> }).access) &&
+    (hostEmailField as { access?: Record<string, unknown> }).access?.update !== undefined
+  ) {
+    email = hostEmailField
+  } else {
+    // Deep-merge at sanitize keeps the base email field's required/
+    // hooks; only the access here is ours. The union spread needs the
+    // narrow cast back to the field type.
+    email = {
+      ...hostEmailField,
+      access: { update: emailUpdateAccess(wired) },
+    } as typeof hostEmailField
+  }
   for (const field of [identities, ...governance]) {
     const collision = existing.fields.find((candidate) => fieldName(candidate) === field.name)
     if (collision) {
@@ -513,14 +630,20 @@ export function applyUsersCollection(
   }
   const beforeValidate = existing.hooks?.beforeValidate ?? []
   const afterChange = existing.hooks?.afterChange ?? []
-  const fields =
-    hostRolesField === undefined
-      ? [...existing.fields, roles, identities, ...governance]
-      : [
-          ...existing.fields.map((field) => (field === hostRolesField ? roles : field)),
-          identities,
-          ...governance,
-        ]
+  // Replace the host's roles/email fields in place when present (the
+  // adopted/governed variants); append whatever is missing. Payload
+  // rejects duplicate field names, so injection must never follow a
+  // failed replacement.
+  const replaced = existing.fields.map((field) =>
+    field === hostRolesField ? roles : field === hostEmailField ? email : field
+  )
+  const fields = [
+    ...replaced,
+    ...(hostRolesField === undefined ? [roles] : []),
+    ...(hostEmailField === undefined ? [email] : []),
+    identities,
+    ...governance,
+  ]
   return (collections ?? []).map((collection) =>
     collection.slug === slug
       ? {
@@ -531,6 +654,7 @@ export function applyUsersCollection(
           hooks: {
             ...existing.hooks,
             beforeValidate: [...beforeValidate, normalizeUserEmailHook(wired.config.map)],
+            beforeOperation: [...(existing.hooks?.beforeOperation ?? []), passwordGuardHook(wired)],
             beforeChange: [...(existing.hooks?.beforeChange ?? []), linkableMarkerHook(wired)],
             afterChange: [...afterChange, suspendRevokeHook(wired)],
           },

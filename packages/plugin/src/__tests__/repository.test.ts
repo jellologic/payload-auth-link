@@ -30,6 +30,7 @@ const ref = { providerId: defineProviderId('stub'), providerUserId: 'stub-1' }
 
 const doc = {
   linkable: true,
+  linkableEmail: 'linked@test.dev',
   id: 'user-1',
   email: 'linked@test.dev',
   roles: ['user'],
@@ -199,6 +200,82 @@ describe('findByEmail linkability gate (GHSA-98hq-hh6v-2p2r)', () => {
     )
     expect((await users.findByEmail(email('linked@test.dev')))._unsafeUnwrap()).toBeNull()
     expect(warn.some((message) => message.includes('not marked linkable'))).toBe(true)
+  })
+
+  it('refuses when the linkable proof does not match the document email', async () => {
+    const moved = {
+      ...doc,
+      linkable: true,
+      linkableEmail: 'linked@test.dev',
+      email: 'moved@test.dev',
+    }
+    const { logger, warn } = (() => {
+      const warnings: string[] = []
+      const base = nullLogger()
+      const l: LoggerPort = {
+        ...base,
+        warn: (message) => warnings.push(message),
+        child: () => l,
+      }
+      return { logger: l, warn: warnings }
+    })()
+    const users = repository({ find: found([moved]), findByID: () => Promise.resolve({}) }, logger)
+    expect((await users.findByEmail(email('moved@test.dev')))._unsafeUnwrap()).toBeNull()
+    expect(warn.some((message) => message.includes('does not match the document email'))).toBe(true)
+  })
+
+  it('keeps the proof bound after a provider-email resync (setEmail moves linkableEmail)', async () => {
+    let written: { data?: Record<string, unknown> } | undefined
+    const users = repository({
+      find: found([linkedDoc]),
+      update: (args: unknown) => {
+        written = args as { data?: Record<string, unknown> }
+        return Promise.resolve({ ...linkedDoc, email: 'next@test.dev' })
+      },
+    })
+    const resynced = await users.setEmail(userId, email('next@test.dev'))
+    expect(resynced.isOk()).toBe(true)
+    expect(written?.data?.linkable).toBe(true)
+    expect(written?.data?.linkableEmail).toBe('next@test.dev')
+  })
+
+  it('refuses linkable documents whose proof was never granted (missing linkableEmail)', async () => {
+    const unproven = { ...doc, linkable: true, linkableEmail: undefined }
+    const { logger, warn } = (() => {
+      const warnings: string[] = []
+      const base = nullLogger()
+      const l: LoggerPort = {
+        ...base,
+        warn: (message) => warnings.push(message),
+        child: () => l,
+      }
+      return { logger: l, warn: warnings }
+    })()
+    const users = repository(
+      { find: found([unproven]), findByID: () => Promise.resolve({}) },
+      logger
+    )
+    expect((await users.findByEmail(email('linked@test.dev')))._unsafeUnwrap()).toBeNull()
+    expect(warn.some((message) => message.includes('does not match the document email'))).toBe(true)
+  })
+
+  it('linkIdentity still links when the best-effort password probe fails', async () => {
+    const update = vi.fn<(args: unknown) => Promise<unknown>>(() =>
+      Promise.resolve({
+        ...linkedDoc,
+        identities: [
+          ...linkedDoc.identities,
+          { ...linkedDoc.identities[0], providerUserId: 'stub-2' },
+        ],
+      })
+    )
+    const users = repository({
+      find: found([linkedDoc]),
+      findByID: () => Promise.reject(new Error('db down')),
+      update,
+    })
+    expect((await users.linkIdentity(userId, ref)).isOk()).toBe(true)
+    expect((await users.linkIdentity(userId, ref)).isOk()).toBe(true)
   })
 
   it('returns documents Payload itself verified', async () => {

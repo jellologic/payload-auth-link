@@ -32,7 +32,7 @@ const warnings: string[] = []
 const logger: LoggerPort = {
   ...consoleLogger(),
   warn: (message) => {
-    warnings.push(message)
+    warnings.push(`#${warnings.length} ${message}`)
   },
   child: () => logger,
 }
@@ -115,14 +115,68 @@ describe('one resolution per request (issue #42)', () => {
     })
     const { sessions } = createServices(wired, countPayload)
 
-    // The auth strategy and the endpoint handler see the SAME
-    // `headers` reference for one request; both verifications must
-    // collapse into one provider walk and one warning.
-    const headers = new Headers({ cookie: `${stubCookieName}=stale-garbage` })
-    const first = await sessions.verify(headers)
-    const second = await sessions.verify(headers)
-    expect(first.isErr() && second.isErr()).toBe(true)
+    // The real strategy and endpoint paths may see DIFFERENT Headers
+    // object references (bundler graphs), so the memo layers are: the
+    // headers WeakMap (same-object reuse) and req.context (shared
+    // request). Each layer must collapse its own duplicate walks.
+    const req = { context: { 'dbg-id': 'req-memo-req' } as Record<string, unknown> }
+    const headersA = new Headers({ cookie: `${stubCookieName}=stale-garbage` })
+    const headersB = new Headers({ cookie: `${stubCookieName}=stale-garbage` })
+    const first = await sessions.verify(headersA, req as never)
+    const second = await sessions.verify(headersA, req as never)
+    const third = await sessions.verify(headersB, req as never)
+    expect(first.isErr() && second.isErr() && third.isErr()).toBe(true)
+    process.stdout.write(
+      `DBG42 warns: ${JSON.stringify(warnings)} count: ${getCount.mock.calls.length}\n`
+    )
     expect(getCount).toHaveBeenCalledTimes(1)
+    expect(
+      warnings.filter((message) => message.includes('no provider session resolved'))
+    ).toHaveLength(1)
+  })
+})
+
+describe('one provider walk per HTTP request (issue #42 reopen)', () => {
+  it('counts exactly one getSession per refused REST request', async () => {
+    const countSecret = `${SECRET}-count-rest`
+    const countConfig = await buildConfig({
+      secret: countSecret,
+      serverURL: ORIGIN,
+      db: sqliteAdapter({ client: { url: ':memory:' } }),
+      telemetry: false,
+      logger: { options: { level: 'silent' } },
+      admin: { user: 'users' },
+      collections: [{ slug: 'users', auth: true, fields: [] }],
+      plugins: [
+        authLink({
+          baseUrl: ORIGIN,
+          roles: ['admin', 'user'],
+          defaultRole: 'user',
+          providers: [
+            {
+              ...stub.provider,
+              getSession: (headers: Headers) => {
+                process.stdout.write(`DBG-WRAPPER-CALL cookie=${String(headers.get('cookie'))}\n`)
+                getCount()
+                return stub.provider.getSession(headers)
+              },
+            },
+          ],
+        }),
+      ],
+    })
+    getCount.mockClear()
+    warnings.length = 0
+    const response = await handleEndpoints({
+      config: countConfig,
+      request: new Request(`${ORIGIN}/api/auth-link/session`, {
+        method: 'GET',
+        headers: { cookie: `${stubCookieName}=stale-garbage` },
+      }),
+    })
+    expect(response.status).toBe(401)
+    process.stdout.write(`DBG42 warns: ${JSON.stringify(warnings)}\n`)
+    expect(warnings.filter((m) => m.includes('no provider session resolved'))).toHaveLength(1)
     expect(
       warnings.filter((message) => message.includes('no provider session resolved'))
     ).toHaveLength(1)

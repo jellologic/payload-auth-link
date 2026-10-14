@@ -15,7 +15,10 @@ import {
   type SanitizedConfig,
 } from 'payload'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { parseEmail } from '@payload-auth-link/core'
 import { authLink } from '../index.js'
+import { wireOptions } from '../options.js'
+import { createServices } from '../services.js'
 import { createStubProvider } from './stub-provider.js'
 
 const ORIGIN = 'http://auth-link.test'
@@ -124,6 +127,7 @@ beforeAll(async () => {
       suspendedUntil: '2031-01-01T00:00:00.000Z',
       suspendReason: 'internal note: fraud investigation',
       linkable: true,
+      linkableEmail: 'plain@test.dev',
     },
   })
   // Simulates a document created outside the plugin (pre-upgrade row,
@@ -300,6 +304,68 @@ describe('injected field access defaults', () => {
     expect(body.user.email).toBe('proven@test.dev')
     const createdDoc = (created.body as { doc: { id: string } }).doc
     expect(body.user.id).toBe(String(createdDoc.id))
+  })
+
+  it('self-service email changes are stripped on linked documents (GHSA-8524)', async () => {
+    const session = await loginAs('plain@test.dev', 'correct-horse-battery')
+    const attempt = await rest('PATCH', `/users/${session.id}`, {
+      jar: session.jar,
+      body: { email: 'planted@test.dev' },
+    })
+    const body = attempt.body as { doc?: { email?: string } }
+    // Stripped (200) or refused — either way the planted email does
+    // not land on the document.
+    expect(body.doc?.email ?? 'plain@test.dev').toBe('plain@test.dev')
+  })
+
+  it('self-service password changes are stripped; the planted password does not log in', async () => {
+    const session = await loginAs('plain@test.dev', 'correct-horse-battery')
+    await rest('PATCH', `/users/${session.id}`, {
+      jar: session.jar,
+      body: { password: 'AttackerKnows-9' },
+    })
+    const replant = await rest('POST', '/users/login', {
+      body: { email: 'plain@test.dev', password: 'AttackerKnows-9' },
+    })
+    expect(replant.status).toBe(401)
+    const still = await rest('POST', '/users/login', {
+      body: { email: 'plain@test.dev', password: 'correct-horse-battery' },
+    })
+    expect(still.status).toBe(200)
+  })
+
+  it('the provider-email resync keeps the linkable proof bound (overrideAccess path)', async () => {
+    const session = await loginAs('admin@test.dev', 'correct-horse-battery')
+    // Manager withdraws the proof over REST...
+    const withdraw = await rest('PATCH', `/users/${session.id}`, {
+      jar: session.jar,
+      body: { linkable: false, linkableEmail: '' },
+    })
+    expect(withdraw.status).toBe(200)
+    // ...then the plugin's provider-email resync (repository setEmail,
+    // Local API with overrideAccess) re-establishes it for the new
+    // provider-verified address.
+    const wired = wireOptions({
+      baseUrl: ORIGIN,
+      roles: ['admin', 'user'],
+      defaultRole: 'user',
+      providers: [stub.provider],
+    })
+    const { users: resyncUsers } = createServices(wired, payload)
+    const changed = parseEmail('moved@test.dev')._unsafeUnwrap()
+    const resynced = await resyncUsers.setEmail(
+      session.id as unknown as Parameters<typeof resyncUsers.setEmail>[0],
+      changed
+    )
+    expect(resynced.isOk()).toBe(true)
+    const found = await payload.findByID({
+      collection: 'users',
+      id: session.id,
+      overrideAccess: true,
+    })
+    expect(found.email).toBe('moved@test.dev')
+    expect((found as unknown as { linkable: boolean }).linkable).toBe(true)
+    expect((found as unknown as { linkableEmail: string }).linkableEmail).toBe('moved@test.dev')
   })
 
   it('config fails fast when no admin role exists and none is named', async () => {

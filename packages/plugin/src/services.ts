@@ -9,7 +9,7 @@ import {
 import type { Payload } from 'payload'
 import type { WiredOptions } from './options.js'
 import { createPayloadUserRepository } from './repository.js'
-import { createSessionService } from './session.js'
+import { createSessionService, type PluginSessionService } from './session.js'
 
 /**
  * Single wiring change point for request-scoped services: the strategy
@@ -32,7 +32,7 @@ export function createServices(wired: WiredOptions, payload: Payload) {
     configuredRoles: new Set(wired.config.roles),
   })
   const orgs = wired.organizations
-  const sessions = createSessionService({
+  const sessions: PluginSessionService = createSessionService({
     users,
     registry: wired.registry,
     logger: wired.logger,

@@ -95,6 +95,31 @@ per deployment after upgrading (idempotent; safe to re-run).
 Already upgraded without it? The composite-key behavior silently
 does not hold on your deployment until you run the reconciliation.
 
+## 0.4.0 → 0.5.0 users, continued in 0.5.x → 0.6.0 (proof bound to the email)
+
+Follow-up to the JIT-linking proof above: the `linkable` marker is now
+bound to the email it was granted for (new `linkableEmail` field). The
+proof holds only while the document email equals `linkableEmail`:
+
+- Self-service email changes over REST on documents with linked
+  identities are role-manager-only (stripped for non-managers), and
+  self-service local passwords on plugin-managed documents are
+  stripped — one document can no longer hold two independently owned
+  credentials, and a local credential can no longer bypass Better
+  Auth's MFA/bans/verification.
+- The plugin's provider-email resync keeps the proof in step
+  (repository `setEmail` moves both the email and the proof, with
+  `overrideAccess`).
+- Linking to a document that also holds a local password now warns
+  (the hidden-field lookup that previously never fired is fixed).
+
+**Backfill for existing `linkable: true` documents** (created by
+0.5.0/0.5.1 without `linkableEmail`): set `linkableEmail = email` ONLY
+where the email still matches the linked identity's email; treat
+anything else as unproven (the admin users list shows which rows lack
+the marker). Role managers can do it per user over REST; bulk
+migrations via the Local API (see the migration runbook).
+
 ## 0.3.x → 0.5.0 (JIT-linking proof + users create/read defaults)
 
 Two more fail-closed defaults on the users collection (see the

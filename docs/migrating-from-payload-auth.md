@@ -179,7 +179,9 @@ for (const old of oldUsers) {
     id: old.id,
     data: {
       roles: old.role ?? ['user'], // your adopted roles field
-      linkable: true, // PROOF of email ownership (required for JIT linking)
+      // PROOF of email ownership (required for JIT linking) — BOTH:
+      linkable: true,
+      linkableEmail: old.email,
       identities: links.map((a) => ({
         providerId: a.providerId === 'credential' ? 'better-auth' : a.providerId,
         providerUserId: String(a.userId),

@@ -653,6 +653,7 @@ export declare function auditStoredRoles(wired: WiredOptions, payload: Payload):
 // ===== services.d.ts =====
 import type { Payload } from 'payload';
 import type { WiredOptions } from './options.js';
+import { type PluginSessionService } from './session.js';
 /**
  * Single wiring change point for request-scoped services: the strategy
  * and the endpoints both build their repository + session service here,
@@ -660,12 +661,13 @@ import type { WiredOptions } from './options.js';
  */
 export declare function createServices(wired: WiredOptions, payload: Payload): {
     users: import("@payload-auth-link/core").UserRepository;
-    sessions: import("@payload-auth-link/core").SessionPort;
+    sessions: PluginSessionService;
 };
 
 // ===== session.d.ts =====
 import { ResultAsync } from 'neverthrow';
-import { RepositoryError, type ClockPort, type Email, type LinkingPolicy, type LoggerPort, type ProviderId, type ProviderRegistry, type Role, type SessionChannel, type SessionPort, type UserRepository } from '@payload-auth-link/core';
+import type { PayloadRequest } from 'payload';
+import { ChannelNotAdmittedError, RepositoryError, SessionExpiredError, SessionInvalidError, UserSuspendedError, type ClockPort, type Email, type GuestPrincipal, type LinkingPolicy, type LoggerPort, type ProviderId, type ProviderRegistry, type Role, type Session, type SessionChannel, type SessionPort, type UserRepository } from '@payload-auth-link/core';
 /** `SessionPort` wiring: user store, provider registry, leaf ports. */
 export type SessionServiceDeps = {
     readonly users: UserRepository;
@@ -698,12 +700,47 @@ export type SessionServiceDeps = {
     readonly ssoDomainAllowed?: ((providerId: ProviderId, email: Email | null) => ResultAsync<boolean, RepositoryError>) | undefined;
 };
 /**
+ * Per-`Headers`-identity verification cache. Payload runs the auth
+ * strategy for every /api request AND the endpoint handler verifies
+ * again — one refused request used to walk the providers (and warn)
+ * three times (issue #42). The same request flows the same
+ * `req.headers` object to both callers, so memoizing on that identity
+ * resolves once per request; a new request brings a new headers
+ * object and a fresh verification.
+ */
+type SessionVerifyError = SessionInvalidError | SessionExpiredError | ChannelNotAdmittedError | UserSuspendedError | RepositoryError;
+/**
+ * Per-request verification memo key (issue #42): the auth strategy
+ * resolves the session once and stores the result on `req.context`;
+ * the endpoint handler reuses it instead of re-verifying. The memo
+ * hangs off the request, which the strategy and the endpoint share
+ * even across bundler graphs (a module-level memo would not).
+ */
+export declare const REQUEST_VERIFY_KEY = "payload-auth-link:session-verification";
+/**
  * `SessionPort` bridging provider sessions to Payload users. Provider state
  * is never touched (no refresh, no writes); Payload users are provisioned
  * just-in-time and idempotently at verification, so no signup ordering can
  * strand a provider user without its Payload document.
  */
-export declare function createSessionService(deps: SessionServiceDeps): SessionPort;
+/**
+ * The plugin's session service: the core `SessionPort` plus the
+ * request-aware verification used by the strategy and the endpoint
+ * handler to share one resolution per request (issue #42).
+ */
+export type PluginSessionService = SessionPort & {
+    verify(headers: Headers, req?: PayloadRequest): ResultAsync<Session, SessionVerifyError>;
+    guest(headers: Headers, req?: PayloadRequest): ResultAsync<GuestPrincipal | null, RepositoryError>;
+};
+/**
+ * Read (or lazily create) the request's verified session from
+ * `req.context` — the strategy and the endpoint handler share one
+ * resolution per request (issue #42). `verify` is only called when no
+ * result is memoized; its result is stored for every later reader.
+ */
+export declare function requestVerifiedSession(sessions: SessionPort, req: PayloadRequest): ResultAsync<Session, SessionVerifyError>;
+export declare function createSessionService(deps: SessionServiceDeps): PluginSessionService;
+export {};
 
 // ===== strategy.d.ts =====
 import type { AuthStrategy } from 'payload';

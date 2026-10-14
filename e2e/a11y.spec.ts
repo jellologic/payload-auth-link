@@ -60,7 +60,10 @@ test('admin users table body has zero axe violations', async ({ browser, baseURL
  * no rule outside this set and no more nodes per rule, so a new upstream
  * regression (or anything we add to the admin) fails here instead of
  * hiding behind the `tbody` scoping above. Fixes upstream (fewer nodes,
- * vanished rules) pass; shrink the snapshot when they land.
+ * vanished rules) pass; shrink the snapshot when they land. The
+ * `button-name` rule is allowed for the per-row array-drawer chevrons
+ * (`.clickable-arrow`, upstream @payloadcms/ui ArrayCell chrome: icon
+ * buttons without accessible names, one per row with identities).
  */
 const upstreamAdminViolations: Record<3 | 4, Readonly<Record<string, number>>> = {
   // Payload v3: sort-label contrast per column, unlabeled select-all and
@@ -105,6 +108,10 @@ test('admin users page reports nothing beyond the upstream snapshot', async ({
   const results = await new AxeBuilder({ page })
     .exclude('tbody input[type="checkbox"]')
     .exclude('.id-label')
+    // Payload's per-row array-drawer chevrons (the identities cell):
+    // icon-only buttons rendered by upstream @payloadcms/ui ArrayCell,
+    // unlabeled upstream of us.
+    .exclude('.clickable-arrow')
     .analyze()
   const beyond = results.violations
     .filter((violation) => violation.nodes.length > (allowed[violation.id] ?? 0))
