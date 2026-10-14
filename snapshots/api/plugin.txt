@@ -174,7 +174,7 @@ export declare function withImpersonationAuditCollections(collections: readonly 
 export declare function withImpersonationAuditGlobals(globals: readonly GlobalConfig[] | undefined, logger: LoggerPort): GlobalConfig[];
 
 // ===== collections.d.ts =====
-import type { AuthStrategy, CollectionConfig, Field } from 'payload';
+import type { AuthStrategy, CollectionBeforeOperationHook, CollectionConfig, Field, GlobalBeforeOperationHook } from 'payload';
 import type { WiredOptions } from './options.js';
 /**
  * `req.context` key the plugin sets on engine-driven Local-API creates
@@ -183,6 +183,26 @@ import type { WiredOptions } from './options.js';
  * identity.
  */
 export declare const linkableCreateMarker = "payload-auth-link:create";
+/**
+ * Request-time account controls on EVERY strategy (GHSA-f4hj): the
+ * `auth-link` strategy enforces suspension and the MFA projection at
+ * verification, but Payload's local JWT and API-key strategies resolve
+ * `req.user` without consulting the plugin — and `beforeLogin` does
+ * nothing for a token minted before the control applied. This hook
+ * runs in `beforeOperation` (which Payload evaluates BEFORE access
+ * control) on every collection and global, so a suspended user's next
+ * request is refused outright and `requireMfaForRoles` roles are
+ * withheld from local sessions (which have no MFA proof — fail
+ * closed) before any access check reads them. Provider sessions carry
+ * the strategy's own projection and keep their proof.
+ */
+export declare function accountControlsGateHook(wired: WiredOptions): CollectionBeforeOperationHook;
+/**
+ * The same account controls for Payload globals: a suspended user's
+ * local JWT must not read or write global data either. Shares the
+ * per-request status memo with the collection gate.
+ */
+export declare function accountControlsGlobalGateHook(wired: WiredOptions): GlobalBeforeOperationHook;
 /** Field name when the field variant has one (`collapsible` has none). */
 export declare function fieldName(field: Field): string | undefined;
 export declare function applyUsersCollection(collections: readonly CollectionConfig[] | undefined, wired: WiredOptions, strategy: AuthStrategy): CollectionConfig[];
@@ -460,6 +480,18 @@ export type AuthLinkPluginOptions = {
      * are CAP-13b, when non-cookie channels actually arrive).
      */
     readonly admitChannels?: readonly SessionChannel[] | undefined;
+    /**
+     * Provider-owned documents (GHSA-f4hj): a users document holding
+     * linked provider identities authenticates through its provider —
+     * local sign-in and the forgot/reset-password flow are refused for
+     * it, because a local password would bypass the provider's MFA,
+     * bans, rate limits, and revocation. Defaults to `false` (refuse).
+     * Set `true` only for a migration window where documents must keep
+     * working with both credentials; remove it once the migration
+     * completes. Documents without linked identities (operator
+     * accounts, pre-link imports) are unaffected either way.
+     */
+    readonly allowLocalCredentialsForLinkedDocs?: boolean | undefined;
 };
 /** Injected governance/identity field names on the users collection. */
 export type UserGovernanceFields = {
@@ -509,6 +541,12 @@ export type WiredOptions = {
     readonly onAudit: AuditSink | null;
     /** Organizations wiring (CAP-11), or `null` when not enabled. */
     readonly organizations: WiredOrganizations | null;
+    /**
+     * Provider-owned documents (GHSA-f4hj): local sign-in and
+     * forgot/reset-password are refused for documents holding linked
+     * identities. `false` (the default) enforces it.
+     */
+    readonly allowLocalCredentialsForLinkedDocs: boolean;
 };
 /**
  * Validate raw options and build the composition root. Throws

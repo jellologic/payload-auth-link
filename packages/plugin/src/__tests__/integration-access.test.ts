@@ -68,6 +68,30 @@ function setCookieOf(responseHeaders: Headers): string {
   return setCookie.split(';')[0] ?? ''
 }
 
+/**
+ * Mint a live stub-provider session for a linked document and verify
+ * it through the plugin, returning the session jar. Linked documents
+ * authenticate through their provider (GHSA-f4hj): local sign-in is
+ * refused for them, so tests driving a linked user hold a provider
+ * session instead.
+ */
+async function providerJar(
+  sessionId: string,
+  providerUserId: string,
+  email: string
+): Promise<{ jar: string; id: string }> {
+  const jar = stub.issue({
+    sessionId,
+    providerUserId,
+    email,
+    expiresAt: new Date(Date.now() + 3600_000),
+  })
+  const linked = await rest('GET', '/auth-link/session', { jar })
+  expect(linked.status).toBe(200)
+  const body = linked.body as { user: { id: string } }
+  return { jar, id: String(body.user.id) }
+}
+
 async function loginAs(email: string, password: string): Promise<Session> {
   const response = await handleEndpoints({
     config,
@@ -124,10 +148,28 @@ beforeAll(async () => {
           linkedAt: new Date().toISOString(),
         },
       ],
-      suspendedUntil: '2031-01-01T00:00:00.000Z',
+      // An EXPIRED suspension: the document carries operator-facing
+      // data for the field-strip tests, but the account is not
+      // currently suspended — an active suspension would refuse every
+      // session, which the credential-path suite covers.
+      suspendedUntil: '2020-01-01T00:00:00.000Z',
       suspendReason: 'internal note: fraud investigation',
       linkable: true,
       linkableEmail: 'plain@test.dev',
+    },
+  })
+  // A plain LOCAL operator account: no linked identities, no active
+  // suspension — the shape that keeps local sign-in (GHSA-f4hj
+  // provider-owned default refuses local credentials only for
+  // provider-linked documents).
+  await payload.create({
+    collection: 'users',
+    data: {
+      email: 'operator@test.dev',
+      password: 'correct-horse-battery',
+      roles: ['user'],
+      suspendedUntil: '2020-06-01T00:00:00.000Z',
+      suspendReason: 'internal note: resolved',
     },
   })
   // Simulates a document created outside the plugin (pre-upgrade row,
@@ -145,7 +187,7 @@ beforeAll(async () => {
 
 describe('injected field access defaults', () => {
   it('a plain user cannot grant themselves roles; the session stays ["user"]', async () => {
-    const session = await loginAs('plain@test.dev', 'correct-horse-battery')
+    const session = await loginAs('operator@test.dev', 'correct-horse-battery')
     const attempt = await rest('PATCH', `/users/${session.id}`, {
       jar: session.jar,
       body: { roles: ['admin'] },
@@ -155,12 +197,12 @@ describe('injected field access defaults', () => {
     const body = attempt.body as { doc?: { roles?: string[] } }
     expect(body.doc?.roles).not.toEqual(['admin'])
     // A fresh login re-reads the stored document: still just `user`.
-    const after = await loginAs('plain@test.dev', 'correct-horse-battery')
+    const after = await loginAs('operator@test.dev', 'correct-horse-battery')
     expect(after.roles).toEqual(['user'])
   })
 
   it('a plain user holds no governing permissions on the users collection', async () => {
-    const session = await loginAs('plain@test.dev', 'correct-horse-battery')
+    const session = await loginAs('operator@test.dev', 'correct-horse-battery')
     const access = await rest('GET', '/access', { jar: session.jar })
     // Payload 3.90's /api/access serves the per-collection permission
     // map; canAccessAdmin itself is served by the admin routes. The
@@ -178,7 +220,9 @@ describe('injected field access defaults', () => {
   })
 
   it('operator-facing fields are stripped from every row a plain user reads', async () => {
-    const session = await loginAs('plain@test.dev', 'correct-horse-battery')
+    // Local session: the operator account's own rows carry expired
+    // suspension data; every read strips it.
+    const session = await loginAs('operator@test.dev', 'correct-horse-battery')
     const list = await rest('GET', '/users?depth=0&limit=10', { jar: session.jar })
     expect(list.status).toBe(200)
     const docs = (list.body as { docs: Array<Record<string, unknown>> }).docs
@@ -186,8 +230,21 @@ describe('injected field access defaults', () => {
     for (const doc of docs) {
       expect(doc).not.toHaveProperty('suspendReason')
       expect(doc).not.toHaveProperty('suspendedUntil')
-      // Payload strips read-denied arrays to an empty list: no row
-      // content (provider ids, emails) may leak either way.
+      const identities = doc.identities
+      expect(
+        identities === undefined || (Array.isArray(identities) && identities.length === 0)
+      ).toBe(true)
+    }
+    // Provider session on a LINKED document: the identity rows (and
+    // the operator data) are equally invisible to its owner's reads.
+    const { jar } = await providerJar('sess-plain-reads', 'plain-1', 'plain@test.dev')
+    const linkedList = await rest('GET', '/users?depth=0&limit=10', { jar })
+    expect(linkedList.status).toBe(200)
+    const linkedDocs = (linkedList.body as { docs: Array<Record<string, unknown>> }).docs
+    expect(linkedDocs.length).toBe(1)
+    for (const doc of linkedDocs) {
+      expect(doc).not.toHaveProperty('suspendReason')
+      expect(doc).not.toHaveProperty('suspendedUntil')
       const identities = doc.identities
       expect(
         identities === undefined || (Array.isArray(identities) && identities.length === 0)
@@ -196,7 +253,7 @@ describe('injected field access defaults', () => {
   })
 
   it('a plain user still reads their own roles', async () => {
-    const session = await loginAs('plain@test.dev', 'correct-horse-battery')
+    const session = await loginAs('operator@test.dev', 'correct-horse-battery')
     const me = await rest('GET', `/users/${session.id}`, { jar: session.jar })
     const body = me.body as { roles?: string[] }
     expect(body.roles).toEqual(['user'])
@@ -252,7 +309,7 @@ describe('injected field access defaults', () => {
   })
 
   it('a non-manager cannot create users over REST (GHSA-98hq-hh6v-2p2r)', async () => {
-    const session = await loginAs('plain@test.dev', 'correct-horse-battery')
+    const session = await loginAs('operator@test.dev', 'correct-horse-battery')
     const created = await rest('POST', '/users', {
       jar: session.jar,
       body: { email: 'victim@test.dev', password: 'AttackerKnows-1' },
@@ -261,12 +318,12 @@ describe('injected field access defaults', () => {
   })
 
   it('a non-manager sees only their own document in the list', async () => {
-    const session = await loginAs('plain@test.dev', 'correct-horse-battery')
+    const session = await loginAs('operator@test.dev', 'correct-horse-battery')
     const list = await rest('GET', '/users?depth=0&limit=10', { jar: session.jar })
     expect(list.status).toBe(200)
     const docs = (list.body as { docs: Array<Record<string, unknown>> }).docs
     expect(docs.length).toBe(1)
-    expect(docs[0]?.email).toBe('plain@test.dev')
+    expect(docs[0]?.email).toBe('operator@test.dev')
     void docs
   })
 
@@ -307,31 +364,40 @@ describe('injected field access defaults', () => {
   })
 
   it('self-service email changes are stripped on linked documents (GHSA-8524)', async () => {
-    const session = await loginAs('plain@test.dev', 'correct-horse-battery')
-    const attempt = await rest('PATCH', `/users/${session.id}`, {
-      jar: session.jar,
+    const { jar, id } = await providerJar('sess-plain-email', 'plain-1', 'plain@test.dev')
+    await rest('PATCH', `/users/${id}`, {
+      jar,
       body: { email: 'planted@test.dev' },
     })
-    const body = attempt.body as { doc?: { email?: string } }
-    // Stripped (200) or refused — either way the planted email does
-    // not land on the document.
-    expect(body.doc?.email ?? 'plain@test.dev').toBe('plain@test.dev')
+    // Whatever the status, the planted email does not land on the
+    // document — the field access strips it for the non-manager.
+    const found = await payload.find({
+      collection: 'users',
+      where: { email: { equals: 'planted@test.dev' } },
+      limit: 1,
+      overrideAccess: true,
+    })
+    expect(found.docs.length).toBe(0)
   })
 
-  it('self-service password changes are stripped; the planted password does not log in', async () => {
-    const session = await loginAs('plain@test.dev', 'correct-horse-battery')
-    await rest('PATCH', `/users/${session.id}`, {
-      jar: session.jar,
+  it('self-service password changes are stripped; no local login survives on a linked document (GHSA-8524, GHSA-f4hj)', async () => {
+    const { jar, id } = await providerJar('sess-plain-password', 'plain-1', 'plain@test.dev')
+    await rest('PATCH', `/users/${id}`, {
+      jar,
       body: { password: 'AttackerKnows-9' },
     })
+    // The planted password does not log in...
     const replant = await rest('POST', '/users/login', {
       body: { email: 'plain@test.dev', password: 'AttackerKnows-9' },
     })
-    expect(replant.status).toBe(401)
+    expect(replant.status).not.toBe(200)
+    // ...and neither does the pre-existing one: the document holds
+    // linked identities, so local sign-in is refused outright
+    // (GHSA-f4hj provider-owned documents).
     const still = await rest('POST', '/users/login', {
       body: { email: 'plain@test.dev', password: 'correct-horse-battery' },
     })
-    expect(still.status).toBe(200)
+    expect(still.status).toBe(403)
   })
 
   it('the provider-email resync keeps the linkable proof bound (overrideAccess path)', async () => {

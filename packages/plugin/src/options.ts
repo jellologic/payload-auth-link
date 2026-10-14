@@ -150,6 +150,18 @@ export type AuthLinkPluginOptions = {
    * are CAP-13b, when non-cookie channels actually arrive).
    */
   readonly admitChannels?: readonly SessionChannel[] | undefined
+  /**
+   * Provider-owned documents (GHSA-f4hj): a users document holding
+   * linked provider identities authenticates through its provider —
+   * local sign-in and the forgot/reset-password flow are refused for
+   * it, because a local password would bypass the provider's MFA,
+   * bans, rate limits, and revocation. Defaults to `false` (refuse).
+   * Set `true` only for a migration window where documents must keep
+   * working with both credentials; remove it once the migration
+   * completes. Documents without linked identities (operator
+   * accounts, pre-link imports) are unaffected either way.
+   */
+  readonly allowLocalCredentialsForLinkedDocs?: boolean | undefined
 }
 
 /** Injected governance/identity field names on the users collection. */
@@ -200,6 +212,12 @@ export type WiredOptions = {
   readonly onAudit: AuditSink | null
   /** Organizations wiring (CAP-11), or `null` when not enabled. */
   readonly organizations: WiredOrganizations | null
+  /**
+   * Provider-owned documents (GHSA-f4hj): local sign-in and
+   * forgot/reset-password are refused for documents holding linked
+   * identities. `false` (the default) enforces it.
+   */
+  readonly allowLocalCredentialsForLinkedDocs: boolean
 }
 
 function fieldNameOption(value: string | undefined, fallback: string, label: string): string {
@@ -446,5 +464,6 @@ export function wireOptions(raw: AuthLinkPluginOptions): WiredOptions {
     roleManagerRoles,
     onAudit: raw.onAudit ?? null,
     organizations,
+    allowLocalCredentialsForLinkedDocs: raw.allowLocalCredentialsForLinkedDocs === true,
   }
 }

@@ -143,6 +143,19 @@ role. Your own access functions still win wherever you declare them
 fields users may edit, declare collection `access` explicitly; the
 plugin does not guess a policy for fields it did not inject.
 
+**Suspension and local credentials.** Suspension (`suspendedUntil`
+in the future) refuses every session for that account — the provider
+session, a local password sign-in, and any local JWT or API key the
+account already holds (the next request is refused, on every
+collection). Documents with linked provider identities are
+**provider-owned**: local sign-in and the forgot/reset-password flow
+are refused for them (`allowLocalCredentialsForLinkedDocs: true`
+re-enables both during a migration window), while operator accounts
+without linked identities keep local credentials and password
+recovery. Roles listed in `policies.requireMfaForRoles` are withheld
+from local-strategy sessions, which have no MFA proof. The full
+matrix lives in [security-model.md](security-model.md).
+
 ## Edit 4 — Routes, middleware, UI
 
 **Auth routes** (`app/api/auth/[...all]/route.ts`):

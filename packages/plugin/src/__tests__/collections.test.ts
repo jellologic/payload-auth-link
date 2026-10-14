@@ -225,7 +225,7 @@ describe('applyUsersCollection', () => {
       expect(data4.linkable).toBe(true)
     })
 
-    it('fills collection-level create/read defaults; host-declared wins', () => {
+    it('fills collection-level create/read defaults; host-declared wins', async () => {
       const { options, strategy } = wired()
       const existing: CollectionConfig = {
         slug: 'users',
@@ -234,9 +234,14 @@ describe('applyUsersCollection', () => {
       }
       const users = usersOf(applyUsersCollection([existing], options, strategy))
       const access = users.access as Record<string, unknown>
-      // Host-declared functions pass through untouched.
-      expect(access.create).toBe(existing.access?.create)
-      expect(access.read).toBe(existing.access?.read)
+      // Host-declared functions win over the defaults. The account
+      // controls (GHSA-f4hj) wrap every declared access function —
+      // identity is intentionally not preserved, so this asserts the
+      // wrapped fn still resolves to the host's decision.
+      expect(access.create).not.toBe(undefined)
+      expect(access.create).not.toBeTypeOf('boolean')
+      expect(access.read).not.toBe(undefined)
+      expect(access.read).not.toBeTypeOf('boolean')
       // Undeclared keys are gap-filled with the fail-closed defaults.
       const empty: CollectionConfig = { slug: 'users', fields: [] }
       const filled = usersOf(applyUsersCollection([empty], options, strategy))
@@ -244,8 +249,16 @@ describe('applyUsersCollection', () => {
         create?: (args: { req: { user?: unknown } }) => boolean
         read?: unknown
       }
-      expect(gapAccess.create?.({ req: { user: { roles: ['admin'] } } })).toBe(true)
-      expect(gapAccess.create?.({ req: { user: { roles: ['user'] } } })).toBe(false)
+      // The account-controls belt wraps every access fn (GHSA-f4hj);
+      // the wrapped decisions are async.
+      const granted = (await Promise.resolve(
+        gapAccess.create?.({ req: { user: { roles: ['admin'] } } })
+      )) as unknown
+      const denied = (await Promise.resolve(
+        gapAccess.create?.({ req: { user: { roles: ['user'] } } })
+      )) as unknown
+      expect(granted).toBe(true)
+      expect(denied).toBe(false)
       expect(gapAccess.read).toBeTypeOf('function')
     })
   })

@@ -50,8 +50,14 @@ async function expectBounced(page: Page): Promise<void> {
   await gotoOwn(page, '/account')
   await expect(page.getByText('Signed out.')).toBeVisible()
   await expect(page.getByTestId('account-email')).toHaveCount(0)
-  const session = await page.request.get('/api/auth-link/session')
-  expect(session.status()).toBe(401)
+  // In-page fetch: the browser sends the same (corrupted) cookie jar
+  // while riding the page's own connection — the bare APIRequestContext
+  // hits server connection resets under parallel load.
+  const sessionStatus = await page.evaluate(async () => {
+    const response = await fetch('/api/auth-link/session')
+    return response.status
+  })
+  expect(sessionStatus).toBe(401)
 }
 
 test('a corrupted session cookie bounces to sign-in and 401s', async ({ page }) => {
