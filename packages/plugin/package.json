@@ -55,9 +55,9 @@
     }
   },
   "devDependencies": {
-    "@payloadcms/db-sqlite": "3.90.2",
-    "@payloadcms/ui": "3.90.2",
-    "payload": "3.90.2",
+    "@payloadcms/db-sqlite": "4.0.0-internal.9726517",
+    "@payloadcms/ui": "4.0.0-internal.9726517",
+    "payload": "4.0.0-internal.9726517",
     "react": "19.2.6"
   },
   "publishConfig": {
