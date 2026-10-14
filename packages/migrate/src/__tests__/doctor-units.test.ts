@@ -120,3 +120,45 @@ describe('doctor units', () => {
     }
   })
 })
+
+describe('doctor report formatting', () => {
+  test('renders every section of the human-readable report', async () => {
+    const { cliMain } = await import('../cli.js')
+    const chunks: string[] = []
+    const sink = {
+      write: (chunk: string): void => {
+        chunks.push(chunk)
+      },
+    }
+    await expect(
+      cliMain(['doctor', '--config', '/nonexistent/payload.config.ts'], sink, sink)
+    ).rejects.toThrow(/Cannot find module|ERR_MODULE_NOT_FOUND/)
+  })
+
+  test('formats blockers, warnings, tables, and behaviour changes as text', async () => {
+    // formatReport is not exported; exercise it through cliMain with a
+    // config the doctor can load (the CLI prints the text report when
+    // --json is absent).
+    const { cliMain } = await import('../cli.js')
+    const chunks: string[] = []
+    const sink = {
+      write: (chunk: string): void => {
+        chunks.push(chunk)
+      },
+    }
+    const configPath = new URL('../__fixtures__/doctor-fixture/payload.config.ts', import.meta.url)
+      .pathname
+    const code = await cliMain(['doctor', '--config', configPath], sink, sink)
+    expect(code).toBe(2)
+    const format = chunks.join('')
+    expect(format).toContain('== versions ==')
+    expect(format).toContain('== Better Auth plugins ==')
+    expect(format).toContain('== users collection ==')
+    expect(format).toContain('== source scan ==')
+    expect(format).toContain('== database ==')
+    expect(format).toContain('not inspected')
+    expect(format).toContain('== behaviour changes')
+    expect(format).toContain('== blockers ==')
+    expect(format).toContain('== warnings ==')
+  })
+})

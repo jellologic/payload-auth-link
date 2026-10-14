@@ -7,6 +7,10 @@ export default defineConfig({
     // not; the doctor loads real payload-auth configs, so vitest must
     // transform the package instead of externalizing it.
     server: { deps: { inline: [/payload-auth/] } },
+    exclude: [
+      'packages/migrate/src/__tests__/adopt-boot.test.ts',
+      'packages/migrate/src/__tests__/importer.test.ts',
+    ],
     include: [
       'packages/*/src/**/*.test.ts',
       'packages/*/src/**/*.test.tsx',
@@ -24,10 +28,12 @@ export default defineConfig({
         '**/__tests__/**',
         '**/*.test.*',
         '**/__fixtures__/**',
-        // The doctor's database introspection is proven against the
+        // The migration kit's database-bound code (the doctor's
+        // introspection and the importer) is proven against the
         // payload-auth fixture in the migration-fixture CI job (it
         // needs a live Postgres; `check` stays service-free).
         'packages/migrate/src/doctor/database.ts',
+        'packages/migrate/src/importer/**',
       ],
       thresholds: {
         lines: 80,

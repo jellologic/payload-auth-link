@@ -1,4 +1,5 @@
 // ===== cli.d.ts =====
+#!/usr/bin/env bun
 type StdSink = {
     readonly write: (chunk: string) => void;
 };

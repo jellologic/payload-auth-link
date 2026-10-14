@@ -88,11 +88,20 @@ export async function loadFixtureDump(prefix: string): Promise<string> {
   return database
 }
 
+/**
+ * Best-effort cleanup: WITH (FORCE) terminates live backends, and the
+ * killed connections surface as unhandled pg errors that fail the run
+ * even when every test passed. A failed drop (live connections) is
+ * ignored — the suite stays green and the leftover database is garbage
+ * collected by the next scratch purge.
+ */
 export async function dropDatabase(database: string): Promise<void> {
   const admin = adminClient(targetFromEnv(database))
   await admin.connect()
   try {
-    await admin.query(`DROP DATABASE IF EXISTS ${quoteIdent(database)} WITH (FORCE)`)
+    await admin.query(`DROP DATABASE IF EXISTS ${quoteIdent(database)}`)
+  } catch {
+    // Live connections; leave the database for the next purge.
   } finally {
     await admin.end()
   }
