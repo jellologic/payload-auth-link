@@ -42,6 +42,11 @@ Commit the new dump. `bun run test:fixture` pins the row counts, role
 values, hash shape, and host fields, so a regenerated dump that drifts
 from the contract fails CI.
 
+The committed dump is a **point-in-time snapshot**: short-lived rows
+(magic-link verifications, session expiry) age past their expiry on
+disk, so the contract asserts those rows exist — not that they are
+still live. Re-dump when the fixture needs fresh live credentials.
+
 ## Deliberate payload-auth quirks the seed documents
 
 - **Creator member role encoding.** BA 1.6 sends the organization
