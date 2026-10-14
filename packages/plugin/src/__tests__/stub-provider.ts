@@ -23,6 +23,8 @@ type StubSessionRow = {
   readonly anonymous?: boolean | undefined
   /** Session carries a satisfied MFA proof (CAP-6). */
   readonly mfaSatisfied?: boolean | undefined
+  /** Active organization reported on the session (organization plugin). */
+  readonly organizationId?: string | undefined
 }
 
 /**
@@ -67,7 +69,7 @@ export function createStubProvider(options?: { readonly capabilities?: readonly 
           found.actorProviderUserId === undefined
             ? null
             : { providerUserId: found.actorProviderUserId },
-        organizationId: null,
+        organizationId: found.organizationId ?? null,
         channel: found.channel ?? 'cookie',
       }
       return okAsync(session)
@@ -92,6 +94,7 @@ export function createStubProvider(options?: { readonly capabilities?: readonly 
       actorProviderUserId: input.actorProviderUserId,
       anonymous: input.anonymous,
       mfaSatisfied: input.mfaSatisfied,
+      organizationId: input.organizationId,
     })
     return `${stubCookieName}=${input.sessionId}`
   }

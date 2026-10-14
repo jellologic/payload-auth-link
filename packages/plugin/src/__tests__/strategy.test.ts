@@ -261,3 +261,227 @@ describe('role projection (issue #56)', () => {
     expect(user?.roles).toEqual(['front-plugin', 'user'])
   })
 })
+
+describe('reqUser: document (issue #57)', () => {
+  it('loads the full document with projected fields on top', async () => {
+    const stub = createStubProvider()
+    const cookie = stub.issue({
+      sessionId: 'doc-1',
+      providerUserId: 'stub-1',
+      email: 'linked@test.dev',
+      expiresAt: new Date(Date.now() + 3_600_000),
+    })
+    const payload = stubPayload({
+      find: () =>
+        Promise.resolve({
+          docs: [{ ...linkedDoc, activeOrganization: 'org-7', department: null }],
+          totalDocs: 1,
+        }),
+      findByID: () =>
+        Promise.resolve({
+          ...linkedDoc,
+          activeOrganization: 'org-7',
+          department: null,
+        }),
+    })
+    const wired = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['user'],
+      defaultRole: 'user',
+      roleManagerRoles: ['user'],
+      reqUser: 'document',
+      providers: [stub.provider],
+      logger: nullLogger(),
+    })
+    const result = await authenticateWired(wired, new Headers({ cookie }), payload)
+    const user = result.user as Record<string, unknown> | null
+    expect(user?.activeOrganization).toBe('org-7')
+    expect(user?.department).toBeNull()
+    expect(user?.roles).toEqual(['user'])
+    expect(user?.collection).toBe('users')
+    expect(user?._strategy).toBe('auth-link')
+  })
+
+  it('memoizes the document per request context', async () => {
+    const stub = createStubProvider()
+    const cookie = stub.issue({
+      sessionId: 'doc-2',
+      providerUserId: 'stub-1',
+      email: 'linked@test.dev',
+      expiresAt: new Date(Date.now() + 3_600_000),
+    })
+    const findByID = vi.fn(() =>
+      Promise.resolve({
+        ...linkedDoc,
+        activeOrganization: 'org-7',
+      })
+    )
+    const payload = stubPayload({
+      find: () =>
+        Promise.resolve({
+          docs: [{ ...linkedDoc, activeOrganization: 'org-7' }],
+          totalDocs: 1,
+        }),
+      findByID,
+    })
+    const wired = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['user'],
+      defaultRole: 'user',
+      roleManagerRoles: ['user'],
+      reqUser: 'document',
+      providers: [stub.provider],
+      logger: nullLogger(),
+    })
+    const req = { context: {} } as unknown as Parameters<
+      ReturnType<typeof createAuthLinkStrategy>['authenticate']
+    >[0]['req']
+    await authenticateWired(wired, new Headers({ cookie }), payload)
+    const strategy = createAuthLinkStrategy(wired)
+    await strategy.authenticate({
+      headers: new Headers({ cookie }),
+      payload,
+      req: req as NonNullable<typeof req>,
+    })
+    // The document is memoized on the request context, so the endpoint
+    // handlers share the exact object the strategy resolved.
+    const memo = (req?.context ?? {}) as Record<string, unknown>
+    expect(memo['payloadAuthLink:reqUserDocument']).toBeDefined()
+  })
+})
+
+it('keeps assurance, actor, and MFA markers authoritative over the document', async () => {
+  const stub = createStubProvider({ capabilities: ['mfa'] })
+  const cookie = stub.issue({
+    sessionId: 'doc-3',
+    providerUserId: 'stub-1',
+    email: 'linked@test.dev',
+    expiresAt: new Date(Date.now() + 3_600_000),
+    mfaSatisfied: true,
+    actorProviderUserId: 'operator-9',
+  })
+  const payload = stubPayload({
+    find: () =>
+      Promise.resolve({
+        docs: [{ ...linkedDoc, activeOrganization: 'org-8' }],
+        totalDocs: 1,
+      }),
+    findByID: () =>
+      Promise.resolve({
+        ...linkedDoc,
+        activeOrganization: 'org-8',
+        roles: ['admin'],
+      }),
+  })
+  const wired = wireOptions({
+    baseUrl: 'http://auth-link.test',
+    roles: ['user', 'admin'],
+    defaultRole: 'user',
+    roleManagerRoles: ['admin'],
+    reqUser: 'document',
+    providers: [stub.provider],
+    logger: nullLogger(),
+  })
+  const result = await authenticateWired(wired, new Headers({ cookie }), payload)
+  const user = result.user as Record<string, unknown> | null
+  // Document fields ride along…
+  expect(user?.activeOrganization).toBe('org-8')
+  // …but the projected fields are authoritative, impersonation included.
+  expect(user?.actor).toMatchObject({ providerUserId: 'operator-9' })
+  expect(user?.assurance).toEqual({ methods: ['password'], mfa: true })
+  expect(user?.roles).toEqual(['admin'])
+})
+
+it('serves the second request from the memo and honors stored projection', async () => {
+  const stub = createStubProvider()
+  const cookie = stub.issue({
+    sessionId: 'doc-4',
+    providerUserId: 'stub-1',
+    email: 'linked@test.dev',
+    expiresAt: new Date(Date.now() + 3_600_000),
+  })
+  let loads = 0
+  const payload = stubPayload({
+    find: () =>
+      Promise.resolve({
+        docs: [{ ...linkedDoc, activeOrganization: 'org-5' }],
+        totalDocs: 1,
+      }),
+    findByID: () => {
+      loads += 1
+      return Promise.resolve({
+        ...linkedDoc,
+        activeOrganization: 'org-5',
+        roles: ['front-plugin'],
+      })
+    },
+  })
+  const wired = wireOptions({
+    baseUrl: 'http://auth-link.test',
+    roles: ['user', 'front-plugin'],
+    defaultRole: 'user',
+    roleManagerRoles: ['user'],
+    reqUser: 'document',
+    projectRolesAs: 'stored',
+    roleValues: { 'front-plugin': 'frontPlugin' },
+    providers: [stub.provider],
+    logger: nullLogger(),
+  })
+  const strategy = createAuthLinkStrategy(wired)
+  const req = { context: {} }
+  const args = {
+    headers: new Headers({ cookie }),
+    payload,
+    req: req as never,
+  }
+  await strategy.authenticate(args)
+  const loadsAfterFirst = loads
+  await strategy.authenticate(args)
+  // The repository still reloads per request; the DOCUMENT load is what
+  // the memo absorbs — the second request adds exactly one load.
+  expect(loads).toBe(loadsAfterFirst + 1)
+  const first = (await strategy.authenticate(args)).user as Record<string, unknown> | null
+  // Stored projection rides through document mode too.
+  expect(first?.roles).toEqual(['frontPlugin'])
+  expect(loads).toBe(loadsAfterFirst + 2)
+})
+
+it('keeps the MFA marker on the document when roles were withheld', async () => {
+  const stub = createStubProvider({ capabilities: ['mfa'] })
+  const cookie = stub.issue({
+    sessionId: 'doc-5',
+    providerUserId: 'stub-1',
+    email: 'linked@test.dev',
+    expiresAt: new Date(Date.now() + 3_600_000),
+  })
+  const payload = stubPayload({
+    find: () =>
+      Promise.resolve({
+        docs: [{ ...linkedDoc, activeOrganization: 'org-6' }],
+        totalDocs: 1,
+      }),
+    findByID: () =>
+      Promise.resolve({
+        ...linkedDoc,
+        activeOrganization: 'org-6',
+        roles: ['admin'],
+      }),
+  })
+  const wired = wireOptions({
+    baseUrl: 'http://auth-link.test',
+    roles: ['user', 'admin'],
+    defaultRole: 'user',
+    roleManagerRoles: ['admin'],
+    reqUser: 'document',
+    policies: { requireMfaForRoles: ['admin'] },
+    providers: [stub.provider],
+    logger: nullLogger(),
+  })
+  const result = await authenticateWired(wired, new Headers({ cookie }), payload)
+  const user = result.user as Record<string, unknown> | null
+  // The document's stored roles are NOT authoritative: the withheld
+  // role is gone and the marker explains why.
+  expect(user?.roles).toEqual([])
+  expect(user?.mfaRequired).toBe(true)
+  expect(user?.activeOrganization).toBe('org-6')
+})

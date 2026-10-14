@@ -74,6 +74,16 @@ export type AuthLinkPluginOptions = {
    */
   readonly roleValues?: Readonly<Record<string, string>> | undefined
   /**
+   * What `req.user` carries (issue #57): `'projection'` (the default)
+   * keeps the stable session projection `{ id, collection, email,
+   * roles, … }`; `'document'` loads the FULL user document once per
+   * request (the `req.context` memo) so access functions reading other
+   * fields keep working unchanged. The security-relevant projected
+   * fields stay authoritative either way: `roles` after the MFA
+   * projection, `actor`/impersonation markers, suspension.
+   */
+  readonly reqUser?: 'projection' | 'document' | undefined
+  /**
    * Which form `req.user.roles` carries (issue #56): `'canonical'`
    * (the default) always hands access functions the plugin's canonical
    * slugs; `'stored'` projects the values the database stores, so
@@ -230,6 +240,8 @@ export type WiredOptions = {
   readonly roleValuesReverse: Readonly<Record<string, string>>
   /** Which form the session projection carries on `req.user.roles`. */
   readonly projectRolesAs: 'canonical' | 'stored'
+  /** Whether `req.user` is the full document (issue #57). */
+  readonly reqUser: 'projection' | 'document'
   /**
    * Roles governing the auth system: gate
    * writes to injected governance fields, sensitive-field reads, and
@@ -538,6 +550,7 @@ export function wireOptions(raw: AuthLinkPluginOptions): WiredOptions {
     roleValues,
     roleValuesReverse,
     projectRolesAs: raw.projectRolesAs === 'stored' ? ('stored' as const) : ('canonical' as const),
+    reqUser: raw.reqUser === 'document' ? ('document' as const) : ('projection' as const),
     roleManagerRoles,
     onAudit: raw.onAudit ?? null,
     organizations,

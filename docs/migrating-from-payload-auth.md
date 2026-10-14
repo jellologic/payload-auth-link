@@ -106,6 +106,13 @@ changes and admin edits keep storing `frontPlugin`. Keys must be
 declared roles and stored values must be unique; both fail at config
 time.
 
+`req.user` is the session projection by default (`{ id, collection,
+email, roles }` plus assurance fields). Access functions reading other
+fields off it keep working unchanged with
+`authLink({ reqUser: 'document' })` — the full document loads once per
+request and the projected, security-relevant fields stay authoritative
+on top of it (#57).
+
 `req.user.roles` carries canonical roles by default. Access functions
 that compare the stored literal (`req.user.roles.includes('frontPlugin')`)
 can keep working unchanged with

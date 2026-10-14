@@ -504,6 +504,42 @@ async function applyAccountControls(
   if (status.suspended) {
     return 'suspended'
   }
+  if (user._strategy !== strategyName) {
+    // Issue #57: `reqUser: 'document'` also shapes LOCAL sessions
+    // (Payload's local JWT and API keys carry the full document but not
+    // the projection's assurance) — load the document once per request
+    // through the same memo the strategy uses.
+    if (wired.reqUser === 'document' && typeof user.id !== 'undefined') {
+      const memo = isRecord(req.context) ? (req.context as Record<string, unknown>) : undefined
+      const memoKey = 'payloadAuthLink:reqUserDocument'
+      let document: unknown = memo?.[memoKey]
+      if (document === undefined && typeof req.payload?.findByID === 'function') {
+        document = await req.payload.findByID({
+          collection: wired.config.map.usersCollection,
+          id: user.id,
+          depth: wired.depth,
+          overrideAccess: true,
+        })
+        if (memo !== undefined) {
+          memo[memoKey] = document
+        }
+      }
+      if (isRecord(document)) {
+        // The reshaped user is Payload's own document with the request's
+        // resolved identity fields on top; the assignment target is
+        // Payload's typed user.
+        const shaped: Record<string, unknown> = {
+          ...document,
+          id: user.id,
+          email: typeof user.email === 'string' ? user.email : document.email,
+          roles: Array.isArray(user.roles) ? user.roles : document.roles,
+          collection: user.collection,
+          _strategy: user._strategy,
+        }
+        req.user = shaped as typeof req.user
+      }
+    }
+  }
   if (gated.size === 0 || user._strategy === strategyName) {
     return 'ok'
   }

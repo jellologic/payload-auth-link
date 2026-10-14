@@ -1,3 +1,4 @@
+import { isRecord } from '@payload-auth-link/core'
 import type { AuthStrategy } from 'payload'
 import { REQUEST_VERIFY_KEY } from './session.js'
 import { logVerifyFailure } from './access.js'
@@ -66,6 +67,61 @@ export function createAuthLinkStrategy(wired: WiredOptions): AuthStrategy {
         wired.projectRolesAs === 'stored'
           ? payloadUser.roles.map((role) => wired.roleValues[role] ?? role)
           : payloadUser.roles
+      // Issue #57: `reqUser: 'document'` loads the full user document
+      // (once per request, through the same `req.context` memo the
+      // endpoint handlers share) so access functions reading other
+      // fields keep working unchanged. The security-relevant projected
+      // fields stay authoritative on top of it.
+      if (wired.reqUser === 'document') {
+        const memo =
+          req !== undefined && isRecord(req.context)
+            ? (req.context as Record<string, unknown>)
+            : undefined
+        const memoKey = 'payloadAuthLink:reqUserDocument'
+        let document: unknown = memo?.[memoKey]
+        if (document === undefined) {
+          document = await payload.findByID({
+            collection: wired.config.map.usersCollection,
+            id: found.value.id,
+            depth: wired.depth,
+            overrideAccess: true,
+          })
+          if (memo !== undefined) {
+            memo[memoKey] = document
+          }
+        }
+        if (isRecord(document)) {
+          // The document's own fields ride under an index signature;
+          // the security-relevant projected fields are written on top
+          // and typed exactly.
+          const user: Record<string, unknown> & {
+            id: typeof payloadUser.id
+            email: string
+            collection: string
+            _strategy: string
+          } = {
+            ...document,
+            id: payloadUser.id,
+            email: payloadUser.email,
+            roles,
+            collection: wired.config.map.usersCollection,
+            _strategy: strategyName,
+          }
+          if (payloadUser.mfaRequired !== undefined) {
+            user.mfaRequired = payloadUser.mfaRequired
+          }
+          if (payloadUser.assurance !== undefined) {
+            user.assurance = payloadUser.assurance
+          }
+          if (payloadUser.actor !== undefined) {
+            user.actor = payloadUser.actor
+          }
+          if (payloadUser.organizationId !== undefined) {
+            user.organizationId = payloadUser.organizationId
+          }
+          return { user }
+        }
+      }
       return {
         user: {
           ...payloadUser,
