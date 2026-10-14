@@ -1,0 +1,17 @@
+{
+  "name": "@payload-auth-link/fixture-payload-auth",
+  "private": true,
+  "type": "module",
+  "description": "Generator for the payload-auth 1.9.x fixture database (see fixtures/dumps/). A real payload-auth app layout, seeded by running payload-auth itself.",
+  "scripts": {
+    "seed": "bun scripts/seed.ts"
+  },
+  "dependencies": {
+    "@better-auth/api-key": "1.6.30",
+    "@payloadcms/db-postgres": "3.90.2",
+    "better-auth": "1.6.30",
+    "payload": "3.90.2",
+    "payload-auth": "1.9.4",
+    "pg": "^8.16.3"
+  }
+}

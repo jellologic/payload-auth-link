@@ -187,6 +187,33 @@ jobs:
           path: test-results/
           retention-days: 7
 
+  # Migration kit (issues #49–#59): the payload-auth fixture is the
+  # contract every migration feature tests against. Postgres is the
+  # minimum matrix cell — the fixture IS a Postgres dump.
+  migration-fixture:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: payload
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5433:5432
+    env:
+      FIXTURE_DATABASE_URL: postgres://postgres:payload@localhost:5433/pal_fixture
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun run test:fixture
+
   release-check:
     runs-on: ubuntu-latest
     steps:

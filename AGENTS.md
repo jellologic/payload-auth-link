@@ -37,6 +37,11 @@ Guidance for coding agents working **on this repository**. Start with
   (`better-auth`, then `authjs`; `workos`/`clerk` ids reserved).
 - `examples/basic`: Next reference integration and e2e target.
 - `examples/tanstack-start`: Start reference integration and e2e target.
+- `fixtures/payload-auth-app`: generates the payload-auth 1.9.x
+  fixture database (the migration-kit contract, issue #59); the
+  committed dump in `fixtures/dumps/` feeds the `migration-fixture`
+  CI job (`bun run test:fixture`). Mirrors a third-party app layout,
+  so it is exempt from repo lint; keep it prettier-formatted.
 
 ## Invariants (don't break these)
 
