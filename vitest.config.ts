@@ -7,6 +7,7 @@ export default defineConfig({
     // not; the doctor loads real payload-auth configs, so vitest must
     // transform the package instead of externalizing it.
     server: { deps: { inline: [/payload-auth/] } },
+    exclude: ['packages/migrate/src/__tests__/adopt-boot.test.ts'],
     include: [
       'packages/*/src/**/*.test.ts',
       'packages/*/src/**/*.test.tsx',

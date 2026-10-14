@@ -40,6 +40,10 @@ export type PayloadUserRepositoryDeps = {
   readonly userFields?: MappingContext['userFields']
   /** Configured role set (B11); reads drop stored roles outside it. */
   readonly configuredRoles?: ReadonlySet<Role> | undefined
+  /** Stored value → canonical role (issue #56); reads translate through it. */
+  readonly roleValuesReverse?: Readonly<Record<string, string>> | undefined
+  /** Canonical role → stored value (issue #56); writes translate through it. */
+  readonly roleValues?: Readonly<Record<string, string>> | undefined
 }
 
 function isEmailUniqueViolation(error: unknown, emailField: string): boolean {
@@ -67,6 +71,8 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
     clock: deps.clock,
     ...(deps.userFields === undefined ? {} : { userFields: deps.userFields }),
     ...(deps.configuredRoles === undefined ? {} : { configuredRoles: deps.configuredRoles }),
+    ...(deps.roleValuesReverse === undefined ? {} : { roleValuesReverse: deps.roleValuesReverse }),
+    ...(deps.roleValues === undefined ? {} : { roleValues: deps.roleValues }),
   }
   const phoneField = deps.userFields?.phoneField ?? 'phone'
   const collection = deps.map.usersCollection
@@ -401,7 +407,11 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
         deps.payload.update({
           collection,
           id: userId,
-          data: { [deps.map.rolesField]: [...roles] },
+          // Storage edge (issue #56): canonical roles persist as their
+          // stored values.
+          data: {
+            [deps.map.rolesField]: roles.map((role) => deps.roleValues?.[role] ?? role),
+          },
           overrideAccess: true,
         }),
         (cause) => new RepositoryError('setRoles', { cause })

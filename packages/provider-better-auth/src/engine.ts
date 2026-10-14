@@ -20,6 +20,7 @@ import {
   type BetterAuthCustomField,
   type BetterAuthCustomModel,
   type BetterAuthModelKey,
+  type BetterAuthSchemaMap,
 } from './collections.js'
 import {
   getBetterAuthLogoutCookieNames,
@@ -36,6 +37,24 @@ export type BetterAuthEngineInput<TOptions extends Omit<BetterAuthOptions, 'data
   readonly getPayload: () => Promise<Payload>
   /** Override any default Better Auth collection slug. */
   readonly slugs?: Partial<BetterAuthCollectionSlugs> | undefined
+  /**
+   * Adopt existing collections for these Better Auth models
+   * (issue #49): the engine creates no `ba-*` collection for an
+   * adopted model and serves it from the host slug instead — the
+   * payload-auth layout boots with zero row moves. The host keeps its
+   * access, hooks, versions, and admin config; its extra fields are
+   * invisible to Better Auth and survive every write (the adapter
+   * writes partial updates only).
+   */
+  readonly schemaMap?: BetterAuthSchemaMap | undefined
+  /**
+   * `'payload'` (adopted models only) makes the Payload document id
+   * the Better Auth row id, so existing ids never move:
+   * `schemaMap: { user: { slug: 'users' } }, idStrategy: 'payload'`.
+   * `'ba'` (default) keeps the provider id in a dedicated column on
+   * the collections the engine creates.
+   */
+  readonly idStrategy?: 'ba' | 'payload' | undefined
   /** Custom fields on core models (`additionalFields`, plugin fields). */
   readonly customFields?:
     Partial<Record<BetterAuthModelKey, readonly BetterAuthCustomField[]>> | undefined
@@ -99,6 +118,8 @@ export type BetterAuthEngine<AuthType> = {
   readonly collections: CollectionConfig[]
   /** Resolved slugs (defaults plus overrides). */
   readonly slugs: BetterAuthCollectionSlugs
+  /** The adoption map the engine serves (issue #49). */
+  readonly schemaMap: BetterAuthSchemaMap
   /** Session cookie names for middleware fast-paths and logout clearing. */
   readonly sessionCookieNames: readonly string[]
 }
@@ -355,6 +376,8 @@ export function createBetterAuthEngine<
   const database = createPayloadDatabaseAdapter({
     getPayload: input.getPayload,
     slugs,
+    schemaMap: input.schemaMap,
+    idStrategy: input.idStrategy,
     depth: input.depth,
     customFields: declared.customFields,
     customModels: declared.customModels,
@@ -462,9 +485,17 @@ export function createBetterAuthEngine<
   )
   const collections = createBetterAuthCollections({
     slugs: input.slugs,
+    schemaMap: input.schemaMap,
     access: input.collectionsAccess,
     customFields: declared.customFields,
     customModels: declared.customModels,
   })
-  return { auth, provider, collections, slugs, sessionCookieNames }
+  return {
+    auth,
+    provider,
+    collections,
+    slugs,
+    schemaMap: input.schemaMap ?? {},
+    sessionCookieNames,
+  }
 }

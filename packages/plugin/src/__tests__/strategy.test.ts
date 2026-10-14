@@ -1,4 +1,4 @@
-import type { LoggerPort } from '@payload-auth-link/core'
+import { nullLogger, type LoggerPort } from '@payload-auth-link/core'
 import type { Payload } from 'payload'
 import { describe, expect, it, vi } from 'vitest'
 import { createAuthLinkStrategy } from '../strategy.js'
@@ -63,6 +63,15 @@ async function authenticate(
     providers: [provider],
     logger,
   })
+  const strategy = createAuthLinkStrategy(wired)
+  return strategy.authenticate({ headers, payload })
+}
+
+async function authenticateWired(
+  wired: Parameters<typeof createAuthLinkStrategy>[0],
+  headers: Headers,
+  payload: Payload
+): Promise<{ user: unknown }> {
   const strategy = createAuthLinkStrategy(wired)
   return strategy.authenticate({ headers, payload })
 }
@@ -165,5 +174,90 @@ describe('strategy verify logging', () => {
     expect(result).toEqual({ user: null })
     expect(logs.warn).toHaveBeenCalledWith('strategy session has no user document')
     expect(logs.error).not.toHaveBeenCalled()
+  })
+})
+
+describe('role projection (issue #56)', () => {
+  it('projects stored role values when projectRolesAs is stored, after the MFA gate', async () => {
+    const stub = createStubProvider()
+    const cookie = stub.issue({
+      sessionId: 'proj-1',
+      providerUserId: 'stub-1',
+      email: 'linked@test.dev',
+      expiresAt: new Date(Date.now() + 3_600_000),
+    })
+    const headers = new Headers({ cookie })
+    const payload = stubPayload({
+      find: () =>
+        Promise.resolve({
+          docs: [
+            {
+              ...linkedDoc,
+              roles: ['frontPlugin'],
+            },
+          ],
+          totalDocs: 1,
+        }),
+      findByID: () =>
+        Promise.resolve({
+          ...linkedDoc,
+          roles: ['frontPlugin'],
+        }),
+    })
+    const wired = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['user', 'front-plugin'],
+      defaultRole: 'user',
+      roleManagerRoles: ['user'],
+      providers: [stub.provider],
+      roleValues: { 'front-plugin': 'frontPlugin' },
+      projectRolesAs: 'stored',
+      logger: nullLogger(),
+    })
+    const result = await authenticateWired(wired, headers, payload)
+    const user = result.user as { roles?: string[] } | null
+    // The STORED form reaches req.user; access checks comparing the
+    // stored literal keep working unchanged.
+    expect(user?.roles).toEqual(['frontPlugin'])
+  })
+
+  it('keeps the MFA-gated roles canonical in the default projection', async () => {
+    const stub = createStubProvider()
+    const cookie = stub.issue({
+      sessionId: 'proj-2',
+      providerUserId: 'stub-1',
+      email: 'linked@test.dev',
+      expiresAt: new Date(Date.now() + 3_600_000),
+    })
+    const headers = new Headers({ cookie })
+    const payload = stubPayload({
+      find: () =>
+        Promise.resolve({
+          docs: [
+            {
+              ...linkedDoc,
+              roles: ['frontPlugin', 'user'],
+            },
+          ],
+          totalDocs: 1,
+        }),
+      findByID: () =>
+        Promise.resolve({
+          ...linkedDoc,
+          roles: ['frontPlugin', 'user'],
+        }),
+    })
+    const wired = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['user', 'front-plugin'],
+      defaultRole: 'user',
+      roleManagerRoles: ['user'],
+      providers: [stub.provider],
+      roleValues: { 'front-plugin': 'frontPlugin' },
+      logger: nullLogger(),
+    })
+    const result = await authenticateWired(wired, headers, payload)
+    const user = result.user as { roles?: string[] } | null
+    expect(user?.roles).toEqual(['front-plugin', 'user'])
   })
 })

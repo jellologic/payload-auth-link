@@ -296,6 +296,19 @@ export type MappingContext = {
         readonly suspendReasonField: string;
     } | undefined;
     /**
+     * Stored value → canonical role (issue #56). Present when the site
+     * maps role values; reads translate through it before validation, so
+     * a payload-auth layout keeps storing e.g. `frontPlugin` while the
+     * plugin reasons about `front-plugin`.
+     */
+    readonly roleValuesReverse?: Readonly<Record<string, string>> | undefined;
+    /**
+     * Canonical role → stored value (issue #56); present for writes.
+     * Unmapped roles store their canonical form, so this is total when
+     * present.
+     */
+    readonly roleValues?: Readonly<Record<string, string>> | undefined;
+    /**
      * Roles the site currently configures (B11 role-config safety).
      * When present, stored roles outside this set are dropped at read
      * time — a removed role must stop granting access at the very next
@@ -325,7 +338,7 @@ export declare function singleResultRecord(doc: unknown, ctx: MappingContext): U
  * users never log in with it, but local-enabled collections require the
  * field and SSO collections keep it for continuity.
  */
-export declare function toNewUserData(input: NewUser, ctx: Pick<MappingContext, 'map' | 'clock' | 'userFields'>, password: string): Record<string, unknown>;
+export declare function toNewUserData(input: NewUser, ctx: Pick<MappingContext, 'map' | 'clock' | 'userFields' | 'roleValues'>, password: string): Record<string, unknown>;
 /** Build one identities-array row for writes. */
 export declare function toIdentityData(ref: ProviderIdentityRef, email: string, clock: ClockPort): Record<string, unknown>;
 /**
@@ -392,6 +405,25 @@ export type AuthLinkPluginOptions = {
     readonly rolesField?: string | undefined;
     /** Identities field injected on the users collection. Defaults to `identities`. */
     readonly identitiesField?: string | undefined;
+    /**
+     * Canonical role → stored value map (issue #56). Roles stay canonical
+     * inside the plugin (branded `Role`, `requireRoles`,
+     * `requireMfaForRoles`); at the storage edge — field reads, writes,
+     * and the injected select's options — values are translated, so a
+     * payload-auth layout keeps storing e.g. `frontPlugin` unchanged.
+     * Keys must be declared roles; two roles may not share a stored
+     * value; unmapped roles store their canonical form.
+     */
+    readonly roleValues?: Readonly<Record<string, string>> | undefined;
+    /**
+     * Which form `req.user.roles` carries (issue #56): `'canonical'`
+     * (the default) always hands access functions the plugin's canonical
+     * slugs; `'stored'` projects the values the database stores, so
+     * access checks comparing against stored values (like `frontPlugin`)
+     * keep working unchanged. The MFA gate and role governance always
+     * operate on canonical roles regardless.
+     */
+    readonly projectRolesAs?: 'canonical' | 'stored' | undefined;
     /**
      * Structured logger. Defaults to a console logger (refusals and
      * audit events are visible without configuration); pass
@@ -532,6 +564,15 @@ export type WiredOptions = {
     /** Roles withheld without MFA proof (CAP-6); empty means no policy. */
     readonly requireMfaForRoles: readonly Role[];
     /**
+     * Canonical role → stored value (issue #56), complete over the
+     * configured roles: unmapped roles map to themselves.
+     */
+    readonly roleValues: Readonly<Record<string, string>>;
+    /** The inverse of {@link WiredOptions.roleValues}: stored → canonical. */
+    readonly roleValuesReverse: Readonly<Record<string, string>>;
+    /** Which form the session projection carries on `req.user.roles`. */
+    readonly projectRolesAs: 'canonical' | 'stored';
+    /**
      * Roles governing the auth system: gate
      * writes to injected governance fields, sensitive-field reads, and
      * the default admin-panel fallback. Never empty.
@@ -661,6 +702,10 @@ export type PayloadUserRepositoryDeps = {
     readonly userFields?: MappingContext['userFields'];
     /** Configured role set (B11); reads drop stored roles outside it. */
     readonly configuredRoles?: ReadonlySet<Role> | undefined;
+    /** Stored value → canonical role (issue #56); reads translate through it. */
+    readonly roleValuesReverse?: Readonly<Record<string, string>> | undefined;
+    /** Canonical role → stored value (issue #56); writes translate through it. */
+    readonly roleValues?: Readonly<Record<string, string>> | undefined;
 };
 /**
  * `UserRepository` over the Payload Local API. Request-scoped: construct one

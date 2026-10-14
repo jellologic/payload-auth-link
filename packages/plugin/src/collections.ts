@@ -628,8 +628,14 @@ function rolesField(wired: WiredOptions): SelectField {
     // validation treats an empty array as missing), so emptied roles
     // can no longer persist through the API or admin UI.
     required: true,
-    options: wired.config.roles.map((role) => ({ label: role, value: role })),
-    defaultValue: [wired.config.defaultRole],
+    // The select stores role VALUES (issue #56): options carry the
+    // stored form (labelled with the canonical role), so admin edits
+    // round-trip without a database change.
+    options: wired.config.roles.map((role) => ({
+      label: role,
+      value: wired.roleValues[role] ?? role,
+    })),
+    defaultValue: [wired.roleValues[wired.config.defaultRole] ?? wired.config.defaultRole],
     admin: {
       description: 'Managed by payload-auth-link. At least one role is required.',
     },
@@ -877,7 +883,12 @@ function adoptRolesField(host: Field, wired: WiredOptions): SelectField {
   if (select.hasMany !== true) {
     fail('it is a single-select (hasMany is not true)')
   }
-  const configured = new Set<string>(wired.config.roles)
+  // Coverage is checked against the STORED forms (issue #56): the host
+  // select stores values, and the plugin's map is the only translation
+  // layer.
+  const configured = new Set<string>(
+    wired.config.roles.map((role) => wired.roleValues[role] ?? role)
+  )
   const declared = new Set<string>(
     (select.options ?? [])
       .map((option) => (typeof option === 'string' ? option : option.value))

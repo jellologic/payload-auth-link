@@ -13,7 +13,11 @@ import type { WiredOptions } from './options.js'
  * degrade to a warning: the audit must never block a boot.
  */
 export async function auditStoredRoles(wired: WiredOptions, payload: Payload): Promise<void> {
-  const configured = new Set<string>(wired.config.roles)
+  // The audit speaks in STORED values (issue #56): what drifts is what
+  // the database holds.
+  const configured = new Set<string>(
+    wired.config.roles.map((role) => wired.roleValues[role] ?? role)
+  )
   const rolesField = wired.config.map.rolesField
   try {
     const found = await payload.find({

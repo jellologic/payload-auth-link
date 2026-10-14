@@ -27,13 +27,6 @@ export function createAuthLinkStrategy(wired: WiredOptions): AuthStrategy {
         req?: import('payload').PayloadRequest
       }
       const { users, sessions } = createServices(wired, payload)
-      if (process.env.DEBUG_WALK === '1') {
-        process.stdout.write(
-          `DBG-STRATEGY argKeys=${JSON.stringify(Object.keys(args))} hasReq=${String(
-            (args as { req?: unknown }).req !== undefined
-          )}\n`
-        )
-      }
       const verified = await sessions.verify(headers, req)
       // Share the resolution with the endpoint handler (issue #42):
       // the strategy's `req` is the same object the endpoint sees, and
@@ -57,11 +50,26 @@ export function createAuthLinkStrategy(wired: WiredOptions): AuthStrategy {
         wired.logger.warn('strategy session has no user document')
         return { user: null }
       }
+      const payloadUser = toPayloadUser(
+        found.value,
+        wired.config.map.usersCollection,
+        verified.value,
+        {
+          requireMfaForRoles: wired.requireMfaForRoles,
+        }
+      )
+      // Issue #56: `projectRolesAs: 'stored'` hands access functions
+      // the values the database stores. The MFA gate above already ran
+      // on canonical roles — projection is output-shaping only, and
+      // governance compares canonical roles everywhere else.
+      const roles =
+        wired.projectRolesAs === 'stored'
+          ? payloadUser.roles.map((role) => wired.roleValues[role] ?? role)
+          : payloadUser.roles
       return {
         user: {
-          ...toPayloadUser(found.value, wired.config.map.usersCollection, verified.value, {
-            requireMfaForRoles: wired.requireMfaForRoles,
-          }),
+          ...payloadUser,
+          roles,
           _strategy: strategyName,
         },
       }

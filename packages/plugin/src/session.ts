@@ -100,14 +100,6 @@ async function findProviderSession(
     }
     walkMemo[REQUEST_WALK_KEY] = false
   }
-  if (process.env.DEBUG_WALK === '1') {
-    process.stdout.write(
-      `DBG-WALK walked req=${String(req !== undefined)}\n${String(new Error().stack)
-        .split('\n')
-        .slice(2, 5)
-        .join('\n')}\n`
-    )
-  }
   for (const id of deps.registry.ids()) {
     const required = deps.registry.require(id)
     if (required.isErr()) {
@@ -135,20 +127,6 @@ async function findProviderSession(
   // Truly anonymous probes (no matching cookie at all) stay silent or
   // every health check and cold page load would warn.
   const cookieHeader = headers.get('cookie') ?? ''
-  if (
-    typeof process !== 'undefined' &&
-    process.env?.DEBUG_FIND_PROVIDER === '1' &&
-    cookieHeader.includes('stale-garbage')
-  ) {
-    process.stdout.write(
-      `DBG-FPS ids=${JSON.stringify(deps.registry.ids().map(String))} providers=${JSON.stringify(
-        deps.registry.ids().map((id) => {
-          const required = deps.registry.require(id)
-          return required.isOk() ? required.value.sessionCookieNames.join('|') : 'ERR'
-        })
-      )}\n`
-    )
-  }
   const presented = deps.registry.ids().some((id) => {
     const required = deps.registry.require(id)
     if (required.isErr()) {

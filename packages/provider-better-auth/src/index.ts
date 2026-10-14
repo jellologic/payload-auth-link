@@ -14,11 +14,13 @@ export {
 export type {
   BetterAuthCollectionsAccess,
   BetterAuthCollectionSlugs,
+  BetterAuthAdoptedModel,
   BetterAuthCollectionsOptions,
   BetterAuthCustomField,
   BetterAuthCustomFieldType,
   BetterAuthCustomModel,
   BetterAuthModelKey,
+  BetterAuthSchemaMap,
 } from './collections.js'
 export {
   declarationsFromTables,

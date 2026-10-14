@@ -2,13 +2,28 @@
 import type { BetterAuthOptions } from 'better-auth';
 import { type AdapterFactory } from 'better-auth/adapters';
 import type { Payload } from 'payload';
-import { type BetterAuthCollectionSlugs, type BetterAuthCustomField, type BetterAuthCustomModel, type BetterAuthModelKey } from './collections.js';
+import { type BetterAuthCollectionSlugs, type BetterAuthCustomField, type BetterAuthCustomModel, type BetterAuthModelKey, type BetterAuthSchemaMap } from './collections.js';
 /** Database adapter wiring: Payload access, slugs, read depth. */
 export type PayloadDatabaseAdapterDeps = {
     /** Resolves the Payload instance (cached `getPayload` in Next.js). */
     readonly getPayload: () => Promise<Payload>;
     /** Collection slugs per model. Defaults to {@link defaultBetterAuthSlugs}. */
     readonly slugs?: Partial<BetterAuthCollectionSlugs> | undefined;
+    /**
+     * Adopt existing collections for these models (issue #49): the
+     * adapter serves the model from the host slug, maps renamed fields,
+     * and — with `idStrategy: 'payload'` — uses the Payload document id
+     * as the Better Auth row id. No `ba-*` collection exists for an
+     * adopted model.
+     */
+    readonly schemaMap?: BetterAuthSchemaMap | undefined;
+    /**
+     * `'payload'` (adopted models only) makes the Payload document id
+     * the Better Auth row id, so ids never move. `'ba'` (the default)
+     * keeps the provider id in the dedicated `baId` column of the
+     * collections the engine creates.
+     */
+    readonly idStrategy?: 'ba' | 'payload' | undefined;
     /** Payload query depth for adapter reads. Rows are flat; defaults to 0. */
     readonly depth?: number | undefined;
     /** Declared custom fields on core models; must match the BA schema exactly. */
@@ -69,15 +84,49 @@ export type BetterAuthCustomModel = {
     readonly label?: string | undefined;
     readonly fields: readonly BetterAuthCustomField[];
 };
+/**
+ * One adopted model (issue #49): the engine serves a Better Auth model
+ * from an EXISTING Payload collection instead of creating its own
+ * `ba-*` collection — the "adopt, don't replace" path for apps whose
+ * auth rows already live in Payload (payload-auth layout).
+ */
+export type BetterAuthAdoptedModel = {
+    /** The host collection slug that backs the model. */
+    readonly slug: string;
+    /**
+     * Better Auth field name → host Payload field name, for fields the
+     * host renamed. Most payload-auth layouts rename only the
+     * relationship fields (`userId` → `user`); everything unmapped keeps
+     * its Better Auth name. Renamed fields read and write as ids: the
+     * adapter reads them at depth 0 and writes the id the host's
+     * relationship expects, coercing to the Payload id type.
+     */
+    readonly fields?: Readonly<Record<string, string>> | undefined;
+};
+/**
+ * Adopted models by Better Auth model name — core keys (`user`,
+ * `session`, `account`, `verification`, `rateLimit`) and plugin models
+ * (`organization`, `member`, `invitation`, `apikey`, `jwks`, …) alike.
+ */
+export type BetterAuthSchemaMap = Readonly<Record<string, BetterAuthAdoptedModel>>;
 /** Slug overrides and access for {@link createBetterAuthCollections}. */
 export type BetterAuthCollectionsOptions = {
     /** Override any default slug. Unmentioned models keep their defaults. */
     readonly slugs?: Partial<BetterAuthCollectionSlugs> | undefined;
     /**
+     * Adopt existing collections for these models: the engine creates no
+     * collection for them, forces no access, and serves the model from
+     * the host slug (issue #49). The host keeps its access, hooks,
+     * versions, and admin config; its extra fields are invisible to
+     * Better Auth and preserved because the adapter writes partial
+     * updates only.
+     */
+    readonly schemaMap?: BetterAuthSchemaMap | undefined;
+    /**
      * Access control for the system collections. Defaults to deny-all: these
      * tables hold credential material (hashes, tokens) and the adapter writes
      * with `overrideAccess`, so no API access is needed. Builders may open
-     * `read` for operations debugging.
+     * `read` for operations debugging. Never applied to adopted models.
      */
     readonly access?: BetterAuthCollectionsAccess | undefined;
     /** Custom fields appended to core-model collections. */
@@ -106,6 +155,17 @@ export declare function customModelSlug(entry: BetterAuthCustomModel): string;
  * fail-fast at startup.
  */
 export declare function createBetterAuthCollections(options?: BetterAuthCollectionsOptions): CollectionConfig[];
+/**
+ * Validate an adoption map at wiring time (issue #49): models must be
+ * known (core or declared custom), entries must name a slug, and field
+ * maps must not rename reserved names. The host collection's own
+ * fields are validated once the Payload instance exists (the adapter's
+ * first use) — wiring time has no collections to compare against.
+ */
+export declare function validateSchemaMap(schemaMap: BetterAuthSchemaMap, known: {
+    readonly coreModels: readonly string[];
+    readonly customModels: readonly string[];
+}): void;
 
 // ===== cookies.d.ts =====
 import { type CookieOptions, type SecureCookieEnvironment } from '@payload-auth-link/core';
@@ -187,13 +247,31 @@ export {};
 import { type IdentityProviderPort, type LoggerPort, type VersionRange } from '@payload-auth-link/core';
 import { type BetterAuthOptions, type BetterAuthPlugin } from 'better-auth';
 import type { CollectionConfig, Payload } from 'payload';
-import { type BetterAuthCollectionsAccess, type BetterAuthCollectionSlugs, type BetterAuthCustomField, type BetterAuthCustomModel, type BetterAuthModelKey } from './collections.js';
+import { type BetterAuthCollectionsAccess, type BetterAuthCollectionSlugs, type BetterAuthCustomField, type BetterAuthCustomModel, type BetterAuthModelKey, type BetterAuthSchemaMap } from './collections.js';
 /** Engine wiring: Payload access plus the builder's Better Auth options. */
 export type BetterAuthEngineInput<TOptions extends Omit<BetterAuthOptions, 'database'>> = {
     /** Resolves the Payload instance (cached `getPayload` in Next.js). */
     readonly getPayload: () => Promise<Payload>;
     /** Override any default Better Auth collection slug. */
     readonly slugs?: Partial<BetterAuthCollectionSlugs> | undefined;
+    /**
+     * Adopt existing collections for these Better Auth models
+     * (issue #49): the engine creates no `ba-*` collection for an
+     * adopted model and serves it from the host slug instead — the
+     * payload-auth layout boots with zero row moves. The host keeps its
+     * access, hooks, versions, and admin config; its extra fields are
+     * invisible to Better Auth and survive every write (the adapter
+     * writes partial updates only).
+     */
+    readonly schemaMap?: BetterAuthSchemaMap | undefined;
+    /**
+     * `'payload'` (adopted models only) makes the Payload document id
+     * the Better Auth row id, so existing ids never move:
+     * `schemaMap: { user: { slug: 'users' } }, idStrategy: 'payload'`.
+     * `'ba'` (default) keeps the provider id in a dedicated column on
+     * the collections the engine creates.
+     */
+    readonly idStrategy?: 'ba' | 'payload' | undefined;
     /** Custom fields on core models (`additionalFields`, plugin fields). */
     readonly customFields?: Partial<Record<BetterAuthModelKey, readonly BetterAuthCustomField[]>> | undefined;
     /** Custom plugin models (e.g. the organization plugin's tables). */
@@ -255,6 +333,8 @@ export type BetterAuthEngine<AuthType> = {
     readonly collections: CollectionConfig[];
     /** Resolved slugs (defaults plus overrides). */
     readonly slugs: BetterAuthCollectionSlugs;
+    /** The adoption map the engine serves (issue #49). */
+    readonly schemaMap: BetterAuthSchemaMap;
     /** Session cookie names for middleware fast-paths and logout clearing. */
     readonly sessionCookieNames: readonly string[];
 };
@@ -530,6 +610,7 @@ export declare function createBetterAuthEngine<TOptions extends Omit<BetterAuthO
     provider: IdentityProviderPort;
     collections: CollectionConfig[];
     slugs: BetterAuthCollectionSlugs;
+    schemaMap: Readonly<Record<string, import("./collections.js").BetterAuthAdoptedModel>>;
     sessionCookieNames: readonly string[];
 };
 export {};
@@ -583,7 +664,7 @@ export declare function createIdentityEventBus(logger: LoggerPort): IdentityEven
 export { createPayloadDatabaseAdapter } from './adapter.js';
 export type { PayloadDatabaseAdapterDeps } from './adapter.js';
 export { betterAuthCoreFields, createBetterAuthCollections, customModelSlug, defaultBetterAuthSlugs, defaultCustomSlug, } from './collections.js';
-export type { BetterAuthCollectionsAccess, BetterAuthCollectionSlugs, BetterAuthCollectionsOptions, BetterAuthCustomField, BetterAuthCustomFieldType, BetterAuthCustomModel, BetterAuthModelKey, } from './collections.js';
+export type { BetterAuthCollectionsAccess, BetterAuthCollectionSlugs, BetterAuthAdoptedModel, BetterAuthCollectionsOptions, BetterAuthCustomField, BetterAuthCustomFieldType, BetterAuthCustomModel, BetterAuthModelKey, BetterAuthSchemaMap, } from './collections.js';
 export { declarationsFromTables, deriveBetterAuthSchema, isCoreModel, payloadOwnedFields, } from './derive-schema.js';
 export { mergeDeclarations } from './engine.js';
 export { getBetterAuthLogoutCookieNames, getBetterAuthSessionCookieClearOptions, getBetterAuthSessionCookieNames, } from './cookies.js';
@@ -750,9 +831,14 @@ import type { CleanedWhere } from 'better-auth/adapters';
  * Better Auth addresses rows by `id`; Payload owns the document `id`, so the
  * adapter persists the provider id in `baId`. Every other field maps 1:1 —
  * the adapter rejects renamed models/fields at startup, so physical names
- * always equal the canonical Better Auth names here.
+ * always equal the canonical Better Auth names here. Adopted models
+ * (issue #49) pass a per-model resolver instead: `id` resolves to the
+ * document `id` under `idStrategy: 'payload'`, and renamed fields
+ * resolve through the schema map.
  */
 export declare function baFieldToPayload(field: string): string;
+/** Per-model field resolution for adopted models (see baFieldToPayload). */
+export type FieldResolver = (field: string) => string;
 /**
  * Translate a Better Auth `where` list to Payload `Where`, folding mixed
  * `AND`/`OR` connectors left-associatively. Pattern operators and
@@ -763,7 +849,7 @@ export declare function baFieldToPayload(field: string): string;
  * not `baId`) and exacts case-insensitive equality; it is `undefined`
  * when the Payload query alone is exact.
  */
-export declare function translateWhereClause(clauses: readonly CleanedWhere[]): {
+export declare function translateWhereClause(clauses: readonly CleanedWhere[], mapField?: FieldResolver, coerceValue?: (field: string, value: unknown) => unknown): {
     where: Where;
     postFilter: ((row: Record<string, unknown>) => boolean) | undefined;
 };

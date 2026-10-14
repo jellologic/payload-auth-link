@@ -47,6 +47,16 @@ The committed dump is a **point-in-time snapshot**: short-lived rows
 disk, so the contract asserts those rows exist — not that they are
 still live. Re-dump when the fixture needs fresh live credentials.
 
+## Adopting the fixture (issue #49)
+
+`test/adopt-schema.sql` is the additive step a migrating app runs
+before booting payload-auth-link over this layout: the plugin-injected
+users columns plus Payload's session-array and local-strategy
+bookkeeping tables. `push` stays OFF — drizzle's push prompts
+interactively when it meets the payload-auth layout's enums, and a
+migration must never hang on a prompt. The adopt boot itself lives in
+`packages/migrate/src/__tests__/adopt-boot.test.ts`.
+
 ## Deliberate payload-auth quirks the seed documents
 
 - **Creator member role encoding.** BA 1.6 sends the organization

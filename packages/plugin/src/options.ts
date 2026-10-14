@@ -64,6 +64,25 @@ export type AuthLinkPluginOptions = {
   /** Identities field injected on the users collection. Defaults to `identities`. */
   readonly identitiesField?: string | undefined
   /**
+   * Canonical role → stored value map (issue #56). Roles stay canonical
+   * inside the plugin (branded `Role`, `requireRoles`,
+   * `requireMfaForRoles`); at the storage edge — field reads, writes,
+   * and the injected select's options — values are translated, so a
+   * payload-auth layout keeps storing e.g. `frontPlugin` unchanged.
+   * Keys must be declared roles; two roles may not share a stored
+   * value; unmapped roles store their canonical form.
+   */
+  readonly roleValues?: Readonly<Record<string, string>> | undefined
+  /**
+   * Which form `req.user.roles` carries (issue #56): `'canonical'`
+   * (the default) always hands access functions the plugin's canonical
+   * slugs; `'stored'` projects the values the database stores, so
+   * access checks comparing against stored values (like `frontPlugin`)
+   * keep working unchanged. The MFA gate and role governance always
+   * operate on canonical roles regardless.
+   */
+  readonly projectRolesAs?: 'canonical' | 'stored' | undefined
+  /**
    * Structured logger. Defaults to a console logger (refusals and
    * audit events are visible without configuration); pass
    * `nullLogger()` to opt out of all output.
@@ -203,6 +222,15 @@ export type WiredOptions = {
   /** Roles withheld without MFA proof (CAP-6); empty means no policy. */
   readonly requireMfaForRoles: readonly Role[]
   /**
+   * Canonical role → stored value (issue #56), complete over the
+   * configured roles: unmapped roles map to themselves.
+   */
+  readonly roleValues: Readonly<Record<string, string>>
+  /** The inverse of {@link WiredOptions.roleValues}: stored → canonical. */
+  readonly roleValuesReverse: Readonly<Record<string, string>>
+  /** Which form the session projection carries on `req.user.roles`. */
+  readonly projectRolesAs: 'canonical' | 'stored'
+  /**
    * Roles governing the auth system: gate
    * writes to injected governance fields, sensitive-field reads, and
    * the default admin-panel fallback. Never empty.
@@ -248,6 +276,47 @@ function parseRoleList(values: readonly string[] | undefined, label: string): Ro
     }
   }
   return roles
+}
+
+/**
+ * Validate the role value map (issue #56): keys must be declared
+ * roles, values non-empty, and the stored forms unique — two roles
+ * sharing a stored value would make one silently grant the other. The
+ * result is complete over the configured roles (unmapped roles store
+ * their canonical form), so the storage edge never branches on
+ * presence.
+ */
+function validateRoleValues(
+  raw: Readonly<Record<string, string>> | undefined,
+  roles: readonly Role[]
+): Record<string, string> {
+  const declared = new Set<string>(roles)
+  const storedByCanonical: Record<string, string> = {}
+  const seenStored = new Map<string, string>()
+  for (const [canonical, stored] of Object.entries(raw ?? {})) {
+    if (!declared.has(canonical)) {
+      throw new InvalidConfigError(
+        `roleValues has an entry for '${canonical}', which is not a declared role`
+      )
+    }
+    if (stored === '') {
+      throw new InvalidConfigError(`roleValues['${canonical}'] must not be empty`)
+    }
+    storedByCanonical[canonical] = stored
+    const owner = seenStored.get(stored)
+    if (owner !== undefined) {
+      throw new InvalidConfigError(
+        `roleValues: '${owner}' and '${canonical}' both store as '${stored}'; stored values must be unique`
+      )
+    }
+    seenStored.set(stored, canonical)
+  }
+  for (const role of roles) {
+    if (storedByCanonical[role] === undefined) {
+      storedByCanonical[role] = role
+    }
+  }
+  return storedByCanonical
 }
 
 /**
@@ -362,6 +431,11 @@ export function wireOptions(raw: AuthLinkPluginOptions): WiredOptions {
     }
     takenFieldNames.add(name)
   }
+  const roleValues = validateRoleValues(raw.roleValues, validated.value.roles)
+  const roleValuesReverse: Record<string, string> = {}
+  for (const [canonical, stored] of Object.entries(roleValues)) {
+    roleValuesReverse[stored] = canonical
+  }
   const requireMfaForRoles = parseRoleList(
     raw.policies?.requireMfaForRoles,
     'policies.requireMfaForRoles'
@@ -461,6 +535,9 @@ export function wireOptions(raw: AuthLinkPluginOptions): WiredOptions {
     admitChannels: validateAdmitChannels(raw.admitChannels),
     userFields,
     requireMfaForRoles,
+    roleValues,
+    roleValuesReverse,
+    projectRolesAs: raw.projectRolesAs === 'stored' ? ('stored' as const) : ('canonical' as const),
     roleManagerRoles,
     onAudit: raw.onAudit ?? null,
     organizations,
