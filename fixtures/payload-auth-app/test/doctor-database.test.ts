@@ -65,7 +65,17 @@ describe.skipIf(!canReachPostgres)('doctor: database introspection', () => {
       }
       const child = spawn('bun', [cliPath, 'doctor', '--config', configPath, '--json'], {
         cwd: process.cwd(),
-        env: { ...process.env, DATABASE_URL: databaseUrl },
+        env: {
+          ...process.env,
+          DATABASE_URL: databaseUrl,
+          // The child resolves the kit's workspace imports from the
+          // package's own node_modules; hand it the paths explicitly so
+          // a fresh CI checkout resolves them the way the runner does.
+          NODE_PATH: [
+            new URL('../../../packages/migrate/node_modules', import.meta.url).pathname,
+            new URL('../../../node_modules', import.meta.url).pathname,
+          ].join(':'),
+        },
       })
       let stdout = ''
       child.stdout.on('data', (chunk: Buffer) => {
