@@ -8,6 +8,7 @@ import {
   type IdentityProviderPort,
   type LoggerPort,
   type VersionRange,
+  resolveSecureCookies,
 } from '@payload-auth-link/core'
 import { betterAuth, type BetterAuthOptions, type BetterAuthPlugin } from 'better-auth'
 import type { CollectionConfig, Payload } from 'payload'
@@ -481,6 +482,20 @@ export function createBetterAuthEngine<
       plugins: pluginIds,
       oauth: hasSocialOauth,
       events,
+      // #54: the server API's signed session cookie, derived from the
+      // builder's own BA options (secure-cookie rule + `__Secure-`
+      // prefix via the shared name helpers).
+      sessionCookieSpec: {
+        name: sessionCookieNames[0] ?? '',
+        secure: resolveSecureCookies(
+          {
+            useSecureCookies: input.options.advanced?.useSecureCookies,
+            baseURL: typeof input.options.baseURL === 'string' ? input.options.baseURL : undefined,
+          },
+          { nodeEnv: process.env.NODE_ENV }
+        ),
+        sameSite: 'lax',
+      },
     }
   )
   const collections = createBetterAuthCollections({

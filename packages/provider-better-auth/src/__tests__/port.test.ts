@@ -91,7 +91,9 @@ describe('createBetterAuthProvider', () => {
     })
     // No plugin declared at this seam: only the core
     // revoke-user-sessions capability is claimed (PORT-2 honesty).
-    expect(provider.capabilities).toEqual(new Set(['revoke-user-sessions']))
+    expect(provider.capabilities).toEqual(
+      new Set(['revoke-user-sessions', 'server-session-create', 'server-session-list'])
+    )
     expect(provider.revokeUserSessions).toBeTypeOf('function')
     const result = await provider.getSession(headers)
     expect(result.isOk()).toBe(true)
@@ -184,7 +186,14 @@ describe('createBetterAuthProvider', () => {
       sessionCookieNames: cookieNames,
       impersonation: true,
     })
-    expect(withAdmin.capabilities).toEqual(new Set(['impersonation', 'revoke-user-sessions']))
+    expect(withAdmin.capabilities).toEqual(
+      new Set([
+        'impersonation',
+        'revoke-user-sessions',
+        'server-session-create',
+        'server-session-list',
+      ])
+    )
     const unknownBare = createBetterAuthProviderFromUnknown(
       {
         api: { getSession: () => Promise.resolve(null) },
@@ -538,12 +547,22 @@ describe('createBetterAuthProviderFromUnknown', () => {
   })
 
   it('derives capabilities from installed plugin ids (PORT-2)', () => {
-    expect([...betterAuthCapabilities({})]).toEqual(['revoke-user-sessions'])
+    expect([...betterAuthCapabilities({})]).toEqual([
+      'revoke-user-sessions',
+      'server-session-create',
+      'server-session-list',
+    ])
     expect(
       [
         ...betterAuthCapabilities({ plugins: ['magic-link', 'two-factor', 'unknown-plugin'] }),
       ].sort()
-    ).toEqual(['magic-link', 'mfa', 'revoke-user-sessions'])
+    ).toEqual([
+      'magic-link',
+      'mfa',
+      'revoke-user-sessions',
+      'server-session-create',
+      'server-session-list',
+    ])
     expect(betterAuthCapabilities({ oauth: true }).has('oauth')).toBe(true)
   })
 

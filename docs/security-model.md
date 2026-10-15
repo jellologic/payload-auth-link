@@ -68,3 +68,6 @@ a new credential path cannot ship without a row there and here.
   one credential owner per document. The escape hatch
   (`allowLocalCredentialsForLinkedDocs`) exists for migration windows
   only.
+  | 18 | `authLinkServer.createSessionFor` (issue #54) | `allowServerSessions` gate (`'dev-only'` refuses on a production runtime); suspension refusal (CAP-7, the strategies' gate); the mint targets the PROVIDER user reached through a linked identity; every mint audited (`reason`, `actor`, `sessionId`) | ✔ (suspended → `UserSuspendedError`) | ✔ (roles canonical at mint) | ✔ (session minted for a linked identity — never synthesized from the Payload id) | ✔ (`getSession` re-applies the projection) | n/a | ✔ (`onAudit`) |
+  | 19 | `authLinkServer.listSessions / revokeSession / revokeAllForUser` (issue #54) | capability-gated port methods (`server-session-list`, `revoke-user-sessions`); ids are provider-verified handles, never cookie-derived | n/a | n/a | n/a | n/a | n/a | n/a |
+  | 20 | `authLinkServer.verifyApiKey` (issue #54) | capability-gated (`api-key-verify`); keys verify against the provider's own store — the API-key REST path (row 10) remains the only way a key authenticates a request | n/a | n/a | n/a | n/a | n/a | n/a |

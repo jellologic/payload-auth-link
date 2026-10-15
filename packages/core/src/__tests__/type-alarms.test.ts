@@ -63,6 +63,9 @@ describe('union inventories are pinned literal-for-literal', () => {
       | 'mfa'
       | 'impersonation'
       | 'revoke-user-sessions'
+      | 'server-session-create'
+      | 'server-session-list'
+      | 'api-key-verify'
     >()
   })
 })

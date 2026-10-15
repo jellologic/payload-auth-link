@@ -15,6 +15,7 @@ import {
   type ProviderSession,
   type SessionChannel,
   type VerifiedClaim,
+  type ApiKeyVerification,
 } from '@payload-auth-link/core'
 import type { IdentityEventBus } from './events.js'
 
@@ -37,6 +38,7 @@ export const betterAuthPluginCapabilities: Readonly<Record<string, Capability>> 
   'two-factor': 'mfa',
   'phone-number': 'phone',
   anonymous: 'anonymous',
+  'api-key': 'api-key-verify',
 }
 
 /**
@@ -55,7 +57,13 @@ export function betterAuthCapabilities(input: {
   readonly oauth?: boolean | undefined
   readonly impersonation?: boolean | undefined
 }): ReadonlySet<Capability> {
-  const capabilities = new Set<Capability>(['revoke-user-sessions'])
+  const capabilities = new Set<Capability>([
+    'revoke-user-sessions',
+    // BA core's internalAdapter.createSession/listSessions need no
+    // plugin, exactly like deleteUserSessions.
+    'server-session-create',
+    'server-session-list',
+  ])
   for (const id of input.plugins ?? []) {
     const capability = betterAuthPluginCapabilities[id]
     if (capability !== undefined) {
@@ -102,8 +110,24 @@ export type BetterAuthServerApi = {
        * `revokeUserSessions` fails with `ProviderError` when absent.
        */
       readonly deleteUserSessions?: ((userId: string) => Promise<void>) | undefined
+      /**
+       * BA core creates sessions server-side (`internalAdapter
+       * .createSession(userId, expiresAt)`); present on every real
+       * instance. Drives `createProviderSession` (#54).
+       */
+      readonly createSession?: ((userId: string, expiresAt: Date) => Promise<unknown>) | undefined
+      /**
+       * BA core enumerates one user's live sessions; drives
+       * `listProviderSessions` (#54).
+       */
+      readonly listSessions?: ((userId: string) => Promise<unknown>) | undefined
     }
   }>
+  /**
+   * `@better-auth/api-key`'s server-side key verification; present
+   * only with that plugin installed. Drives `verifyApiKey` (#54).
+   */
+  readonly verifyApiKey?: ((input: { body: { key: string } }) => Promise<unknown>) | undefined
 }
 
 /** Port wiring: the Better Auth server surface plus cookie names. */
@@ -153,18 +177,48 @@ export type BetterAuthProviderDeps = {
    * hooks may supply their own bus from `createIdentityEventBus`.
    */
   readonly events?: IdentityEventBus | undefined
+  /**
+   * The session cookie's write attributes for
+   * `sessionCookie(token)` (#54): the engine derives the name and
+   * secure flag from the builder's BA options (secure-cookie rule +
+   * `__Secure-` prefix). Absent = the port omits `sessionCookie`.
+   */
+  readonly sessionCookieSpec?:
+    | {
+        readonly name: string
+        readonly secure: boolean
+        readonly sameSite: 'lax' | 'strict' | 'none'
+      }
+    | undefined
 }
 
 type PortFunctions = {
   readonly getSession: (input: BetterAuthSessionQuery) => Promise<unknown>
   readonly deleteSession: (token: string) => Promise<unknown>
   readonly deleteUserSessions: (userId: string) => Promise<unknown>
+  readonly createProviderSession: (userId: string, expiresAt: Date) => Promise<unknown>
+  readonly listProviderSessions: (userId: string) => Promise<unknown>
+  readonly verifyApiKey?: ((key: string) => Promise<unknown>) | undefined
+  readonly buildSessionCookie?: ((token: string) => string) | undefined
   readonly listDeviceSessions?: ((input: { headers: Headers }) => Promise<unknown>) | undefined
   readonly sessionCookieNames: readonly string[]
   readonly capabilities: ReadonlySet<Capability>
   readonly sessionCookieClearOptions?: ((name: string) => CookieOptions | undefined) | undefined
   readonly logoutCookieNames?: readonly string[] | undefined
   readonly events?: IdentityEventBus | undefined
+  /**
+   * The session cookie's write attributes for
+   * `sessionCookie(token)` (#54): the engine derives the name and
+   * secure flag from the builder's BA options (secure-cookie rule +
+   * `__Secure-` prefix). Absent = the port omits `sessionCookie`.
+   */
+  readonly sessionCookieSpec?:
+    | {
+        readonly name: string
+        readonly secure: boolean
+        readonly sameSite: 'lax' | 'strict' | 'none'
+      }
+    | undefined
 }
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {
@@ -434,6 +488,47 @@ function createPortFromFunctions(deps: PortFunctions): IdentityProviderPort {
         () => undefined
       )
     },
+    createProviderSession(
+      providerUserId: string,
+      options: { readonly expiresAt: Date }
+    ): ResultAsync<{ readonly sessionId: string; readonly token: string }, ProviderError> {
+      return runProviderOperation(
+        providerId,
+        'createProviderSession',
+        () => deps.createProviderSession(providerUserId, options.expiresAt),
+        narrowCreatedSession
+      )
+    },
+    listProviderSessions(
+      providerUserId: string
+    ): ResultAsync<
+      readonly { readonly sessionId: string; readonly expiresAt: Date | null }[],
+      ProviderError
+    > {
+      return runProviderOperation(
+        providerId,
+        'listProviderSessions',
+        () => deps.listProviderSessions(providerUserId),
+        narrowProviderSessions
+      )
+    },
+    ...(deps.verifyApiKey === undefined
+      ? {}
+      : {
+          verifyApiKey: (key: string) =>
+            runProviderOperation(
+              providerId,
+              'verifyApiKey',
+              () => {
+                const verify = deps.verifyApiKey
+                return verify === undefined ? Promise.resolve(null) : verify(key)
+              },
+              (result) => narrowApiKeyVerification(result)
+            ),
+        }),
+    ...(deps.buildSessionCookie === undefined
+      ? {}
+      : { sessionCookie: buildSessionCookieVia(deps.buildSessionCookie) }),
     ...(deps.listDeviceSessions === undefined
       ? {}
       : {
@@ -462,6 +557,104 @@ function createPortFromFunctions(deps: PortFunctions): IdentityProviderPort {
  * Malformed entries fail closed for the whole enumeration: a partial
  * list would silently leave sessions alive after logout.
  */
+function buildSessionCookieVia(build: (token: string) => string): (token: string) => string {
+  return (token: string) => build(token)
+}
+
+function buildSessionCookieFor(spec: {
+  name: string
+  secure: boolean
+  sameSite: 'lax' | 'strict' | 'none'
+}): (token: string) => string {
+  const sameSite = spec.sameSite.charAt(0).toUpperCase() + spec.sameSite.slice(1)
+  return (token: string) =>
+    `${spec.name}=${token}; Path=/; HttpOnly; SameSite=${sameSite}` +
+    (spec.secure ? '; Secure' : '')
+}
+
+/**
+ * Narrow BA core's createSession result to the core shape. Malformed
+ * results fail closed — a session whose id or token is missing could
+ * never be verified or revoked.
+ */
+function narrowCreatedSession(result: unknown): { sessionId: string; token: string } {
+  if (!isRecord(result) || typeof result.id !== 'string' || typeof result.token !== 'string') {
+    throw new ProviderError(
+      wellKnownProviderIds.betterAuth,
+      'createProviderSession: expected a session with id and token'
+    )
+  }
+  return { sessionId: result.id, token: result.token }
+}
+
+/**
+ * Narrow BA core's listSessions result. Malformed entries fail closed
+ * for the whole enumeration.
+ */
+function narrowProviderSessions(result: unknown): { sessionId: string; expiresAt: Date | null }[] {
+  if (!Array.isArray(result)) {
+    throw new ProviderError(
+      wellKnownProviderIds.betterAuth,
+      'listProviderSessions: expected an array'
+    )
+  }
+  return result.map((entry) => {
+    if (!isRecord(entry) || typeof entry.id !== 'string') {
+      throw new ProviderError(
+        wellKnownProviderIds.betterAuth,
+        'listProviderSessions: expected sessions with an id'
+      )
+    }
+    const expires = entry.expiresAt
+    return {
+      sessionId: entry.id,
+      expiresAt: expires instanceof Date ? expires : null,
+    }
+  })
+}
+
+/**
+ * Narrow `@better-auth/api-key`'s verifyApiKey response to the core
+ * verification shape. A null/false response (unknown key) narrows to
+ * null; a malformed `key` block fails closed.
+ */
+function narrowApiKeyVerification(result: unknown): ApiKeyVerification | null {
+  if (result === null || result === undefined) {
+    return null
+  }
+  if (!isRecord(result) || result.valid !== true || !isRecord(result.key)) {
+    return null
+  }
+  const key = result.key
+  if (typeof key.userId !== 'string' || key.userId === '') {
+    throw new ProviderError(
+      wellKnownProviderIds.betterAuth,
+      'verifyApiKey: key block is missing its user id'
+    )
+  }
+  return {
+    userId: key.userId,
+    name: typeof key.name === 'string' ? key.name : null,
+    start: typeof key.start === 'string' ? key.start : null,
+    prefix: typeof key.prefix === 'string' ? key.prefix : null,
+    metadata: key.metadata ?? null,
+    rateLimitEnabled: typeof key.rateLimitEnabled === 'boolean' ? key.rateLimitEnabled : null,
+    rateLimitRemaining:
+      typeof key.remaining === 'number'
+        ? key.remaining
+        : typeof key.remaining === 'string' && key.remaining !== ''
+          ? Number(key.remaining)
+          : null,
+    expiresAt:
+      typeof key.expiresAt === 'string'
+        ? new Date(key.expiresAt)
+        : key.expiresAt instanceof Date
+          ? key.expiresAt
+          : null,
+    permissions: typeof key.permissions === 'string' ? key.permissions : null,
+  }
+}
+
 function narrowDeviceSessionIds(result: unknown): readonly string[] {
   if (!Array.isArray(result)) {
     throw new ProviderError(
@@ -537,6 +730,42 @@ export function createBetterAuthProvider(deps: BetterAuthProviderDeps): Identity
         }
         return deleteUserSessions(userId)
       }),
+    createProviderSession: (userId, expiresAt) =>
+      deps.auth.$context.then((ctx) => {
+        const createSession: ((userId: string, expiresAt: Date) => Promise<unknown>) | undefined =
+          ctx.internalAdapter.createSession
+        if (createSession === undefined) {
+          throw new ProviderError(
+            wellKnownProviderIds.betterAuth,
+            'createProviderSession: internalAdapter.createSession is unavailable'
+          )
+        }
+        return createSession(userId, expiresAt)
+      }),
+    listProviderSessions: (userId) =>
+      deps.auth.$context.then((ctx) => {
+        const listSessions = ctx.internalAdapter.listSessions
+        if (listSessions === undefined) {
+          throw new ProviderError(
+            wellKnownProviderIds.betterAuth,
+            'listProviderSessions: internalAdapter.listSessions is unavailable'
+          )
+        }
+        return listSessions(userId) as Promise<{ id: string; expiresAt: Date | null }[]>
+      }),
+    ...(deps.auth.verifyApiKey === undefined
+      ? {}
+      : {
+          verifyApiKey: (key: string) =>
+            (deps.auth.verifyApiKey as (i: { body: { key: string } }) => Promise<unknown>)({
+              body: { key },
+            }),
+        }),
+    ...(deps.sessionCookieSpec === undefined
+      ? {}
+      : {
+          buildSessionCookie: buildSessionCookieFor(deps.sessionCookieSpec),
+        }),
     ...(deps.auth.api.listDeviceSessions === undefined
       ? {}
       : { listDeviceSessions: deps.auth.api.listDeviceSessions }),
@@ -572,6 +801,13 @@ export function createBetterAuthProviderFromUnknown(
     readonly plugins?: readonly string[] | undefined
     readonly oauth?: boolean | undefined
     readonly events?: IdentityEventBus | undefined
+    readonly sessionCookieSpec?:
+      | {
+          readonly name: string
+          readonly secure: boolean
+          readonly sameSite: 'lax' | 'strict' | 'none'
+        }
+      | undefined
   }
 ): IdentityProviderPort {
   if (!isRecord(auth)) {
@@ -604,10 +840,46 @@ export function createBetterAuthProviderFromUnknown(
         return candidate(arg)
       })
     )
+  const internalAdapterCall = (
+    method: 'createSession' | 'listSessions',
+    run: (candidate: (...args: never[]) => unknown) => unknown
+  ) =>
+    Promise.resolve(
+      context.then((resolved) => {
+        if (!isRecord(resolved) || !isRecord(resolved.internalAdapter)) {
+          throw new InvalidConfigError('Better Auth $context exposes no internalAdapter')
+        }
+        const candidate: unknown = resolved.internalAdapter[method]
+        if (typeof candidate !== 'function') {
+          throw new InvalidConfigError(`Better Auth internalAdapter exposes no ${method} function`)
+        }
+        return run(candidate as (...args: never[]) => unknown)
+      })
+    )
+  const verifyApiKey =
+    typeof api.verifyApiKey === 'function'
+      ? (key: string) =>
+          (api.verifyApiKey as (input: { body: { key: string } }) => Promise<unknown>)({
+            body: { key },
+          })
+      : undefined
+  const sessionCookieSpec = options?.sessionCookieSpec
   return createPortFromFunctions({
     getSession: (input) => getSession(input),
     deleteSession: (token) => internalCall('deleteSession', token),
     deleteUserSessions: (userId) => internalCall('deleteUserSessions', userId),
+    createProviderSession: (userId, expiresAt) =>
+      internalAdapterCall('createSession', (createSession) =>
+        (createSession as (userId: string, expiresAt: Date) => Promise<unknown>)(userId, expiresAt)
+      ),
+    listProviderSessions: (userId) =>
+      internalAdapterCall('listSessions', (listSessions) =>
+        (listSessions as (userId: string) => Promise<unknown>)(userId)
+      ),
+    ...(verifyApiKey === undefined ? {} : { verifyApiKey }),
+    ...(sessionCookieSpec === undefined
+      ? {}
+      : { buildSessionCookie: buildSessionCookieFor(sessionCookieSpec) }),
     ...(listDeviceSessions === undefined ? {} : { listDeviceSessions }),
     sessionCookieNames,
     capabilities: betterAuthCapabilities({

@@ -292,6 +292,24 @@ export type Capability =
   | 'mfa'
   | 'impersonation'
   | 'revoke-user-sessions'
+  | 'server-session-create'
+  | 'server-session-list'
+  | 'api-key-verify'
+
+/** Result of a successful API-key verification (#54). */
+export type ApiKeyVerification = {
+  /** The provider user id the key belongs to. */
+  readonly userId: string
+  readonly name: string | null
+  readonly start: string | null
+  readonly prefix: string | null
+  /** Opaque metadata exactly as stored; the app owns its shape. */
+  readonly metadata: unknown
+  readonly rateLimitEnabled: boolean | null
+  readonly rateLimitRemaining: number | null
+  readonly expiresAt: Date | null
+  readonly permissions: string | null
+}
 
 /** Normalized profile returned by an identity provider. */
 export type ProviderProfile = {
@@ -485,6 +503,47 @@ export interface IdentityProviderPort {
    */
   readonly revokeUserSessions?:
     ((providerUserId: string) => ResultAsync<void, ProviderError>) | undefined
+  /**
+   * Mint a provider session for one provider user — the supported
+   * server-side path behind `authLinkServer.createSessionFor` (issue
+   * #54). Optional: only adapters that declare
+   * `'server-session-create'` implement it; the server API refuses
+   * session creation with a typed error when the configured provider
+   * cannot (e.g. stateless Auth.js).
+   */
+  readonly createProviderSession?:
+    | ((
+        providerUserId: string,
+        options: { readonly expiresAt: Date }
+      ) => ResultAsync<{ readonly sessionId: string; readonly token: string }, ProviderError>)
+    | undefined
+  /**
+   * Enumerate one provider user's live sessions — the read side of
+   * `authLinkServer.listSessions`. Optional: only adapters declaring
+   * `'server-session-list'` implement it.
+   */
+  readonly listProviderSessions?:
+    | ((providerUserId: string) => ResultAsync<
+        readonly {
+          readonly sessionId: string
+          readonly expiresAt: Date | null
+        }[],
+        ProviderError
+      >)
+    | undefined
+  /**
+   * Verify an API key and resolve its owner + metadata —
+   * `authLinkServer.verifyApiKey`. Optional: only adapters declaring
+   * `'api-key-verify'` implement it.
+   */
+  readonly verifyApiKey?:
+    ((key: string) => ResultAsync<ApiKeyVerification | null, ProviderError>) | undefined
+  /**
+   * The provider's correctly signed session cookie for one session
+   * token — `authLinkServer.sessionCookie`. Optional: providers whose
+   * session transport is not a cookie (stateless Auth.js) omit it.
+   */
+  readonly sessionCookie?: ((token: string) => string) | undefined
   /**
    * Enumerate every session id presented by this request beyond the
    * active session (CAP-13b multi-session logout): the ids are

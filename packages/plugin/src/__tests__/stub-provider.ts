@@ -33,10 +33,22 @@ type StubSessionRow = {
  */
 export function createStubProvider(options?: { readonly capabilities?: readonly Capability[] }) {
   const sessions = new Map<string, StubSessionRow>()
+  // Server-minted sessions (issue #54): the provider's mint API
+  // writes here AND plants a verifyable stub session row.
+  const minted = new Map<
+    string,
+    { sessionId: string; token: string; providerUserId: string; expiresAt: Date }
+  >()
+  let mintCounter = 0
 
   const provider: IdentityProviderPort = {
     id: defineProviderId('stub'),
-    capabilities: new Set<Capability>(options?.capabilities ?? []),
+    capabilities: new Set<Capability>([
+      ...(options?.capabilities ?? []),
+      'revoke-user-sessions',
+      'server-session-create',
+      'server-session-list',
+    ]),
     sessionCookieNames: [stubCookieName],
     getSession: (headers) => {
       const cookie = headers.get('cookie') ?? ''
@@ -76,8 +88,42 @@ export function createStubProvider(options?: { readonly capabilities?: readonly 
     },
     revokeSession: (sessionId) => {
       sessions.delete(sessionId)
+      minted.delete(sessionId)
       return okAsync(undefined)
     },
+    createProviderSession: (providerUserId, options) => {
+      mintCounter += 1
+      const sessionId = `minted-${mintCounter}`
+      const token = `minted-token-${mintCounter}`
+      minted.set(sessionId, { sessionId, token, providerUserId, expiresAt: options.expiresAt })
+      const mintedEmail = parseEmail('minted@test.dev')
+      if (mintedEmail.isErr()) {
+        throw mintedEmail.error
+      }
+      sessions.set(token, {
+        providerUserId,
+        email: mintedEmail.value,
+        emailVerified: true,
+        expiresAt: options.expiresAt,
+      })
+      return okAsync({ sessionId, token })
+    },
+    revokeUserSessions: (providerUserId) => {
+      for (const [id, row] of minted) {
+        if (row.providerUserId === providerUserId) {
+          minted.delete(id)
+          sessions.delete(row.token)
+        }
+      }
+      return okAsync(undefined)
+    },
+    listProviderSessions: (providerUserId) =>
+      okAsync(
+        [...minted.values()]
+          .filter((row) => row.providerUserId === providerUserId)
+          .map((row) => ({ sessionId: row.sessionId, expiresAt: row.expiresAt }))
+      ),
+    sessionCookie: (token: string) => `al_stub_session=${token}; Path=/; HttpOnly; SameSite=Lax`,
   }
 
   const issue = (

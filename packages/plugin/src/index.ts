@@ -22,6 +22,7 @@ import { applyOrganizationCollections, createOrganizationEndpoints } from './org
 import { wireOptions, type AuthLinkPluginOptions, type WiredOptions } from './options.js'
 import { auditStoredRoles } from './role-audit.js'
 import { createAuthLinkStrategy, strategyName } from './strategy.js'
+import { registerAuthLinkServer } from './server.js'
 
 /** Plugin slug registered with Payload. */
 export const pluginSlug = 'payload-auth-link'
@@ -147,6 +148,8 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
     // CAP-14: subscribe provider identity lifecycle events once the
     // Payload instance exists, then run the builder's own onInit.
     onInit: async (payload) => {
+      // #54: register the server API for `authLinkServer(payload)`.
+      registerAuthLinkServer(payload, wired)
       // "Audited" must land somewhere: with an impersonation-capable
       // provider and neither a hearing logger nor an audit sink, say
       // so once, through a channel the builder has not muted.
@@ -179,6 +182,16 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
 export type { AuthLinkPluginOptions }
 export type { UserGovernanceFields, WiredOptions, WiredOrganizations } from './options.js'
 export { strategyName }
+export {
+  authLinkServer,
+  registerAuthLinkServer,
+  AuthLinkServerMissingError,
+  ServerSessionsDisabledError,
+  ServerSessionUnsupportedError,
+  UserSuspendedError,
+  type AuthLinkServer,
+  type CreateSessionForOptions,
+} from './server.js'
 export {
   defaultDeniedWhileImpersonating,
   denyWhileImpersonating,

@@ -36,6 +36,9 @@ export type ConformanceCheckId =
   | 'no-session'
   | 'revoke-session'
   | 'revoke-user-sessions'
+  | 'server-session-create'
+  | 'server-session-list'
+  | 'api-key-verify'
 
 /** One failed conformance assertion: which check, and what was wrong. */
 export type ConformanceViolation = {
@@ -144,6 +147,9 @@ const allCapabilities: readonly Capability[] = [
   'mfa',
   'impersonation',
   'revoke-user-sessions',
+  'server-session-create',
+  'server-session-list',
+  'api-key-verify',
 ]
 
 const allAuthMethods: readonly AuthMethod[] = [
@@ -391,6 +397,27 @@ function checkCapabilities(
   }
   // revokeUserSessions exists iff its capability is declared.
   const hasRevokeAll = typeof port.revokeUserSessions === 'function'
+  const hasCreate = typeof port.createProviderSession === 'function'
+  if (capabilities.has('server-session-create') && !hasCreate) {
+    fail("declares 'server-session-create' but implements no createProviderSession")
+  }
+  if (!capabilities.has('server-session-create') && hasCreate) {
+    fail("implements createProviderSession without declaring 'server-session-create'")
+  }
+  const hasList = typeof port.listProviderSessions === 'function'
+  if (capabilities.has('server-session-list') && !hasList) {
+    fail("declares 'server-session-list' but implements no listProviderSessions")
+  }
+  if (!capabilities.has('server-session-list') && hasList) {
+    fail("implements listProviderSessions without declaring 'server-session-list'")
+  }
+  const hasVerifyKey = typeof port.verifyApiKey === 'function'
+  if (capabilities.has('api-key-verify') && !hasVerifyKey) {
+    fail("declares 'api-key-verify' but implements no verifyApiKey")
+  }
+  if (!capabilities.has('api-key-verify') && hasVerifyKey) {
+    fail("implements verifyApiKey without declaring 'api-key-verify'")
+  }
   if (capabilities.has('revoke-user-sessions') && !hasRevokeAll) {
     fail("declares 'revoke-user-sessions' but implements no revokeUserSessions")
   }

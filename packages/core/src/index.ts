@@ -95,6 +95,7 @@ export {
   wellKnownProviderIds,
 } from './ports.js'
 export type {
+  ApiKeyVerification,
   AuthMethod,
   Capability,
   CookieOptions,

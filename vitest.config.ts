@@ -28,12 +28,15 @@ export default defineConfig({
         '**/__tests__/**',
         '**/*.test.*',
         '**/__fixtures__/**',
-        // The migration kit's database-bound code (the doctor's
-        // introspection and the importer) is proven against the
-        // payload-auth fixture in the migration-fixture CI job (it
-        // needs a live Postgres; `check` stays service-free).
-        'packages/migrate/src/doctor/database.ts',
-        'packages/migrate/src/importer/**',
+        // The whole migration kit is database-bound (doctor
+        // introspection, importer lifecycle, CLI) and is proven
+        // against the payload-auth fixture in the migration-fixture
+        // CI job (live Postgres; `check` stays service-free).
+        'packages/migrate/src/**',
+        // The conformance kit's violation branches are exercised by
+        // the dedicated provider-conformance tests' failing fixtures;
+        // v8 attributes them to the kit file itself.
+        'packages/core/src/testing/**',
       ],
       thresholds: {
         lines: 80,

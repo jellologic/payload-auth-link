@@ -198,3 +198,45 @@ describe('provider conformance kit', () => {
     }
   })
 })
+
+describe('provider conformance kit: server-session capabilities (#54)', () => {
+  it('fails when a port declares server-session capabilities without the methods', async () => {
+    const built = fakeFactory()
+    const subject = built() as ProviderConformanceSubject
+    const port = {
+      ...subject.port,
+      capabilities: new Set<Capability>([
+        ...subject.port.capabilities,
+        'server-session-create',
+        'server-session-list',
+        'api-key-verify',
+      ]),
+    }
+    const violations = await checkProviderConformance(() => ({ ...subject, port }))
+    expect(
+      violations.some(
+        (v) =>
+          v.message.includes("'server-session-create' but implements no createProviderSession") ||
+          v.message.includes("'server-session-list' but implements no listProviderSessions") ||
+          v.message.includes("'api-key-verify' but implements no verifyApiKey")
+      )
+    ).toBe(true)
+  })
+
+  it('fails when a port implements server-session methods without declaring them', async () => {
+    const built = fakeFactory()
+    const subject = built() as ProviderConformanceSubject
+    const caps = new Set<Capability>(subject.port.capabilities)
+    caps.delete('server-session-create')
+    caps.delete('server-session-list')
+    const port = {
+      ...subject.port,
+      capabilities: caps,
+      createProviderSession: () => okAsync({ sessionId: 's', token: 't' }),
+      listProviderSessions: () => okAsync([]),
+      verifyApiKey: () => okAsync(null),
+    }
+    const violations = await checkProviderConformance(() => ({ ...subject, port }))
+    expect(violations.filter((v) => v.check === 'capabilities').length).toBeGreaterThanOrEqual(3)
+  })
+})

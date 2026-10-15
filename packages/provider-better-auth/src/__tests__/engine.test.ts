@@ -165,12 +165,19 @@ describe('createBetterAuthEngine', () => {
       options: { plugins: [admin()] },
     })
     expect(withAdmin.provider.capabilities).toEqual(
-      new Set(['impersonation', 'revoke-user-sessions'])
+      new Set([
+        'impersonation',
+        'revoke-user-sessions',
+        'server-session-create',
+        'server-session-list',
+      ])
     )
     // Plugin-derived capabilities (CAP-1..6): magic-link present
     // above declares its capability without claiming impersonation.
     expect(markerOnly.provider.capabilities.has('magic-link')).toBe(true)
     expect(markerOnly.provider.capabilities.has('revoke-user-sessions')).toBe(true)
+    expect(markerOnly.provider.capabilities.has('server-session-create')).toBe(true)
+    expect(markerOnly.provider.capabilities.has('server-session-list')).toBe(true)
   })
 
   it('wires the provider, collections, slugs, and cookie names', () => {

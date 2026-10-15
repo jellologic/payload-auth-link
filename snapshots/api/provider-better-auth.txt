@@ -741,8 +741,28 @@ export type BetterAuthServerApi = {
              * `revokeUserSessions` fails with `ProviderError` when absent.
              */
             readonly deleteUserSessions?: ((userId: string) => Promise<void>) | undefined;
+            /**
+             * BA core creates sessions server-side (`internalAdapter
+             * .createSession(userId, expiresAt)`); present on every real
+             * instance. Drives `createProviderSession` (#54).
+             */
+            readonly createSession?: ((userId: string, expiresAt: Date) => Promise<unknown>) | undefined;
+            /**
+             * BA core enumerates one user's live sessions; drives
+             * `listProviderSessions` (#54).
+             */
+            readonly listSessions?: ((userId: string) => Promise<unknown>) | undefined;
         };
     }>;
+    /**
+     * `@better-auth/api-key`'s server-side key verification; present
+     * only with that plugin installed. Drives `verifyApiKey` (#54).
+     */
+    readonly verifyApiKey?: ((input: {
+        body: {
+            key: string;
+        };
+    }) => Promise<unknown>) | undefined;
 };
 /** Port wiring: the Better Auth server surface plus cookie names. */
 export type BetterAuthProviderDeps = {
@@ -791,6 +811,17 @@ export type BetterAuthProviderDeps = {
      * hooks may supply their own bus from `createIdentityEventBus`.
      */
     readonly events?: IdentityEventBus | undefined;
+    /**
+     * The session cookie's write attributes for
+     * `sessionCookie(token)` (#54): the engine derives the name and
+     * secure flag from the builder's BA options (secure-cookie rule +
+     * `__Secure-` prefix). Absent = the port omits `sessionCookie`.
+     */
+    readonly sessionCookieSpec?: {
+        readonly name: string;
+        readonly secure: boolean;
+        readonly sameSite: 'lax' | 'strict' | 'none';
+    } | undefined;
 };
 /**
  * Placeholder emails BA mints for identities that have no real
@@ -822,6 +853,11 @@ export declare function createBetterAuthProviderFromUnknown(auth: unknown, sessi
     readonly plugins?: readonly string[] | undefined;
     readonly oauth?: boolean | undefined;
     readonly events?: IdentityEventBus | undefined;
+    readonly sessionCookieSpec?: {
+        readonly name: string;
+        readonly secure: boolean;
+        readonly sameSite: 'lax' | 'strict' | 'none';
+    } | undefined;
 }): IdentityProviderPort;
 
 // ===== where.d.ts =====

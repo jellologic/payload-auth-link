@@ -212,10 +212,9 @@ const consumerSnippets = {
     body: [],
   },
   migrate: {
-    imports:
-      "import { runDoctor, type DoctorReport } from '@payload-auth-link/migrate'",
+    imports: "import { runDoctor, type DoctorReport } from '@payload-auth-link/migrate'",
     body: [
-      "const doctor: (options: { configPath: string }) => Promise<DoctorReport> =",
+      'const doctor: (options: { configPath: string }) => Promise<DoctorReport> =',
       '  (options) => runDoctor(options)',
     ],
   },

@@ -258,6 +258,7 @@ export declare function authLink(options: AuthLinkPluginOptions): Plugin;
 export type { AuthLinkPluginOptions };
 export type { UserGovernanceFields, WiredOptions, WiredOrganizations } from './options.js';
 export { strategyName };
+export { authLinkServer, registerAuthLinkServer, AuthLinkServerMissingError, ServerSessionsDisabledError, ServerSessionUnsupportedError, UserSuspendedError, type AuthLinkServer, type CreateSessionForOptions, } from './server.js';
 export { defaultDeniedWhileImpersonating, denyWhileImpersonating, denyWithoutMfa, impersonationActorFromRequest, impersonationStateFromRequest, isImpersonating, sessionMfaSatisfied, } from './access.js';
 export type { DenyWhileImpersonatingAccess, ImpersonationOperation, ImpersonationState, } from './access.js';
 export { getOrgMembership, orgManagerRoles, requireOrgRole } from './organizations.js';
@@ -415,6 +416,15 @@ export type AuthLinkPluginOptions = {
      * value; unmapped roles store their canonical form.
      */
     readonly roleValues?: Readonly<Record<string, string>> | undefined;
+    /**
+     * Server session creation gate (issue #54): controls
+     * `authLinkServer(payload).createSessionFor`. `'dev-only'` (the
+     * default) enables it except on a production runtime (`NODE_ENV ===
+     * 'production'`); `true` enables it everywhere; `false` disables it
+     * everywhere. Reads, listings, revocations, and API-key
+     * verification are never gated — only minting is.
+     */
+    readonly allowServerSessions?: 'dev-only' | true | false | undefined;
     /**
      * What `req.user` carries (issue #57): `'projection'` (the default)
      * keeps the stable session projection `{ id, collection, email,
@@ -584,6 +594,8 @@ export type WiredOptions = {
     readonly projectRolesAs: 'canonical' | 'stored';
     /** Whether `req.user` is the full document (issue #57). */
     readonly reqUser: 'projection' | 'document';
+    /** Resolved server-session gate (issue #54), verbatim from options. */
+    readonly allowServerSessions: 'dev-only' | true | false;
     /**
      * Roles governing the auth system: gate
      * writes to injected governance fields, sensitive-field reads, and
@@ -744,6 +756,98 @@ import type { WiredOptions } from './options.js';
  * degrade to a warning: the audit must never block a boot.
  */
 export declare function auditStoredRoles(wired: WiredOptions, payload: Payload): Promise<void>;
+
+// ===== server.d.ts =====
+import { type ApiKeyVerification, type Capability } from '@payload-auth-link/core';
+import type { Payload } from 'payload';
+import type { WiredOptions } from './options.js';
+/**
+ * The supported server-side session API (issue #54): everything apps
+ * used to reach Better Auth internals for — minting a session,
+ * listing and revoking, verifying an API key, signing the session
+ * cookie — behind one typed surface that goes through the same gates
+ * as every other session: suspension refusal, the MFA projection,
+ * role governance, and the audit sink.
+ *
+ * Obtain the instance from `authLinkServer(payload)` after the plugin
+ * is installed on that Payload instance. Server session creation is
+ * additionally gated by `allowServerSessions` (default `'dev-only'`):
+ * refused with {@link ServerSessionsDisabledError} when disabled, or
+ * when `'dev-only'` and `NODE_ENV` is `'production'`.
+ */
+/** Thrown by `authLinkServer(payload)` when the plugin is not installed there. */
+export declare class AuthLinkServerMissingError extends Error {
+    constructor();
+}
+/** Thrown by `createSessionFor` when server session creation is disabled. */
+export declare class ServerSessionsDisabledError extends Error {
+    constructor(mode: 'dev-only' | true | false);
+}
+/** Thrown when no linked identity of the user supports the needed capability. */
+export declare class ServerSessionUnsupportedError extends Error {
+    constructor(userId: string, capability: Capability);
+}
+/** Thrown when the user is suspended (CAP-7): the same gate the strategies apply. */
+export declare class UserSuspendedError extends Error {
+    readonly suspendedUntil: Date;
+    constructor(suspendedUntil: Date);
+}
+/** Called from the plugin's `onInit`. Not public API. */
+export declare function registerAuthLinkServer(payload: Payload, wired: WiredOptions): void;
+/** Options for {@link AuthLinkServer.createSessionFor}. */
+export type CreateSessionForOptions = {
+    /**
+     * Why the session was minted — required; lands in the audit event
+     * (`dev-auto-login`, `api-key bridge`, `support session`, …).
+     */
+    readonly reason: string;
+    /** Session lifetime in seconds. Omitted = the provider's default. */
+    readonly ttlSeconds?: number | undefined;
+    /** Who asked for the session; recorded in the audit event. */
+    readonly actor?: string | undefined;
+};
+/** The supported server-side session API (issue #54). */
+export type AuthLinkServer = {
+    /**
+     * Resolve the Payload user behind a request's session — the same
+     * rules the strategies apply: suspension refusal, MFA projection,
+     * stored-role projection, impersonation facts. Returns `null` when
+     * the request carries no (live) session.
+     */
+    readonly getSession: (headers: Headers) => Promise<Record<string, unknown> | null>;
+    /**
+     * Mint a session for one Payload user. Refused for suspended users;
+     * audited with `reason` and `actor`. Returns the session token, its
+     * expiry, and — when the provider's session transport is a cookie —
+     * the correctly signed `Set-Cookie` value for it.
+     */
+    readonly createSessionFor: (userId: number | string, options: CreateSessionForOptions) => Promise<{
+        readonly sessionId: string;
+        readonly token: string;
+        readonly expiresAt: Date;
+        readonly setCookie: string | undefined;
+    }>;
+    /** One user's live sessions, as the provider reports them. */
+    readonly listSessions: (userId: number | string) => Promise<readonly {
+        readonly sessionId: string;
+        readonly expiresAt: Date | null;
+    }[]>;
+    /** Revoke one session by its provider-verified handle. */
+    readonly revokeSession: (sessionId: string) => Promise<void>;
+    /** Revoke every live session of one Payload user. */
+    readonly revokeAllForUser: (userId: number | string) => Promise<void>;
+    /** Verify an API key; `null` when the key is unknown. */
+    readonly verifyApiKey: (key: string) => Promise<ApiKeyVerification | null>;
+    /** The provider's signed session cookie for one session token. */
+    readonly sessionCookie: (token: string) => string;
+};
+/**
+ * Resolve the server API for a Payload instance the plugin is
+ * installed on (issue #54). Throws
+ * {@link AuthLinkServerMissingError} when the plugin is not part of
+ * that instance's config.
+ */
+export declare function authLinkServer(payload: Payload): AuthLinkServer;
 
 // ===== services.d.ts =====
 import type { Payload } from 'payload';

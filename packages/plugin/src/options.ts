@@ -74,6 +74,15 @@ export type AuthLinkPluginOptions = {
    */
   readonly roleValues?: Readonly<Record<string, string>> | undefined
   /**
+   * Server session creation gate (issue #54): controls
+   * `authLinkServer(payload).createSessionFor`. `'dev-only'` (the
+   * default) enables it except on a production runtime (`NODE_ENV ===
+   * 'production'`); `true` enables it everywhere; `false` disables it
+   * everywhere. Reads, listings, revocations, and API-key
+   * verification are never gated — only minting is.
+   */
+  readonly allowServerSessions?: 'dev-only' | true | false | undefined
+  /**
    * What `req.user` carries (issue #57): `'projection'` (the default)
    * keeps the stable session projection `{ id, collection, email,
    * roles, … }`; `'document'` loads the FULL user document once per
@@ -242,6 +251,8 @@ export type WiredOptions = {
   readonly projectRolesAs: 'canonical' | 'stored'
   /** Whether `req.user` is the full document (issue #57). */
   readonly reqUser: 'projection' | 'document'
+  /** Resolved server-session gate (issue #54), verbatim from options. */
+  readonly allowServerSessions: 'dev-only' | true | false
   /**
    * Roles governing the auth system: gate
    * writes to injected governance fields, sensitive-field reads, and
@@ -551,6 +562,12 @@ export function wireOptions(raw: AuthLinkPluginOptions): WiredOptions {
     roleValuesReverse,
     projectRolesAs: raw.projectRolesAs === 'stored' ? ('stored' as const) : ('canonical' as const),
     reqUser: raw.reqUser === 'document' ? ('document' as const) : ('projection' as const),
+    allowServerSessions:
+      raw.allowServerSessions === true
+        ? (true as const)
+        : raw.allowServerSessions === false
+          ? (false as const)
+          : ('dev-only' as const),
     roleManagerRoles,
     onAudit: raw.onAudit ?? null,
     organizations,

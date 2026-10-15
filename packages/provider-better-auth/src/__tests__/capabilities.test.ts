@@ -208,7 +208,16 @@ beforeAll(async () => {
 describe('engine capability declaration (PORT-2)', () => {
   it('declares exactly the installed plugins capabilities plus revoke-user-sessions', () => {
     expect([...engine.provider.capabilities].sort()).toEqual(
-      ['anonymous', 'email-otp', 'magic-link', 'mfa', 'phone', 'revoke-user-sessions'].sort()
+      [
+        'anonymous',
+        'email-otp',
+        'magic-link',
+        'mfa',
+        'phone',
+        'revoke-user-sessions',
+        'server-session-create',
+        'server-session-list',
+      ].sort()
     )
   })
 })
