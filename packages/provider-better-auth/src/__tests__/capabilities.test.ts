@@ -476,20 +476,17 @@ describe('CAP-6 two-factor + requireMfaForRoles', () => {
     // TOTP verification rotates the session: use the fresh cookie.
     const mfaCookie = cookieHeaderFrom(verifiedTotp) || cookie
 
-    // Enrollment is not proof (the server-session advisory fix): the
-    // signed-in session records no method, so it still proves nothing
-    // and admin stays withheld — even with twoFactorEnabled now true.
+    // The native flow records the method (#79): the enrollment's
+    // verify-totp stamps the session `two-factor`, so the signed-in
+    // session IS MFA-proven and admin is restored — no step-up route
+    // needed.
     const portSession = (
       await engine.provider.getSession(new Headers({ cookie: mfaCookie }))
     )._unsafeUnwrap()
-    expect(portSession?.assurance.mfa).toBe('unknown')
-    const stillGated = await sessionBody(await pluginSession(mfaCookie))
-    expect(stillGated.user?.roles).toEqual(['user'])
-    expect(stillGated.user?.mfaRequired).toBe(true)
-
-    // The server verified the TOTP itself, so it may VOUCH the step-up:
-    // a minted session with the server-vouched proof records the
-    // method, and the gate restores admin.
+    expect(portSession?.assurance.mfa).toBe(true)
+    expect(portSession?.assurance.methods).toEqual(['two-factor'])
+    // A server-vouched step-up mint records the method too — the same
+    // guarantee for server-side flows.
     const found = await payload.find({
       collection: 'ba-users',
       where: { email: { equals: email } },
@@ -521,9 +518,9 @@ describe('CAP-6 two-factor + requireMfaForRoles', () => {
     )._unsafeUnwrap()
     expect(portStepUp?.assurance.mfa).toBe(true)
     expect(portStepUp?.assurance.methods).toEqual(['server-step-up'])
-    const restored = await sessionBody(await pluginSession(stepUpCookie))
-    expect(restored.user?.roles).toEqual(['admin', 'user'])
-    expect(restored.user?.mfaRequired).toBeUndefined()
+    const restoredStepUp = await sessionBody(await pluginSession(stepUpCookie))
+    expect(restoredStepUp.user?.roles).toEqual(['admin', 'user'])
+    expect(restoredStepUp.user?.mfaRequired).toBeUndefined()
   })
 })
 

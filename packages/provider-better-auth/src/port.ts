@@ -447,8 +447,12 @@ function narrowSession(result: unknown, channel: SessionChannel): ProviderSessio
   // at most (D3). The deprecated flat aliases still carry the raw
   // address for one minor; linking reads the claim, never them.
   const placeholder = isPlaceholderEmail(email.value)
+  // The OPAQUE handle: the session ROW id (issue #80 — never the
+  // bearer token). Older engines whose getSession output strips the id
+  // fall back to the token; revokeSession resolves both shapes.
+  const handle = typeof session.id === 'string' && session.id !== '' ? session.id : session.token
   const narrowed: ProviderSession = {
-    sessionId: session.token,
+    sessionId: handle,
     providerUserId: user.id,
     email: email.value,
     emailVerified: user.emailVerified,
@@ -587,14 +591,6 @@ function createPortFromFunctions(deps: PortFunctions): IdentityProviderPort {
         }),
   }
 }
-
-/**
- * Narrow `listDeviceSessions` output (CAP-13b) to session tokens.
- * The tokens come from BA's signature-verified enumeration — never
- * parsed out of the lowercased cookie-name suffix (spike S6).
- * Malformed entries fail closed for the whole enumeration: a partial
- * list would silently leave sessions alive after logout.
- */
 
 /** The context fields the signed session cookie (#54) is built from. */
 type SessionCookieContext = {
@@ -770,17 +766,24 @@ function narrowCreatedSession(result: unknown): {
   token: string
   storedExpiresAt: Date | null
 } {
-  // The revocation contract consumes TOKENS (BA deletes by token), so
-  // the session id IS the token — never the row id. The stored expiry
-  // is read from the row BA actually wrote, not the requested one.
-  if (!isRecord(result) || typeof result.token !== 'string' || result.token === '') {
+  // The session id is the OPAQUE row id — never the bearer token (the
+  // token rides a dedicated field, consumed only to set the cookie).
+  // The stored expiry is read from the row BA actually wrote, not the
+  // requested one.
+  if (
+    !isRecord(result) ||
+    typeof result.id !== 'string' ||
+    result.id === '' ||
+    typeof result.token !== 'string' ||
+    result.token === ''
+  ) {
     throw new ProviderError(
       wellKnownProviderIds.betterAuth,
-      'createProviderSession: expected a session row with a token'
+      'createProviderSession: expected a session row with an id and a token'
     )
   }
   return {
-    sessionId: result.token,
+    sessionId: result.id,
     token: result.token,
     storedExpiresAt: toDate(result.expiresAt),
   }
@@ -798,18 +801,20 @@ function narrowProviderSessions(result: unknown): { sessionId: string; expiresAt
     )
   }
   return result.map((entry) => {
-    // One id type across list/mint/revoke: the TOKEN. BA's
-    // deleteSession consumes tokens; handing out row ids produced
-    // revocations that deleted nothing.
-    if (!isRecord(entry) || typeof entry.token !== 'string' || entry.token === '') {
+    // The handle is the OPAQUE session row id — never the token (the
+    // token is a bearer credential; a devices page that lists session
+    // ids would otherwise expose one live credential per session,
+    // issue #80). The port resolves the id to the token server-side
+    // inside revokeSession — one id type, verified deletion.
+    if (!isRecord(entry) || typeof entry.id !== 'string' || entry.id === '') {
       throw new ProviderError(
         wellKnownProviderIds.betterAuth,
-        'listProviderSessions: expected sessions with a token'
+        'listProviderSessions: expected sessions with an id'
       )
     }
     const expires = entry.expiresAt
     return {
-      sessionId: entry.token,
+      sessionId: entry.id,
       expiresAt: expires instanceof Date ? expires : null,
     }
   })
@@ -857,6 +862,13 @@ function narrowApiKeyVerification(result: unknown): ApiKeyVerification | null {
   }
 }
 
+/**
+ * Narrow `listDeviceSessions` output (CAP-13b) to session handles.
+ * The handles come from BA's signature-verified enumeration — never
+ * parsed out of the lowercased cookie-name suffix (spike S6).
+ * Malformed entries fail closed for the whole enumeration: a partial
+ * list would silently leave sessions alive after logout.
+ */
 function narrowDeviceSessionIds(result: unknown): readonly string[] {
   if (!Array.isArray(result)) {
     throw new ProviderError(
@@ -864,7 +876,9 @@ function narrowDeviceSessionIds(result: unknown): readonly string[] {
       'listDeviceSessions: expected an array'
     )
   }
-  const tokens: string[] = []
+  // Opaque row ids where the enumeration carries them (issue #80);
+  // tokens as the fallback — revokeSession resolves both shapes.
+  const handles: string[] = []
   for (const entry of result) {
     if (!isRecord(entry) || !isRecord(entry.session)) {
       throw new ProviderError(
@@ -872,16 +886,20 @@ function narrowDeviceSessionIds(result: unknown): readonly string[] {
         'listDeviceSessions: malformed entry'
       )
     }
-    const { token } = entry.session
+    const { token, id } = entry.session
+    if (typeof id === 'string' && id !== '') {
+      handles.push(id)
+      continue
+    }
     if (typeof token !== 'string' || token === '') {
       throw new ProviderError(
         wellKnownProviderIds.betterAuth,
         'listDeviceSessions: session token is missing'
       )
     }
-    tokens.push(token)
+    handles.push(token)
   }
-  return tokens
+  return handles
 }
 
 /**
@@ -925,25 +943,56 @@ export function createBetterAuthProvider(deps: BetterAuthProviderDeps): Identity
         deps.sessionCookieNames,
         deps.legacySessions
       ),
-    deleteSession: (token) =>
+    deleteSession: (handle) =>
       deps.auth.$context.then(async (ctx) => {
-        // Fail closed, both directions: BA's deleteSession reports
-        // nothing, so confirm a row EXISTS before deleting (deleting
-        // nothing must be an error, not a silent success) and is GONE
-        // afterwards.
-        const findSessions = (
-          ctx.internalAdapter as unknown as {
-            findSessions?: ((tokens: string[]) => Promise<unknown>) | undefined
+        // The handle is the OPAQUE session row id (issue #80): resolve
+        // it to the token SERVER-SIDE, then delete by token — verified
+        // both directions (a row must exist, and must be gone).
+        const internalAdapter = ctx.internalAdapter as unknown as {
+          deleteSession?: ((token: string) => Promise<unknown>) | undefined
+          findSessions?: ((tokens: string[]) => Promise<unknown>) | undefined
+        }
+        const adapter = (
+          ctx as unknown as {
+            adapter?: {
+              findOne?: (input: {
+                model: string
+                where: readonly { field: string; value: string }[]
+              }) => Promise<unknown>
+            }
           }
-        ).findSessions
+        ).adapter
+        const findSessions = internalAdapter.findSessions
+        const findOne = adapter?.findOne
         if (findSessions === undefined) {
           throw new ProviderError(
             wellKnownProviderIds.betterAuth,
             'revokeSession: internalAdapter.findSessions is unavailable; deletion cannot be verified'
           )
         }
-        const before = (await findSessions([token])) as unknown[]
-        if (!Array.isArray(before) || before.length === 0) {
+        // The input may be (a) an OPAQUE session row id — from the
+        // server API's listSessions/createSessionFor (issue #80) — or
+        // (b) a raw session TOKEN — from BA's own logout internals
+        // (CAP-13b multi-session logout, impersonation logout).
+        // Resolve whichever shape arrives; an id is never a token and
+        // a token is never an id, so the lookup is unambiguous.
+        let token: string | null = null
+        const row =
+          findOne === undefined
+            ? null
+            : ((await findOne({
+                model: 'session',
+                where: [{ field: 'id', value: handle }],
+              })) as { token?: unknown } | null)
+        if (isRecord(row) && typeof row.token === 'string' && row.token !== '') {
+          token = row.token
+        } else {
+          const byToken = (await findSessions([handle])) as unknown[]
+          if (Array.isArray(byToken) && byToken.length > 0) {
+            token = handle
+          }
+        }
+        if (token === null) {
           throw new ProviderError(
             wellKnownProviderIds.betterAuth,
             'revokeSession: no session exists for the given id'
@@ -1127,31 +1176,70 @@ export function createBetterAuthProviderFromUnknown(
         sessionCookieNames,
         options?.legacySessions
       ),
-    deleteSession: (token) =>
-      // Fail closed, both directions: a row must EXIST before the
-      // delete (deleting nothing is an error, not a silent success)
-      // and be GONE afterwards.
-      internalAdapterCall('findSessions', (findSessions) =>
-        (findSessions as (tokens: string[]) => Promise<unknown>)([token]).then((before) => {
-          if (!Array.isArray(before) || before.length === 0) {
-            throw new ProviderError(
-              wellKnownProviderIds.betterAuth,
-              'revokeSession: no session exists for the given id'
-            )
+    deleteSession: (handle) =>
+      // The handle is the OPAQUE session row id (issue #80): resolve it
+      // to the token SERVER-SIDE through the adapter, then delete by
+      // token — fail closed both directions (a row must exist, and
+      // must be gone afterwards).
+      Promise.resolve(
+        context.then(async (resolved) => {
+          if (!isRecord(resolved) || !isRecord(resolved.internalAdapter)) {
+            throw new InvalidConfigError('Better Auth $context exposes no internalAdapter')
           }
-          return internalCall('deleteSession', token).then(() =>
-            internalAdapterCall('findSessions', (verify) =>
-              (verify as (tokens: string[]) => Promise<unknown>)([token]).then((after) => {
-                if (Array.isArray(after) && after.length > 0) {
-                  throw new ProviderError(
-                    wellKnownProviderIds.betterAuth,
-                    'revokeSession: no session was deleted for the given id'
-                  )
-                }
-                return undefined
-              })
+          const adapter = resolved.adapter
+          const findOne =
+            isRecord(adapter) && typeof adapter['findOne'] === 'function'
+              ? (adapter['findOne'] as (input: {
+                  model: string
+                  where: readonly { field: string; value: string }[]
+                }) => Promise<unknown>)
+              : undefined
+          const found =
+            findOne === undefined
+              ? null
+              : await findOne({ model: 'session', where: [{ field: 'id', value: handle }] })
+          return Promise.resolve(found).then((foundRow) => {
+            // The input may be an OPAQUE row id (server API, issue
+            // #80) or a raw TOKEN (BA's own logout internals).
+            let token: string | null = null
+            if (
+              isRecord(foundRow) &&
+              typeof foundRow['token'] === 'string' &&
+              foundRow['token'] !== ''
+            ) {
+              token = foundRow['token']
+            }
+            if (token === null && findOne === undefined) {
+              // Bare-fixture fallback: no adapter to resolve ids with,
+              // so the input is treated as the token itself.
+              token = handle
+            }
+            if (token === null) {
+              throw new ProviderError(
+                wellKnownProviderIds.betterAuth,
+                'revokeSession: no session exists for the given id'
+              )
+            }
+            const deleteSession = (resolved.internalAdapter as Record<string, unknown>)[
+              'deleteSession'
+            ] as (token: string) => Promise<unknown>
+            if (typeof deleteSession !== 'function') {
+              throw new InvalidConfigError('Better Auth internalAdapter exposes no deleteSession')
+            }
+            return deleteSession(token).then(() =>
+              internalAdapterCall('findSessions', (verify) =>
+                (verify as (tokens: string[]) => Promise<unknown>)([token]).then((after) => {
+                  if (Array.isArray(after) && after.length > 0) {
+                    throw new ProviderError(
+                      wellKnownProviderIds.betterAuth,
+                      'revokeSession: no session was deleted for the given id'
+                    )
+                  }
+                  return undefined
+                })
+              )
             )
-          )
+          })
         })
       ),
     deleteUserSessions: (userId) => internalCall('deleteUserSessions', userId),

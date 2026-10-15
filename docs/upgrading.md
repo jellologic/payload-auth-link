@@ -34,6 +34,37 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
+## 0.10.x → 0.11.0 (recorded sign-in methods; opaque session handles)
+
+Two changes to the server-session surface, both driven by the
+post-release review (issues #79 and #80).
+
+1. **Better Auth's own sign-in flows record their authentication
+   method.** 0.10.1's assurance read the per-session
+   `authenticationMethod` column, but only server-side mints wrote it —
+   a user completing Better Auth's NATIVE two-factor sign-in got
+   `mfa: 'unknown'` and `requireMfaForRoles` withheld their role. The
+   provenance plugin now stamps the method on every sign-in flow it
+   recognizes (`password`, `two-factor` on the verification endpoints,
+   `oauth` callbacks, `magic-link`, `email-otp`, `passkey`); unknown
+   paths still record nothing (fail closed). Apps on 0.10.1/0.7.1
+   needing MFA roles through a custom step-up route can drop it after
+   upgrading — the native flow now works. BA's 2FA-pending sign-in
+   expires the session cookie, so a single-factor session is never
+   relabelled: the second factor issues a FRESH session, recorded as
+   `two-factor`.
+
+2. **Session ids are opaque handles, never bearer tokens.**
+   `listSessions` and `createSessionFor().sessionId` used to return
+   the raw session token — a "sign out other sessions" page would have
+   put a live credential for every session into page data. They now
+   return the session ROW id; `revokeSession` resolves the id to the
+   token server-side (BA's own logout internals, which revoke by
+   token, are unaffected). `createSessionFor().token` is unchanged —
+   the token still rides exactly where setting the cookie needs it.
+   **`sessionCookie(token)` still takes the TOKEN** (the mint
+   response's `token` field), not the id.
+
 ## 0.10.x → 0.10.1 (server-session API hardening; advisory GHSA-hxgq-9pww-59j4)
 
 Four fixes to the server session API, all fail-closed.
