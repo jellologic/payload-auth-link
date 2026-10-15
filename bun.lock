@@ -95,7 +95,7 @@
     },
     "packages/core": {
       "name": "@payload-auth-link/core",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "dependencies": {
         "@standard-schema/spec": "^1.1.0",
         "neverthrow": "^8.2.0",
@@ -108,7 +108,7 @@
     },
     "packages/migrate": {
       "name": "@payload-auth-link/migrate",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "bin": {
         "payload-auth-link-migrate": "./dist/cli.js",
       },
@@ -138,7 +138,7 @@
     },
     "packages/next": {
       "name": "@payload-auth-link/next",
-      "version": "0.3.2",
+      "version": "0.3.3",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
         "@payload-auth-link/react": "workspace:*",
@@ -154,7 +154,7 @@
     },
     "packages/plugin": {
       "name": "@payload-auth-link/plugin",
-      "version": "0.10.0",
+      "version": "0.10.1",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
         "neverthrow": "^8.2.0",
@@ -176,7 +176,7 @@
     },
     "packages/provider-authjs": {
       "name": "@payload-auth-link/provider-authjs",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
         "neverthrow": "^8.2.0",
@@ -197,7 +197,7 @@
     },
     "packages/provider-better-auth": {
       "name": "@payload-auth-link/provider-better-auth",
-      "version": "0.7.0",
+      "version": "0.7.1",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
         "neverthrow": "^8.2.0",
@@ -217,7 +217,7 @@
     },
     "packages/react": {
       "name": "@payload-auth-link/react",
-      "version": "0.2.4",
+      "version": "0.2.5",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
       },
@@ -230,7 +230,7 @@
     },
     "packages/tanstack-start": {
       "name": "@payload-auth-link/tanstack-start",
-      "version": "0.2.3",
+      "version": "0.2.4",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
         "@payload-auth-link/react": "workspace:*",
@@ -248,7 +248,7 @@
     },
     "packages/web": {
       "name": "@payload-auth-link/web",
-      "version": "0.2.4",
+      "version": "0.2.5",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
       },

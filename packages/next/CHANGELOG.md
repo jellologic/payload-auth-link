@@ -1,5 +1,14 @@
 # @payload-auth-link/next
 
+## 0.3.3
+
+### Patch Changes
+
+- Updated dependencies [[`5c76018`](https://github.com/jellologic/payload-auth-link/commit/5c76018ad084e58ec2fc483a811a66b803f21bbe)]:
+  - @payload-auth-link/core@0.6.1
+  - @payload-auth-link/react@0.2.5
+  - @payload-auth-link/web@0.2.5
+
 ## 0.3.2
 
 ### Patch Changes
