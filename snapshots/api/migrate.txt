@@ -28,6 +28,8 @@ export type CodemodFileResult = {
     readonly applied: readonly string[];
     /** Matches the rules could not fully rewrite (reported, never touched). */
     readonly manual: readonly string[];
+    /** The rewritten content — equal to the input when nothing changed. */
+    readonly after: string;
 };
 export declare const codemodRules: readonly CodemodRule[];
 /**
@@ -412,8 +414,8 @@ export declare function runRollback(options: ImportCommandOptions): Promise<{
     deleted: number;
     restored: number;
 }>;
-/** The `finalize` command. */
-export declare function runFinalize(options: ImportCommandOptions): Promise<ImportManifest>;
+/** The `finalize` command — manifest-only; no Payload instance is loaded. */
+export declare function runFinalize(options: Pick<ImportCommandOptions, 'manifestPath' | 'log'>): Promise<ImportManifest>;
 
 // ===== importer/source.d.ts =====
 import { Client } from 'pg';

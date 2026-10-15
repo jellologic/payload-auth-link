@@ -1,4 +1,8 @@
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
+import { cliMain } from '../cli.js'
 import { applyCodemods, codemodRules } from '../codemods.js'
 
 describe('codemods (issue #53)', () => {
@@ -33,5 +37,40 @@ describe('codemods (issue #53)', () => {
     expect(result.manual.join(' ')).toContain('payload.betterAuth.api.<method>')
     const internals = applyCodemods('c.ts', 'await payload.betterAuth.$context.internalAdapter.x()')
     expect(internals.manual.join(' ')).toContain('$context internals')
+  })
+
+  test('applyCodemods returns the rewritten content', () => {
+    const before = 'export const s = () => payload.betterAuth.api.getSession({ headers })'
+    const result = applyCodemods('d.ts', before)
+    expect(result.changed).toBe(true)
+    expect(result.after).not.toBe(before)
+    expect(result.after).toContain('getSession(headers)')
+  })
+
+  test('the CLI --write persists the rewrite to disk (regression: it wrote the original back)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'payload-auth-link-codemod-'))
+    const file = join(dir, 'session.ts')
+    writeFileSync(file, 'export const s = () => payload.betterAuth.api.getSession({ headers })')
+    const out: string[] = []
+    const sink = { write: (chunk: string) => void out.push(chunk) }
+    const code = await cliMain(['codemod', '--src', dir, '--write'], sink, sink)
+    expect(code).toBe(0)
+    const onDisk = readFileSync(file, 'utf8')
+    expect(onDisk).toContain('getSession(headers)')
+    expect(onDisk).not.toContain('betterAuth.api.getSession')
+    expect(out.join('')).toContain('rewritten')
+  })
+
+  test('the CLI dry run reports the rewrite but leaves the file untouched', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'payload-auth-link-codemod-'))
+    const file = join(dir, 'session.ts')
+    const before = 'export const s = () => payload.betterAuth.api.getSession({ headers })'
+    writeFileSync(file, before)
+    const out: string[] = []
+    const sink = { write: (chunk: string) => void out.push(chunk) }
+    const code = await cliMain(['codemod', '--src', dir], sink, sink)
+    expect(code).toBe(0)
+    expect(readFileSync(file, 'utf8')).toBe(before)
+    expect(out.join('')).toContain('would be rewritten')
   })
 })

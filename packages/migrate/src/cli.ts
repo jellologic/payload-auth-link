@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 /**
- * The `@payload-auth-link/migrate` CLI (issues #49–#59). Today: the
- * read-only `doctor` (#52). The importer and exporters ride the same
- * entrypoint as they land (#50, #58).
+ * The `@payload-auth-link/migrate` CLI (issues #49–#59): the
+ * read-only `doctor` (#52), the importer lifecycle (#50), the
+ * codemods (#53), and the JSONL exporter (#58).
  *
  * Exit codes: 0 clean, 1 blockers, 2 warnings only, 3 usage errors.
  * Never logs credential material — connection strings print only in
@@ -83,9 +83,9 @@ Commands:
   rollback undoes exactly the manifest; finalize marks it read-only
   so the legacy tables may be dropped later, in their own migration.
 
-  codemod rewrites the four named payload-auth call-site patterns
-  (getPayloadAuth, getSession, toNextJsHandler, importMap entries) and
-  reports what needs a human. Dry run by default; --write rewrites.
+  codemod rewrites the three named payload-auth call-site patterns
+  (getPayloadAuth, payload.betterAuth.api.getSession, toNextJsHandler)
+  and reports what needs a human. Dry run by default; --write rewrites.
 
 Exit codes: 0 clean, 1 blockers/mismatch, 2 warnings only, 3 usage errors.
 `
@@ -208,15 +208,106 @@ async function main(
     return 3
   }
   if (importCommands.includes(command)) {
+    const databaseUrl =
+      typeof flags.get('database-url') === 'string'
+        ? (flags.get('database-url') as string)
+        : (process.env.DATABASE_URL ?? '')
+    // export --database-url URL [--out file.jsonl]
+    // (no --config: it reads the source database directly, #58)
+    if (command === 'export') {
+      if (databaseUrl === '') {
+        err.write('export requires --database-url or DATABASE_URL\n')
+        return 3
+      }
+      const { exportToJsonl } = await import('./exporters.js')
+      const result = await exportToJsonl({
+        connectionString: databaseUrl,
+        format: 'jsonl',
+        log: (message) => out.write(`${message}\n`),
+      })
+      if (typeof flags.get('out') === 'string') {
+        writeFileSync(flags.get('out') as string, result.jsonl)
+        out.write(`wrote ${result.totalRows} row(s) to ${String(flags.get('out'))}\n`)
+      } else {
+        out.write(result.jsonl)
+      }
+      return 0
+    }
+    // codemod --src ./src [--write]
+    // (no --config: a pure source rewrite, #53)
+    if (command === 'codemod') {
+      const srcFlag = flags.get('src')
+      if (typeof srcFlag !== 'string' || srcFlag === '') {
+        err.write('codemod requires --src <directory>\n')
+        return 3
+      }
+      const srcDir = new URL(srcFlag, `file://${process.cwd()}/`).pathname
+      const write = flags.get('write') === true
+      const changed: string[] = []
+      const manual: string[] = []
+      const walk = (dir: string): void => {
+        let entries: string[]
+        try {
+          entries = readdirSync(dir)
+        } catch {
+          return
+        }
+        for (const entry of entries) {
+          if (['node_modules', 'dist', '.next'].includes(entry) || entry.startsWith('.')) {
+            continue
+          }
+          const full = join(dir, entry)
+          let stats
+          try {
+            stats = statSync(full)
+          } catch {
+            continue
+          }
+          if (stats.isDirectory()) {
+            walk(full)
+          } else if (['.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs'].includes(extname(entry))) {
+            const before = readFileSync(full, 'utf8')
+            const result = applyCodemods(relative(srcDir, full), before)
+            if (result.changed) {
+              if (write) {
+                writeFileSync(full, result.after)
+              }
+              changed.push(relative(srcDir, full))
+            }
+            for (const site of result.manual) {
+              manual.push(`${relative(srcDir, full)}: ${site}`)
+            }
+          }
+        }
+      }
+      walk(srcDir)
+      out.write(
+        `${changed.length} file(s) ${write ? 'rewritten' : 'would be rewritten (dry run; pass --write)'}:\n` +
+          changed.map((f) => `  ${f}`).join('\n') +
+          (manual.length > 0
+            ? `\nmanual follow-up:\n${manual.map((m) => `  ${m}`).join('\n')}`
+            : '') +
+          '\n'
+      )
+      return 0
+    }
+    // finalize [--manifest ...]
+    // (no --config: manifest-only; no Payload instance is loaded)
+    if (command === 'finalize') {
+      await runFinalize(
+        typeof flags.get('manifest') === 'string'
+          ? { manifestPath: flags.get('manifest') as string }
+          : {}
+      )
+      return 0
+    }
+    // The remaining commands (from-payload-auth, verify, rollback) all
+    // load a Payload instance, so they need the config.
     const configFlag = flags.get('config')
     if (typeof configFlag !== 'string' || configFlag === '') {
       err.write(`${command} requires --config <path to payload.config.ts>\n`)
       return 3
     }
-    const databaseUrl =
-      typeof flags.get('database-url') === 'string'
-        ? (flags.get('database-url') as string)
-        : (process.env.DATABASE_URL ?? '')
     if ((command === 'from-payload-auth' || command === 'verify') && databaseUrl === '') {
       err.write(`${command} requires --database-url or DATABASE_URL\n`)
       return 3
@@ -254,90 +345,6 @@ async function main(
       await runRollback(importOptions)
       return 0
     }
-    if (command === 'finalize') {
-      await runFinalize(importOptions)
-      return 0
-    }
-    // export --database-url URL [--out file.jsonl]
-    if (command === 'export') {
-      if (databaseUrl === '') {
-        err.write('export requires --database-url or DATABASE_URL\n')
-        return 3
-      }
-      const { exportToJsonl } = await import('./exporters.js')
-      const result = await exportToJsonl({
-        connectionString: databaseUrl,
-        format: 'jsonl',
-        log: (message) => out.write(`${message}\n`),
-      })
-      if (typeof flags.get('out') === 'string') {
-        writeFileSync(flags.get('out') as string, result.jsonl)
-        out.write(`wrote ${result.totalRows} row(s) to ${String(flags.get('out'))}\n`)
-      } else {
-        out.write(result.jsonl)
-      }
-      return 0
-    }
-    // codemod --src ./src [--write]
-    const srcFlagC = flags.get('src')
-    if (typeof srcFlagC !== 'string' || srcFlagC === '') {
-      err.write('codemod requires --src <directory>\n')
-      return 3
-    }
-    const srcDir = new URL(srcFlagC, `file://${process.cwd()}/`).pathname
-    const write = flags.get('write') === true
-    const changed: string[] = []
-    const manual: string[] = []
-    const walk = (dir: string): void => {
-      let entries: string[]
-      try {
-        entries = readdirSync(dir)
-      } catch {
-        return
-      }
-      for (const entry of entries) {
-        if (['node_modules', 'dist', '.next'].includes(entry) || entry.startsWith('.')) {
-          continue
-        }
-        const full = join(dir, entry)
-        let stats
-        try {
-          stats = statSync(full)
-        } catch {
-          continue
-        }
-        if (stats.isDirectory()) {
-          walk(full)
-        } else if (['.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs'].includes(extname(entry))) {
-          const before = readFileSync(full, 'utf8')
-          const result = applyCodemods(relative(srcDir, full), before)
-          if (result.changed) {
-            if (write) {
-              writeFileSync(full, before)
-            }
-            changed.push(relative(srcDir, full))
-          }
-          for (const site of result.manual) {
-            manual.push(`${relative(srcDir, full)}: ${site}`)
-          }
-        }
-      }
-    }
-    // Two passes: report first, then rewrite on --write (the rules are
-    // deterministic, so the report and the rewrite always agree).
-    walk(srcDir)
-    if (write && changed.length > 0) {
-      walk(srcDir)
-    }
-    out.write(
-      `${changed.length} file(s) ${write ? 'rewritten' : 'would be rewritten (dry run; pass --write)'}:\n` +
-        changed.map((f) => `  ${f}`).join('\n') +
-        (manual.length > 0
-          ? `\nmanual follow-up:\n${manual.map((m) => `  ${m}`).join('\n')}`
-          : '') +
-        '\n'
-    )
-    return 0
   }
   const configPath = flags.get('config')
   if (typeof configPath !== 'string' || configPath === '') {

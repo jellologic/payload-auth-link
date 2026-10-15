@@ -41,7 +41,7 @@ export type ImportCommandOptions = {
   readonly loadPayload?: (configPath: string) => Promise<import('payload').Payload>
 }
 
-const log_ = (options: ImportCommandOptions): ((message: string) => void) =>
+const log_ = (options: Pick<ImportCommandOptions, 'log'>): ((message: string) => void) =>
   options.log ?? (() => {})
 
 async function loadPayloadInstance(configPath: string): Promise<import('payload').Payload> {
@@ -221,8 +221,10 @@ export async function runRollback(
   return result
 }
 
-/** The `finalize` command. */
-export function runFinalize(options: ImportCommandOptions): Promise<ImportManifest> {
+/** The `finalize` command — manifest-only; no Payload instance is loaded. */
+export function runFinalize(
+  options: Pick<ImportCommandOptions, 'manifestPath' | 'log'>
+): Promise<ImportManifest> {
   const log = log_(options)
   const manifestPath = options.manifestPath ?? defaultManifestPath
   const manifest = readManifest(manifestPath)
