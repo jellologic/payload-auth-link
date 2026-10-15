@@ -1,14 +1,28 @@
 # Migrating from `payload-auth`
 
 `payload-auth` makes the Payload `users` collection **be** Better
-Auth's user table: passwords and OAuth tokens live in
-`user_accounts`, sessions in `user_sessions`, and the plugin
-rewrites the schema on BA upgrades. `payload-auth-link` keeps Better
-Auth rows in dedicated `ba-*` collections keyed by a text `baId`,
-while Payload owns `users`. There is no compatibility layer
-(deliberately — see MISSION.md), but the data move is mechanical.
-This page is the runbook; the script sketch below is a starting
-point, not a turnkey migration — review it against your schema.
+Auth's user table: passwords and OAuth tokens live in `accounts`,
+sessions in `sessions`, and the plugin rewrites the schema on BA
+upgrades. `payload-auth-link` either **adopts** your existing
+collections (zero row moves, #49) or **imports** the rows into its
+own `ba-*` collections (#50) — both paths are runnable, reversible,
+and CI-proven against a real payload-auth 1.9.4 database (the
+fixture at `fixtures/`). This page is the runbook; every step is a
+shipped command, not a sketch. The field report behind it is
+[journey issue #60](https://github.com/jellologic/payload-auth-link/issues/60).
+
+## The runbook at a glance
+
+1. **Doctor** (read-only): `bunx @payload-auth-link/migrate doctor --config … --src …` — the exact blocker list.
+2. **Choose the path**: **adopt** (#49, zero row moves — `schemaMap` serves BA models from your existing tables) or **import** (#50, reversible copy into `ba-*`). Same credentials both ways; hashes are portable.
+3. **Migrate roles**: `roleValues` keeps stored values like `frontPlugin` untouched (#56); `projectRolesAs: 'stored'` keeps access checks comparing stored literals working.
+4. **`req.user`**: opt into `reqUser: 'document'` if access functions read full-document fields (#57).
+5. **Coexistence**: `legacySessions` keeps legacy payload-auth session cookies working inside a dated window (#51) — nobody is logged out.
+6. **Cut over**: `from-payload-auth --apply` (importer; sessions carry by default), `verify`, watch the window, `finalize`.
+7. **Codemods**: `codemod --src ./src [--write]` rewrites the named call sites; the opt-in `payload.betterAuth` shim covers the rest incrementally (#53).
+8. **Server API**: `authLinkServer(payload)` replaces every `$context` internal bridge (#54).
+9. **Admin**: `admin: { loginView: 'provider' }` restores /admin login through the provider, with the break-glass local form (#55).
+10. **Off-ramp**: `export --database-url … --out …` — lossless JSONL of every auth table; uninstall is a tested operation (#58).
 
 ## Step 0: run the doctor (read-only preflight)
 
