@@ -1,5 +1,13 @@
 # @payload-auth-link/migrate
 
+## 0.3.1
+
+### Patch Changes
+
+- [#66](https://github.com/jellologic/payload-auth-link/pull/66) [`a23a0c6`](https://github.com/jellologic/payload-auth-link/commit/a23a0c6a793ebc7d5b933780b3f6f4191b791bcf) Thanks [@jellologic](https://github.com/jellologic)! - The migrate CLI's `codemod --write` now writes the rewritten content to disk — it previously wrote the original file back, so `--write` reported the files as rewritten while changing nothing. `codemod`, `export` and `finalize` also no longer require `--config`, matching their documented usage (`codemod` needs `--src`, `export` needs `--database-url`, `finalize` is manifest-only).
+
+  Upgrade impact: none — schema, options, and the programmatic `applyCodemods` result gain an additive `after` field only. CLI users running `codemod --write` get the rewrite they were promised; no stored data is touched.
+
 ## 0.3.0
 
 ### Minor Changes
