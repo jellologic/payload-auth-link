@@ -60,8 +60,9 @@ export function AccountSecurity() {
         setError('That code did not verify')
         return
       }
+      // The response carries the minted session cookie: the CURRENT
+      // session is already the recorded-method one — no reload needed.
       setStatus('Two-factor authentication is on.')
-      window.location.reload()
     })
   }
 

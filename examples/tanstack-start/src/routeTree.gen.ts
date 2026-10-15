@@ -20,6 +20,7 @@ import { Route as FrontendSignInAuthjsRouteImport } from './app/_frontend/sign-i
 import { Route as ApiAuthjsSignupRouteImport } from './app/api.authjs-signup'
 import { Route as ApiDevAutoVerifyRouteImport } from './app/api.dev-auto-verify'
 import { Route as ApiDevMailboxRouteImport } from './app/api.dev-mailbox'
+import { Route as ApiStepUpRouteImport } from './app/api.step-up'
 import { Route as FrontendSignInPasswordlessRouteImport } from './app/_frontend/sign-in_.passwordless'
 import { Route as PayloadAdminIndexRouteImport } from './app/_payload/admin.index'
 import { Route as PayloadAdminSplatRouteImport } from './app/_payload/admin.$'
@@ -80,6 +81,11 @@ const ApiDevMailboxRoute = ApiDevMailboxRouteImport.update({
   path: '/api/dev-mailbox',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiStepUpRoute = ApiStepUpRouteImport.update({
+  id: '/api/step-up',
+  path: '/api/step-up',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const FrontendSignInPasswordlessRoute =
   FrontendSignInPasswordlessRouteImport.update({
     id: '/sign-in_/passwordless',
@@ -122,6 +128,7 @@ export interface FileRoutesByFullPath {
   '/api/authjs-signup': typeof ApiAuthjsSignupRoute
   '/api/dev-auto-verify': typeof ApiDevAutoVerifyRoute
   '/api/dev-mailbox': typeof ApiDevMailboxRoute
+  '/api/step-up': typeof ApiStepUpRoute
   '/sign-in/passwordless': typeof FrontendSignInPasswordlessRoute
   '/admin/$': typeof PayloadAdminSplatRoute
   '/api/$': typeof PayloadApiSplatRoute
@@ -139,6 +146,7 @@ export interface FileRoutesByTo {
   '/api/authjs-signup': typeof ApiAuthjsSignupRoute
   '/api/dev-auto-verify': typeof ApiDevAutoVerifyRoute
   '/api/dev-mailbox': typeof ApiDevMailboxRoute
+  '/api/step-up': typeof ApiStepUpRoute
   '/sign-in/passwordless': typeof FrontendSignInPasswordlessRoute
   '/admin/$': typeof PayloadAdminSplatRoute
   '/api/$': typeof PayloadApiSplatRoute
@@ -158,6 +166,7 @@ export interface FileRoutesById {
   '/api/authjs-signup': typeof ApiAuthjsSignupRoute
   '/api/dev-auto-verify': typeof ApiDevAutoVerifyRoute
   '/api/dev-mailbox': typeof ApiDevMailboxRoute
+  '/api/step-up': typeof ApiStepUpRoute
   '/_frontend/': typeof FrontendIndexRoute
   '/_frontend/sign-in_/passwordless': typeof FrontendSignInPasswordlessRoute
   '/_payload/admin/$': typeof PayloadAdminSplatRoute
@@ -178,6 +187,7 @@ export interface FileRouteTypes {
     | '/api/authjs-signup'
     | '/api/dev-auto-verify'
     | '/api/dev-mailbox'
+    | '/api/step-up'
     | '/sign-in/passwordless'
     | '/admin/$'
     | '/api/$'
@@ -195,6 +205,7 @@ export interface FileRouteTypes {
     | '/api/authjs-signup'
     | '/api/dev-auto-verify'
     | '/api/dev-mailbox'
+    | '/api/step-up'
     | '/sign-in/passwordless'
     | '/admin/$'
     | '/api/$'
@@ -213,6 +224,7 @@ export interface FileRouteTypes {
     | '/api/authjs-signup'
     | '/api/dev-auto-verify'
     | '/api/dev-mailbox'
+    | '/api/step-up'
     | '/_frontend/'
     | '/_frontend/sign-in_/passwordless'
     | '/_payload/admin/$'
@@ -228,6 +240,7 @@ export interface RootRouteChildren {
   ApiAuthjsSignupRoute: typeof ApiAuthjsSignupRoute
   ApiDevAutoVerifyRoute: typeof ApiDevAutoVerifyRoute
   ApiDevMailboxRoute: typeof ApiDevMailboxRoute
+  ApiStepUpRoute: typeof ApiStepUpRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiAuthjsSplatRoute: typeof ApiAuthjsSplatRoute
 }
@@ -309,6 +322,13 @@ declare module '@tanstack/react-router' {
       path: '/api/dev-mailbox'
       fullPath: '/api/dev-mailbox'
       preLoaderRoute: typeof ApiDevMailboxRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/step-up': {
+      id: '/api/step-up'
+      path: '/api/step-up'
+      fullPath: '/api/step-up'
+      preLoaderRoute: typeof ApiStepUpRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_frontend/sign-in_/passwordless': {
@@ -401,6 +421,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAuthjsSignupRoute: ApiAuthjsSignupRoute,
   ApiDevAutoVerifyRoute: ApiDevAutoVerifyRoute,
   ApiDevMailboxRoute: ApiDevMailboxRoute,
+  ApiStepUpRoute: ApiStepUpRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiAuthjsSplatRoute: ApiAuthjsSplatRoute,
 }

@@ -23,17 +23,31 @@ export async function POST(request: Request): Promise<Response> {
   }
   const cookie = request.headers.get('cookie') ?? ''
   const origin = new URL(request.url).origin
+  // Better Auth's CSRF check demands the browser's origin on mutating
+  // requests — forward it, or the server-side verify fails with 400 no
+  // matter how correct the code is.
+  const originHeader = request.headers.get('origin')
   const verify = await fetch(`${origin}/api/auth/two-factor/verify-totp`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', cookie },
+    headers: {
+      'content-type': 'application/json',
+      cookie,
+      ...(originHeader === null ? {} : { origin: originHeader }),
+    },
     body: JSON.stringify({ code }),
   })
   if (!verify.ok) {
     return NextResponse.json({ error: 'That code did not verify' }, { status: verify.status })
   }
+  // TOTP verification ROTATES the session: the live token is on the
+  // verify response's Set-Cookie, not in the request's.
+  const rotated = verify.headers
+    .getSetCookie()
+    .map((entry) => entry.split(';')[0])
+    .join('; ')
   const payload = await getPayload({ config: configPromise })
   const server = authLinkServer(payload)
-  const session = await server.getSession(new Headers({ cookie }))
+  const session = await server.getSession(new Headers({ cookie: rotated || cookie }))
   if (session === null) {
     return NextResponse.json({ error: 'no live session' }, { status: 401 })
   }
