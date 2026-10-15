@@ -1,5 +1,20 @@
 # @payload-auth-link/core
 
+## 0.5.0
+
+### Minor Changes
+
+- [`408b579`](https://github.com/jellologic/payload-auth-link/commit/408b5799d2642c8734ea9752a6df73218ccc389c) Thanks [@jellologic](https://github.com/jellologic)! - Supported server session API (issue [#54](https://github.com/jellologic/payload-auth-link/issues/54)): `authLinkServer(payload)` —
+  `getSession` (same rules as the strategies), `createSessionFor` (audited,
+  refused for suspended users, gated by `allowServerSessions`:
+  `'dev-only'` default | `true` | `false`), `listSessions`,
+  `revokeSession`, `revokeAllForUser`, `verifyApiKey`, and
+  `sessionCookie` — so apps never touch Better Auth internals or
+  hand-sign cookies. Provider capability-gated (`server-session-create`,
+  `server-session-list`, `api-key-verify`); Better Auth implements all
+  three, Auth.js reports none and the server API refuses with typed
+  errors. `Upgrade impact:` none — additive.
+
 ## 0.4.0
 
 ### Minor Changes

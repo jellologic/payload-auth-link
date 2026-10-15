@@ -1,5 +1,38 @@
 # @payload-auth-link/migrate
 
+## 0.3.0
+
+### Minor Changes
+
+- [`8d2dfc4`](https://github.com/jellologic/payload-auth-link/commit/8d2dfc4b9aef0c57c8f84ba6f39d82bd9a9ea2dd) Thanks [@jellologic](https://github.com/jellologic)! - Codemods + temporary `payload.betterAuth` compatibility shim (issue [#53](https://github.com/jellologic/payload-auth-link/issues/53)).
+
+  `bunx @payload-auth-link/migrate codemod --src ./src` rewrites the
+  named payload-auth call-site patterns (`getPayloadAuth()`,
+  `payload.betterAuth.api.getSession({ headers })`,
+  `toNextJsHandler(payload.betterAuth)`) and reports what needs a human
+  decision — nothing is half-rewritten. Dry run by default; `--write`
+  rewrites.
+
+  `createBetterAuthCompatShim(payload)` is the opt-in
+  `payload.betterAuth`-shaped accessor backed entirely by the supported
+  server API — same suspension gate, same MFA projection, same audit
+  sink, no back door — with one deprecation warning per process. The
+  doctor counts remaining shim call sites.
+
+- [`a7bf621`](https://github.com/jellologic/payload-auth-link/commit/a7bf62112ae818d6c287d4dbe809aac51f92c08f) Thanks [@jellologic](https://github.com/jellologic)! - Off-ramp (issue [#58](https://github.com/jellologic/payload-auth-link/issues/58)): `bunx @payload-auth-link/migrate export
+--database-url URL [--out file.jsonl]` exports every auth table
+  losslessly as JSONL — every column (plugin-injected fields,
+  credential hashes, role child rows) typed as stored, re-importable
+  without transformation. The uninstall path is a supported operation
+  with a CI-validated test (plugin removed → users/content intact on
+  the same database) and documentation of every plugin-injected field.
+
+### Patch Changes
+
+- Updated dependencies [[`408b579`](https://github.com/jellologic/payload-auth-link/commit/408b5799d2642c8734ea9752a6df73218ccc389c)]:
+  - @payload-auth-link/core@0.5.0
+  - @payload-auth-link/next@0.3.1
+
 ## 0.2.0
 
 ### Minor Changes

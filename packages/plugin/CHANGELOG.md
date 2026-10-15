@@ -1,5 +1,63 @@
 # @payload-auth-link/plugin
 
+## 0.9.0
+
+### Minor Changes
+
+- [`e8117a0`](https://github.com/jellologic/payload-auth-link/commit/e8117a0d15e94c30beaf6468fe6ad8af2367f72c) Thanks [@jellologic](https://github.com/jellologic)! - Provider-backed admin login view (issue [#55](https://github.com/jellologic/payload-auth-link/issues/55)):
+  `authLink({ admin: { loginView: 'provider' } })` swaps Payload's local
+  login view for one that runs admin sign-in through the configured
+  provider (email+password, magic link, social — whatever the provider
+  exposes) plus the break-glass local fallback form for UNLINKED
+  operator accounts (0.7.0 refuses provider-linked documents on the
+  local login path by design). The view is a Payload custom view;
+  the import map must include
+  `@payload-auth-link/plugin/admin#ProviderLoginView` (the doctor
+  counts it). `Upgrade impact:` none — opt-in; the default stays
+  Payload's local login.
+
+- [`8d2dfc4`](https://github.com/jellologic/payload-auth-link/commit/8d2dfc4b9aef0c57c8f84ba6f39d82bd9a9ea2dd) Thanks [@jellologic](https://github.com/jellologic)! - Codemods + temporary `payload.betterAuth` compatibility shim (issue [#53](https://github.com/jellologic/payload-auth-link/issues/53)).
+
+  `bunx @payload-auth-link/migrate codemod --src ./src` rewrites the
+  named payload-auth call-site patterns (`getPayloadAuth()`,
+  `payload.betterAuth.api.getSession({ headers })`,
+  `toNextJsHandler(payload.betterAuth)`) and reports what needs a human
+  decision — nothing is half-rewritten. Dry run by default; `--write`
+  rewrites.
+
+  `createBetterAuthCompatShim(payload)` is the opt-in
+  `payload.betterAuth`-shaped accessor backed entirely by the supported
+  server API — same suspension gate, same MFA projection, same audit
+  sink, no back door — with one deprecation warning per process. The
+  doctor counts remaining shim call sites.
+
+- [`a199112`](https://github.com/jellologic/payload-auth-link/commit/a199112f5aff164f2c028a403e816821a7635d27) Thanks [@jellologic](https://github.com/jellologic)! - Coexistence window (issue [#51](https://github.com/jellologic/payload-auth-link/issues/51)): `createBetterAuthEngine({ legacySessions: { until, cookieNames } })`
+  honors legacy payload-auth session cookie names READ-ONLY until the
+  ISO `until` date — the lookup re-presents them under the current
+  names (suffix-preserving, so `.sig` signatures ride along when the
+  app keeps the same `BETTER_AUTH_SECRET`), while minting always uses
+  the current names. After the window the legacy names are refused with
+  a session miss. The engine exposes `legacySessionCookieNames` for
+  cookie helpers and Edge middleware; the plugin mirrors the
+  declaration (`legacySessions`) for the doctor's expiry check.
+  `Upgrade impact:` none — additive, opt-in.
+
+- [`408b579`](https://github.com/jellologic/payload-auth-link/commit/408b5799d2642c8734ea9752a6df73218ccc389c) Thanks [@jellologic](https://github.com/jellologic)! - Supported server session API (issue [#54](https://github.com/jellologic/payload-auth-link/issues/54)): `authLinkServer(payload)` —
+  `getSession` (same rules as the strategies), `createSessionFor` (audited,
+  refused for suspended users, gated by `allowServerSessions`:
+  `'dev-only'` default | `true` | `false`), `listSessions`,
+  `revokeSession`, `revokeAllForUser`, `verifyApiKey`, and
+  `sessionCookie` — so apps never touch Better Auth internals or
+  hand-sign cookies. Provider capability-gated (`server-session-create`,
+  `server-session-list`, `api-key-verify`); Better Auth implements all
+  three, Auth.js reports none and the server API refuses with typed
+  errors. `Upgrade impact:` none — additive.
+
+### Patch Changes
+
+- Updated dependencies [[`408b579`](https://github.com/jellologic/payload-auth-link/commit/408b5799d2642c8734ea9752a6df73218ccc389c)]:
+  - @payload-auth-link/core@0.5.0
+
 ## 0.8.0
 
 ### Minor Changes

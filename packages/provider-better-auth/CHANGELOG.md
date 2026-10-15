@@ -1,5 +1,36 @@
 # @payload-auth-link/provider-better-auth
 
+## 0.6.0
+
+### Minor Changes
+
+- [`a199112`](https://github.com/jellologic/payload-auth-link/commit/a199112f5aff164f2c028a403e816821a7635d27) Thanks [@jellologic](https://github.com/jellologic)! - Coexistence window (issue [#51](https://github.com/jellologic/payload-auth-link/issues/51)): `createBetterAuthEngine({ legacySessions: { until, cookieNames } })`
+  honors legacy payload-auth session cookie names READ-ONLY until the
+  ISO `until` date — the lookup re-presents them under the current
+  names (suffix-preserving, so `.sig` signatures ride along when the
+  app keeps the same `BETTER_AUTH_SECRET`), while minting always uses
+  the current names. After the window the legacy names are refused with
+  a session miss. The engine exposes `legacySessionCookieNames` for
+  cookie helpers and Edge middleware; the plugin mirrors the
+  declaration (`legacySessions`) for the doctor's expiry check.
+  `Upgrade impact:` none — additive, opt-in.
+
+- [`408b579`](https://github.com/jellologic/payload-auth-link/commit/408b5799d2642c8734ea9752a6df73218ccc389c) Thanks [@jellologic](https://github.com/jellologic)! - Supported server session API (issue [#54](https://github.com/jellologic/payload-auth-link/issues/54)): `authLinkServer(payload)` —
+  `getSession` (same rules as the strategies), `createSessionFor` (audited,
+  refused for suspended users, gated by `allowServerSessions`:
+  `'dev-only'` default | `true` | `false`), `listSessions`,
+  `revokeSession`, `revokeAllForUser`, `verifyApiKey`, and
+  `sessionCookie` — so apps never touch Better Auth internals or
+  hand-sign cookies. Provider capability-gated (`server-session-create`,
+  `server-session-list`, `api-key-verify`); Better Auth implements all
+  three, Auth.js reports none and the server API refuses with typed
+  errors. `Upgrade impact:` none — additive.
+
+### Patch Changes
+
+- Updated dependencies [[`408b579`](https://github.com/jellologic/payload-auth-link/commit/408b5799d2642c8734ea9752a6df73218ccc389c)]:
+  - @payload-auth-link/core@0.5.0
+
 ## 0.5.0
 
 ### Minor Changes

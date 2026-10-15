@@ -1,5 +1,12 @@
 # @payload-auth-link/provider-authjs
 
+## 0.3.2
+
+### Patch Changes
+
+- Updated dependencies [[`408b579`](https://github.com/jellologic/payload-auth-link/commit/408b5799d2642c8734ea9752a6df73218ccc389c)]:
+  - @payload-auth-link/core@0.5.0
+
 ## 0.3.1
 
 ### Patch Changes
