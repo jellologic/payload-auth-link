@@ -122,7 +122,7 @@ export function createStubProvider(options?: {
         emailVerified: true,
         expiresAt: options.expiresAt,
       })
-      return okAsync({ sessionId, token })
+      return okAsync({ sessionId, token, storedExpiresAt: options.expiresAt })
     },
     revokeUserSessions: (providerUserId) => {
       for (const [id, row] of minted) {

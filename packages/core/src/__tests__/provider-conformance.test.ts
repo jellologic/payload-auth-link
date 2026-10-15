@@ -232,7 +232,7 @@ describe('provider conformance kit: server-session capabilities (#54)', () => {
     const port = {
       ...subject.port,
       capabilities: caps,
-      createProviderSession: () => okAsync({ sessionId: 's', token: 't' }),
+      createProviderSession: () => okAsync({ sessionId: 's', token: 't', storedExpiresAt: null }),
       listProviderSessions: () => okAsync([]),
       verifyApiKey: () => okAsync(null),
     }

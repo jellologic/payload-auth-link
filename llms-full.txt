@@ -1896,6 +1896,52 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
+## 0.10.x → 0.10.1 (server-session API hardening; advisory GHSA-hxgq-9pww-59j4)
+
+Four fixes to the server session API, all fail-closed.
+
+1. **Minted sessions no longer claim MFA.** Session assurance now
+   reads a per-session record of HOW the session came into being —
+   the engine appends an internal plugin that adds one nullable
+   `authenticationMethod` column to the session table (additive; rows
+   that predate it read as "no recorded method"). A server-side mint
+   records `server-mint` and reports `mfa: false` — it ran no 2FA
+   challenge. The old read leaned on `user.twoFactorEnabled`
+   (ENROLLMENT), so every mint for an enrolled user claimed a second
+   factor that never ran. **`requireMfaForRoles` sites**: sign-in
+   sessions now report `mfa: 'unknown'` until a flow records a
+   method — the gate treats `'unknown'` as absent (fail-closed), so
+   gated roles stay withheld for plain cookie sign-ins. To restore
+   them, mint with the new `createSessionFor(userId, { mfaProof:
+   true })` — set it ONLY when the server has itself verified a
+   second factor; the session then records `server-step-up` and
+   reports `mfa: true`. **Schema note:** the engine adds the session
+   column through Better Auth's own schema machinery; run your usual
+   Payload push/migrations on upgrade (additive column, no data
+   changes).
+2. **One id type across mint/list/revoke — the session token.**
+   `listSessions` and `createSessionFor` used to hand out session ROW
+   ids while revocation deleted by TOKEN, so revoking a listed id
+   deleted nothing and reported success. Both now return tokens (the
+   id `createSessionFor` returns revokes directly), and revocation is
+   verified in both directions: revoking an id with no session behind
+   it is an ERROR (nothing was deleted), and a delete that leaves the
+   row in place is an error too.
+3. **The requested TTL is honored and the STORED expiry is audited.**
+   The mint passed its expiry into Better Auth's `dontRememberMe`
+   parameter slot (a truthy Date), so every minted session got the
+   engine's default expiry (~24h) no matter what was requested — and
+   the audit event recorded the requested value as if stored. The mint
+   now passes the expiry through Better Auth's `override` (applied
+   with `overrideAll`), and the audit event and returned `expiresAt`
+   carry the expiry the provider actually stored.
+4. **`'dev-only'` means development.** The `allowServerSessions`
+   default enabled minting on every runtime that merely wasn't
+   `production` — CI, test, staging, unset. It now enables minting
+   ONLY when `NODE_ENV === 'development'`; every other runtime
+   refuses with `ServerSessionsDisabledError`. Set `allowServerSessions:
+   true` explicitly where minting is intended outside development.
+
 ## 0.9.x → 0.10.0 (the server-session kit's correctness pass)
 
 Fixes from the first production rehearsal (issues #68–#72). Three of

@@ -852,7 +852,7 @@ export type VerifiedClaim<T> = {
  * the wire `z.enum` in `http.ts` both derive from this tuple, so the
  * two can never drift apart silently (B16).
  */
-export declare const authMethods: readonly ["password", "magic-link", "email-otp", "oauth", "one-tap", "passkey", "phone-otp", "anonymous"];
+export declare const authMethods: readonly ["password", "magic-link", "email-otp", "oauth", "one-tap", "passkey", "phone-otp", "anonymous", "server-mint", "server-step-up", "two-factor"];
 export type AuthMethod = (typeof authMethods)[number];
 /** The identity claims a provider session carries (PORT-1). */
 export type ProviderIdentityClaims = {
@@ -1131,9 +1131,20 @@ export interface IdentityProviderPort {
      */
     readonly createProviderSession?: ((providerUserId: string, options: {
         readonly expiresAt: Date;
+        /**
+         * A server-vouched step-up proof: set ONLY when the server
+         * has itself verified a second factor for this mint (there
+         * is no client input to trust here). Records the
+         * authentication method on the session row; the default
+         * (`false`) marks the session `mfa: false` on read-back —
+         * a mint ran no 2FA challenge.
+         */
+        readonly mfaProof?: boolean | undefined;
     }) => ResultAsync<{
         readonly sessionId: string;
         readonly token: string;
+        /** The expiry STORED on the session row, when the row reports it. */
+        readonly storedExpiresAt: Date | null;
     }, ProviderError>) | undefined;
     /**
      * Enumerate one provider user's live sessions — the read side of
@@ -1334,7 +1345,8 @@ export { assertProviderConformance, checkProviderConformance, ProviderConformanc
 export type { ConformanceCheckId, ConformanceViolation, ExpectedConformanceSession, ProviderConformanceFactory, ProviderConformanceScenarios, ProviderConformanceSubject, } from './provider-conformance.js';
 
 // ===== testing/provider-conformance.d.ts =====
-import type { AuthMethod, IdentityProviderPort, SessionActor, SessionChannel } from '../ports.js';
+import { type AuthMethod } from '../ports.js';
+import type { IdentityProviderPort, SessionActor, SessionChannel } from '../ports.js';
 /** One named conformance check a {@link ConformanceViolation} can blame. */
 export type ConformanceCheckId = 'session-shape' | 'verified-claim' | 'assurance' | 'actor' | 'channel' | 'capabilities' | 'no-session' | 'revoke-session' | 'revoke-user-sessions' | 'server-session-create' | 'server-session-list' | 'api-key-verify';
 /** One failed conformance assertion: which check, and what was wrong. */
