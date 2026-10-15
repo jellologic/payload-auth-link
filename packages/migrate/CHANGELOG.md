@@ -1,5 +1,13 @@
 # @payload-auth-link/migrate
 
+## 0.4.3
+
+### Patch Changes
+
+- Updated dependencies [[`d20684e`](https://github.com/jellologic/payload-auth-link/commit/d20684e5e8a1602e3b8e6de37ce494112c250c94)]:
+  - @payload-auth-link/core@0.6.2
+  - @payload-auth-link/next@0.3.4
+
 ## 0.4.2
 
 ### Patch Changes
