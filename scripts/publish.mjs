@@ -41,6 +41,7 @@ const order = [
   'tanstack-start',
   'provider-better-auth',
   'provider-authjs',
+  'migrate',
 ]
 const present = readdirSync(join(root, 'packages'))
 const missing = present.filter((name) => !order.includes(name))
