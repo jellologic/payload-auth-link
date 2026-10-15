@@ -54,6 +54,9 @@ const engine = createBetterAuthEngine({
         '/sign-up/email': false,
         '/sign-in/email': false,
         '/two-factor/verify-totp': false,
+        // The harness retries enrollment; BA's per-endpoint limit would
+        // 429 the second attempt.
+        '/two-factor/enable': false,
       },
     },
   },
