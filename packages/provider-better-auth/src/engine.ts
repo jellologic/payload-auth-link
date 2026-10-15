@@ -30,6 +30,7 @@ import {
 import { createIdentityEventBus } from './events.js'
 import { deriveBetterAuthSchema } from './derive-schema.js'
 import { createBetterAuthProviderFromUnknown } from './port.js'
+import { sessionProvenancePlugin } from './session-provenance.js'
 
 /** Engine wiring: Payload access plus the builder's Better Auth options. */
 export type BetterAuthEngineInput<TOptions extends Omit<BetterAuthOptions, 'database'>> = {
@@ -388,7 +389,19 @@ export function createBetterAuthEngine<
     input.logger ?? nullLogger()
   )
   const slugs: BetterAuthCollectionSlugs = resolveSlugs(defaultBetterAuthSlugs, input.slugs)
-  const declared = mergeDeclarations(input, input.autoDeclare === true)
+  const declared: {
+    customFields: Partial<Record<BetterAuthModelKey, BetterAuthCustomField[]>>
+    customModels: BetterAuthCustomModel[]
+  } = mergeDeclarations(input, input.autoDeclare === true)
+  // The provenance field is ENGINE-owned: declared even when the host
+  // declares nothing (autoDeclare off), so the adapter always maps the
+  // column and the schema validation never flags the engine's own
+  // field. Additive and nullable — rows that predate it read as
+  // "no recorded method".
+  declared.customFields.session = [
+    ...(declared.customFields.session ?? []),
+    { name: 'authenticationMethod', type: 'text' },
+  ]
   const database = createPayloadDatabaseAdapter({
     getPayload: input.getPayload,
     slugs,
@@ -461,11 +474,30 @@ export function createBetterAuthEngine<
         }
       : input.options.account
   // The builder's `plugins` pass through verbatim inside
-  // `input.options`: the engine never appends framework cookie plugins
-  // (see the input docs), so there is no second guessable API beside
-  // Better Auth's own `plugins` convention. `TPlugins` (bound on the
+  // `input.options`, PLUS the engine's own internal provenance plugin:
+  // it adds one nullable, input-excluded session field
+  // (`authenticationMethod`) so every session records HOW it came
+  // into being and the server API's assurance reads a per-session
+  // fact instead of an enrollment flag. `TPlugins` (bound on the
   // input type) keeps plugin endpoints inferred on `auth.api`.
-  const auth = betterAuth({ ...input.options, database, emailAndPassword, account, databaseHooks })
+  // The builder's plugins keep their exact inferred type through the
+  // merge so Better Auth's endpoint inference (InferAPI) survives
+  // composition — pinned by the option-driven-typing test. The
+  // provenance plugin contributes NO endpoints (its schema is
+  // runtime-only), so typing the merged array as TPlugins is honest
+  // for the API surface the compiler sees.
+  const mergedPlugins = [
+    ...(input.options.plugins ?? []),
+    sessionProvenancePlugin,
+  ] as unknown as TPlugins
+  const auth = betterAuth({
+    ...input.options,
+    ...(mergedPlugins === undefined ? {} : { plugins: mergedPlugins }),
+    database,
+    emailAndPassword,
+    account,
+    databaseHooks,
+  })
   const sessionCookieNames = getBetterAuthSessionCookieNames(input.options)
   const sessionCookieClearOptions = getBetterAuthSessionCookieClearOptions(input.options)
   // `Auth` is invariant in its options, so the generically-typed instance

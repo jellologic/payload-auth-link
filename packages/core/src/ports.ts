@@ -199,6 +199,14 @@ export const authMethods = [
   'passkey',
   'phone-otp',
   'anonymous',
+  // Server-session provenance (#54): the engine records HOW a session
+  // came into being, and the assurance projection reads that
+  // per-session fact. A mint ran no challenge; `server-step-up` is
+  // set only when the server vouches a second factor it verified
+  // itself; `two-factor` is reserved for flows that record one.
+  'server-mint',
+  'server-step-up',
+  'two-factor',
 ] as const
 
 export type AuthMethod = (typeof authMethods)[number]
@@ -528,8 +536,27 @@ export interface IdentityProviderPort {
   readonly createProviderSession?:
     | ((
         providerUserId: string,
-        options: { readonly expiresAt: Date }
-      ) => ResultAsync<{ readonly sessionId: string; readonly token: string }, ProviderError>)
+        options: {
+          readonly expiresAt: Date
+          /**
+           * A server-vouched step-up proof: set ONLY when the server
+           * has itself verified a second factor for this mint (there
+           * is no client input to trust here). Records the
+           * authentication method on the session row; the default
+           * (`false`) marks the session `mfa: false` on read-back —
+           * a mint ran no 2FA challenge.
+           */
+          readonly mfaProof?: boolean | undefined
+        }
+      ) => ResultAsync<
+        {
+          readonly sessionId: string
+          readonly token: string
+          /** The expiry STORED on the session row, when the row reports it. */
+          readonly storedExpiresAt: Date | null
+        },
+        ProviderError
+      >)
     | undefined
   /**
    * Enumerate one provider user's live sessions — the read side of

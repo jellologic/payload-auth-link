@@ -16,8 +16,8 @@
  * lies in its types still fails.
  */
 import { isNonEmptyString, isRecord } from '../guards.js'
+import { authMethods, type AuthMethod } from '../ports.js'
 import type {
-  AuthMethod,
   Capability,
   IdentityProviderPort,
   ProviderSession,
@@ -152,16 +152,9 @@ const allCapabilities: readonly Capability[] = [
   'api-key-verify',
 ]
 
-const allAuthMethods: readonly AuthMethod[] = [
-  'password',
-  'magic-link',
-  'email-otp',
-  'oauth',
-  'one-tap',
-  'passkey',
-  'phone-otp',
-  'anonymous',
-]
+// The kit accepts exactly the single-sourced method tuple — a private
+// copy here could silently drift (B16).
+const allAuthMethods: readonly AuthMethod[] = authMethods
 
 const allChannels: readonly SessionChannel[] = ['cookie', 'bearer', 'api-key', 'device']
 

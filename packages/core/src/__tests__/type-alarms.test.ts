@@ -40,9 +40,12 @@ describe('union inventories are pinned literal-for-literal', () => {
       | 'passkey'
       | 'phone-otp'
       | 'anonymous'
+      | 'server-mint'
+      | 'server-step-up'
+      | 'two-factor'
     >()
     expectTypeOf<(typeof authMethods)[number]>().toEqualTypeOf<AuthMethod>()
-    expect(authMethods).toHaveLength(8)
+    expect(authMethods).toHaveLength(11)
   })
 
   it('pins SessionChannel and its single-source tuple', () => {
