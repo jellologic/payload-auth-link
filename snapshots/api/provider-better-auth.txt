@@ -876,28 +876,33 @@ export declare function createBetterAuthProviderFromUnknown(auth: unknown, sessi
 // ===== session-provenance.d.ts =====
 import type { BetterAuthPlugin } from 'better-auth';
 import type { AuthMethod } from '@payload-auth-link/core';
-/**
- * The engine's internal session-provenance plugin. Adds ONE nullable,
- * input-excluded field to Better Auth's session model:
- * `authenticationMethod` — a short token recording HOW the session
- * came into being (`server-mint` for server-side mints,
- * `server-step-up` when the server vouches a second factor it
- * verified itself, `two-factor` for flows that record one). The
- * server session API reads this per-session fact for its assurance
- * projection; enrollment flags are never consulted.
- *
- * Internal: appended to the builder's plugin list by the engine; the
- * field is engine-owned (never a client input) and null on rows that
- * predate it — a null reads as "no recorded method", which the
- * assurance projection treats as proving nothing.
- */
-export declare const sessionProvenancePlugin: BetterAuthPlugin;
 /** The method value recorded on server-side mints (no 2FA challenge ran). */
 export declare const MINT_METHOD: AuthMethod;
 /** The method recorded when the server vouches a second factor it verified itself. */
 export declare const STEP_UP_METHOD: AuthMethod;
 /** Session methods whose recorded value counts as an MFA proof. */
 export declare const MFA_METHODS: readonly AuthMethod[];
+/**
+ * The engine's internal session-provenance plugin. Two jobs:
+ *
+ * 1. **Schema** — one nullable, input-excluded field on Better Auth's
+ *    session model: `authenticationMethod`, recording HOW the session
+ *    came into being.
+ * 2. **Recording** — `hooks.after` on the endpoints whose success
+ *    creates (or finally proves) a session: password sign-in records
+ *    `password`, the two-factor verifications upgrade their session to
+ *    `two-factor`, OAuth callbacks record `oauth`, and so on. A
+ *    single-factor session is never relabelled — the second factor's
+ *    own endpoint is the only path that writes `two-factor`, and
+ *    server-side mints write `server-mint`/`server-step-up` (port.ts).
+ *
+ * The server session API reads this per-session fact for its
+ * assurance projection; enrollment flags are never consulted. Paths
+ * outside the table and rows that predate the field record nothing —
+ * `null` reads as "no recorded method", which the assurance projection
+ * treats as proving nothing (fail closed).
+ */
+export declare const sessionProvenancePlugin: BetterAuthPlugin;
 
 // ===== where.d.ts =====
 import type { Where } from 'payload';
