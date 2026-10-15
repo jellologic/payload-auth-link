@@ -1,6 +1,6 @@
 {
   "name": "@payload-auth-link/migrate",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "payload-auth-link migration kit: read-only doctor/preflight, the payload-auth importer, and exporters.",
   "license": "MIT",
   "repository": {
