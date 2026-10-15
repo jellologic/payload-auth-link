@@ -108,7 +108,7 @@
     },
     "packages/migrate": {
       "name": "@payload-auth-link/migrate",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "bin": {
         "payload-auth-link-migrate": "./dist/cli.js",
       },
@@ -128,8 +128,14 @@
         "payload": "3.90.2",
       },
       "peerDependencies": {
+        "@payload-auth-link/next": "^0.3.0",
+        "better-auth": ">=1.7.6 <1.8.0",
         "payload": "^3.83.0 || 4.0.0-beta.0",
       },
+      "optionalPeers": [
+        "@payload-auth-link/next",
+        "better-auth",
+      ],
     },
     "packages/next": {
       "name": "@payload-auth-link/next",
