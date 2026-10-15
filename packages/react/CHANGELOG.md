@@ -1,5 +1,12 @@
 # @payload-auth-link/react
 
+## 0.2.6
+
+### Patch Changes
+
+- Updated dependencies [[`d20684e`](https://github.com/jellologic/payload-auth-link/commit/d20684e5e8a1602e3b8e6de37ce494112c250c94)]:
+  - @payload-auth-link/core@0.6.2
+
 ## 0.2.5
 
 ### Patch Changes
