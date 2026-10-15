@@ -250,7 +250,10 @@ function analyzePayloadAuth(content: string): {
               node,
               kind: 'call',
               call: parent,
-              reason: `getPayloadAuth() (line ${lineOf(source, parent)}) — the no-arg form needs this file to import from '@payload-config'; add that import and use await getPayload({ config })`,
+              // The message spells the specifier without `from '…'`:
+              // shipped string literals must not read as imports
+              // (release:check scans for undeclared ones).
+              reason: `getPayloadAuth() (line ${lineOf(source, parent)}) — the no-arg form needs this file to import the payload config alias (@payload-config); add that import and use await getPayload({ config })`,
             })
           }
         } else if (argCount === 1 && firstArg !== undefined) {
