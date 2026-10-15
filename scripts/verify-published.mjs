@@ -45,6 +45,7 @@ const allNames = [
   'tanstack-start',
   'provider-better-auth',
   'provider-authjs',
+  'migrate',
 ]
 
 function step(label) {
