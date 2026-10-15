@@ -230,6 +230,57 @@ export declare function analyzeUsersCollection(collection: Record<string, unknow
 };
 export declare function injectedFieldNamesForDocs(): readonly string[];
 
+// ===== exporters.d.ts =====
+/**
+ * Off-ramp exporters (issue #58): every payload-auth-link collection's
+ * rows as lossless JSONL — each line is one row with every column
+ * (including plugin-injected fields: identities, linkable,
+ * linkableEmail, suspension, roles child rows), typed as stored.
+ * Re-importing the JSONL reproduces the exact rows, so leaving is as
+ * testable as arriving.
+ */
+export type ExportFormat = 'jsonl';
+export type ExportOptions = {
+    readonly connectionString: string;
+    readonly format: ExportFormat;
+    /** Tables to export; defaults to the full auth-table set. */
+    readonly tables?: readonly string[] | undefined;
+    readonly log?: (message: string) => void;
+};
+/** The auth-table set, in dependency order for re-import. */
+export declare const exportTables: readonly string[];
+export type ExportResult = {
+    readonly tables: readonly {
+        readonly name: string;
+        readonly rows: number;
+    }[];
+    /** The JSONL document: one JSON object per line, `{"table": …, "row": …}`. */
+    readonly jsonl: string;
+    readonly totalRows: number;
+};
+/** Export the auth tables to lossless JSONL (issue #58). */
+export declare function exportToJsonl(options: ExportOptions): Promise<ExportResult>;
+/** A round-trip verification row: source vs re-import counts. */
+export type RoundTripResult = {
+    readonly ok: boolean;
+    readonly tables: readonly {
+        readonly name: string;
+        readonly source: number;
+        readonly target: number;
+    }[];
+};
+/**
+ * Lossless round-trip check (#58): re-import the JSONL into a target
+ * schema (same table names) and compare per-table counts. The JSONL
+ * rows carry every column, so a re-import that drops or reshapes
+ * anything fails here.
+ */
+export declare function verifyRoundTrip(options: {
+    readonly sourceConnectionString: string;
+    readonly targetConnectionString: string;
+    readonly tables?: readonly string[] | undefined;
+}): Promise<RoundTripResult>;
+
 // ===== importer/apply.d.ts =====
 import type { Payload } from 'payload';
 import { type ImportManifest, type ImportResult, type PlanRow } from './types.js';

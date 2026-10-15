@@ -190,6 +190,20 @@ jobs:
           path: test-results/
           retention-days: 7
 
+  # Off-ramp (issue #58): uninstalling the plugin must leave users and
+  # content intact. The uninstall test boots the example shape WITH the
+  # plugin + data, reboots WITHOUT it on the same database, and asserts
+  # users/content survive.
+  uninstall:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bunx vitest run packages/plugin/src/__tests__/uninstall.test.ts
+
   # Migration kit (issues #49–#59): the payload-auth fixture is the
   # contract every migration feature tests against. Postgres is the
   # minimum matrix cell — the fixture IS a Postgres dump.

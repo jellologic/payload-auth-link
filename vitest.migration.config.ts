@@ -13,6 +13,7 @@ export default defineConfig({
       // The migration kit's own Postgres-backed suites.
       'packages/migrate/src/__tests__/adopt-boot.test.ts',
       'packages/migrate/src/__tests__/importer.test.ts',
+      'packages/migrate/src/__tests__/exporters.test.ts',
     ],
     // payload-auth's dist uses directory imports Bun tolerates and
     // Node's loader does not; tests that import its modules need the

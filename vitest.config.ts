@@ -10,6 +10,7 @@ export default defineConfig({
     exclude: [
       'packages/migrate/src/__tests__/adopt-boot.test.ts',
       'packages/migrate/src/__tests__/importer.test.ts',
+      'packages/migrate/src/__tests__/exporters.test.ts',
     ],
     include: [
       'packages/*/src/**/*.test.ts',

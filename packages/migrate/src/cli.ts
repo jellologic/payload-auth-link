@@ -61,6 +61,8 @@ function usage(): string {
 
 Commands:
   doctor --config ./src/payload.config.ts [--src ./src] [--json] [--database-url URL]
+  export            --database-url URL [--out file.jsonl]
+                    (lossless JSONL of every auth table — the off-ramp, #58)
   codemod           --src ./src [--write]
   from-payload-auth --config ./src/payload.config.ts [--apply] [--sessions=carry|drop]
                     [--manifest ./payload-auth-link-migration.json] [--database-url URL] [--json]
@@ -193,7 +195,14 @@ async function main(
     out.write(usage())
     return command === null && argv.length === 0 ? 3 : 0
   }
-  const importCommands = ['from-payload-auth', 'verify', 'rollback', 'finalize', 'codemod']
+  const importCommands = [
+    'from-payload-auth',
+    'verify',
+    'rollback',
+    'finalize',
+    'codemod',
+    'export',
+  ]
   if (command !== 'doctor' && !importCommands.includes(command)) {
     err.write(`unknown command '${command}'\n\n${usage()}`)
     return 3
@@ -247,6 +256,26 @@ async function main(
     }
     if (command === 'finalize') {
       await runFinalize(importOptions)
+      return 0
+    }
+    // export --database-url URL [--out file.jsonl]
+    if (command === 'export') {
+      if (databaseUrl === '') {
+        err.write('export requires --database-url or DATABASE_URL\n')
+        return 3
+      }
+      const { exportToJsonl } = await import('./exporters.js')
+      const result = await exportToJsonl({
+        connectionString: databaseUrl,
+        format: 'jsonl',
+        log: (message) => out.write(`${message}\n`),
+      })
+      if (typeof flags.get('out') === 'string') {
+        writeFileSync(flags.get('out') as string, result.jsonl)
+        out.write(`wrote ${result.totalRows} row(s) to ${String(flags.get('out'))}\n`)
+      } else {
+        out.write(result.jsonl)
+      }
       return 0
     }
     // codemod --src ./src [--write]
