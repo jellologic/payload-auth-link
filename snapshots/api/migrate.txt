@@ -6,6 +6,38 @@ type StdSink = {
 declare function main(argv: readonly string[], out?: StdSink, err?: StdSink): Promise<number>;
 export { main as cliMain };
 
+// ===== codemods.d.ts =====
+/**
+ * Codemods (issue #53): rule-based rewrites for the call sites a
+ * payload-auth app must migrate. Deliberately textual and scoped —
+ * each rule matches an exact, idiomatic payload-auth pattern and
+ * leaves anything it cannot fully rewrite untouched (reported in the
+ * result), because a half-rewritten call site is worse than an
+ * explicit one.
+ */
+export type CodemodRule = {
+    readonly id: string;
+    readonly description: string;
+    /** Apply to one file's content; returns the new content (same string when untouched). */
+    readonly apply: (content: string) => string;
+};
+export type CodemodFileResult = {
+    readonly file: string;
+    readonly changed: boolean;
+    /** Rules that fired on this file. */
+    readonly applied: readonly string[];
+    /** Matches the rules could not fully rewrite (reported, never touched). */
+    readonly manual: readonly string[];
+};
+export declare const codemodRules: readonly CodemodRule[];
+/**
+ * Report call sites the rules cannot fully rewrite — each one needs a
+ * human decision (which session API call, which route handler shape).
+ */
+export declare function findManualSites(content: string): readonly string[];
+/** Apply every rule to one file; reports what fired and what needs a human. */
+export declare function applyCodemods(file: string, content: string): CodemodFileResult;
+
 // ===== doctor/bands.d.ts =====
 import { type VersionRange } from '@payload-auth-link/core';
 import type { VersionFinding } from './types.js';

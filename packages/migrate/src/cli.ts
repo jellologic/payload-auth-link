@@ -18,6 +18,9 @@ import {
   runVerify,
   type ImportCommandOptions,
 } from './importer/run-import.js'
+import { applyCodemods } from './codemods.js'
+import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { extname, join, relative } from 'node:path'
 
 type ParsedArgs = {
   readonly command: string | null
@@ -58,6 +61,7 @@ function usage(): string {
 
 Commands:
   doctor --config ./src/payload.config.ts [--src ./src] [--json] [--database-url URL]
+  codemod           --src ./src [--write]
   from-payload-auth --config ./src/payload.config.ts [--apply] [--sessions=carry|drop]
                     [--manifest ./payload-auth-link-migration.json] [--database-url URL] [--json]
   verify            --config ./src/payload.config.ts [--database-url URL] [--json]
@@ -76,6 +80,10 @@ Commands:
   and never modifies the source tables. verify checks both sides;
   rollback undoes exactly the manifest; finalize marks it read-only
   so the legacy tables may be dropped later, in their own migration.
+
+  codemod rewrites the four named payload-auth call-site patterns
+  (getPayloadAuth, getSession, toNextJsHandler, importMap entries) and
+  reports what needs a human. Dry run by default; --write rewrites.
 
 Exit codes: 0 clean, 1 blockers/mismatch, 2 warnings only, 3 usage errors.
 `
@@ -185,7 +193,7 @@ async function main(
     out.write(usage())
     return command === null && argv.length === 0 ? 3 : 0
   }
-  const importCommands = ['from-payload-auth', 'verify', 'rollback', 'finalize']
+  const importCommands = ['from-payload-auth', 'verify', 'rollback', 'finalize', 'codemod']
   if (command !== 'doctor' && !importCommands.includes(command)) {
     err.write(`unknown command '${command}'\n\n${usage()}`)
     return 3
@@ -237,7 +245,69 @@ async function main(
       await runRollback(importOptions)
       return 0
     }
-    await runFinalize(importOptions)
+    if (command === 'finalize') {
+      await runFinalize(importOptions)
+      return 0
+    }
+    // codemod --src ./src [--write]
+    const srcFlagC = flags.get('src')
+    if (typeof srcFlagC !== 'string' || srcFlagC === '') {
+      err.write('codemod requires --src <directory>\n')
+      return 3
+    }
+    const srcDir = new URL(srcFlagC, `file://${process.cwd()}/`).pathname
+    const write = flags.get('write') === true
+    const changed: string[] = []
+    const manual: string[] = []
+    const walk = (dir: string): void => {
+      let entries: string[]
+      try {
+        entries = readdirSync(dir)
+      } catch {
+        return
+      }
+      for (const entry of entries) {
+        if (['node_modules', 'dist', '.next'].includes(entry) || entry.startsWith('.')) {
+          continue
+        }
+        const full = join(dir, entry)
+        let stats
+        try {
+          stats = statSync(full)
+        } catch {
+          continue
+        }
+        if (stats.isDirectory()) {
+          walk(full)
+        } else if (['.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs'].includes(extname(entry))) {
+          const before = readFileSync(full, 'utf8')
+          const result = applyCodemods(relative(srcDir, full), before)
+          if (result.changed) {
+            if (write) {
+              writeFileSync(full, before)
+            }
+            changed.push(relative(srcDir, full))
+          }
+          for (const site of result.manual) {
+            manual.push(`${relative(srcDir, full)}: ${site}`)
+          }
+        }
+      }
+    }
+    // Two passes: report first, then rewrite on --write (the rules are
+    // deterministic, so the report and the rewrite always agree).
+    walk(srcDir)
+    if (write && changed.length > 0) {
+      walk(srcDir)
+    }
+    out.write(
+      `${changed.length} file(s) ${write ? 'rewritten' : 'would be rewritten (dry run; pass --write)'}:\n` +
+        changed.map((f) => `  ${f}`).join('\n') +
+        (manual.length > 0
+          ? `\nmanual follow-up:\n${manual.map((m) => `  ${m}`).join('\n')}`
+          : '') +
+        '\n'
+    )
     return 0
   }
   const configPath = flags.get('config')

@@ -207,6 +207,18 @@ export declare function accountControlsGlobalGateHook(wired: WiredOptions): Glob
 export declare function fieldName(field: Field): string | undefined;
 export declare function applyUsersCollection(collections: readonly CollectionConfig[] | undefined, wired: WiredOptions, strategy: AuthStrategy): CollectionConfig[];
 
+// ===== compat-shim.d.ts =====
+import type { Payload } from 'payload';
+/** The subset of the payload-auth `payload.betterAuth` surface the shim supports. */
+export type BetterAuthCompatShim = {
+    readonly api: {
+        readonly getSession: (input: {
+            headers: Headers;
+        }) => Promise<unknown>;
+    };
+};
+export declare function createBetterAuthCompatShim(payload: Payload): BetterAuthCompatShim;
+
 // ===== endpoints.d.ts =====
 import type { Endpoint } from 'payload';
 import type { WiredOptions } from './options.js';
@@ -258,6 +270,7 @@ export declare function authLink(options: AuthLinkPluginOptions): Plugin;
 export type { AuthLinkPluginOptions };
 export type { UserGovernanceFields, WiredOptions, WiredOrganizations } from './options.js';
 export { strategyName };
+export { createBetterAuthCompatShim, type BetterAuthCompatShim } from './compat-shim.js';
 export { authLinkServer, registerAuthLinkServer, AuthLinkServerMissingError, ServerSessionsDisabledError, ServerSessionUnsupportedError, UserSuspendedError, type AuthLinkServer, type CreateSessionForOptions, } from './server.js';
 export { defaultDeniedWhileImpersonating, denyWhileImpersonating, denyWithoutMfa, impersonationActorFromRequest, impersonationStateFromRequest, isImpersonating, sessionMfaSatisfied, } from './access.js';
 export type { DenyWhileImpersonatingAccess, ImpersonationOperation, ImpersonationState, } from './access.js';

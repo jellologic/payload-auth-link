@@ -182,6 +182,7 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
 export type { AuthLinkPluginOptions }
 export type { UserGovernanceFields, WiredOptions, WiredOrganizations } from './options.js'
 export { strategyName }
+export { createBetterAuthCompatShim, type BetterAuthCompatShim } from './compat-shim.js'
 export {
   authLinkServer,
   registerAuthLinkServer,
