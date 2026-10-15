@@ -41,6 +41,10 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: bun install --frozen-lockfile
+      # The suites resolve workspace packages through their dist
+      # exports — build once under Bun, run the tests under the matrix
+      # Node.
+      - run: bun run build
       - run: node node_modules/vitest/vitest.mjs run
 
   # Every user-facing PR carries a changeset (see CONTRIBUTING.md);
