@@ -46,12 +46,22 @@ export function AccountSecurity() {
   const verifyTwoFactor = (event: FormEvent): void => {
     event.preventDefault()
     void run(async () => {
-      const result = await authClient.twoFactor.verifyTotp({ code })
-      if (result.error !== null) {
+      // Verify THROUGH the app's step-up route, not Better Auth's
+      // client directly: the route re-verifies the code server-side and
+      // — only on success — mints a session with the vouched MFA proof,
+      // so the session RECORDS the method (enrollment alone proves
+      // nothing).
+      const verify = await fetch('/api/step-up', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code }),
+      })
+      if (!verify.ok) {
         setError('That code did not verify')
         return
       }
       setStatus('Two-factor authentication is on.')
+      window.location.reload()
     })
   }
 

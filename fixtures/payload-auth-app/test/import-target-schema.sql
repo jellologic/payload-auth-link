@@ -152,6 +152,7 @@ CREATE TABLE IF NOT EXISTS ba_sessions (
   ip_address varchar,
   user_agent varchar,
   active_organization_id varchar,
+  authentication_method varchar,
   updated_at timestamptz NOT NULL DEFAULT now(),
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT ba_sessions_pkey PRIMARY KEY (id)

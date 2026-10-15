@@ -56,7 +56,7 @@ function totp(base32Secret: string): string {
   return String(binary % 1_000_000).padStart(6, '0')
 }
 
-test('TOTP enrollment flips session assurance to mfa:true', async ({ page }) => {
+test('TOTP verification records a step-up and flips assurance to mfa:true', async ({ page }) => {
   const email = uniqueEmail('totp')
   await signUp(page, email)
   const before = (await (await page.request.get('/api/auth-link/session')).json()) as {
@@ -77,6 +77,9 @@ test('TOTP enrollment flips session assurance to mfa:true', async ({ page }) => 
     throw new Error(`no TOTP secret shown (got: ${secretText ?? 'nothing'})`)
   }
   await page.getByLabel(/two-factor code/i).fill(totp(secret))
+  // The page verifies THROUGH the app's step-up route (server-side
+  // re-verification + a minted session with the vouched proof), so the
+  // session records the method.
   await page.getByRole('button', { name: /verify two-factor code/i }).click()
   await expect(page.getByRole('status')).toContainText(/two-factor authentication is on/i, {
     timeout: 30_000,
