@@ -47,6 +47,9 @@ Bun's module loader, which tolerates the directory imports
 payload-auth's dist uses.
 
 Peers: `payload` ^3.83.0 || 4.0.0-beta.0 (the import commands boot the
-app's own Payload instance; the doctor itself only reads),
-`better-auth` >=1.7.6 <1.8.0, and `@payload-auth-link/next` ^0.3.1
-(optional — only the codemod's emitted route handlers need it).
+app's own Payload instance; the doctor itself only reads) and
+`@payload-auth-link/next` ^0.3.2 (optional — only the codemod's
+emitted route handlers need it). `better-auth` is NOT a peer since
+0.4.0: installing the kit must never touch the app's own better-auth
+dependency (the #71 rehearsal finding), and the doctor falls back to
+static analysis when the app sits outside the validated band.
