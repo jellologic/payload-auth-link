@@ -111,6 +111,96 @@ async function verifyTotpResilient(uriSecret: string, cookie: string): Promise<R
   throw new Error('TOTP verification failed across all time windows')
 }
 
+/**
+ * Enable + enroll 2FA for the user through BA's own endpoints. Returns
+ * whether the enrollment verify succeeded.
+ */
+async function enrollUser(email: string): Promise<boolean> {
+  const signIn = await engine.auth.handler(
+    authRequest('/sign-in/email', {
+      method: 'POST',
+      body: { email, password: 'correct-horse-battery' },
+    })
+  )
+  const cookie = cookieOf(signIn)
+  // A fresh secret sidesteps the TOTP window-boundary race; stale
+  // two-factor rows are cleared first so the adapter's findOne always
+  // sees the row the URI's secret came from.
+  const userForRows = await baUserIdOf(email)
+  await payload
+    .delete({
+      collection: 'ba-twoFactor',
+      where: { userId: { equals: userForRows } },
+      overrideAccess: true,
+    })
+    .catch(() => undefined)
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const enabled = await engine.auth.handler(
+      authRequest('/two-factor/enable', {
+        method: 'POST',
+        body: { password: 'correct-horse-battery' },
+        cookie,
+      })
+    )
+    if (enabled.status !== 200) {
+      return false
+    }
+    const enabledBody = (await enabled.json()) as { totpURI?: unknown }
+    if (typeof enabledBody.totpURI !== 'string') {
+      return false
+    }
+    const secret = new URL(enabledBody.totpURI).searchParams.get('secret')
+    if (secret === null) {
+      return false
+    }
+    // The enroll verify has NO attempt budget (BA counts attempts only
+    // on the 2FA-cookie sign-in path), so sweep both key derivations x
+    // time windows: one of them is what BA computes.
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
+    let buffer = 0
+    let bits = 0
+    const decodedKey: number[] = []
+    for (const char of secret) {
+      if (char === '=') break
+      const value = alphabet.indexOf(char)
+      if (value === -1) continue
+      buffer = (buffer << 5) | value
+      bits += 5
+      while (bits >= 8) {
+        bits -= 8
+        decodedKey.push((buffer >> bits) & 255)
+      }
+    }
+    const keys = [Buffer.from(decodedKey), Buffer.from(secret, 'utf8')]
+    const now = Date.now()
+    for (const key of keys) {
+      for (const offsetSeconds of [0, -30, 30, -60, 60]) {
+        const counter = Buffer.alloc(8)
+        counter.writeBigUInt64BE(BigInt(Math.floor((now + offsetSeconds * 1000) / 30_000)))
+        const digest = createHmac('sha1', key).update(counter).digest()
+        const offset = (digest[digest.length - 1] ?? 0) & 0x0f
+        const binary =
+          ((digest[offset] ?? 0) & 0x7f) * 2 ** 24 +
+          ((digest[offset + 1] ?? 0) & 0x7f) * 2 ** 16 +
+          ((digest[offset + 2] ?? 0) & 0x7f) * 2 ** 8 +
+          (digest[offset + 3] ?? 0)
+        const code = String(binary % 1_000_000).padStart(6, '0')
+        const verified = await engine.auth.handler(
+          authRequest('/two-factor/verify-totp', {
+            method: 'POST',
+            body: { code },
+            cookie,
+          })
+        )
+        if (verified.status === 200) {
+          return true
+        }
+      }
+    }
+  }
+  return false
+}
+
 function authRequest(
   path: string,
   init: { method?: string; body?: unknown; cookie?: string } = {}
@@ -148,7 +238,18 @@ function responseCookieHeader(response: Response): string {
     .filter((pair) => pair !== '')
     .join('; ')
 }
+let runCounter = 0
+
+/** Unique per invocation: test retries re-run signUp against the same storage. */
+function uniqueEmail(prefix: string): string {
+  runCounter += 1
+  return `${prefix}-${Date.now()}-${runCounter}@test.dev`
+}
+
+let lastEmail = ''
+
 async function signUp(email: string): Promise<void> {
+  lastEmail = email
   const response = await engine.auth.handler(
     authRequest('/sign-up/email', {
       method: 'POST',
@@ -370,7 +471,7 @@ describe('real-engine server sessions', () => {
   // retries absorb the remaining boundary cases.
   it(
     "Better Auth's native two-factor sign-in records 'two-factor' (issue #79)",
-    { retry: 2 },
+    { retry: 3 },
     async () => {
       // Unique email per attempt: a retry re-runs signUp against the
       // same storage, and BA 422s duplicate emails.
@@ -448,6 +549,81 @@ describe('real-engine server sessions', () => {
       expect(postVerify.value.assurance.methods).toEqual(['two-factor'])
       expect(postVerify.value.assurance.mfa).toBe(true)
       void userId
+    }
+  )
+
+  // retry: enrollment races the 30s TOTP step boundary (same as the
+  // native-flow test).
+  it(
+    'a FAILED verification never relabels the session (advisory: wrong code must not upgrade MFA)',
+    { retry: 3 },
+    async () => {
+      // Enrolled user, live server-minted session (records 'server-mint',
+      // mfa false). Sending a WRONG code from that session must leave the
+      // session exactly as it was.
+      await signUp(uniqueEmail('bypass'))
+      const userId = await baUserIdOf(lastEmail)
+      const enrolled = await enrollUser(lastEmail)
+      expect(enrolled).toBe(true)
+      const created = await mint(userId, new Date(Date.now() + 3_600_000))
+      const buildCookie = engine.provider.sessionCookie
+      if (buildCookie === undefined) {
+        throw new Error('the better-auth provider exposes no sessionCookie')
+      }
+      const mintedCookie = await buildCookie(created.token)
+      const before = await engine.provider.getSession(new Headers({ cookie: mintedCookie }))
+      if (before.isErr() || before.value === null) {
+        throw new Error(before.isErr() ? before.error.message : 'no session')
+      }
+      expect(before.value.assurance.mfa).toBe(false)
+
+      // The attack: a garbage code from the session being used.
+      const wrong = await engine.auth.handler(
+        authRequest('/two-factor/verify-totp', {
+          method: 'POST',
+          body: { code: '000000' },
+          cookie: mintedCookie,
+        })
+      )
+      expect([400, 401]).toContain(wrong.status)
+
+      const after = await engine.provider.getSession(new Headers({ cookie: mintedCookie }))
+      if (after.isErr() || after.value === null) {
+        throw new Error(after.isErr() ? after.error.message : 'no session')
+      }
+      expect(after.value.assurance.methods).toEqual(['server-mint'])
+      expect(after.value.assurance.mfa).toBe(false)
+    }
+  )
+
+  // retry: enrollment races the 30s TOTP step boundary (same as the
+  // native-flow test).
+  it(
+    'a wrong code from a NON-enrolled user leaves their session unchanged',
+    { retry: 3 },
+    async () => {
+      await signUp(uniqueEmail('notenrolled'))
+      const userId = await baUserIdOf(lastEmail)
+      const created = await mint(userId, new Date(Date.now() + 3_600_000))
+      const buildCookie = engine.provider.sessionCookie
+      if (buildCookie === undefined) {
+        throw new Error('the better-auth provider exposes no sessionCookie')
+      }
+      const mintedCookie = await buildCookie(created.token)
+      const wrong = await engine.auth.handler(
+        authRequest('/two-factor/verify-totp', {
+          method: 'POST',
+          body: { code: '123456' },
+          cookie: mintedCookie,
+        })
+      )
+      expect(wrong.status).toBe(400)
+      const after = await engine.provider.getSession(new Headers({ cookie: mintedCookie }))
+      if (after.isErr() || after.value === null) {
+        throw new Error(after.isErr() ? after.error.message : 'no session')
+      }
+      expect(after.value.assurance.mfa).toBe(false)
+      expect(after.value.assurance.methods).toEqual(['server-mint'])
     }
   )
 

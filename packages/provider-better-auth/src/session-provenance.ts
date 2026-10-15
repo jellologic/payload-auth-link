@@ -1,4 +1,4 @@
-import { createAuthMiddleware } from 'better-auth/api'
+import { createAuthMiddleware, isAPIError } from 'better-auth/api'
 import type { BetterAuthPlugin } from 'better-auth'
 import type { AuthMethod } from '@payload-auth-link/core'
 
@@ -107,6 +107,26 @@ export const sessionProvenancePlugin: BetterAuthPlugin = {
               handler: createAuthMiddleware(async (ctx) => {
                 const method = methodForPath(ctx.path)
                 if (method === null) {
+                  return
+                }
+                // Record ONLY successful requests. BA's after-hooks run
+                // even when the endpoint returned an error response
+                // (verify-totp RETURNS a 401 for a wrong code instead
+                // of unwinding the chain), so success must be checked
+                // explicitly. This mirrors BA's own
+                // `getEndpointResponse` (utils/plugin-helper): the
+                // endpoint's result must be a 200 body — non-2xx
+                // responses and thrown APIErrors record nothing (a
+                // wrong 2FA code must never relabel the presented
+                // session).
+                const returned = (ctx.context as { returned?: unknown }).returned
+                if (returned === null || returned === undefined) {
+                  return
+                }
+                if (returned instanceof Response && returned.status !== 200) {
+                  return
+                }
+                if (isAPIError(returned)) {
                   return
                 }
                 const context = ctx.context as {
