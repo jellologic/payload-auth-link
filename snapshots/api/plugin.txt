@@ -150,6 +150,29 @@ export declare function IdentityRowLabel(): JSX.Element;
  * Imported by the Payload admin via the import map — client only.
  */
 export { IdentityRowLabel } from './IdentityRowLabel.js';
+export { default as ProviderLoginView } from './views/ProviderLoginView.js';
+
+// ===== admin/views/ProviderLoginView.d.ts =====
+import React from 'react';
+/**
+ * The provider-backed admin login view (issue #55): email+password
+ * through Payload's own login endpoint — the break-glass local form
+ * for UNLINKED operator accounts (0.7.0 refuses provider-linked
+ * documents here by design, GHSA-f4hj) — plus a link to the
+ * provider's own sign-in page for everyone else.
+ *
+ * Registered by the plugin when `admin: { loginView: 'provider' }` —
+ * Payload renders it at /admin/login via the import map.
+ */
+export type ProviderLoginViewProps = {
+    /**
+     * The app-relative auth base for provider sign-in requests
+     * (e.g. `/api/auth`). Set by the plugin from its own wiring.
+     */
+    readonly authBase: string;
+};
+declare const ProviderLoginView: React.FC<ProviderLoginViewProps>;
+export default ProviderLoginView;
 
 // ===== audit.d.ts =====
 import { type LoggerPort } from '@payload-auth-link/core';
@@ -430,6 +453,18 @@ export type AuthLinkPluginOptions = {
      */
     readonly roleValues?: Readonly<Record<string, string>> | undefined;
     /**
+     * Admin panel surface (issue #55): `'provider'` swaps Payload's
+     * local login view for the provider-backed one — email+password
+     * through the provider's sign-in endpoint plus the break-glass
+     * local fallback form (unlinked operator accounts only). The view
+     * is registered as a Payload custom view; the import map must
+     * include `@payload-auth-link/plugin/admin#ProviderLoginView` (the
+     * doctor checks for it).
+     */
+    readonly admin?: {
+        readonly loginView?: 'provider' | undefined;
+    } | undefined;
+    /**
      * Coexistence window (issue #51): legacy payload-auth session
      * cookie names, honored read-only by the provider until the ISO
      * `until` date. Mirrors the engine's `legacySessions` input (the
@@ -621,6 +656,8 @@ export type WiredOptions = {
     readonly reqUser: 'projection' | 'document';
     /** Resolved server-session gate (issue #54), verbatim from options. */
     readonly allowServerSessions: 'dev-only' | true | false;
+    /** Whether the provider-backed admin login view is requested (#55). */
+    readonly adminProviderLoginView: boolean;
     /** Validated coexistence window (issue #51), or `null`. */
     readonly legacySessions: {
         readonly until: string;

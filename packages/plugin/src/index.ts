@@ -121,56 +121,80 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
   // log rotation, so the sink is not a logger nicety.
   const auditLogger =
     wired.onAudit === null ? wired.logger : composeAuditLogger(wired.logger, wired.onAudit)
-  const plugin: Plugin = (config: Config) => ({
-    ...config,
-    // Impersonation audit (CAP-8b): every collection/global gains a
-    // `beforeOperation` hook that logs operations performed while an
-    // operator impersonates the request's user (see `audit.ts`).
-    collections: withImpersonationAuditCollections(
-      withAccountControls(
-        applyOrganizationCollections(
-          applyUsersCollection(config.collections, wired, strategy),
+  const plugin: Plugin = (config: Config) => {
+    // #55: the provider-backed admin login view. Registered as a
+    // custom view; the import map must include
+    // `@payload-auth-link/plugin/admin#ProviderLoginView` (the doctor
+    // checks for it).
+    const adminConfig = wired.adminProviderLoginView
+      ? {
+          ...config.admin,
+          components: {
+            ...config.admin?.components,
+            views: {
+              ...config.admin?.components?.views,
+              login: {
+                Component: {
+                  path: '@payload-auth-link/plugin/admin',
+                  clientProps: { authBase: '/api/auth' },
+                },
+              },
+            },
+          },
+        }
+      : config.admin
+    return {
+      ...config,
+      // Impersonation audit (CAP-8b): every collection/global gains a
+      // `beforeOperation` hook that logs operations performed while an
+      // operator impersonates the request's user (see `audit.ts`).
+      collections: withImpersonationAuditCollections(
+        withAccountControls(
+          applyOrganizationCollections(
+            applyUsersCollection(config.collections, wired, strategy),
+            wired
+          ),
           wired
         ),
+        auditLogger
+      ),
+      globals: withAccountControlsGlobals(
+        withImpersonationAuditGlobals(config.globals, auditLogger),
         wired
       ),
-      auditLogger
-    ),
-    globals: withAccountControlsGlobals(
-      withImpersonationAuditGlobals(config.globals, auditLogger),
-      wired
-    ),
-    endpoints: [
-      ...(config.endpoints ?? []),
-      ...createEndpoints(wired),
-      ...createOrganizationEndpoints(wired),
-    ],
-    // CAP-14: subscribe provider identity lifecycle events once the
-    // Payload instance exists, then run the builder's own onInit.
-    onInit: async (payload) => {
-      // #54: register the server API for `authLinkServer(payload)`.
-      registerAuthLinkServer(payload, wired)
-      // "Audited" must land somewhere: with an impersonation-capable
-      // provider and neither a hearing logger nor an audit sink, say
-      // so once, through a channel the builder has not muted.
-      const impersonationCapable = wired.registry.ids().some((id) => {
-        const required = wired.registry.require(id)
-        return required.isOk() && required.value.capabilities.has('impersonation')
-      })
-      if (impersonationCapable && wired.onAudit === null && isSilentLogger(wired.logger)) {
-        consoleLogger().warn(
-          'payload-auth-link: an impersonation-capable provider is configured, but the ' +
-            'logger is silent and no onAudit sink is set — impersonation audit events ' +
-            'will be dropped. Pass onAudit or a logger.'
-        )
-      }
-      // B11: one startup warning when stored roles drifted out of the
-      // configured set (removed/renamed role). Never blocks the boot.
-      await auditStoredRoles(wired, payload)
-      subscribeIdentityEvents(wired, payload)
-      await config.onInit?.(payload)
-    },
-  })
+      ...(adminConfig === undefined ? {} : { admin: adminConfig }),
+      endpoints: [
+        ...(config.endpoints ?? []),
+        ...createEndpoints(wired),
+        ...createOrganizationEndpoints(wired),
+      ],
+      // CAP-14: subscribe provider identity lifecycle events once the
+      // Payload instance exists, then run the builder's own onInit.
+      onInit: async (payload) => {
+        // #54: register the server API for `authLinkServer(payload)`.
+        registerAuthLinkServer(payload, wired)
+        // "Audited" must land somewhere: with an impersonation-capable
+        // provider and neither a hearing logger nor an audit sink, say
+        // so once, through a channel the builder has not muted.
+        const impersonationCapable = wired.registry.ids().some((id) => {
+          const required = wired.registry.require(id)
+          return required.isOk() && required.value.capabilities.has('impersonation')
+        })
+        if (impersonationCapable && wired.onAudit === null && isSilentLogger(wired.logger)) {
+          consoleLogger().warn(
+            'payload-auth-link: an impersonation-capable provider is configured, but the ' +
+              'logger is silent and no onAudit sink is set — impersonation audit events ' +
+              'will be dropped. Pass onAudit or a logger.'
+          )
+        }
+        // B11: one startup warning when stored roles drifted out of the
+        // configured set (removed/renamed role). Never blocks the boot.
+        await auditStoredRoles(wired, payload)
+        subscribeIdentityEvents(wired, payload)
+        await config.onInit?.(payload)
+      },
+    }
+  }
   plugin.slug = pluginSlug
   // Cross-plugin discovery parity with `definePlugin` (which exposes the
   // raw options on the function). Mutating this has no effect: wiring is

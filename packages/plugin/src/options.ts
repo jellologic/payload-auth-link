@@ -74,6 +74,20 @@ export type AuthLinkPluginOptions = {
    */
   readonly roleValues?: Readonly<Record<string, string>> | undefined
   /**
+   * Admin panel surface (issue #55): `'provider'` swaps Payload's
+   * local login view for the provider-backed one — email+password
+   * through the provider's sign-in endpoint plus the break-glass
+   * local fallback form (unlinked operator accounts only). The view
+   * is registered as a Payload custom view; the import map must
+   * include `@payload-auth-link/plugin/admin#ProviderLoginView` (the
+   * doctor checks for it).
+   */
+  readonly admin?:
+    | {
+        readonly loginView?: 'provider' | undefined
+      }
+    | undefined
+  /**
    * Coexistence window (issue #51): legacy payload-auth session
    * cookie names, honored read-only by the provider until the ISO
    * `until` date. Mirrors the engine's `legacySessions` input (the
@@ -267,6 +281,8 @@ export type WiredOptions = {
   readonly reqUser: 'projection' | 'document'
   /** Resolved server-session gate (issue #54), verbatim from options. */
   readonly allowServerSessions: 'dev-only' | true | false
+  /** Whether the provider-backed admin login view is requested (#55). */
+  readonly adminProviderLoginView: boolean
   /** Validated coexistence window (issue #51), or `null`. */
   readonly legacySessions: {
     readonly until: string
@@ -617,6 +633,7 @@ export function wireOptions(raw: AuthLinkPluginOptions): WiredOptions {
           ? (false as const)
           : ('dev-only' as const),
     legacySessions: validateLegacySessions(raw.legacySessions),
+    adminProviderLoginView: raw.admin?.loginView === 'provider',
     roleManagerRoles,
     onAudit: raw.onAudit ?? null,
     organizations,
