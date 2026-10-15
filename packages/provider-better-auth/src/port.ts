@@ -190,6 +190,18 @@ export type BetterAuthProviderDeps = {
         readonly sameSite: 'lax' | 'strict' | 'none'
       }
     | undefined
+  /**
+   * Coexistence window (#51): legacy payload-auth session cookie
+   * names, honored READ-ONLY until the ISO date `until`. After the
+   * window the names are ignored and the lookup refuses with a logged
+   * reason. Minting always uses the current names.
+   */
+  readonly legacySessions?:
+    | {
+        readonly until: string
+        readonly cookieNames: readonly string[]
+      }
+    | undefined
 }
 
 type PortFunctions = {
@@ -217,6 +229,18 @@ type PortFunctions = {
         readonly name: string
         readonly secure: boolean
         readonly sameSite: 'lax' | 'strict' | 'none'
+      }
+    | undefined
+  /**
+   * Coexistence window (#51): legacy payload-auth session cookie
+   * names, honored READ-ONLY until the ISO date `until`. After the
+   * window the names are ignored and the lookup refuses with a logged
+   * reason. Minting always uses the current names.
+   */
+  readonly legacySessions?:
+    | {
+        readonly until: string
+        readonly cookieNames: readonly string[]
       }
     | undefined
 }
@@ -573,6 +597,66 @@ function buildSessionCookieFor(spec: {
 }
 
 /**
+ * #51 coexistence: read a session normally; on a miss inside the
+ * legacy window, re-present legacy payload-auth cookies under the
+ * current names READ-ONLY. After the window the legacy names are
+ * dropped (session miss). Minting always uses current names.
+ */
+async function getSessionMaybeWithLegacy(
+  input: BetterAuthSessionQuery,
+  call: (rewritten: BetterAuthSessionQuery) => Promise<unknown>,
+  sessionCookieNames: readonly string[],
+  legacySessions?: {
+    readonly until: string
+    readonly cookieNames: readonly string[]
+  }
+): Promise<unknown> {
+  if (legacySessions === undefined) {
+    return call(input)
+  }
+  const headers = input.headers
+  const hasCurrent = sessionCookieNames.some((name) =>
+    new RegExp(`(?:^|;\\s*)${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}=`).test(
+      headers.get('cookie') ?? ''
+    )
+  )
+  if (hasCurrent) {
+    return call(input)
+  }
+  if (new Date(legacySessions.until).getTime() <= Date.now()) {
+    return null
+  }
+  const translated = new Headers(headers)
+  const cookieHeader = headers.get('cookie') ?? ''
+  // Map EVERY legacy name to the current name with the same suffix
+  // (`.sig` signatures ride along with their token cookie).
+  let copied = false
+  for (const legacyName of legacySessions.cookieNames) {
+    const match = new RegExp(
+      `(?:^|;\\s*)${legacyName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}=([^;]+)`
+    ).exec(cookieHeader)
+    if (match === null) {
+      continue
+    }
+    const base = legacyName.replace(/^__Secure-/, '').replace(/\.[^.]+$/, '')
+    const suffix = legacyName.replace(/^__Secure-/, '').slice(base.length)
+    for (const currentName of sessionCookieNames) {
+      const currentBase = currentName.replace(/^__Secure-/, '').replace(/\.[^.]+$/, '')
+      const currentSuffix = currentName.replace(/^__Secure-/, '').slice(currentBase.length)
+      if (currentSuffix === suffix) {
+        translated.append('cookie', `${currentName}=${match[1]}`)
+        copied = true
+        break
+      }
+    }
+  }
+  if (!copied) {
+    return null
+  }
+  return call({ ...input, headers: translated })
+}
+
+/**
  * Narrow BA core's createSession result to the core shape. Malformed
  * results fail closed — a session whose id or token is missing could
  * never be verified or revoked.
@@ -716,7 +800,13 @@ function presentedMultiSessionCookieNames(
  */
 export function createBetterAuthProvider(deps: BetterAuthProviderDeps): IdentityProviderPort {
   return createPortFromFunctions({
-    getSession: (input) => deps.auth.api.getSession(input),
+    getSession: (input) =>
+      getSessionMaybeWithLegacy(
+        input,
+        deps.auth.api.getSession,
+        deps.sessionCookieNames,
+        deps.legacySessions
+      ),
     deleteSession: (token) =>
       deps.auth.$context.then((ctx) => ctx.internalAdapter.deleteSession(token)),
     deleteUserSessions: (userId) =>
@@ -801,6 +891,12 @@ export function createBetterAuthProviderFromUnknown(
     readonly plugins?: readonly string[] | undefined
     readonly oauth?: boolean | undefined
     readonly events?: IdentityEventBus | undefined
+    readonly legacySessions?:
+      | {
+          readonly until: string
+          readonly cookieNames: readonly string[]
+        }
+      | undefined
     readonly sessionCookieSpec?:
       | {
           readonly name: string
@@ -865,7 +961,13 @@ export function createBetterAuthProviderFromUnknown(
       : undefined
   const sessionCookieSpec = options?.sessionCookieSpec
   return createPortFromFunctions({
-    getSession: (input) => getSession(input),
+    getSession: (input) =>
+      getSessionMaybeWithLegacy(
+        input,
+        (rewritten) => getSession(rewritten),
+        sessionCookieNames,
+        options?.legacySessions
+      ),
     deleteSession: (token) => internalCall('deleteSession', token),
     deleteUserSessions: (userId) => internalCall('deleteUserSessions', userId),
     createProviderSession: (userId, expiresAt) =>
@@ -890,5 +992,6 @@ export function createBetterAuthProviderFromUnknown(
     ...(sessionCookieClearOptions === undefined ? {} : { sessionCookieClearOptions }),
     ...(logoutCookieNames === undefined ? {} : { logoutCookieNames }),
     ...(options?.events === undefined ? {} : { events: options.events }),
+    ...(options?.legacySessions === undefined ? {} : { legacySessions: options.legacySessions }),
   })
 }

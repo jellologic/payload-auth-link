@@ -56,6 +56,20 @@ export type BetterAuthEngineInput<TOptions extends Omit<BetterAuthOptions, 'data
    * the collections the engine creates.
    */
   readonly idStrategy?: 'ba' | 'payload' | undefined
+  /**
+   * Coexistence window (issue #51): legacy payload-auth session
+   * cookie names honored READ-ONLY until the ISO `until` date — the
+   * lookup re-presents them under the current names, minting always
+   * uses the current names, and after the window they are refused.
+   * Exposed on the engine as `legacySessionCookieNames` for the
+   * cookie helpers and Edge middleware.
+   */
+  readonly legacySessions?:
+    | {
+        readonly until: string
+        readonly cookieNames: readonly string[]
+      }
+    | undefined
   /** Custom fields on core models (`additionalFields`, plugin fields). */
   readonly customFields?:
     Partial<Record<BetterAuthModelKey, readonly BetterAuthCustomField[]>> | undefined
@@ -121,6 +135,8 @@ export type BetterAuthEngine<AuthType> = {
   readonly slugs: BetterAuthCollectionSlugs
   /** The adoption map the engine serves (issue #49). */
   readonly schemaMap: BetterAuthSchemaMap
+  /** Legacy cookie names honored during the coexistence window (#51). */
+  readonly legacySessionCookieNames: readonly string[]
   /** Session cookie names for middleware fast-paths and logout clearing. */
   readonly sessionCookieNames: readonly string[]
 }
@@ -482,6 +498,7 @@ export function createBetterAuthEngine<
       plugins: pluginIds,
       oauth: hasSocialOauth,
       events,
+      ...(input.legacySessions === undefined ? {} : { legacySessions: input.legacySessions }),
       // #54: the server API's signed session cookie, derived from the
       // builder's own BA options (secure-cookie rule + `__Secure-`
       // prefix via the shared name helpers).
@@ -511,6 +528,7 @@ export function createBetterAuthEngine<
     collections,
     slugs,
     schemaMap: input.schemaMap ?? {},
+    legacySessionCookieNames: input.legacySessions?.cookieNames ?? [],
     sessionCookieNames,
   }
 }

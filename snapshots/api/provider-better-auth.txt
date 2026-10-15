@@ -272,6 +272,18 @@ export type BetterAuthEngineInput<TOptions extends Omit<BetterAuthOptions, 'data
      * the collections the engine creates.
      */
     readonly idStrategy?: 'ba' | 'payload' | undefined;
+    /**
+     * Coexistence window (issue #51): legacy payload-auth session
+     * cookie names honored READ-ONLY until the ISO `until` date — the
+     * lookup re-presents them under the current names, minting always
+     * uses the current names, and after the window they are refused.
+     * Exposed on the engine as `legacySessionCookieNames` for the
+     * cookie helpers and Edge middleware.
+     */
+    readonly legacySessions?: {
+        readonly until: string;
+        readonly cookieNames: readonly string[];
+    } | undefined;
     /** Custom fields on core models (`additionalFields`, plugin fields). */
     readonly customFields?: Partial<Record<BetterAuthModelKey, readonly BetterAuthCustomField[]>> | undefined;
     /** Custom plugin models (e.g. the organization plugin's tables). */
@@ -335,6 +347,8 @@ export type BetterAuthEngine<AuthType> = {
     readonly slugs: BetterAuthCollectionSlugs;
     /** The adoption map the engine serves (issue #49). */
     readonly schemaMap: BetterAuthSchemaMap;
+    /** Legacy cookie names honored during the coexistence window (#51). */
+    readonly legacySessionCookieNames: readonly string[];
     /** Session cookie names for middleware fast-paths and logout clearing. */
     readonly sessionCookieNames: readonly string[];
 };
@@ -611,6 +625,7 @@ export declare function createBetterAuthEngine<TOptions extends Omit<BetterAuthO
     collections: CollectionConfig[];
     slugs: BetterAuthCollectionSlugs;
     schemaMap: Readonly<Record<string, import("./collections.js").BetterAuthAdoptedModel>>;
+    legacySessionCookieNames: readonly string[];
     sessionCookieNames: readonly string[];
 };
 export {};
@@ -822,6 +837,16 @@ export type BetterAuthProviderDeps = {
         readonly secure: boolean;
         readonly sameSite: 'lax' | 'strict' | 'none';
     } | undefined;
+    /**
+     * Coexistence window (#51): legacy payload-auth session cookie
+     * names, honored READ-ONLY until the ISO date `until`. After the
+     * window the names are ignored and the lookup refuses with a logged
+     * reason. Minting always uses the current names.
+     */
+    readonly legacySessions?: {
+        readonly until: string;
+        readonly cookieNames: readonly string[];
+    } | undefined;
 };
 /**
  * Placeholder emails BA mints for identities that have no real
@@ -853,6 +878,10 @@ export declare function createBetterAuthProviderFromUnknown(auth: unknown, sessi
     readonly plugins?: readonly string[] | undefined;
     readonly oauth?: boolean | undefined;
     readonly events?: IdentityEventBus | undefined;
+    readonly legacySessions?: {
+        readonly until: string;
+        readonly cookieNames: readonly string[];
+    } | undefined;
     readonly sessionCookieSpec?: {
         readonly name: string;
         readonly secure: boolean;

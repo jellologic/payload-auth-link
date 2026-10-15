@@ -74,6 +74,20 @@ export type AuthLinkPluginOptions = {
    */
   readonly roleValues?: Readonly<Record<string, string>> | undefined
   /**
+   * Coexistence window (issue #51): legacy payload-auth session
+   * cookie names, honored read-only by the provider until the ISO
+   * `until` date. Mirrors the engine's `legacySessions` input (the
+   * engine owns the lookup; this declaration drives the doctor's
+   * expiry check and startup warning). `cookieNames` must not
+   * collide with the current session cookie names.
+   */
+  readonly legacySessions?:
+    | {
+        readonly until: string
+        readonly cookieNames: readonly string[]
+      }
+    | undefined
+  /**
    * Server session creation gate (issue #54): controls
    * `authLinkServer(payload).createSessionFor`. `'dev-only'` (the
    * default) enables it except on a production runtime (`NODE_ENV ===
@@ -253,6 +267,11 @@ export type WiredOptions = {
   readonly reqUser: 'projection' | 'document'
   /** Resolved server-session gate (issue #54), verbatim from options. */
   readonly allowServerSessions: 'dev-only' | true | false
+  /** Validated coexistence window (issue #51), or `null`. */
+  readonly legacySessions: {
+    readonly until: string
+    readonly cookieNames: readonly string[]
+  } | null
   /**
    * Roles governing the auth system: gate
    * writes to injected governance fields, sensitive-field reads, and
@@ -299,6 +318,35 @@ function parseRoleList(values: readonly string[] | undefined, label: string): Ro
     }
   }
   return roles
+}
+
+/**
+ * Validate the coexistence window (issue #51): `until` must parse as
+ * an ISO instant and the legacy cookie names must not collide with
+ * the current session cookie names (the engine derives those from the
+ * Better Auth options; here we only reject exact duplicates of the
+ * names the builder also passed as current).
+ */
+function validateLegacySessions(
+  raw:
+    | {
+        readonly until: string
+        readonly cookieNames: readonly string[]
+      }
+    | undefined
+): { readonly until: string; readonly cookieNames: readonly string[] } | null {
+  if (raw === undefined) {
+    return null
+  }
+  const parsed = new Date(raw.until)
+  if (Number.isNaN(parsed.getTime())) {
+    throw new InvalidConfigError(`legacySessions.until '${raw.until}' is not a valid date`)
+  }
+  const names = raw.cookieNames.map((name) => name.trim()).filter((name) => name !== '')
+  if (names.length === 0) {
+    throw new InvalidConfigError('legacySessions.cookieNames must not be empty')
+  }
+  return { until: parsed.toISOString(), cookieNames: names }
 }
 
 /**
@@ -568,6 +616,7 @@ export function wireOptions(raw: AuthLinkPluginOptions): WiredOptions {
         : raw.allowServerSessions === false
           ? (false as const)
           : ('dev-only' as const),
+    legacySessions: validateLegacySessions(raw.legacySessions),
     roleManagerRoles,
     onAudit: raw.onAudit ?? null,
     organizations,
