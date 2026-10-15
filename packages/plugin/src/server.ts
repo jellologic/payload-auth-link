@@ -29,7 +29,7 @@ import { strategyName } from './strategy.js'
  * is installed on that Payload instance. Server session creation is
  * additionally gated by `allowServerSessions` (default `'dev-only'`):
  * refused with {@link ServerSessionsDisabledError} when disabled, or
- * when `'dev-only'` and `NODE_ENV` is `'production'`.
+ * when `'dev-only'` and `NODE_ENV` is anything but `'development'`.
  */
 
 /** Thrown by `authLinkServer(payload)` when the plugin is not installed there. */
@@ -96,6 +96,14 @@ export type CreateSessionForOptions = {
   readonly ttlSeconds?: number | undefined
   /** Who asked for the session; recorded in the audit event. */
   readonly actor?: string | undefined
+  /**
+   * A server-vouched step-up proof: set ONLY when the server has
+   * itself verified a second factor for this mint (there is no
+   * client input to trust here). The default records the session as
+   * carrying NO MFA proof — a mint ran no challenge — so MFA-gated
+   * roles stay withheld until a proof is recorded.
+   */
+  readonly mfaProof?: boolean | undefined
 }
 
 /** The supported server-side session API (issue #54). */
@@ -161,8 +169,11 @@ function serverSessionsEnabled(wired: WiredOptions): boolean {
   if (wired.allowServerSessions === false) {
     return false
   }
-  // 'dev-only': refuse on a production runtime.
-  return process.env.NODE_ENV !== 'production'
+  // 'dev-only': ONLY an explicit development runtime. Anything else —
+  // production, test, staging, unset — refuses: a gate that fails open
+  // on every runtime that merely isn't 'production' (CI, test, a
+  // staging deploy) was a gate in name only.
+  return process.env.NODE_ENV === 'development'
 }
 
 /** The first registered provider carrying a capability, if any. */
@@ -264,22 +275,28 @@ function buildAuthLinkServer(wired: WiredOptions, payload: Payload): AuthLinkSer
             : new Date(wired.clock.now().getTime() + options.ttlSeconds * 1000)
         const created = await provider.createProviderSession(identity.providerUserId, {
           expiresAt,
+          ...(options.mfaProof === undefined ? {} : { mfaProof: options.mfaProof }),
         })
         if (created.isErr()) {
           throw new Error(`createSessionFor: ${created.error.message}`)
         }
+        // Audit and return the expiry the PROVIDER STORED, not the one
+        // we asked for: engines that cannot honor the request must not
+        // gain an audited claim they didn't fulfill.
+        const storedExpiresAt = created.value.storedExpiresAt
         auditLog.info('server session created', {
           providerId: identity.providerId,
           userId: String(record.id),
           sessionId: created.value.sessionId,
           reason: options.reason,
           ...(options.actor === undefined ? {} : { actor: options.actor }),
-          expiresAt: expiresAt.toISOString(),
+          ...(options.mfaProof === undefined ? {} : { mfaProof: options.mfaProof }),
+          expiresAt: (storedExpiresAt ?? expiresAt).toISOString(),
         })
         return {
           sessionId: created.value.sessionId,
           token: created.value.token,
-          expiresAt,
+          expiresAt: storedExpiresAt ?? expiresAt,
           setCookie:
             provider.sessionCookie === undefined
               ? undefined

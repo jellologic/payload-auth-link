@@ -21,12 +21,25 @@ describe('better-auth provider conformance (PORT-5 kit)', () => {
       const rows = new Map<string, unknown>([
         [
           'tok-verified',
-          { session: { token: 'tok-verified', expiresAt, activeOrganizationId: 'org-1' }, user },
+          {
+            session: {
+              token: 'tok-verified',
+              expiresAt,
+              activeOrganizationId: 'org-1',
+              authenticationMethod: 'two-factor',
+            },
+            user,
+          },
         ],
         [
           'tok-unverified',
           {
-            session: { token: 'tok-unverified', expiresAt, activeOrganizationId: 'org-1' },
+            session: {
+              token: 'tok-unverified',
+              expiresAt,
+              activeOrganizationId: 'org-1',
+              authenticationMethod: 'two-factor',
+            },
             user: { ...user, emailVerified: false },
           },
         ],
@@ -38,6 +51,7 @@ describe('better-auth provider conformance (PORT-5 kit)', () => {
               expiresAt,
               activeOrganizationId: 'org-1',
               impersonatedBy: 'ba-admin',
+              authenticationMethod: 'two-factor',
             },
             user,
           },
@@ -58,6 +72,10 @@ describe('better-auth provider conformance (PORT-5 kit)', () => {
               rows.delete(token)
               return Promise.resolve()
             },
+            findSessions: (tokens: string[]) =>
+              Promise.resolve(
+                tokens.filter((token) => rows.has(token)).map((token) => rows.get(token))
+              ),
             deleteUserSessions: (userId) => {
               for (const [token, row] of rows) {
                 if (
@@ -89,8 +107,8 @@ describe('better-auth provider conformance (PORT-5 kit)', () => {
         email: 'user@example.com',
         emailVerified: true,
         channel: 'cookie' as const,
-        // S4: no per-session method on BA; S3: mfa from enrollment.
-        methods: 'unknown' as const,
+        // Assurance reads the recorded per-session method.
+        methods: ['two-factor'] as const,
         mfa: true,
         organizationId: 'org-1',
       }

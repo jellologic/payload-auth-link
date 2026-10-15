@@ -16,8 +16,11 @@ import {
   type SessionChannel,
   type VerifiedClaim,
   type ApiKeyVerification,
+  authMethods,
+  type AuthMethod,
 } from '@payload-auth-link/core'
 import type { IdentityEventBus } from './events.js'
+import { MFA_METHODS, MINT_METHOD, STEP_UP_METHOD } from './session-provenance.js'
 
 /**
  * Better Auth plugin ids whose presence this adapter maps to core
@@ -195,7 +198,10 @@ type PortFunctions = {
   readonly getSession: (input: BetterAuthSessionQuery) => Promise<unknown>
   readonly deleteSession: (token: string) => Promise<unknown>
   readonly deleteUserSessions: (userId: string) => Promise<unknown>
-  readonly createProviderSession: (userId: string, expiresAt: Date) => Promise<unknown>
+  readonly createProviderSession: (
+    userId: string,
+    options: { readonly expiresAt: Date; readonly mfaProof?: boolean | undefined }
+  ) => Promise<unknown>
   readonly listProviderSessions: (userId: string) => Promise<unknown>
   readonly verifyApiKey?: ((key: string) => Promise<unknown>) | undefined
   readonly buildSessionCookie?: ((token: string) => Promise<string>) | undefined
@@ -394,21 +400,36 @@ function narrowSession(result: unknown, channel: SessionChannel): ProviderSessio
     }
     organizationId = activeOrganizationId
   }
-  // Two-factor plugin (spike S3): BA marks no per-session MFA proof;
-  // the only signal is enrollment on `user.twoFactorEnabled`, present
-  // only when declared. Absent/null -> `'unknown'`; a present
-  // non-boolean is malformed and fails closed.
-  const { twoFactorEnabled, isAnonymous } = user
+  // Per-session authentication method: the engine's internal
+  // provenance plugin records HOW each session came into being
+  // ('server-mint', 'server-step-up', 'two-factor', ...). A session
+  // with no recorded method proves nothing — `'unknown'` fails closed
+  // at the MFA gate. Enrollment (`user.twoFactorEnabled`) is
+  // deliberately NOT consulted: enrollment is not a challenge, and
+  // leaning on it made every minted session for an enrolled user
+  // claim a second factor that never ran.
+  const methodRaw = session['authenticationMethod']
+  let methods: ProviderSession['assurance']['methods'] = 'unknown'
   let mfa: ProviderSession['assurance']['mfa'] = 'unknown'
-  if (twoFactorEnabled !== undefined && twoFactorEnabled !== null) {
-    if (typeof twoFactorEnabled !== 'boolean') {
+  if (methodRaw !== undefined && methodRaw !== null) {
+    // Known-method validation (fail closed): the engine writes only
+    // the methods in the single-source tuple; anything else on the row
+    // is a corruption, not a method.
+    if (
+      typeof methodRaw !== 'string' ||
+      methodRaw === '' ||
+      !(authMethods as readonly string[]).includes(methodRaw)
+    ) {
       throw new ProviderError(
         wellKnownProviderIds.betterAuth,
-        'getSession: user twoFactorEnabled is malformed'
+        'getSession: session authenticationMethod is malformed'
       )
     }
-    mfa = twoFactorEnabled
+    const method = methodRaw as AuthMethod
+    methods = [method]
+    mfa = MFA_METHODS.includes(method)
   }
+  const { isAnonymous } = user
   // Anonymous plugin: `user.isAnonymous` only when declared. Mapped
   // when present (CAP-10 consumes it); absent/null -> not anonymous.
   let anonymous = false
@@ -438,7 +459,7 @@ function narrowSession(result: unknown, channel: SessionChannel): ProviderSessio
       anonymous: anonymous || placeholder,
     },
     // No per-session sign-in method exists on BA (spike S4).
-    assurance: { methods: 'unknown', mfa },
+    assurance: { methods, mfa },
     actor,
     organizationId,
     // Observed from the presenting headers (see `observedChannel`).
@@ -500,12 +521,19 @@ function createPortFromFunctions(deps: PortFunctions): IdentityProviderPort {
     },
     createProviderSession(
       providerUserId: string,
-      options: { readonly expiresAt: Date }
-    ): ResultAsync<{ readonly sessionId: string; readonly token: string }, ProviderError> {
+      options: { readonly expiresAt: Date; readonly mfaProof?: boolean | undefined }
+    ): ResultAsync<
+      {
+        readonly sessionId: string
+        readonly token: string
+        readonly storedExpiresAt: Date | null
+      },
+      ProviderError
+    > {
       return runProviderOperation(
         providerId,
         'createProviderSession',
-        () => deps.createProviderSession(providerUserId, options.expiresAt),
+        () => deps.createProviderSession(providerUserId, options),
         narrowCreatedSession
       )
     },
@@ -737,14 +765,25 @@ async function getSessionMaybeWithLegacy(
  * results fail closed — a session whose id or token is missing could
  * never be verified or revoked.
  */
-function narrowCreatedSession(result: unknown): { sessionId: string; token: string } {
-  if (!isRecord(result) || typeof result.id !== 'string' || typeof result.token !== 'string') {
+function narrowCreatedSession(result: unknown): {
+  sessionId: string
+  token: string
+  storedExpiresAt: Date | null
+} {
+  // The revocation contract consumes TOKENS (BA deletes by token), so
+  // the session id IS the token — never the row id. The stored expiry
+  // is read from the row BA actually wrote, not the requested one.
+  if (!isRecord(result) || typeof result.token !== 'string' || result.token === '') {
     throw new ProviderError(
       wellKnownProviderIds.betterAuth,
-      'createProviderSession: expected a session with id and token'
+      'createProviderSession: expected a session row with a token'
     )
   }
-  return { sessionId: result.id, token: result.token }
+  return {
+    sessionId: result.token,
+    token: result.token,
+    storedExpiresAt: toDate(result.expiresAt),
+  }
 }
 
 /**
@@ -759,15 +798,18 @@ function narrowProviderSessions(result: unknown): { sessionId: string; expiresAt
     )
   }
   return result.map((entry) => {
-    if (!isRecord(entry) || typeof entry.id !== 'string') {
+    // One id type across list/mint/revoke: the TOKEN. BA's
+    // deleteSession consumes tokens; handing out row ids produced
+    // revocations that deleted nothing.
+    if (!isRecord(entry) || typeof entry.token !== 'string' || entry.token === '') {
       throw new ProviderError(
         wellKnownProviderIds.betterAuth,
-        'listProviderSessions: expected sessions with an id'
+        'listProviderSessions: expected sessions with a token'
       )
     }
     const expires = entry.expiresAt
     return {
-      sessionId: entry.id,
+      sessionId: entry.token,
       expiresAt: expires instanceof Date ? expires : null,
     }
   })
@@ -884,7 +926,38 @@ export function createBetterAuthProvider(deps: BetterAuthProviderDeps): Identity
         deps.legacySessions
       ),
     deleteSession: (token) =>
-      deps.auth.$context.then((ctx) => ctx.internalAdapter.deleteSession(token)),
+      deps.auth.$context.then(async (ctx) => {
+        // Fail closed, both directions: BA's deleteSession reports
+        // nothing, so confirm a row EXISTS before deleting (deleting
+        // nothing must be an error, not a silent success) and is GONE
+        // afterwards.
+        const findSessions = (
+          ctx.internalAdapter as unknown as {
+            findSessions?: ((tokens: string[]) => Promise<unknown>) | undefined
+          }
+        ).findSessions
+        if (findSessions === undefined) {
+          throw new ProviderError(
+            wellKnownProviderIds.betterAuth,
+            'revokeSession: internalAdapter.findSessions is unavailable; deletion cannot be verified'
+          )
+        }
+        const before = (await findSessions([token])) as unknown[]
+        if (!Array.isArray(before) || before.length === 0) {
+          throw new ProviderError(
+            wellKnownProviderIds.betterAuth,
+            'revokeSession: no session exists for the given id'
+          )
+        }
+        await ctx.internalAdapter.deleteSession(token)
+        const after = (await findSessions([token])) as unknown[]
+        if (Array.isArray(after) && after.length > 0) {
+          throw new ProviderError(
+            wellKnownProviderIds.betterAuth,
+            'revokeSession: no session was deleted for the given id'
+          )
+        }
+      }),
     deleteUserSessions: (userId) =>
       deps.auth.$context.then((ctx) => {
         const { deleteUserSessions } = ctx.internalAdapter
@@ -896,17 +969,36 @@ export function createBetterAuthProvider(deps: BetterAuthProviderDeps): Identity
         }
         return deleteUserSessions(userId)
       }),
-    createProviderSession: (userId, expiresAt) =>
+    createProviderSession: (userId, options) =>
       deps.auth.$context.then((ctx) => {
-        const createSession: ((userId: string, expiresAt: Date) => Promise<unknown>) | undefined =
-          ctx.internalAdapter.createSession
+        const createSession = ctx.internalAdapter.createSession as unknown as
+          | ((
+              userId: string,
+              dontRememberMe: boolean,
+              override: Record<string, unknown>,
+              overrideAll: boolean
+            ) => Promise<unknown>)
+          | undefined
         if (createSession === undefined) {
           throw new ProviderError(
             wellKnownProviderIds.betterAuth,
             'createProviderSession: internalAdapter.createSession is unavailable'
           )
         }
-        return createSession(userId, expiresAt)
+        // BA's real signature is (userId, dontRememberMe, override,
+        // overrideAll): dontRememberMe truthy forces the 24h expiry and
+        // override.expiresAt only applies with overrideAll. Record the
+        // authentication method on the row so no minted session can
+        // inherit an MFA claim it never earned.
+        return createSession(
+          userId,
+          false,
+          {
+            expiresAt: options.expiresAt,
+            authenticationMethod: options.mfaProof === true ? STEP_UP_METHOD : MINT_METHOD,
+          },
+          true
+        )
       }),
     listProviderSessions: (userId) =>
       deps.auth.$context.then((ctx) => {
@@ -1005,7 +1097,7 @@ export function createBetterAuthProviderFromUnknown(
       })
     )
   const internalAdapterCall = (
-    method: 'createSession' | 'listSessions',
+    method: 'createSession' | 'listSessions' | 'findSessions',
     run: (candidate: (...args: never[]) => unknown) => unknown
   ) =>
     Promise.resolve(
@@ -1035,11 +1127,57 @@ export function createBetterAuthProviderFromUnknown(
         sessionCookieNames,
         options?.legacySessions
       ),
-    deleteSession: (token) => internalCall('deleteSession', token),
+    deleteSession: (token) =>
+      // Fail closed, both directions: a row must EXIST before the
+      // delete (deleting nothing is an error, not a silent success)
+      // and be GONE afterwards.
+      internalAdapterCall('findSessions', (findSessions) =>
+        (findSessions as (tokens: string[]) => Promise<unknown>)([token]).then((before) => {
+          if (!Array.isArray(before) || before.length === 0) {
+            throw new ProviderError(
+              wellKnownProviderIds.betterAuth,
+              'revokeSession: no session exists for the given id'
+            )
+          }
+          return internalCall('deleteSession', token).then(() =>
+            internalAdapterCall('findSessions', (verify) =>
+              (verify as (tokens: string[]) => Promise<unknown>)([token]).then((after) => {
+                if (Array.isArray(after) && after.length > 0) {
+                  throw new ProviderError(
+                    wellKnownProviderIds.betterAuth,
+                    'revokeSession: no session was deleted for the given id'
+                  )
+                }
+                return undefined
+              })
+            )
+          )
+        })
+      ),
     deleteUserSessions: (userId) => internalCall('deleteUserSessions', userId),
-    createProviderSession: (userId, expiresAt) =>
+    createProviderSession: (userId, options) =>
+      // BA's real signature is (userId, dontRememberMe, override,
+      // overrideAll): dontRememberMe truthy forces the 24h expiry and
+      // override.expiresAt only applies with overrideAll. Record the
+      // authentication method on the row so no minted session can
+      // inherit an MFA claim it never earned.
       internalAdapterCall('createSession', (createSession) =>
-        (createSession as (userId: string, expiresAt: Date) => Promise<unknown>)(userId, expiresAt)
+        (
+          createSession as (
+            userId: string,
+            dontRememberMe: boolean,
+            override: Record<string, unknown>,
+            overrideAll: boolean
+          ) => Promise<unknown>
+        )(
+          userId,
+          false,
+          {
+            expiresAt: options.expiresAt,
+            authenticationMethod: options.mfaProof === true ? STEP_UP_METHOD : MINT_METHOD,
+          },
+          true
+        )
       ),
     listProviderSessions: (userId) =>
       internalAdapterCall('listSessions', (listSessions) =>

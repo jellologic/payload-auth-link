@@ -103,8 +103,11 @@ describe('createBetterAuthProvider', () => {
         phone: null,
         anonymous: false,
       })
-      // S4: no per-session method; S3: mfa from twoFactorEnabled enrollment.
-      expect(result.value.assurance).toEqual({ methods: 'unknown', mfa: true })
+      // Assurance reads the recorded per-session method, never the
+      // enrollment flag: this fixture records no method, so the
+      // session proves nothing — even with twoFactorEnabled: true on
+      // the user.
+      expect(result.value.assurance).toEqual({ methods: 'unknown', mfa: 'unknown' })
       expect(result.value.organizationId).toBe('org-1')
       expect(result.value.channel).toBe('cookie')
       expect(result.value.actor).toBeNull()
@@ -123,10 +126,6 @@ describe('createBetterAuthProvider', () => {
         { token: 'tok-1', expiresAt: new Date(), activeOrganizationId: null },
         { id: 'ba-1', email: 'user@example.com', emailVerified: false, twoFactorEnabled: null },
       ],
-      [
-        { token: 'tok-1', expiresAt: new Date() },
-        { id: 'ba-1', email: 'user@example.com', emailVerified: true, twoFactorEnabled: false },
-      ],
     ] as const) {
       const provider = createBetterAuthProvider({
         auth: api({ session, user }),
@@ -137,9 +136,7 @@ describe('createBetterAuthProvider', () => {
       if (result.isOk() && result.value !== null) {
         expect(result.value.organizationId).toBeNull()
         expect(result.value.assurance.methods).toBe('unknown')
-        expect(result.value.assurance.mfa).toBe(
-          'twoFactorEnabled' in user && user.twoFactorEnabled === false ? false : 'unknown'
-        )
+        expect(result.value.assurance.mfa).toBe('unknown')
       }
     }
   })
@@ -152,13 +149,8 @@ describe('createBetterAuthProvider', () => {
         user: { id: 'ba-1', email: 'user@example.com', emailVerified: true },
       },
       {
-        session: { token: 'tok-1', expiresAt },
-        user: {
-          id: 'ba-1',
-          email: 'user@example.com',
-          emailVerified: true,
-          twoFactorEnabled: 'yes',
-        },
+        session: { token: 'tok-1', expiresAt, authenticationMethod: 42 },
+        user: { id: 'ba-1', email: 'user@example.com', emailVerified: true },
       },
       {
         session: { token: 'tok-1', expiresAt },
@@ -400,17 +392,25 @@ describe('createBetterAuthProvider', () => {
     }
   })
 
-  it('revokes through internalAdapter.deleteSession', async () => {
+  it('revokes through internalAdapter.deleteSession, verified both directions', async () => {
     const deleteSession = vi.fn().mockResolvedValue(undefined)
+    const findSessions = vi
+      .fn()
+      .mockResolvedValueOnce([{ session: { token: 'tok-1' }, user: { id: 'ba-1' } }])
+      .mockResolvedValueOnce([])
     const provider = createBetterAuthProvider({
       auth: api(null, {
-        $context: Promise.resolve({ internalAdapter: { deleteSession } }),
+        $context: Promise.resolve({ internalAdapter: { deleteSession, findSessions } }),
       }),
       sessionCookieNames: cookieNames,
     })
     const result = await provider.revokeSession('tok-1')
     expect(result.isOk()).toBe(true)
     expect(deleteSession).toHaveBeenCalledWith('tok-1')
+    // A revocation with NO row behind it is an error, not a silent
+    // success (nothing was deleted).
+    const second = await provider.revokeSession('tok-1')
+    expect(second.isErr()).toBe(true)
   })
 })
 
