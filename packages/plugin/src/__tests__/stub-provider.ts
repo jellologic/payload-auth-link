@@ -31,7 +31,15 @@ type StubSessionRow = {
  * In-memory identity provider for tests. Sessions live in a `Map` keyed by
  * the `al_stub_session` cookie value.
  */
-export function createStubProvider(options?: { readonly capabilities?: readonly Capability[] }) {
+export function createStubProvider(options?: {
+  readonly capabilities?: readonly Capability[]
+  /** Registry id override, so tests can wire two stubs side by side. */
+  readonly id?: string
+  /** Coexistence window to expose on the port (#72 cross-check tests). */
+  readonly legacySessions?: { readonly until: string; readonly cookieNames: readonly string[] }
+  /** Omit `sessionCookie` (simulates a non-cookie-transport provider). */
+  readonly omitSessionCookie?: boolean
+}) {
   const sessions = new Map<string, StubSessionRow>()
   // Server-minted sessions (issue #54): the provider's mint API
   // writes here AND plants a verifyable stub session row.
@@ -42,7 +50,7 @@ export function createStubProvider(options?: { readonly capabilities?: readonly 
   let mintCounter = 0
 
   const provider: IdentityProviderPort = {
-    id: defineProviderId('stub'),
+    id: defineProviderId(options?.id ?? 'stub'),
     capabilities: new Set<Capability>([
       ...(options?.capabilities ?? []),
       'revoke-user-sessions',
@@ -50,6 +58,14 @@ export function createStubProvider(options?: { readonly capabilities?: readonly 
       'server-session-list',
     ]),
     sessionCookieNames: [stubCookieName],
+    ...(options?.legacySessions === undefined
+      ? {}
+      : {
+          legacySessions: {
+            ...options.legacySessions,
+            cookieNames: [...options.legacySessions.cookieNames],
+          },
+        }),
     getSession: (headers) => {
       const cookie = headers.get('cookie') ?? ''
       const match = new RegExp(`${stubCookieName}=([^;]+)`).exec(cookie)
@@ -123,7 +139,12 @@ export function createStubProvider(options?: { readonly capabilities?: readonly 
           .filter((row) => row.providerUserId === providerUserId)
           .map((row) => ({ sessionId: row.sessionId, expiresAt: row.expiresAt }))
       ),
-    sessionCookie: (token: string) => `al_stub_session=${token}; Path=/; HttpOnly; SameSite=Lax`,
+    ...(options?.omitSessionCookie === true
+      ? {}
+      : {
+          sessionCookie: (token: string) =>
+            Promise.resolve(`al_stub_session=${token}; Path=/; HttpOnly; SameSite=Lax`),
+        }),
   }
 
   const issue = (

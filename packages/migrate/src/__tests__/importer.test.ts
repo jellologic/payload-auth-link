@@ -46,6 +46,8 @@ import {
   defaultManifestPath,
 } from '../importer/lifecycle.js'
 import { runFromPayloadAuth } from '../importer/run-import.js'
+import { findOrphans } from '../importer/source.js'
+import { introspectDatabase } from '../doctor/database.js'
 import type { Client } from 'pg'
 
 const PASSWORD = 'FixturePassw0rd!'
@@ -303,6 +305,31 @@ describe.skipIf(!canReachPostgres)(
       return counts
     }
 
+    /**
+     * Strict verify counts THE IMPORT (#68) — a live sign-in creates a
+     * real ba-session, and that is app traffic, not the copy. Tests
+     * that sign in drop their live session afterwards so the count
+     * checks keep measuring the import.
+     */
+    async function deleteLiveSessions(): Promise<void> {
+      const client = harness.fixtureClient(database)
+      await client.connect()
+      const source = await client.query('SELECT token FROM sessions')
+      await client.end()
+      const carried = new Set(source.rows.map((row) => String((row as { token: unknown }).token)))
+      const sessions = await payload.find({
+        collection: 'ba-sessions',
+        depth: 0,
+        pagination: false,
+        overrideAccess: true,
+      })
+      for (const doc of sessions.docs) {
+        if (!carried.has(String((doc as unknown as Record<string, unknown>).token))) {
+          await payload.delete({ collection: 'ba-sessions', id: doc.id, overrideAccess: true })
+        }
+      }
+    }
+
     test('dry run is the default: nothing is written', async () => {
       const before = await sourceCounts()
       const outcome = await runFromPayloadAuth({
@@ -476,6 +503,8 @@ describe.skipIf(!canReachPostgres)(
         })
       )
       expect(response.status).toBe(200)
+      // The strict count checks measure the import, not live traffic.
+      await deleteLiveSessions()
     })
 
     test('verify remains green after the re-apply', async () => {
@@ -500,6 +529,290 @@ describe.skipIf(!canReachPostgres)(
       expect(readManifest(path)?.version).toBe(1)
       // defaultManifestPath is the documented location
       expect(defaultManifestPath).toBe('payload-auth-link-migration.json')
+    })
+
+    test('imported users carry exactly one better-auth identity resolving to their ba-users id (#69)', async () => {
+      const baUsers = await payload.find({
+        collection: 'ba-users',
+        depth: 0,
+        pagination: false,
+        overrideAccess: true,
+      })
+      expect(baUsers.totalDocs).toBe(harness.expectedCounts.users)
+      for (const doc of baUsers.docs) {
+        const record = doc as unknown as Record<string, unknown>
+        const baId = String(record['baId'])
+        // The host document the source user id IS (hostId = source id).
+        const host = await payload.findByID({
+          collection: 'users',
+          id: Number(baId),
+          depth: 0,
+          overrideAccess: true,
+        })
+        const identities = (host as unknown as Record<string, unknown>)['identities'] as
+          | { providerId: string; providerUserId: string; email: string; linkedAt: string }[]
+          | undefined
+        expect(Array.isArray(identities), baId).toBe(true)
+        expect(identities, baId).toHaveLength(1)
+        const only = identities?.[0]
+        expect(only?.providerId, baId).toBe('better-auth')
+        // The engine serves BA's user.id from the ba-users baId column,
+        // so this is exactly what findByProviderIdentity queries back.
+        expect(only?.providerUserId, baId).toBe(baId)
+        expect(only?.email, baId).toBe(String(record['email']))
+      }
+    })
+
+    test('a user who verifies after the import resolves to the ORIGINAL document (#69)', async () => {
+      const bobDocs = await payload.find({
+        collection: 'ba-users',
+        where: { email: { equals: 'bob@example.com' } },
+        depth: 0,
+        overrideAccess: true,
+      })
+      const bob = bobDocs.docs[0]
+      if (bob === undefined) {
+        throw new Error('bob missing from ba-users')
+      }
+      const baId = String((bob as unknown as Record<string, unknown>)['baId'])
+      // Simulate the email verifying AFTER the import window (bob came
+      // in unverified; the import never granted linkable).
+      await payload.update({
+        collection: 'ba-users',
+        id: bob.id,
+        data: { emailVerified: true },
+        overrideAccess: true,
+      })
+      // His old password still signs in on the new stack.
+      const response = await engine.auth.handler(
+        new Request(`${ORIGIN}/api/auth/sign-in/email`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', origin: ORIGIN },
+          body: JSON.stringify({ email: 'bob@example.com', password: PASSWORD }),
+        })
+      )
+      expect(response.status).toBe(200)
+      // The test tree has no external provider to round-trip a session
+      // through, so the data-intact half is asserted at the lookup the
+      // session resolver performs: the imported identity row answers
+      // EXACTLY the query findByProviderIdentity issues
+      // ({ 'identities.providerId': 'better-auth',
+      //    'identities.providerUserId': <BA user id> }) and resolves to
+      // bob's ORIGINAL host document id (hostId = source user id).
+      const resolved = await payload.find({
+        collection: 'users',
+        where: {
+          and: [
+            { 'identities.providerId': { equals: 'better-auth' } },
+            { 'identities.providerUserId': { equals: baId } },
+          ],
+        },
+        depth: 0,
+        overrideAccess: true,
+      })
+      expect(resolved.totalDocs).toBe(1)
+      expect(Number(resolved.docs[0]?.id)).toBe(Number(baId))
+      // The sign-in above is live traffic, not the import.
+      await deleteLiveSessions()
+    })
+
+    test('an unknown --source-map model is a usage error, not a silent skip (#68)', async () => {
+      await expect(
+        runFromPayloadAuth({
+          configPath: 'unused',
+          databaseUrl: connectionString,
+          apply: false,
+          sessions: 'carry',
+          manifestPath,
+          // Typo on purpose: 'acounts' is not a source model.
+          sourceMapJson: '{"acounts":"user_accounts"}',
+          loadPayload: () => Promise.resolve(payload),
+        })
+      ).rejects.toThrow(/unknown model/)
+    })
+
+    test('a renamed source layout blocks the dry run until --source-map maps it (#68)', async () => {
+      const alt = await harness.loadFixtureDump('pal_import_alt')
+      const altTarget = harness.targetFromEnv(alt)
+      const altUrl = `postgres://${altTarget.user}:${altTarget.password}@${altTarget.host}:${altTarget.port}/${alt}`
+      const renamer = harness.fixtureClient(alt)
+      await renamer.connect()
+      await renamer.query('ALTER TABLE accounts RENAME TO user_accounts')
+      await renamer.query('ALTER TABLE sessions RENAME TO user_sessions')
+      await renamer.end()
+      try {
+        const loadPayload = () => Promise.resolve(payload)
+        const blocked = await runFromPayloadAuth({
+          configPath: 'unused',
+          databaseUrl: altUrl,
+          apply: false,
+          sessions: 'carry',
+          manifestPath,
+          loadPayload,
+        })
+        expect(blocked.exitCode).toBe(1)
+        const reasons = blocked.plan.unmappable.map((row) => row.reason).join(' ')
+        expect(reasons).toContain("'accounts'")
+        expect(reasons).toContain("'sessions'")
+        expect(reasons).toContain('--source-map')
+        expect(blocked.result).toBeUndefined()
+
+        // With the map, the SAME layout plans cleanly.
+        const mapped = await runFromPayloadAuth({
+          configPath: 'unused',
+          databaseUrl: altUrl,
+          apply: false,
+          sessions: 'carry',
+          manifestPath,
+          sourceMapJson: '{"accounts":"user_accounts","sessions":"user_sessions"}',
+          loadPayload,
+        })
+        expect(mapped.exitCode).toBe(0)
+        expect(mapped.plan.unmappable).toEqual([])
+        expect(mapped.unverified).toEqual(['bob@example.com', 'dave@example.com'])
+        // The dry run wrote nothing.
+        const baUsers = await payload.count({ collection: 'ba-users', overrideAccess: true })
+        expect(baUsers.totalDocs).toBe(harness.expectedCounts.users)
+
+        // The orphan sweep reports the checks it could not run instead
+        // of passing silently.
+        const scanClient = harness.fixtureClient(alt)
+        await scanClient.connect()
+        const scan = await findOrphans(scanClient)
+        await scanClient.end()
+        const skipped = scan.skipped.join(' ')
+        expect(skipped).toContain("'accounts'")
+        expect(skipped).toContain("'sessions'")
+        expect(skipped).not.toContain('apikey')
+      } finally {
+        await harness.dropDatabase(alt)
+      }
+    })
+
+    test('the api-key orphan check runs on the reference_id layout and finds an orphan (#68)', async () => {
+      const client = harness.fixtureClient(database)
+      await client.connect()
+      const nextId = await client.query('SELECT (max(id) + 1)::int AS id FROM api_keys')
+      const id = (nextId.rows[0] as { id: number }).id
+      await client.query(
+        'INSERT INTO api_keys (id, config_id, reference_id, key) VALUES ($1, $2, $3, $4)',
+        [id, 'default', 99999, 'orphan-key-value']
+      )
+      try {
+        // The importer's sweep probes the owner column by layout:
+        // reference_id (current), user_id (1.6-era) — never silent.
+        const scan = await findOrphans(client)
+        const orphan = scan.orphans.find((row) => row.model === 'apikey')
+        expect(orphan?.reason).toContain('reference_id')
+        expect(scan.skipped.join(' ')).not.toContain('apikey')
+        // The doctor's database section reports the same orphan.
+        const found = await introspectDatabase(connectionString)
+        expect(found.orphans.map((entry) => entry.kind)).toContain('api-keys-without-user')
+        // The fixture layout is complete: nothing missing, no skips.
+        expect(found.missingTables).toEqual([])
+        expect(found.skippedChecks).toEqual([])
+      } finally {
+        await client.query('DELETE FROM api_keys WHERE id = $1', [id])
+        await client.end()
+      }
+    })
+
+    test('verify is strict: an extra target row fails where >= once passed (#68)', async () => {
+      const stray = await payload.create({
+        collection: 'ba-users',
+        data: { baId: '999999', email: 'stray@example.com', name: 'Stray', emailVerified: false },
+        overrideAccess: true,
+      })
+      try {
+        const result = await verifyImport({ payload, sourceConnectionString: connectionString })
+        expect(result.ok).toBe(false)
+        const detail = result.issues.map((issue) => issue.detail).join(' ')
+        expect(detail).toContain('exactly 4 users')
+        expect(detail).toContain('ba-users')
+      } finally {
+        await payload.delete({ collection: 'ba-users', id: stray.id, overrideAccess: true })
+      }
+      const green = await verifyImport({ payload, sourceConnectionString: connectionString })
+      expect(green.ok, JSON.stringify(green.issues)).toBe(true)
+    })
+
+    test('verify is strict: zero source rows no longer skip the count (#68)', async () => {
+      const client = harness.fixtureClient(database)
+      await client.connect()
+      const saved = await client.query(
+        'SELECT id, identifier, value, expires_at FROM verifications ORDER BY id LIMIT 1'
+      )
+      const row = saved.rows[0] as {
+        id: number
+        identifier: string
+        value: string
+        expires_at: Date
+      }
+      await client.query('DELETE FROM verifications')
+      try {
+        const failed = await verifyImport({ payload, sourceConnectionString: connectionString })
+        expect(failed.ok).toBe(false)
+        const detail = failed.issues.map((issue) => issue.detail).join(' ')
+        expect(detail).toContain('exactly 0 verifications')
+      } finally {
+        await client.query(
+          'INSERT INTO verifications (id, identifier, value, expires_at) VALUES ($1, $2, $3, $4)',
+          [row.id, row.identifier, row.value, row.expires_at]
+        )
+        await client.end()
+      }
+      const green = await verifyImport({ payload, sourceConnectionString: connectionString })
+      expect(green.ok, JSON.stringify(green.issues)).toBe(true)
+    })
+
+    test('verify is strict: a missing credential account fails and is restored exactly (#68)', async () => {
+      const accounts = await payload.find({
+        collection: 'ba-accounts',
+        where: { providerId: { equals: 'credential' } },
+        depth: 0,
+        pagination: false,
+        overrideAccess: true,
+      })
+      const victim = accounts.docs[0]
+      if (victim === undefined) {
+        throw new Error('no credential account to test with')
+      }
+      const record = victim as unknown as Record<string, unknown>
+      await payload.delete({ collection: 'ba-accounts', id: victim.id, overrideAccess: true })
+      try {
+        const result = await verifyImport({ payload, sourceConnectionString: connectionString })
+        expect(result.ok).toBe(false)
+        const detail = result.issues.map((issue) => issue.detail).join(' ')
+        expect(detail).toContain('exactly 6 accounts')
+      } finally {
+        // Recreate with the same baId — exactly what a resumed import
+        // would do (a fresh document id, the same deterministic key).
+        await payload.create({
+          collection: 'ba-accounts',
+          data: {
+            baId: String(record['baId']),
+            accountId: String(record['accountId']),
+            providerId: String(record['providerId']),
+            userId: String(record['userId']),
+            ...(typeof record['password'] === 'string' ? { password: record['password'] } : {}),
+          },
+          overrideAccess: true,
+        })
+      }
+      const green = await verifyImport({ payload, sourceConnectionString: connectionString })
+      expect(green.ok, JSON.stringify(green.issues)).toBe(true)
+    })
+
+    test('a null-mapped model is skipped by config, never probed or counted (#68)', async () => {
+      const result = await verifyImport({
+        payload,
+        sourceConnectionString: connectionString,
+        sourceTables: { verifications: null },
+      })
+      expect(result.ok, JSON.stringify(result.issues)).toBe(true)
+      const names = result.checks.map((check) => check.name).join(' ')
+      expect(names).toContain('null-mapped')
+      expect(names).toContain('verifications')
     })
   }
 )

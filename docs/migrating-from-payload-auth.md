@@ -19,10 +19,10 @@ shipped command, not a sketch. The field report behind it is
 4. **`req.user`**: opt into `reqUser: 'document'` if access functions read full-document fields (#57).
 5. **Coexistence**: `legacySessions` keeps legacy payload-auth session cookies working inside a dated window (#51) — nobody is logged out.
 6. **Cut over**: `from-payload-auth --apply` (importer; sessions carry by default), `verify`, watch the window, `finalize`.
-7. **Codemods**: `codemod --src ./src [--write]` rewrites the named call sites; the opt-in `payload.betterAuth` shim covers the rest incrementally (#53).
+7. **Codemods**: `codemod --src ./src [--write]` rewrites the named call sites (AST-matched, alias- and `import type`-aware); the opt-in `payload.betterAuth` shim covers the rest incrementally (#53).
 8. **Server API**: `authLinkServer(payload)` replaces every `$context` internal bridge (#54).
-9. **Admin**: `admin: { loginView: 'provider' }` restores /admin login through the provider, with the break-glass local form (#55).
-10. **Off-ramp**: `export --database-url … --out …` — lossless JSONL of every auth table; uninstall is a tested operation (#58).
+9. **Admin**: `admin: { loginView: 'provider' }` restores /admin login through the provider, with the break-glass local form (#55). It registers a Payload admin component, so REGENERATE your import map after enabling it (`payload generate:importmap`) — a stale map renders an empty login page.
+10. **Off-ramp**: `export --database-url … --out …` — lossless JSONL of every auth table (narrow it with `--tables`); uninstall is a tested operation (#58).
 
 ## Step 0: run the doctor (read-only preflight)
 
@@ -34,14 +34,32 @@ bunx @payload-auth-link/migrate doctor --config ./src/payload.config.ts --src ./
 
 It reads the config, the users collection, the Better Auth plugins,
 your sources, and (with `--database-url` or `DATABASE_URL`) the
-database — and reports version bands, plugin support, users-collection
-collisions and role values, the 0.7.0 behaviour changes that will
-bite, every call site that must migrate, and per-table row counts with
-unverified users and orphans. `--json` gives tools the same findings
-with stable machine codes; exit codes are `0` clean, `1` blockers,
-`2` warnings only. Fix the blockers it names before writing anything —
-every later step in this guide assumes the doctor's blocker list is
-clear.
+database — and reports version bands, plugin support (including
+schema-adding plugin calls hiding in non-config helper files), users
+collection collisions and role values, the 0.7.0 behaviour changes
+that will bite, every call site that must migrate, and per-table row
+counts with unverified users and orphans. A config that cannot even be
+IMPORTED (the mid-upgrade state) is a `config-unloadable` blocker, not
+a crash — the static scans still run and still catch what the load
+cannot (an `oidcProvider(`/`mcp(` call is flagged as removed in
+better-auth 1.7). `--json` gives tools the same findings with stable
+machine codes; exit codes are `0` clean, `1` blockers, `2` warnings
+only. Fix the blockers it names before writing anything — every later
+step in this guide assumes the doctor's blocker list is clear.
+
+**Custom table slugs.** If your layout renamed the payload-auth tables
+(the production field report: `user_accounts`, `user_sessions`), say so
+explicitly with `--source-map` — the doctor, the importer, and `verify`
+all take it:
+
+```sh
+--source-map '{"accounts":"user_accounts","sessions":"user_sessions"}'
+```
+
+A `null` value records a model as not installed (`"organizations":null`)
+and skips it by config. Without a map, a missing source table is a
+blocker that names the table and suggests `--source-map` — nothing is
+silently read as empty.
 
 ## What moves where
 
@@ -154,10 +172,12 @@ bunx @payload-auth-link/migrate from-payload-auth \
 bunx @payload-auth-link/migrate from-payload-auth \
   --config ./src/payload.config.ts --database-url $DATABASE_URL --apply
 
-# 3. The check. Counts per model, one target row per source user,
-#    every credential account resolving to its user with its hash,
-#    every API key and member/invitation resolving. Non-zero exit on
-#    any mismatch.
+# 3. The check. EXACT counts per model (zero never skips; every model
+#    in --source-map is either counted or explicitly null-mapped), one
+#    target row per source user resolving through one better-auth
+#    identity, every credential account resolving to its user with its
+#    hash, every API key and member/invitation resolving. Non-zero
+#    exit on any mismatch.
 bunx @payload-auth-link/migrate verify \
   --config ./src/payload.config.ts --database-url $DATABASE_URL
 
@@ -171,11 +191,14 @@ bunx @payload-auth-link/migrate rollback --config ./src/payload.config.ts
 bunx @payload-auth-link/migrate finalize
 ```
 
-What it copies: users (with `linkable` + `linkableEmail` granted from
-VERIFIED emails only — unverified users are reported and never
-linked), credential accounts with their password hashes VERBATIM,
-OAuth accounts with their tokens, magic-link verifications, API keys
-with hash/prefix/metadata/rate-limit state, jwks, and the organization
+What it copies: users — each with ONE pre-linked `better-auth` identity
+resolving to their `ba-users` row, so a provider sign-in (now or after
+a later email verification) lands on the ORIGINAL Payload document,
+while `linkable` + `linkableEmail` stay granted from VERIFIED emails
+only (that gate is email-ownership proof, not identity resolution) —
+plus credential accounts with their password hashes VERBATIM, OAuth
+accounts with their tokens, magic-link verifications, API keys with
+hash/prefix/metadata/rate-limit state, jwks, and the organization
 plugin's rows (orgs, members, invitations) with references remapped.
 `--sessions=carry` (the default) copies the session table so nobody is
 logged out — keep the same `advanced.cookiePrefix` and the existing
@@ -183,8 +206,12 @@ cookies keep working; `--sessions=drop` starts everyone fresh instead.
 
 It is idempotent and resumable: every target row carries a
 deterministic `baId` derived from the source id, so a re-run after a
-crash finds its own earlier rows and skips them. Unmappable data
-(orphaned references) aborts the run — nothing is silently skipped.
+crash finds its own earlier rows and skips them. It is also fail
+closed: the run PROBES every mapped source model's table and required
+columns first, and a missing one aborts before anything is read or
+written — pass `--source-map` (above) for renamed layouts or to record
+a model as not installed. Unmappable data (orphaned references) aborts
+the run — nothing is silently skipped.
 
 The importer's target slugs default to `ba-users`, `ba-accounts`,
 `ba-sessions`, `ba-verifications`, `ba-apikey`, `ba-jwks`,

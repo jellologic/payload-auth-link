@@ -71,6 +71,9 @@ export default buildConfig({
       baseUrl,
       roles: ['admin', 'user'],
       defaultRole: 'user',
+      // #55/#72: /admin/login through the provider (plus the
+      // break-glass local form for unlinked operators).
+      admin: { loginView: 'provider' },
       // API keys (Better Auth @better-auth/api-key) present as a
       // distinct session channel; cookie remains the default.
       admitChannels: ['cookie', 'api-key'],

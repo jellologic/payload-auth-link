@@ -9,12 +9,24 @@ import {
   verifyImport,
   type VerifyResult,
 } from './lifecycle.js'
-import { countTables, findOrphans, openSource, unverifiedEmails } from './source.js'
+import {
+  countTables,
+  findOrphans,
+  openSource,
+  probeSourceLayout,
+  readSourceUsers,
+  unverifiedEmails,
+  type SourceLayoutIssue,
+} from './source.js'
 import {
   defaultTargetSlugs,
+  parseSourceMapJson,
+  presentTables,
+  resolveSourceTables,
   type ImportManifest,
   type ImportPlan,
   type ImportResult,
+  type ResolvedSourceTables,
   type TargetSlugMap,
 } from './types.js'
 
@@ -36,6 +48,12 @@ export type ImportCommandOptions = {
   readonly sessions: 'carry' | 'drop'
   readonly manifestPath?: string | undefined
   readonly slugsJson?: string | undefined
+  /**
+   * The `--source-map` JSON (issue #68): model → source table name, or
+   * `null` for "model not installed". Missing mapped tables abort the
+   * run before anything is written without it.
+   */
+  readonly sourceMapJson?: string | undefined
   readonly json?: boolean
   readonly log?: (message: string) => void
   readonly loadPayload?: (configPath: string) => Promise<import('payload').Payload>
@@ -67,33 +85,53 @@ function slugsOf(options: ImportCommandOptions): TargetSlugMap {
   return { ...defaultTargetSlugs, ...(parsed as Record<string, string>) }
 }
 
+/** The resolved source layout (`--source-map` over the default layout). */
+function sourceTablesOf(options: ImportCommandOptions): ResolvedSourceTables {
+  return resolveSourceTables(
+    options.sourceMapJson === undefined ? undefined : parseSourceMapJson(options.sourceMapJson)
+  )
+}
+
+/**
+ * Fail-closed probe (issue #68): runs FIRST, before any plan, read, or
+ * Payload boot. Findings come back as unmappable rows — the caller's
+ * exit-1 path — so nothing is silently read as empty.
+ */
+async function probeOrFail(
+  options: ImportCommandOptions,
+  log: (message: string) => void
+): Promise<readonly SourceLayoutIssue[]> {
+  const client = await openSource(options.databaseUrl)
+  try {
+    const issues = await probeSourceLayout(client, sourceTablesOf(options))
+    for (const issue of issues) {
+      log(`  X ${issue.model}: ${issue.reason}`)
+    }
+    return issues
+  } finally {
+    await client.end()
+  }
+}
+
 /** Plan-only pass: counts, orphans, unverified users, warnings. */
-async function buildPlan(options: ImportCommandOptions): Promise<{
+async function buildPlan(
+  options: ImportCommandOptions,
+  sourceTables: ResolvedSourceTables
+): Promise<{
   plan: ImportPlan
   sourceCounts: Record<string, number>
 }> {
   const client = await openSource(options.databaseUrl)
   try {
-    const sourceCounts = await countTables(client, [
-      'users',
-      'accounts',
-      'sessions',
-      'verifications',
-      'api_keys',
-      'jwks',
-      'organizations',
-      'members',
-      'invitations',
-      'users_role',
-    ])
-    const orphans = await findOrphans(client)
+    const sourceCounts = await countTables(client, presentTables(sourceTables))
+    const { orphans, skipped } = await findOrphans(client, sourceTables)
     return {
       sourceCounts,
       plan: {
         rows: [],
         unmappable: orphans,
         sessions: options.sessions,
-        warnings: [],
+        warnings: skipped.map((reason) => `orphan check ${reason}`),
       },
     }
   } finally {
@@ -110,13 +148,34 @@ export async function runFromPayloadAuth(options: ImportCommandOptions): Promise
 }> {
   const log = log_(options)
   const slugs = slugsOf(options)
-  const { plan: basePlan, sourceCounts } = await buildPlan(options)
+  const sourceTables = sourceTablesOf(options)
+
+  // The probe runs before anything else (issue #68): a missing mapped
+  // table or column aborts here — exit 1, nothing planned or written.
+  const probeIssues = await probeOrFail(options, log)
+  if (probeIssues.length > 0) {
+    return {
+      exitCode: 1,
+      plan: {
+        rows: [],
+        unmappable: probeIssues.map((issue) => ({
+          model: issue.model,
+          key: issue.key,
+          reason: issue.reason,
+        })),
+        sessions: options.sessions,
+        warnings: [],
+      },
+      unverified: [],
+    }
+  }
+
+  const { plan: basePlan, sourceCounts } = await buildPlan(options, sourceTables)
 
   const unverified = await (async () => {
     const client = await openSource(options.databaseUrl)
     try {
-      const { readSourceUsers } = await import('./source.js')
-      return unverifiedEmails(await readSourceUsers(client))
+      return unverifiedEmails(await readSourceUsers(client, sourceTables))
     } finally {
       await client.end()
     }
@@ -152,6 +211,7 @@ export async function runFromPayloadAuth(options: ImportCommandOptions): Promise
     sourceCounts,
     sourceDatabase: options.databaseUrl.replace(/\/\/[^@]*@/, '//***@'),
     slugs,
+    sourceTables,
     log,
   })
   const plan: ImportPlan = {
@@ -186,11 +246,34 @@ export async function runFromPayloadAuth(options: ImportCommandOptions): Promise
 /** The `verify` command. */
 export async function runVerify(options: ImportCommandOptions): Promise<VerifyResult> {
   const log = log_(options)
+
+  // The probe runs first (issue #68): a missing mapped table fails the
+  // check with a blocker — before any Payload boot or read.
+  const probeIssues = await probeOrFail(options, log)
+  if (probeIssues.length > 0) {
+    const result: VerifyResult = {
+      ok: false,
+      issues: probeIssues.map((issue) => ({
+        code: 'source-table-missing',
+        detail: issue.reason,
+      })),
+      checks: [],
+    }
+    if (!options.json) {
+      for (const issue of result.issues) {
+        log(`  [${issue.code}] ${issue.detail}`)
+      }
+    }
+    return result
+  }
+
   const payload = await (options.loadPayload ?? loadPayloadInstance)(options.configPath)
   const result = await verifyImport({
     payload,
     sourceConnectionString: options.databaseUrl,
     slugs: slugsOf(options),
+    sourceTables: sourceTablesOf(options),
+    sessions: options.sessions,
   })
   if (!options.json) {
     for (const check of result.checks) {

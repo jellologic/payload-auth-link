@@ -1896,6 +1896,57 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
+## 0.9.x → 0.10.0 (the server-session kit's correctness pass)
+
+Fixes from the first production rehearsal (issues #68–#72). Three of
+them change behaviour that previously "worked" by silently doing
+nothing.
+
+1. **`sessionCookie` is signed — and async.** Better Auth reads the
+   session token cookie with `getSignedCookie` ONLY, so the
+   server-session API's cookie must be `token.<HMAC signature>`.
+   0.9.0 minted the raw token, which Better Auth refused (every
+   bridge built on `createSessionFor().setCookie` or
+   `authLinkServer.sessionCookie()` logged nobody in). The cookie is
+   now built from the engine's own resolved context (secret, name,
+   `Secure`/`SameSite`/`Path`/`Max-Age` attributes). **Type change:**
+   `sessionCookie(token)` returns `Promise<string>` on
+   `authLinkServer` and on the provider port — `await` it. A
+   real-engine round trip (mint → setCookie → `getSession` resolves
+   the user) pins the behaviour.
+
+2. **`legacySessions` on the plugin now enforces agreement.** The
+   plugin option never enabled anything — the provider ENGINE's
+   `legacySessions` input is what honors legacy cookies. Wiring now
+   throws `InvalidConfigError` when the plugin option is set but no
+   engine declares a window, when the two disagree on `until` or
+   `cookieNames`, or when a legacy cookie name collides with a
+   current session cookie name. Engine-only configuration stays
+   legal. If you set only the plugin option believing it bounded the
+   window, move the window to `createBetterAuthEngine({
+legacySessions })` (and keep the plugin option identical, if you
+   want the assertion).
+
+3. **`revokeAllForUser` revokes on every linked provider.** It used
+   to walk only the first capable identity; a user linked to two
+   providers kept the second provider's sessions. It now attempts
+   every linked provider and throws if any fails.
+
+4. **The provider login view actually renders.** The `loginView:
+'provider'` registration was missing its `exportName`, so
+   Payload's import map never resolved it (empty login page), and its
+   provider link pointed at `/api/auth/sign-in`, which is not a
+   Better Auth route. The view now registers as
+   `@payload-auth-link/plugin/admin#ProviderLoginView` and signs in
+   through Better Auth's own `POST /sign-in/email`; the break-glass
+   local form is unchanged. **Apps enabling `admin: { loginView:
+'provider' }` must regenerate the import map** (`payload
+generate:importmap`) after upgrading — a stale map still renders
+   an empty page.
+
+5. **Stray debug output removed.** The server session API printed
+   `DBG …` lines to stdout on every identity resolution; gone.
+
 ## 0.6.x → 0.7.0 (account controls on every strategy; provider-owned documents)
 
 Three default-behaviour changes, all fail-closed. The full

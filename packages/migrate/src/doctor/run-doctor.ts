@@ -4,10 +4,16 @@ import { dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { checkVersions } from './bands.js'
 import { introspectDatabase } from './database.js'
-import { classifyPlugins, pluginsFromCollectionSlugs, pluginsFromConfigSource } from './plugins.js'
+import {
+  classifyPlugins,
+  pluginsFromCollectionSlugs,
+  pluginsFromConfigSource,
+  pluginsFromSourceTree,
+} from './plugins.js'
 import { scanSource } from './source-scan.js'
 import { analyzeUsersCollection, findUsersCollection } from './users.js'
-import type { BehaviourChange, DoctorIssue, DoctorReport } from './types.js'
+import { parseSourceMapJson, resolveSourceTables } from '../importer/types.js'
+import type { BehaviourChange, DoctorIssue, DoctorReport, PluginFinding } from './types.js'
 
 /**
  * The read-only doctor (issue #52): point it at a payload-auth app and
@@ -16,6 +22,12 @@ import type { BehaviourChange, DoctorIssue, DoctorReport } from './types.js'
  * Auth plugins, scans the source tree for call sites that must
  * migrate, and (with a database URL) reports row counts, unverified
  * users, and orphans. It never writes.
+ *
+ * Never crashes (issue #71): a config that cannot even be IMPORTED
+ * (the mid-upgrade state — better-auth 1.7 installed while the config
+ * still calls `oidcProvider`) is a `config-unloadable` blocker, not a
+ * crash. The static scans (config text, source tree, database) still
+ * run and still catch what the load cannot.
  */
 
 export type DoctorOptions = {
@@ -25,6 +37,11 @@ export type DoctorOptions = {
   readonly srcDir?: string | undefined
   /** Postgres connection string. Defaults to `DATABASE_URL`. */
   readonly databaseUrl?: string | undefined
+  /**
+   * The `--source-map` JSON (issue #68): model → source table name, or
+   * `null` for "model not installed". Shapes the database section.
+   */
+  readonly sourceMapJson?: string | undefined
   /** Config loader, injectable for tests. Defaults to dynamic import. */
   readonly loadModule?: ((path: string) => Promise<unknown>) | undefined
 }
@@ -141,7 +158,6 @@ async function defaultLoadModule(path: string): Promise<unknown> {
 export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   const configPath = resolve(options.configPath)
   const loadModule = options.loadModule ?? defaultLoadModule
-  const config = await loadModule(configPath)
   const configDir = dirname(configPath)
   const srcDir = options.srcDir === undefined ? configDir : resolve(options.srcDir)
 
@@ -162,8 +178,25 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     }
   }
 
-  const plugin = findPayloadAuthPlugin(config)
-  if (plugin === null) {
+  // Issue #71: the load can fail on the mid-upgrade state (better-auth
+  // 1.7 installed while the config still calls `oidcProvider`). That is
+  // a blocker — never a crash — and the static scans below still run.
+  let config: unknown = null
+  let configLoaded = true
+  try {
+    config = await loadModule(configPath)
+  } catch (error) {
+    configLoaded = false
+    blockers.push({
+      code: 'config-unloadable',
+      detail: `the config module could not be loaded: ${
+        error instanceof Error ? error.message : String(error)
+      } — fix the load error before migrating; the report below still reflects the static scans`,
+    })
+  }
+
+  const plugin = configLoaded ? findPayloadAuthPlugin(config) : null
+  if (configLoaded && plugin === null) {
     warnings.push({
       code: 'payload-auth-not-detected',
       detail:
@@ -179,22 +212,35 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   }
 
   // payload-auth keeps the builder's options in its closure, so the
-  // plugin set comes from what the built config proves: the collections
-  // payload-auth created and the plugin calls in the config source.
+  // plugin set comes from what the sources prove: the collections
+  // payload-auth built, the plugin calls in the config source, AND the
+  // plugin calls anywhere under --src (issue #71 — schema-adding
+  // plugins hide in helper files too).
   let configSource: string
   try {
     configSource = readFileSync(configPath, 'utf8')
   } catch {
     configSource = ''
   }
+  const sourceTreeHits = pluginsFromSourceTree(srcDir)
+  const filesById = new Map<string, string[]>()
+  for (const hit of sourceTreeHits) {
+    const list = filesById.get(hit.id) ?? []
+    list.push(hit.file)
+    filesById.set(hit.id, list)
+  }
   const pluginIds = [
     ...new Set([
-      ...betterAuthPluginIds(plugin?.pluginOptions ?? {}),
-      ...pluginsFromCollectionSlugs(collectionSlugs(config)),
+      ...(configLoaded ? betterAuthPluginIds(plugin?.pluginOptions ?? {}) : []),
+      ...(configLoaded ? pluginsFromCollectionSlugs(collectionSlugs(config)) : []),
       ...pluginsFromConfigSource(configSource),
+      ...sourceTreeHits.map((hit) => hit.id),
     ]),
   ]
-  const pluginFindings = classifyPlugins(pluginIds)
+  const pluginFindings: PluginFinding[] = classifyPlugins(pluginIds).map((finding) => {
+    const files = filesById.get(finding.id)
+    return files === undefined ? finding : { ...finding, files }
+  })
   for (const finding of pluginFindings) {
     if (finding.status === 'removed-upstream') {
       blockers.push({
@@ -206,20 +252,24 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     }
   }
 
-  const usersSlug = usersSlugOf(plugin?.pluginOptions ?? {})
-  const { finding: users, issues: userIssues } = analyzeUsersCollection(
-    findUsersCollection(config, usersSlug),
-    'roles'
-  )
-  for (const issue of userIssues) {
-    if (
-      issue.code === 'injected-field-collision' ||
-      issue.code === 'roles-field-not-select' ||
-      issue.code === 'users-collection-missing'
-    ) {
-      blockers.push(issue)
-    } else {
-      warnings.push(issue)
+  let users: DoctorReport['users'] = null
+  if (configLoaded) {
+    const usersSlug = usersSlugOf(plugin?.pluginOptions ?? {})
+    const { finding, issues: userIssues } = analyzeUsersCollection(
+      findUsersCollection(config, usersSlug),
+      'roles'
+    )
+    users = finding
+    for (const issue of userIssues) {
+      if (
+        issue.code === 'injected-field-collision' ||
+        issue.code === 'roles-field-not-select' ||
+        issue.code === 'users-collection-missing'
+      ) {
+        blockers.push(issue)
+      } else {
+        warnings.push(issue)
+      }
     }
   }
 
@@ -237,7 +287,11 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   let database: DoctorReport['database'] = null
   if (databaseUrl !== undefined && databaseUrl !== '') {
     try {
-      const found = await introspectDatabase(databaseUrl)
+      const sourceTables =
+        options.sourceMapJson === undefined
+          ? undefined
+          : resolveSourceTables(parseSourceMapJson(options.sourceMapJson))
+      const found = await introspectDatabase(databaseUrl, { sourceTables })
       database = found
       if (found.unverifiedUsers !== null && found.unverifiedUsers > 0) {
         warnings.push({
@@ -245,11 +299,22 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
           detail: `${found.unverifiedUsers} user(s) have emailVerified = false: they will not JIT-link on a provider sign-in; they need a verified email (or a role manager's manual link) after migration`,
         })
       }
+      // Fail closed on the source layout (issue #68): a mapped model
+      // whose table is absent blocks until --source-map explains it.
+      for (const table of found.missingTables ?? []) {
+        blockers.push({
+          code: 'source-table-missing',
+          detail: `model '${table.model}' expects source table '${table.table}', which does not exist — if your layout renamed it, pass --source-map '{"${table.model}":"<table>"}', or map it null to record it as not installed`,
+        })
+      }
       for (const orphan of found.orphans) {
         blockers.push({
           code: 'orphan-rows',
           detail: `${orphan.count} orphaned row(s) of kind '${orphan.kind}': the importer refuses unmappable references rather than silently skipping them`,
         })
+      }
+      for (const skip of found.skippedChecks ?? []) {
+        warnings.push({ code: 'orphan-check-skipped', detail: skip })
       }
     } catch (error) {
       warnings.push({

@@ -67,6 +67,92 @@ export type ImportResult = {
   readonly plan: ImportPlan
 }
 
+/**
+ * The models the source side names (issue #68). One entry per
+ * payload-auth table the importer/doctor reads — the keys are stable
+ * model names; the values are whatever the source database actually
+ * called the table.
+ */
+export type SourceModel =
+  | 'users'
+  | 'accounts'
+  | 'sessions'
+  | 'verifications'
+  | 'api_keys'
+  | 'jwks'
+  | 'organizations'
+  | 'members'
+  | 'invitations'
+  | 'users_role'
+
+/**
+ * A model → source-table override for custom layouts (`--source-map`):
+ * `{"accounts":"user_accounts","sessions":"user_sessions"}`. A `null`
+ * value means the model is explicitly NOT installed on the source
+ * (recorded as skipped-by-config, never probed as an error).
+ */
+export type SourceTableMap = { readonly [M in SourceModel]?: string | null }
+
+/** Every model resolved to its source table (`null` = not installed). */
+export type ResolvedSourceTables = Readonly<Record<SourceModel, string | null>>
+
+/** payload-auth's default Postgres layout. */
+export const defaultSourceTables: Readonly<Record<SourceModel, string>> = {
+  users: 'users',
+  accounts: 'accounts',
+  sessions: 'sessions',
+  verifications: 'verifications',
+  api_keys: 'api_keys',
+  jwks: 'jwks',
+  organizations: 'organizations',
+  members: 'members',
+  invitations: 'invitations',
+  users_role: 'users_role',
+}
+
+/** All known source models — the error message names them. */
+export const sourceModelNames: readonly SourceModel[] = Object.keys(
+  defaultSourceTables
+) as SourceModel[]
+
+/**
+ * Parse the `--source-map` JSON (same boundary style as `--slugs`):
+ * keys must be known source models, values a table name or `null`
+ * ("model not installed"). Unknown keys throw — a typo would
+ * otherwise silently skip the model it meant to map.
+ */
+export function parseSourceMapJson(json: string): SourceTableMap {
+  const parsed: unknown = JSON.parse(json)
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('--source-map must be a JSON object of model -> table name (or null)')
+  }
+  const map: Record<string, string | null> = {}
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!sourceModelNames.includes(key as SourceModel)) {
+      throw new Error(
+        `--source-map has an unknown model '${key}'; the known models are: ${sourceModelNames.join(', ')}`
+      )
+    }
+    if (value !== null && (typeof value !== 'string' || value.trim() === '')) {
+      throw new Error(`--source-map['${key}'] must be a table name or null`)
+    }
+    map[key] = value === null ? null : value.trim()
+  }
+  return map
+}
+
+/** Merge `--source-map` overrides onto the default layout. */
+export function resolveSourceTables(map: SourceTableMap | undefined): ResolvedSourceTables {
+  return { ...defaultSourceTables, ...(map ?? {}) }
+}
+
+/** The tables to read (the mapped ones — `null` entries are skipped). */
+export function presentTables(tables: ResolvedSourceTables): readonly string[] {
+  return sourceModelNames
+    .map((model) => tables[model])
+    .filter((table): table is string => table !== null)
+}
+
 /** The models the importer copies. */
 export type TargetModel =
   | 'user'

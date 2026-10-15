@@ -110,10 +110,14 @@ describe('legacy session cookie coexistence (#51)', () => {
     expect(engine.legacySessionCookieNames).toEqual(['bl.session_token'])
   })
 
-  it('mints new sessions only under the current cookie name', () => {
+  it('mints new sessions only under the current cookie name', async () => {
     // The mint path (sessionCookie #54) uses the CURRENT name; the
     // legacy names never appear in Set-Cookie.
-    const cookie = engine.provider.sessionCookie?.('tok-1') ?? ''
+    const build = engine.provider.sessionCookie
+    if (build === undefined) {
+      throw new Error('the better-auth provider exposes no sessionCookie')
+    }
+    const cookie = await build('tok-1')
     expect(cookie).not.toContain('bl.session_token')
   })
 

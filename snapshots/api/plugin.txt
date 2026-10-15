@@ -155,14 +155,22 @@ export { default as ProviderLoginView } from './views/ProviderLoginView.js';
 // ===== admin/views/ProviderLoginView.d.ts =====
 import React from 'react';
 /**
- * The provider-backed admin login view (issue #55): email+password
- * through Payload's own login endpoint — the break-glass local form
- * for UNLINKED operator accounts (0.7.0 refuses provider-linked
- * documents here by design, GHSA-f4hj) — plus a link to the
- * provider's own sign-in page for everyone else.
+ * The provider-backed admin login view (issue #55): two forms.
+ *
+ * - **Provider sign-in** posts to Better Auth's own email sign-in
+ *   endpoint (`${authBase}/sign-in/email`), so provider-LINKED
+ *   accounts — whose local password is refused on the Payload side
+ *   (GHSA-f4hj) — can sign in to /admin here. Better Auth sets the
+ *   same session cookie the middleware reads, so the admin session
+ *   picks it up. Social-only users still sign in through the app's
+ *   own sign-in page first; the cookie carries over.
+ * - **Break-glass local sign-in** posts to Payload's own login
+ *   endpoint for UNLINKED operator accounts (0.7.0 refuses
+ *   provider-linked documents there by design, GHSA-f4hj).
  *
  * Registered by the plugin when `admin: { loginView: 'provider' }` —
- * Payload renders it at /admin/login via the import map.
+ * Payload renders it at /admin/login via the import map
+ * (`@payload-auth-link/plugin/admin#ProviderLoginView`).
  */
 export type ProviderLoginViewProps = {
     /**
@@ -465,12 +473,16 @@ export type AuthLinkPluginOptions = {
         readonly loginView?: 'provider' | undefined;
     } | undefined;
     /**
-     * Coexistence window (issue #51): legacy payload-auth session
-     * cookie names, honored read-only by the provider until the ISO
-     * `until` date. Mirrors the engine's `legacySessions` input (the
-     * engine owns the lookup; this declaration drives the doctor's
-     * expiry check and startup warning). `cookieNames` must not
-     * collide with the current session cookie names.
+     * Coexistence window (issue #51/#72): the same window you pass to
+     * the provider ENGINE — `createBetterAuthEngine({ legacySessions })`
+     * — which is the option that actually honors legacy payload-auth
+     * session cookies (read-only) until the ISO `until` date. The
+     * plugin cannot enable coexistence itself; this option exists to
+     * ASSERT the engine's window at config time: wiring throws when
+     * no engine declares one, when the two disagree, or when
+     * `cookieNames` collides with the engine's current session cookie
+     * names. Setting it without the engine input is a config error,
+     * not a silent no-op.
      */
     readonly legacySessions?: {
         readonly until: string;
@@ -905,8 +917,12 @@ export type AuthLinkServer = {
     readonly revokeAllForUser: (userId: number | string) => Promise<void>;
     /** Verify an API key; `null` when the key is unknown. */
     readonly verifyApiKey: (key: string) => Promise<ApiKeyVerification | null>;
-    /** The provider's signed session cookie for one session token. */
-    readonly sessionCookie: (token: string) => string;
+    /**
+     * The provider's signed session cookie for one session token
+     * (`token.<signature>` — Better Auth only accepts the signed form).
+     * Async: the provider resolves its engine's secret on first use.
+     */
+    readonly sessionCookie: (token: string) => Promise<string>;
 };
 /**
  * Resolve the server API for a Payload instance the plugin is

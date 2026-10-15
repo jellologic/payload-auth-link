@@ -8,5 +8,10 @@ test('homepage renders', async ({ page }) => {
 
 test('admin serves login', async ({ page }) => {
   await gotoSettled(page, '/admin/login')
-  await expect(page.getByLabel(/email/i)).toBeVisible()
+  // The provider-backed login view (#55/#72) renders BOTH forms.
+  await expect(page.getByRole('heading', { name: 'Provider sign-in' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Break-glass local sign-in' })).toBeVisible()
+  await expect(
+    page.locator('form', { hasText: 'Provider sign-in' }).getByLabel(/email/i)
+  ).toBeVisible()
 })

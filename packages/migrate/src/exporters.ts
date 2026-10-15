@@ -39,6 +39,46 @@ export type ExportResult = {
   /** The JSONL document: one JSON object per line, `{"table": …, "row": …}`. */
   readonly jsonl: string
   readonly totalRows: number
+  /**
+   * Requested tables that do not exist on the source (issue #68). The
+   * caller decides policy: `--tables` names must abort (exit 1),
+   * default-list gaps are reported but tolerated.
+   */
+  readonly missing: readonly string[]
+}
+
+/**
+ * The `--tables` flag value (issue #68): a JSON array of table names or
+ * a comma-separated list of table names. Anything else is a usage error.
+ */
+const tableName = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+export function parseExportTables(value: string): readonly string[] {
+  const trimmed = value.trim()
+  const reject = (): never => {
+    throw new Error('--tables must be a JSON array of table names or a comma-separated list')
+  }
+  if (trimmed === '') {
+    return reject()
+  }
+  if (trimmed.startsWith('[')) {
+    const parsed: unknown = JSON.parse(trimmed)
+    if (
+      !Array.isArray(parsed) ||
+      parsed.some((entry) => typeof entry !== 'string' || !tableName.test(entry.trim()))
+    ) {
+      return reject()
+    }
+    return (parsed as string[]).map((entry) => entry.trim())
+  }
+  const names = trimmed
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== '')
+  if (names.length === 0 || names.some((entry) => !tableName.test(entry))) {
+    return reject()
+  }
+  return names
 }
 
 /** Export the auth tables to lossless JSONL (issue #58). */
@@ -49,6 +89,7 @@ export async function exportToJsonl(options: ExportOptions): Promise<ExportResul
   try {
     const lines: string[] = []
     const exported: { name: string; rows: number }[] = []
+    const missing: string[] = []
     let totalRows = 0
     for (const table of tables) {
       const exists = await client.query(
@@ -56,6 +97,10 @@ export async function exportToJsonl(options: ExportOptions): Promise<ExportResul
         [table]
       )
       if (exists.rows.length === 0) {
+        // Nothing is silently omitted (issue #68): every absent table
+        // is logged and lands in `missing` for the caller's policy.
+        missing.push(table)
+        options.log?.(`table '${table}' does not exist on the source — not exported`)
         continue
       }
       // Export EVERY column raw (JSON types preserved by ::jsonb cast
@@ -70,7 +115,7 @@ export async function exportToJsonl(options: ExportOptions): Promise<ExportResul
       }
     }
     options.log?.(`exported ${totalRows} row(s) across ${exported.length} table(s)`)
-    return { tables: exported, jsonl: `${lines.join('\n')}\n`, totalRows }
+    return { tables: exported, jsonl: `${lines.join('\n')}\n`, totalRows, missing }
   } finally {
     await client.end()
   }

@@ -88,12 +88,16 @@ export type AuthLinkPluginOptions = {
       }
     | undefined
   /**
-   * Coexistence window (issue #51): legacy payload-auth session
-   * cookie names, honored read-only by the provider until the ISO
-   * `until` date. Mirrors the engine's `legacySessions` input (the
-   * engine owns the lookup; this declaration drives the doctor's
-   * expiry check and startup warning). `cookieNames` must not
-   * collide with the current session cookie names.
+   * Coexistence window (issue #51/#72): the same window you pass to
+   * the provider ENGINE — `createBetterAuthEngine({ legacySessions })`
+   * — which is the option that actually honors legacy payload-auth
+   * session cookies (read-only) until the ISO `until` date. The
+   * plugin cannot enable coexistence itself; this option exists to
+   * ASSERT the engine's window at config time: wiring throws when
+   * no engine declares one, when the two disagree, or when
+   * `cookieNames` collides with the engine's current session cookie
+   * names. Setting it without the engine input is a config error,
+   * not a silent no-op.
    */
   readonly legacySessions?:
     | {
@@ -366,6 +370,65 @@ function validateLegacySessions(
 }
 
 /**
+ * The plugin's `legacySessions` option cannot enable coexistence —
+ * the provider ENGINE's input is what honors legacy cookies (#72).
+ * When the host declares the option, wiring therefore asserts the
+ * engine's window: absent everywhere, or disagreeing on `until` or
+ * `cookieNames`, all fail the build naming the fix. A legacy cookie
+ * name equal to a current session cookie name is rejected too (it
+ * would make the fast-path treat every request as carrying a session).
+ * Engine-only configuration stays legal: the engine acts alone, no
+ * assertion is demanded.
+ */
+function assertLegacySessionsConsistent(
+  plugin: { readonly until: string; readonly cookieNames: readonly string[] } | null,
+  providers: readonly IdentityProviderPort[]
+): { readonly until: string; readonly cookieNames: readonly string[] } | null {
+  if (plugin === null) {
+    return null
+  }
+  const withWindow = providers.filter((provider) => provider.legacySessions !== undefined)
+  if (withWindow.length === 0) {
+    throw new InvalidConfigError(
+      'legacySessions: no provider engine declares a coexistence window — the plugin option only cross-checks the window that acts. Pass the same window to your engine (createBetterAuthEngine({ legacySessions })) or remove the plugin option.'
+    )
+  }
+  for (const provider of withWindow) {
+    const engine = provider.legacySessions
+    if (engine === undefined) {
+      continue
+    }
+    // Compare instants and trimmed name SETS, not raw strings: the
+    // plugin option is normalized on its way through validation (ISO
+    // with milliseconds, trimmed names), the engine port carries the
+    // host's raw strings — `'2099-01-01T00:00:00Z'` and
+    // `'2099-01-01T00:00:00.000Z'` are the same window.
+    const engineUntil = Date.parse(engine.until)
+    const pluginUntil = Date.parse(plugin.until)
+    const sameUntil = Number.isFinite(engineUntil) && engineUntil === pluginUntil
+    const engineNames = engine.cookieNames.map((name) => name.trim())
+    const sameNames =
+      engineNames.length === plugin.cookieNames.length &&
+      engineNames.every((name) => plugin.cookieNames.includes(name))
+    if (!sameUntil || !sameNames) {
+      throw new InvalidConfigError(
+        `legacySessions: provider '${provider.id}' engine window (${engine.until}, [${engine.cookieNames.join(', ')}]) disagrees with the plugin option (${plugin.until}, [${plugin.cookieNames.join(', ')}]) — keep them identical, or set it on the engine only`
+      )
+    }
+  }
+  for (const provider of providers) {
+    for (const name of plugin.cookieNames) {
+      if (provider.sessionCookieNames.includes(name)) {
+        throw new InvalidConfigError(
+          `legacySessions.cookieNames: '${name}' is also a current session cookie name on provider '${provider.id}' — a legacy name must be a different cookie`
+        )
+      }
+    }
+  }
+  return plugin
+}
+
+/**
  * Validate the role value map (issue #56): keys must be declared
  * roles, values non-empty, and the stored forms unique — two roles
  * sharing a stored value would make one silently grant the other. The
@@ -632,7 +695,10 @@ export function wireOptions(raw: AuthLinkPluginOptions): WiredOptions {
         : raw.allowServerSessions === false
           ? (false as const)
           : ('dev-only' as const),
-    legacySessions: validateLegacySessions(raw.legacySessions),
+    legacySessions: assertLegacySessionsConsistent(
+      validateLegacySessions(raw.legacySessions),
+      raw.providers
+    ),
     adminProviderLoginView: raw.admin?.loginView === 'provider',
     roleManagerRoles,
     onAudit: raw.onAudit ?? null,

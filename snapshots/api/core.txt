@@ -1080,6 +1080,18 @@ export interface IdentityProviderPort {
      */
     readonly sessionCookieClearOptions?: ((name: string) => CookieOptions | undefined) | undefined;
     /**
+     * The coexistence window the provider's ENGINE was configured with
+     * (issue #51/#72): legacy session cookie names honored read-only
+     * until the ISO `until` date. The engine input is what acts; the
+     * plugin's own `legacySessions` option exists only as a config-time
+     * cross-check against this. Optional: providers whose engine has no
+     * window (or predates the input) omit it.
+     */
+    readonly legacySessions?: Readonly<{
+        readonly until: string;
+        readonly cookieNames: readonly string[];
+    }> | undefined;
+    /**
      * Extra provider cookies to expire on logout that do NOT themselves
      * indicate a live session, so they must stay out of
      * `sessionCookieNames` (middleware fast-paths read that list as
@@ -1140,10 +1152,12 @@ export interface IdentityProviderPort {
     readonly verifyApiKey?: ((key: string) => ResultAsync<ApiKeyVerification | null, ProviderError>) | undefined;
     /**
      * The provider's correctly signed session cookie for one session
-     * token — `authLinkServer.sessionCookie`. Optional: providers whose
-     * session transport is not a cookie (stateless Auth.js) omit it.
+     * token — `authLinkServer.sessionCookie`. Signing is async (the
+     * provider resolves its engine's secret on first use). Optional:
+     * providers whose session transport is not a cookie (stateless
+     * Auth.js) omit it.
      */
-    readonly sessionCookie?: ((token: string) => string) | undefined;
+    readonly sessionCookie?: ((token: string) => Promise<string>) | undefined;
     /**
      * Enumerate every session id presented by this request beyond the
      * active session (CAP-13b multi-session logout): the ids are

@@ -20,9 +20,12 @@ export async function gotoOwn(page: Page, path: string): Promise<void> {
  * `goto` that collides with a navigation the app itself starts — the
  * post-sign-out redirect still settling ("Frame load interrupted"), or
  * a signed-out page bouncing to sign-in after `clearCookies()` ("is
- * interrupted by another navigation"); Chromium and Gecko queue them.
- * Retry those engine-specific interruptions (up to twice), never other
- * failures. Use directly for Payload admin pages (no hydration marker).
+ * interrupted by another navigation"); Chromium queues them. Gecko has
+ * the same race with its own message ("NS_BINDING_ABORTED") — seen
+ * when the provider login view's post-sign-in redirect is still
+ * settling — so the same retries cover it. Retry those
+ * engine-specific interruptions (up to twice), never other failures.
+ * Use directly for Payload admin pages (no hydration marker).
  */
 export async function gotoSettled(page: Page, path: string): Promise<void> {
   for (let attempt = 0; ; attempt += 1) {
@@ -33,7 +36,8 @@ export async function gotoSettled(page: Page, path: string): Promise<void> {
       const interrupted =
         error instanceof Error &&
         (error.message.includes('Frame load interrupted') ||
-          error.message.includes('is interrupted by another navigation'))
+          error.message.includes('is interrupted by another navigation') ||
+          error.message.includes('NS_BINDING_ABORTED'))
       if (!interrupted || attempt >= 2) {
         throw error
       }

@@ -29,6 +29,8 @@ export type PluginFinding = {
   readonly id: string
   readonly status: 'supported' | 'auto-declarable' | 'unprobed' | 'unsupported' | 'removed-upstream'
   readonly detail: string
+  /** Files under `--src` whose source names this plugin (issue #71). */
+  readonly files?: readonly string[]
 }
 
 /** The users collection, as the migration will meet it. */
@@ -71,6 +73,13 @@ export type DatabaseFinding = {
   /** Users with `emailVerified = false` — they will not JIT-link. */
   readonly unverifiedUsers: number | null
   readonly orphans: readonly { readonly kind: string; readonly count: number }[]
+  /**
+   * Mapped source models whose table is absent (issue #68) — blockers
+   * unless `--source-map` records the model as not installed.
+   */
+  readonly missingTables?: readonly { readonly model: string; readonly table: string }[]
+  /** Orphan checks that could not run, with the reason (issue #68). */
+  readonly skippedChecks?: readonly string[]
 }
 
 /** Default-behaviour changes in payload-auth-link 0.7.0 that bite. */

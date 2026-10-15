@@ -61,19 +61,29 @@ function usage(): string {
 
 Commands:
   doctor --config ./src/payload.config.ts [--src ./src] [--json] [--database-url URL]
+                    [--source-map '{"accounts":"user_accounts","sessions":"user_sessions"}']
   export            --database-url URL [--out file.jsonl]
+                    [--tables users,accounts | '["users","accounts"]']
                     (lossless JSONL of every auth table — the off-ramp, #58)
   codemod           --src ./src [--write]
   from-payload-auth --config ./src/payload.config.ts [--apply] [--sessions=carry|drop]
                     [--manifest ./payload-auth-link-migration.json] [--database-url URL] [--json]
+                    [--source-map '{"accounts":"user_accounts","sessions":"user_sessions"}']
   verify            --config ./src/payload.config.ts [--database-url URL] [--json]
+                    [--source-map '{"accounts":"user_accounts","sessions":"user_sessions"}']
   rollback          --config ./src/payload.config.ts [--manifest ...]
   finalize          [--manifest ...]
 
-  doctor is read-only: it loads the config, inspects the users
-  collection and Better Auth plugins, scans sources for call sites
-  that must migrate, and (with a database URL) reports row counts,
-  unverified users, and orphans.
+  --source-map renames source models to your layout's tables (custom
+  slugs like user_accounts/user_sessions); a null value records a
+  model as not installed. Without it, a missing source table aborts
+  the run — nothing is silently read as empty.
+
+  doctor is read-only: it loads the config (an unloadable config is a
+  blocker, not a crash), inspects the users collection and Better
+  Auth plugins, scans sources for call sites that must migrate, and
+  (with a database URL) reports row counts, unverified users, and
+  orphans.
 
   from-payload-auth is a DRY RUN by default: it prints planned row
   counts per model, collisions, and anything unmappable. --apply
@@ -105,7 +115,13 @@ function formatReport(report: DoctorReport): string {
     lines.push('     none declared')
   }
   for (const finding of report.plugins) {
-    lines.push(`  -  ${finding.id}: ${finding.status} — ${finding.detail}`)
+    lines.push(
+      `  -  ${finding.id}: ${finding.status} — ${finding.detail}${
+        finding.files !== undefined && finding.files.length > 0
+          ? ` (files: ${finding.files.join(', ')})`
+          : ''
+      }`
+    )
   }
   lines.push('')
   lines.push('== users collection ==')
@@ -219,12 +235,33 @@ async function main(
         err.write('export requires --database-url or DATABASE_URL\n')
         return 3
       }
+      const tablesFlag = flags.get('tables')
+      let tables: readonly string[] | undefined
+      if (typeof tablesFlag === 'string') {
+        try {
+          const { parseExportTables } = await import('./exporters.js')
+          tables = parseExportTables(tablesFlag)
+        } catch (error) {
+          err.write(`${error instanceof Error ? error.message : String(error)}\n`)
+          return 3
+        }
+      }
       const { exportToJsonl } = await import('./exporters.js')
       const result = await exportToJsonl({
         connectionString: databaseUrl,
         format: 'jsonl',
+        ...(tables === undefined ? {} : { tables }),
         log: (message) => out.write(`${message}\n`),
       })
+      // A requested table that doesn't exist is an error, not a gap
+      // (issue #68): nothing is silently omitted.
+      if (tables !== undefined && result.missing.length > 0) {
+        for (const table of result.missing) {
+          err.write(`export: table '${table}' does not exist on the source\n`)
+        }
+        err.write('nothing silently omitted; fix --tables or drop it\n')
+        return 1
+      }
       if (typeof flags.get('out') === 'string') {
         writeFileSync(flags.get('out') as string, result.jsonl)
         out.write(`wrote ${result.totalRows} row(s) to ${String(flags.get('out'))}\n`)
@@ -325,6 +362,9 @@ async function main(
       ...(typeof flags.get('slugs') === 'string'
         ? { slugsJson: flags.get('slugs') as string }
         : {}),
+      ...(typeof flags.get('source-map') === 'string'
+        ? { sourceMapJson: flags.get('source-map') as string }
+        : {}),
       json: flags.get('json') === true,
     }
     if (command === 'from-payload-auth') {
@@ -360,6 +400,9 @@ async function main(
       ? { srcDir: new URL(srcFlag, `file://${process.cwd()}/`).pathname }
       : {}),
     ...(typeof dbFlag === 'string' ? { databaseUrl: dbFlag } : {}),
+    ...(typeof flags.get('source-map') === 'string'
+      ? { sourceMapJson: flags.get('source-map') as string }
+      : {}),
   })
   if (flags.get('json') === true) {
     out.write(`${JSON.stringify(report, null, 2)}\n`)
@@ -383,8 +426,11 @@ if (invokedDirectly) {
       process.exitCode = code
     })
     .catch((error: unknown) => {
+      // Name the command that failed (issue #71) — 'doctor failed:' was
+      // wrong for every other subcommand.
+      const { command } = parseArgs(process.argv.slice(2))
       process.stderr.write(
-        `doctor failed: ${error instanceof Error ? error.message : String(error)}\n`
+        `${command ?? 'cli'} failed: ${error instanceof Error ? error.message : String(error)}\n`
       )
       process.exitCode = 1
     })

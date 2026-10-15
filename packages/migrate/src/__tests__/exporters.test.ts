@@ -18,7 +18,20 @@ type Harness = {
   }
 }
 const harness = (await import(harnessPath)) as Harness
-import { exportToJsonl } from '../exporters.js'
+import { exportToJsonl, parseExportTables } from '../exporters.js'
+
+describe('--tables flag parsing (#68)', () => {
+  test('accepts a JSON array or a comma-separated list', () => {
+    expect(parseExportTables('users, accounts')).toEqual(['users', 'accounts'])
+    expect(parseExportTables('["users","api_keys"]')).toEqual(['users', 'api_keys'])
+    expect(parseExportTables(' users_role ')).toEqual(['users_role'])
+  })
+  test('rejects anything that is not a list of table names', () => {
+    expect(() => parseExportTables('')).toThrow(/--tables/)
+    expect(() => parseExportTables('{"users":1}')).toThrow(/--tables/)
+    expect(() => parseExportTables('[1,2]')).toThrow(/table names/)
+  })
+})
 
 /**
  * Off-ramp JSONL export against the real fixture (issue #58): every
@@ -83,5 +96,16 @@ describe.skipIf(!canReachPostgres)('export --to jsonl (issue #58)', () => {
     const accounts = parsed.filter((entry) => entry.table === 'accounts')
     const credential = accounts.find((entry) => entry.row.provider_id === 'credential')
     expect(String(credential?.row.password)).toMatch(/^[0-9a-f]{32}:[0-9a-f]{128}$/)
+  })
+
+  test('a requested table that does not exist lands in missing, never silently omitted (#68)', async () => {
+    const { password, port, user } = harness.targetFromEnv(database)
+    const result = await exportToJsonl({
+      connectionString: `postgres://${user}:${password}@localhost:${port}/${database}`,
+      format: 'jsonl',
+      tables: ['users', 'not_a_real_table'],
+    })
+    expect(result.missing).toEqual(['not_a_real_table'])
+    expect(result.tables.map((table) => table.name)).toEqual(['users'])
   })
 })

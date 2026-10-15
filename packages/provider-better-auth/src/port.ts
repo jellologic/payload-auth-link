@@ -178,19 +178,6 @@ export type BetterAuthProviderDeps = {
    */
   readonly events?: IdentityEventBus | undefined
   /**
-   * The session cookie's write attributes for
-   * `sessionCookie(token)` (#54): the engine derives the name and
-   * secure flag from the builder's BA options (secure-cookie rule +
-   * `__Secure-` prefix). Absent = the port omits `sessionCookie`.
-   */
-  readonly sessionCookieSpec?:
-    | {
-        readonly name: string
-        readonly secure: boolean
-        readonly sameSite: 'lax' | 'strict' | 'none'
-      }
-    | undefined
-  /**
    * Coexistence window (#51): legacy payload-auth session cookie
    * names, honored READ-ONLY until the ISO date `until`. After the
    * window the names are ignored and the lookup refuses with a logged
@@ -211,7 +198,7 @@ type PortFunctions = {
   readonly createProviderSession: (userId: string, expiresAt: Date) => Promise<unknown>
   readonly listProviderSessions: (userId: string) => Promise<unknown>
   readonly verifyApiKey?: ((key: string) => Promise<unknown>) | undefined
-  readonly buildSessionCookie?: ((token: string) => string) | undefined
+  readonly buildSessionCookie?: ((token: string) => Promise<string>) | undefined
   readonly listDeviceSessions?: ((input: { headers: Headers }) => Promise<unknown>) | undefined
   readonly sessionCookieNames: readonly string[]
   readonly capabilities: ReadonlySet<Capability>
@@ -219,23 +206,12 @@ type PortFunctions = {
   readonly logoutCookieNames?: readonly string[] | undefined
   readonly events?: IdentityEventBus | undefined
   /**
-   * The session cookie's write attributes for
-   * `sessionCookie(token)` (#54): the engine derives the name and
-   * secure flag from the builder's BA options (secure-cookie rule +
-   * `__Secure-` prefix). Absent = the port omits `sessionCookie`.
-   */
-  readonly sessionCookieSpec?:
-    | {
-        readonly name: string
-        readonly secure: boolean
-        readonly sameSite: 'lax' | 'strict' | 'none'
-      }
-    | undefined
-  /**
    * Coexistence window (#51): legacy payload-auth session cookie
    * names, honored READ-ONLY until the ISO date `until`. After the
    * window the names are ignored and the lookup refuses with a logged
-   * reason. Minting always uses the current names.
+   * reason. Minting always uses the current names. Exposed on the
+   * port (#72) so the plugin can cross-check its own option against
+   * the window that actually acts.
    */
   readonly legacySessions?:
     | {
@@ -476,11 +452,21 @@ function createPortFromFunctions(deps: PortFunctions): IdentityProviderPort {
   const clearOptions = deps.sessionCookieClearOptions
   const logoutCookieNames = deps.logoutCookieNames
   const events = deps.events
+  const buildSessionCookie = deps.buildSessionCookie
+  const legacySessions = deps.legacySessions
   return {
     id: providerId,
     capabilities: deps.capabilities,
     sessionCookieNames: [...deps.sessionCookieNames],
     ...(clearOptions === undefined ? {} : { sessionCookieClearOptions: clearOptions }),
+    ...(legacySessions === undefined
+      ? {}
+      : {
+          legacySessions: {
+            until: legacySessions.until,
+            cookieNames: [...legacySessions.cookieNames],
+          },
+        }),
     ...(logoutCookieNames === undefined ? {} : { logoutCookieNames: [...logoutCookieNames] }),
     ...(events === undefined ? {} : { onIdentityEvent: (handler) => events.subscribe(handler) }),
     getSession(headers: Headers): ResultAsync<ProviderSession | null, ProviderError> {
@@ -550,9 +536,9 @@ function createPortFromFunctions(deps: PortFunctions): IdentityProviderPort {
               (result) => narrowApiKeyVerification(result)
             ),
         }),
-    ...(deps.buildSessionCookie === undefined
+    ...(buildSessionCookie === undefined
       ? {}
-      : { sessionCookie: buildSessionCookieVia(deps.buildSessionCookie) }),
+      : { sessionCookie: (token: string) => buildSessionCookie(token) }),
     ...(deps.listDeviceSessions === undefined
       ? {}
       : {
@@ -581,19 +567,109 @@ function createPortFromFunctions(deps: PortFunctions): IdentityProviderPort {
  * Malformed entries fail closed for the whole enumeration: a partial
  * list would silently leave sessions alive after logout.
  */
-function buildSessionCookieVia(build: (token: string) => string): (token: string) => string {
-  return (token: string) => build(token)
+
+/** The context fields the signed session cookie (#54) is built from. */
+type SessionCookieContext = {
+  readonly secret: string
+  readonly cookieName: string
+  readonly attributes: Readonly<Record<string, unknown>>
 }
 
-function buildSessionCookieFor(spec: {
-  name: string
-  secure: boolean
-  sameSite: 'lax' | 'strict' | 'none'
-}): (token: string) => string {
-  const sameSite = spec.sameSite.charAt(0).toUpperCase() + spec.sameSite.slice(1)
-  return (token: string) =>
-    `${spec.name}=${token}; Path=/; HttpOnly; SameSite=${sameSite}` +
-    (spec.secure ? '; Secure' : '')
+/**
+ * Narrow the resolved `$context` to the fields BA itself uses to mint
+ * the session cookie — `secret` and `authCookies.sessionToken`
+ * (name + attributes, secure prefix and `maxAge` included). A context
+ * without them is a wiring bug: fail closed, never mint an unsigned
+ * cookie BA would refuse.
+ */
+function narrowSessionCookieContext(resolved: unknown): SessionCookieContext {
+  if (!isRecord(resolved)) {
+    throw new InvalidConfigError('Better Auth $context is not an object')
+  }
+  const secret = resolved.secret
+  if (typeof secret !== 'string' || secret === '') {
+    throw new InvalidConfigError('Better Auth $context exposes no secret')
+  }
+  const authCookies = resolved.authCookies
+  if (!isRecord(authCookies) || !isRecord(authCookies.sessionToken)) {
+    throw new InvalidConfigError('Better Auth $context exposes no authCookies.sessionToken')
+  }
+  const name = authCookies.sessionToken.name
+  if (typeof name !== 'string' || name === '') {
+    throw new InvalidConfigError('Better Auth session cookie has no name')
+  }
+  return {
+    secret,
+    cookieName: name,
+    attributes: isRecord(authCookies.sessionToken.attributes)
+      ? authCookies.sessionToken.attributes
+      : {},
+  }
+}
+
+/**
+ * BA's cookie signature (its `makeSignature`): base64 of
+ * HMAC-SHA256 over the value with the context secret. BA reads the
+ * session token cookie back with `getSignedCookie` ONLY, so an
+ * unsigned cookie resolves no session — this is what
+ * `sessionCookie(token)` must produce.
+ */
+async function signCookieValue(value: string, secret: string): Promise<string> {
+  const encoder = new TextEncoder()
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  )
+  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(value))
+  return btoa(String.fromCharCode(...new Uint8Array(signature)))
+}
+
+/**
+ * The signed session cookie for `sessionCookie(token)` (#54), built
+ * from the resolved BA context (issue #72: the cookie MUST be
+ * `token.<signature>` — BA only accepts the signed form) with the
+ * context's own write attributes (name, Path, HttpOnly, SameSite,
+ * Secure, Domain, Max-Age). The context resolves once; every call
+ * after that awaits the cached read.
+ */
+function buildSessionCookieFromContext(
+  context: PromiseLike<unknown>
+): (token: string) => Promise<string> {
+  const resolved = context.then(narrowSessionCookieContext)
+  // The narrowing rejects when the context lacks the cookie fields;
+  // without a reader that rejection would sit unhandled from port
+  // construction (crashing test runs with fail-closed engines). The
+  // builder below surfaces it on first use instead.
+  Promise.resolve(resolved).catch(() => {})
+  return async (token: string) => {
+    const { secret, cookieName, attributes } = await resolved
+    const signature = await signCookieValue(token, secret)
+    const parts: string[] = [`${cookieName}=${token}.${signature}`]
+    const path = attributes['path']
+    parts.push(`Path=${typeof path === 'string' && path !== '' ? path : '/'}`)
+    if (attributes['httpOnly'] !== false) {
+      parts.push('HttpOnly')
+    }
+    const sameSite = attributes['sameSite']
+    if (typeof sameSite === 'string' && sameSite !== '') {
+      parts.push(`SameSite=${sameSite.charAt(0).toUpperCase()}${sameSite.slice(1)}`)
+    }
+    if (attributes['secure'] === true) {
+      parts.push('Secure')
+    }
+    const domain = attributes['domain']
+    if (typeof domain === 'string' && domain !== '') {
+      parts.push(`Domain=${domain}`)
+    }
+    const maxAge = attributes['maxAge']
+    if (typeof maxAge === 'number' && Number.isFinite(maxAge)) {
+      parts.push(`Max-Age=${String(Math.floor(maxAge))}`)
+    }
+    return parts.join('; ')
+  }
 }
 
 /**
@@ -851,11 +927,10 @@ export function createBetterAuthProvider(deps: BetterAuthProviderDeps): Identity
               body: { key },
             }),
         }),
-    ...(deps.sessionCookieSpec === undefined
-      ? {}
-      : {
-          buildSessionCookie: buildSessionCookieFor(deps.sessionCookieSpec),
-        }),
+    ...(deps.legacySessions === undefined ? {} : { legacySessions: deps.legacySessions }),
+    // #54/#72: the signed session cookie, built from the instance's
+    // own resolved context (secret + cookie attributes).
+    buildSessionCookie: buildSessionCookieFromContext(deps.auth.$context),
     ...(deps.auth.api.listDeviceSessions === undefined
       ? {}
       : { listDeviceSessions: deps.auth.api.listDeviceSessions }),
@@ -895,13 +970,6 @@ export function createBetterAuthProviderFromUnknown(
       | {
           readonly until: string
           readonly cookieNames: readonly string[]
-        }
-      | undefined
-    readonly sessionCookieSpec?:
-      | {
-          readonly name: string
-          readonly secure: boolean
-          readonly sameSite: 'lax' | 'strict' | 'none'
         }
       | undefined
   }
@@ -959,7 +1027,6 @@ export function createBetterAuthProviderFromUnknown(
             body: { key },
           })
       : undefined
-  const sessionCookieSpec = options?.sessionCookieSpec
   return createPortFromFunctions({
     getSession: (input) =>
       getSessionMaybeWithLegacy(
@@ -979,9 +1046,9 @@ export function createBetterAuthProviderFromUnknown(
         (listSessions as (userId: string) => Promise<unknown>)(userId)
       ),
     ...(verifyApiKey === undefined ? {} : { verifyApiKey }),
-    ...(sessionCookieSpec === undefined
-      ? {}
-      : { buildSessionCookie: buildSessionCookieFor(sessionCookieSpec) }),
+    // #54/#72: the signed session cookie, built from the instance's
+    // own resolved context (secret + cookie attributes).
+    buildSessionCookie: buildSessionCookieFromContext(context),
     ...(listDeviceSessions === undefined ? {} : { listDeviceSessions }),
     sessionCookieNames,
     capabilities: betterAuthCapabilities({

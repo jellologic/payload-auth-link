@@ -1,8 +1,16 @@
 import type { Payload } from 'payload'
-import { readFlatRows, openSource, readSourceUsers, type SourceUser } from './source.js'
+import {
+  readFlatRows,
+  openSource,
+  readSourceUsers,
+  type SourceRow,
+  type SourceUser,
+} from './source.js'
 import {
   defaultTargetSlugs,
+  resolveSourceTables,
   type CreatedRow,
+  type ResolvedSourceTables,
   type TargetSlugMap,
   type FieldWrite,
   type ImportManifest,
@@ -41,6 +49,11 @@ export type ApplyOptions = {
   readonly sourceDatabase: string
   /** Target collection slugs; defaults must match the engine wiring. */
   readonly slugs?: Readonly<Record<string, string>> | undefined
+  /**
+   * Source-side model → table map (issue #68). Defaults to
+   * payload-auth's layout; a `null` model is treated as not installed.
+   */
+  readonly sourceTables?: Readonly<Record<string, string | null>> | undefined
   /** Injectable clock for deterministic `linkedAt` stamps. */
   readonly now?: () => Date
   readonly log?: (message: string) => void
@@ -61,6 +74,20 @@ function numberOrNull(value: unknown): number | undefined {
   }
   const numeric = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(numeric) ? numeric : undefined
+}
+
+/**
+ * Rows for one mapped model. A `null` mapping records the model as
+ * not installed (issue #68) — no read, no rows; anything else goes
+ * through the strict `readFlatRows` (a missing mapped table throws;
+ * the probe aborts the run first).
+ */
+async function readMapped(
+  client: Awaited<ReturnType<typeof openSource>>,
+  table: string | null,
+  columns: readonly string[]
+): Promise<SourceRow[]> {
+  return table === null ? [] : readFlatRows(client, table, columns)
 }
 
 /** Find an existing target row by `baId` — the resumable dedupe key. */
@@ -120,26 +147,36 @@ async function captureBefore(
   return JSON.stringify((doc as Record<string, unknown>)[field] ?? null)
 }
 
-/** Identity rows pre-populated on the host user (verified emails only). */
+/**
+ * The identity rows pre-populated on the host user (issue #69): ONE
+ * `better-auth` identity per imported user, `providerUserId` set to
+ * the ba-users row this import created for them. The engine-created
+ * models key their rows by `baId` and serve Better Auth's own
+ * `user.id` from that column, so the value here — the deterministic
+ * `baId` derived from the source user id — is exactly what
+ * `findByProviderIdentity` queries back
+ * (`{ providerId: 'better-auth', providerUserId: <BA user id> }`).
+ *
+ * Every imported user gets the identity — verified or not,
+ * credential-only included: the import itself proves the
+ * BA-user↔document binding, so identity resolution never depends on
+ * the (verified-only) `linkable` proof, which keeps its current
+ * granting below. An unverified user who verifies their email later
+ * resolves to their ORIGINAL document on the next sign-in instead of
+ * being provisioned a fresh one.
+ */
 function identityRows(
   user: SourceUser,
   now: () => Date
 ): { providerId: string; providerUserId: string; email: string; linkedAt: string }[] {
-  const rows: { providerId: string; providerUserId: string; email: string; linkedAt: string }[] = []
-  for (const account of user.accounts) {
-    if (account.providerId === 'credential') {
-      // A password credential is not an identity: the engine signs the
-      // user in through ba-accounts; no link is claimed.
-      continue
-    }
-    rows.push({
-      providerId: account.providerId,
-      providerUserId: account.accountId,
+  return [
+    {
+      providerId: 'better-auth',
+      providerUserId: String(user.id),
       email: user.email,
       linkedAt: now().toISOString(),
-    })
-  }
-  return rows
+    },
+  ]
 }
 
 export async function applyImport(options: ApplyOptions): Promise<ImportResult> {
@@ -152,6 +189,7 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
     now = () => new Date(),
   } = options
   const slugs = slugsOf(options.slugs)
+  const sourceTables: ResolvedSourceTables = resolveSourceTables(options.sourceTables)
   const created: CreatedRow[] = [...(options.manifest?.created ?? [])]
   const fieldWrites: FieldWrite[] = [...(options.manifest?.fieldWrites ?? [])]
   const totals: Record<string, number> = { ...(options.manifest?.totals ?? {}) }
@@ -167,7 +205,7 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
 
   const client = await openSource(sourceConnectionString)
   try {
-    const users = await readSourceUsers(client)
+    const users = await readSourceUsers(client, sourceTables)
     const seenUsers = new Set<string>()
 
     // --- 1. ba-users + host field writes ---------------------------------
@@ -240,7 +278,7 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
       }
       record({
         model: 'user',
-        sourceTable: 'users',
+        sourceTable: sourceTables['users'] ?? 'users',
         targetCollection: slugs.user,
         rows: 1,
         skipped: isNew ? 0 : apply ? 1 : 0,
@@ -249,6 +287,7 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
     }
 
     // --- 2. accounts (hashes verbatim) ------------------------------------
+    const accountsTable = sourceTables['accounts']
     for (const user of users) {
       for (const account of user.accounts) {
         totals.account = (totals.account ?? 0) + 1
@@ -287,7 +326,7 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
         }
         record({
           model: 'account',
-          sourceTable: 'accounts',
+          sourceTable: accountsTable ?? 'accounts',
           targetCollection: slugs.account,
           rows: 1,
           skipped: isNew ? 0 : apply ? 1 : 0,
@@ -297,8 +336,9 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
     }
 
     // --- 3. sessions (carry keeps every token) -----------------------------
+    const sessionsTable = sourceTables['sessions']
     if (sessions === 'carry') {
-      const rows = await readFlatRows(client, 'sessions', [
+      const rows = await readMapped(client, sessionsTable, [
         'id',
         'user_id',
         'token',
@@ -349,7 +389,7 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
         }
         record({
           model: 'session',
-          sourceTable: 'sessions',
+          sourceTable: sessionsTable ?? 'sessions',
           targetCollection: slugs.session,
           rows: 1,
           skipped: isNew ? 0 : apply ? 1 : 0,
@@ -359,7 +399,8 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
     }
 
     // --- 4. verifications ---------------------------------------------------
-    const verifications = await readFlatRows(client, 'verifications', [
+    const verificationsTable = sourceTables['verifications']
+    const verifications = await readMapped(client, verificationsTable, [
       'id',
       'identifier',
       'value',
@@ -392,7 +433,7 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
       }
       record({
         model: 'verification',
-        sourceTable: 'verifications',
+        sourceTable: verificationsTable ?? 'verifications',
         targetCollection: slugs.verification,
         rows: 1,
         skipped: isNew ? 0 : apply ? 1 : 0,
@@ -401,7 +442,8 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
     }
 
     // --- 5. api keys (hash, prefix, metadata, rate-limit state) --------------
-    const apiKeys = await readFlatRows(client, 'api_keys', [
+    const apiKeysTable = sourceTables['api_keys']
+    const apiKeys = await readMapped(client, apiKeysTable, [
       'id',
       'config_id',
       'name',
@@ -495,7 +537,7 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
       }
       record({
         model: 'apikey',
-        sourceTable: 'api_keys',
+        sourceTable: apiKeysTable ?? 'api_keys',
         targetCollection: slugs.apikey,
         rows: 1,
         skipped: isNew ? 0 : apply ? 1 : 0,
@@ -504,7 +546,8 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
     }
 
     // --- 6. jwks --------------------------------------------------------------
-    const jwks = await readFlatRows(client, 'jwks', ['id', 'public_key', 'private_key'])
+    const jwksTable = sourceTables['jwks']
+    const jwks = await readMapped(client, jwksTable, ['id', 'public_key', 'private_key'])
     for (const row of jwks) {
       totals.jwks = (totals.jwks ?? 0) + 1
       const baId = `jwks-${String(row.id)}`
@@ -530,7 +573,7 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
       }
       record({
         model: 'jwks',
-        sourceTable: 'jwks',
+        sourceTable: jwksTable ?? 'jwks',
         targetCollection: slugs.jwks,
         rows: 1,
         skipped: isNew ? 0 : apply ? 1 : 0,
@@ -539,7 +582,8 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
     }
 
     // --- 7. organization plugin rows ---------------------------------------
-    const organizations = await readFlatRows(client, 'organizations', [
+    const organizationsTable = sourceTables['organizations']
+    const organizations = await readMapped(client, organizationsTable, [
       'id',
       'name',
       'slug',
@@ -575,7 +619,7 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
       }
       record({
         model: 'organization',
-        sourceTable: 'organizations',
+        sourceTable: organizationsTable ?? 'organizations',
         targetCollection: slugs.organization,
         rows: 1,
         skipped: isNew ? 0 : apply ? 1 : 0,
@@ -583,7 +627,8 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
       })
     }
 
-    const members = await readFlatRows(client, 'members', [
+    const membersTable = sourceTables['members']
+    const members = await readMapped(client, membersTable, [
       'id',
       'organization_id',
       'user_id',
@@ -615,7 +660,7 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
       }
       record({
         model: 'member',
-        sourceTable: 'members',
+        sourceTable: membersTable ?? 'members',
         targetCollection: slugs.member,
         rows: 1,
         skipped: isNew ? 0 : apply ? 1 : 0,
@@ -623,7 +668,8 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
       })
     }
 
-    const invitations = await readFlatRows(client, 'invitations', [
+    const invitationsTable = sourceTables['invitations']
+    const invitations = await readMapped(client, invitationsTable, [
       'id',
       'organization_id',
       'email',
@@ -663,7 +709,7 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
       }
       record({
         model: 'invitation',
-        sourceTable: 'invitations',
+        sourceTable: invitationsTable ?? 'invitations',
         targetCollection: slugs.invitation,
         rows: 1,
         skipped: isNew ? 0 : apply ? 1 : 0,

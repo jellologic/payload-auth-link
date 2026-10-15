@@ -1,6 +1,12 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import type { Payload } from 'payload'
-import type { ImportManifest } from './types.js'
+import {
+  defaultTargetSlugs,
+  resolveSourceTables,
+  sourceModelNames,
+  type ResolvedSourceTables,
+  type ImportManifest,
+} from './types.js'
 
 /**
  * Manifest lifecycle (issue #50): `verify` checks both sides, `rollback`
@@ -42,30 +48,33 @@ export type VerifyResult = {
 }
 
 /**
- * Verify (issue #50): per-model counts match, every source user has
- * exactly one target row, every credential account resolves to its
- * user, every API key carries its hash with a resolvable owner, and
- * every member/invitation references an existing org and user. Exits
- * non-zero on any mismatch (the caller maps `ok` to the exit code).
+ * Verify (issues #50, #68, #69): fail closed on the source layout
+ * (the probe runs first), per-model counts match EXACTLY (zero never
+ * skips; every mapped model is either counted or explicitly
+ * null-mapped), every source user has exactly one target row, every
+ * imported user resolves through exactly one `better-auth` identity
+ * pointing at their ba-users id, every credential account resolves to
+ * its user, every API key carries its hash with a resolvable owner,
+ * and every member/invitation references an existing org and user.
+ * Exits non-zero on any mismatch (the caller maps `ok` to the exit
+ * code).
  */
 export async function verifyImport(options: {
   readonly payload: Payload
   readonly sourceConnectionString: string
   readonly slugs?: Readonly<Record<string, string>> | undefined
+  /** Model → source table map (issue #68); defaults to the default layout. */
+  readonly sourceTables?: Readonly<Record<string, string | null>> | undefined
+  /** Whether the import carried sessions; `drop` skips the session count. */
+  readonly sessions?: 'carry' | 'drop' | undefined
 }): Promise<VerifyResult> {
   const { payload, sourceConnectionString } = options
   const slugs: Record<string, string> = {
-    ...{
-      user: 'ba-users',
-      account: 'ba-accounts',
-      session: 'ba-sessions',
-      apikey: 'ba-apikey',
-      organization: 'ba-organization',
-      member: 'ba-member',
-      invitation: 'ba-invitation',
-    },
+    ...defaultTargetSlugs,
     ...(options.slugs ?? {}),
   }
+  const sourceTables: ResolvedSourceTables = resolveSourceTables(options.sourceTables)
+  const sessions = options.sessions ?? 'carry'
   const issues: VerifyIssue[] = []
   const checks: { name: string; passed: boolean }[] = []
   const check = (name: string, passed: boolean, detail?: string): void => {
@@ -81,41 +90,79 @@ export async function verifyImport(options: {
   }
 
   // Source side, read directly.
-  const { openSource, readSourceUsers, countTables } = await import('./source.js')
+  const { openSource, probeSourceLayout, readSourceUsers, countTables } =
+    await import('./source.js')
   const client = await openSource(sourceConnectionString)
   try {
-    const sourceCounts = await countTables(client, [
-      'users',
-      'accounts',
-      'sessions',
-      'verifications',
-      'api_keys',
-      'jwks',
-      'organizations',
-      'members',
-      'invitations',
-    ])
-    const users = await readSourceUsers(client)
+    // Fail closed (issue #68): a missing mapped table or column aborts
+    // the check with an actionable report instead of reading zeros.
+    const probe = await probeSourceLayout(client, sourceTables)
+    if (probe.length > 0) {
+      for (const issue of probe) {
+        issues.push({ code: 'source-table-missing', detail: issue.reason })
+      }
+      return { ok: false, issues, checks }
+    }
+    const sourceCounts = await countTables(
+      client,
+      sourceModelNames.map((model) => sourceTables[model]).filter((t): t is string => t !== null)
+    )
+    const users = await readSourceUsers(client, sourceTables)
 
-    // 1. per-model counts match (sessions only when carried).
-    const countPairs: readonly [string, string, number][] = [
-      ['users', String(slugs['user']), sourceCounts['users'] ?? 0],
-      ['accounts', String(slugs['account']), sourceCounts['accounts'] ?? 0],
-      ['api keys', String(slugs['apikey']), sourceCounts['api_keys'] ?? 0],
-      ['organizations', String(slugs['organization']), sourceCounts['organizations'] ?? 0],
-      ['members', String(slugs['member']), sourceCounts['members'] ?? 0],
-      ['invitations', String(slugs['invitation']), sourceCounts['invitations'] ?? 0],
+    // 1. per-model counts match EXACTLY (issue #68) — zero never skips.
+    // A null-mapped model is recorded as skipped-by-config, visibly.
+    const countPairs: readonly {
+      readonly label: string
+      readonly table: string | null
+      readonly collection: string
+    }[] = [
+      { label: 'users', table: sourceTables['users'], collection: String(slugs['user']) },
+      { label: 'accounts', table: sourceTables['accounts'], collection: String(slugs['account']) },
+      {
+        label: 'sessions',
+        table: sessions === 'carry' ? sourceTables['sessions'] : null,
+        collection: String(slugs['session']),
+      },
+      {
+        label: 'verifications',
+        table: sourceTables['verifications'],
+        collection: String(slugs['verification']),
+      },
+      { label: 'api keys', table: sourceTables['api_keys'], collection: String(slugs['apikey']) },
+      { label: 'jwks', table: sourceTables['jwks'], collection: String(slugs['jwks']) },
+      {
+        label: 'organizations',
+        table: sourceTables['organizations'],
+        collection: String(slugs['organization']),
+      },
+      { label: 'members', table: sourceTables['members'], collection: String(slugs['member']) },
+      {
+        label: 'invitations',
+        table: sourceTables['invitations'],
+        collection: String(slugs['invitation']),
+      },
     ]
-    for (const [label, collection, expected] of countPairs) {
-      if (expected === 0) {
+    for (const pair of countPairs) {
+      if (pair.table === null) {
+        checks.push({
+          name: `count ${pair.label} (skipped: null-mapped — not installed on the source)`,
+          passed: true,
+        })
         continue
       }
-      const actual = await targetCounts(collection)
+      const expected = sourceCounts[pair.table] ?? 0
+      const actual = await targetCounts(pair.collection)
       check(
-        `count ${label}`,
-        actual >= expected,
-        `expected >= ${expected} ${label} in ${collection}, found ${actual}`
+        `count ${pair.label}`,
+        actual === expected,
+        `expected exactly ${expected} ${pair.label} in ${pair.collection}, found ${actual}`
       )
+    }
+    if (sessions === 'drop') {
+      checks.push({
+        name: 'count sessions (skipped: the import dropped them)',
+        passed: true,
+      })
     }
 
     // 2. every source user has exactly one target row and its host doc.
@@ -142,6 +189,77 @@ export async function verifyImport(options: {
       `${userIssues} user(s) without exactly one ${String(slugs['user'])} row`
     )
     void userMatches
+
+    // 2b. every imported user resolves through EXACTLY ONE better-auth
+    // identity pointing at their ba-users id (issue #69) — that is the
+    // lookup findByProviderIdentity issues on the next provider
+    // sign-in. The host docs also carry the stored roles (issue #68's
+    // users_role accounting) whenever the host declares the field.
+    let identityIssues = 0
+    let roleMismatchDocs = 0
+    let hostDocsWithRoles = 0
+    for (const user of users) {
+      const hostId = Number(user.id)
+      if (!Number.isSafeInteger(hostId)) {
+        identityIssues += 1
+        continue
+      }
+      let doc: unknown
+      try {
+        doc = await payload.findByID({
+          collection: 'users',
+          id: hostId,
+          depth: 0,
+          overrideAccess: true,
+        })
+      } catch {
+        identityIssues += 1
+        continue
+      }
+      if (typeof doc !== 'object' || doc === null) {
+        identityIssues += 1
+        continue
+      }
+      const record = doc as Record<string, unknown>
+      const identities = Array.isArray(record['identities'])
+        ? (record['identities'] as readonly unknown[])
+        : []
+      const resolving = identities.filter(
+        (entry) =>
+          typeof entry === 'object' &&
+          entry !== null &&
+          (entry as Record<string, unknown>)['providerId'] === 'better-auth' &&
+          String((entry as Record<string, unknown>)['providerUserId']) === String(user.id)
+      )
+      if (identities.length !== 1 || resolving.length !== 1) {
+        identityIssues += 1
+      }
+      const roles = record['roles']
+      if (Array.isArray(roles)) {
+        hostDocsWithRoles += 1
+        const stored = new Set(roles.map((role) => String(role)))
+        if (!user.roles.every((role) => stored.has(role))) {
+          roleMismatchDocs += 1
+        }
+      }
+    }
+    check(
+      'every imported user resolves through one better-auth identity',
+      identityIssues === 0,
+      `${identityIssues} user(s) without exactly one better-auth identity resolving to their ba-users id`
+    )
+    if (hostDocsWithRoles > 0) {
+      check(
+        'source roles carried onto the host docs',
+        roleMismatchDocs === 0,
+        `${roleMismatchDocs} host doc(s) missing stored role values`
+      )
+    } else if (sourceTables['users_role'] !== null && users.some((user) => user.roles.length > 0)) {
+      checks.push({
+        name: 'source roles carried onto the host docs (skipped: the host users carry no roles field)',
+        passed: true,
+      })
+    }
 
     // 3. every credential account resolves to its user.
     const accounts = await payload.find({
@@ -181,9 +299,11 @@ export async function verifyImport(options: {
       orphanAccounts === 0,
       `${orphanAccounts} account(s) with a missing user or empty credential hash`
     )
+    const sourceAccountsCount =
+      sourceTables['accounts'] === null ? 0 : (sourceCounts[sourceTables['accounts']] ?? 0)
     check(
       'credential accounts carry hashes',
-      sourceCounts.accounts === 0 || credentialAccounts > 0,
+      sourceAccountsCount === 0 || credentialAccounts > 0,
       'no credential account carries a password hash'
     )
 
