@@ -157,7 +157,9 @@ complete before you boot.
 
 The sketch below became a runnable, reversible CLI. In the NEW app
 (the one booting payload-auth-link with its own `ba-*` collections on
-the same database):
+the same database) — running it against the untouched payload-auth
+app's config refuses immediately with a naming check, because there
+are no target collections to write to (#75):
 
 ```sh
 # 1. The plan. Dry run by default: planned counts per model,

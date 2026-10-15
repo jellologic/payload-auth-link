@@ -62,16 +62,84 @@ export type ImportCommandOptions = {
 const log_ = (options: Pick<ImportCommandOptions, 'log'>): ((message: string) => void) =>
   options.log ?? (() => {})
 
-async function loadPayloadInstance(configPath: string): Promise<import('payload').Payload> {
-  // Lazy: `doctor` never needs Payload, and a cold CLI should not pay
-  // for the module graph the import commands use.
-  const { getPayload } = await import('payload')
+/** A config module loaded and unwrapped (default / promise), not booted. */
+type LoadedConfigModule = {
+  readonly config: unknown
+}
+
+/**
+ * Load the config MODULE only — no `getPayload`, no database pool.
+ * The pre-flight (#75) inspects this to refuse untouched payload-auth
+ * configs before any boot can hang on them.
+ */
+async function loadConfigModule(configPath: string): Promise<LoadedConfigModule> {
   const mod = (await import(pathToFileURL(configPath).href)) as { default: unknown }
   let config: unknown = isRecord(mod) && 'default' in mod ? mod.default : mod
   if (typeof (config as Partial<Promise<unknown>> | undefined)?.then === 'function') {
     config = await config
   }
-  return getPayload({ config: config as Parameters<typeof getPayload>[0]['config'] })
+  return { config }
+}
+
+/**
+ * The collection slugs a config module declares, read structurally —
+ * sanitized and unsanitized configs both carry the array.
+ */
+function configCollectionSlugs(config: unknown): readonly string[] {
+  if (!isRecord(config) || !Array.isArray(config['collections'])) {
+    return []
+  }
+  const slugs: string[] = []
+  for (const entry of config['collections']) {
+    if (isRecord(entry) && typeof entry['slug'] === 'string') {
+      slugs.push(entry['slug'])
+    }
+  }
+  return slugs
+}
+
+/**
+ * Pre-flight (#75): every TARGET collection must exist in the config
+ * BEFORE Payload boots. The importer writes the plugin's own
+ * `ba-*` collections — running it against an untouched payload-auth
+ * app's config has nothing to write to, and the boot's database pool
+ * would keep the process alive forever after the failure. Fail here,
+ * fast, with the fix in the message.
+ */
+function assertTargetCollections(config: unknown, slugs: TargetSlugMap): void {
+  const declared = new Set(configCollectionSlugs(config))
+  const missing = [...Object.values(slugs)].filter((slug) => !declared.has(slug))
+  if (missing.length > 0) {
+    throw new Error(
+      `this config declares none of the payload-auth-link target collections (missing: ${missing.join(', ')}). ` +
+        'The importer runs against the TARGET config — the app that boots payload-auth-link (adopt or ba-* collections) — ' +
+        'not against the untouched payload-auth app. Install the plugin in this config first (docs/migrating-from-payload-auth.md).'
+    )
+  }
+}
+
+/**
+ * Boot the loaded config with a watchdog (#75): a boot that never
+ * settles must fail loudly after a bounded wait, not park the CLI
+ * forever.
+ */
+async function bootPayload(config: unknown): Promise<import('payload').Payload> {
+  const { getPayload } = await import('payload')
+  const boot = getPayload({ config: config as Parameters<typeof getPayload>[0]['config'] })
+  let timer: NodeJS.Timeout | undefined
+  const watchdog = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error('payload did not finish booting within 120s — refusing to hang'))
+    }, 120_000)
+  })
+  void watchdog.catch(() => {})
+  try {
+    return await Promise.race([boot, watchdog])
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer)
+    }
+  }
 }
 
 function slugsOf(options: ImportCommandOptions): TargetSlugMap {
@@ -83,6 +151,40 @@ function slugsOf(options: ImportCommandOptions): TargetSlugMap {
     throw new Error('--slugs must be a JSON object of model -> collection slug')
   }
   return { ...defaultTargetSlugs, ...(parsed as Record<string, string>) }
+}
+
+/**
+ * The shared boot path for the payload-backed commands (#75): load the
+ * config module, REFUSE configs that declare no target collections
+ * (the untouched payload-auth app's config — the importer would boot a
+ * database pool and then have nothing to write to), then boot under
+ * the watchdog. `loadPayload` injection skips the module reload — the
+ * host's injected boot owns the target wiring, and the config path may
+ * be a placeholder the loader never reads.
+ */
+async function bootTargetPayload(
+  options: ImportCommandOptions
+): Promise<import('payload').Payload> {
+  if (options.loadPayload !== undefined) {
+    return options.loadPayload(options.configPath)
+  }
+  const { config } = await loadConfigModule(options.configPath)
+  assertTargetCollections(config, slugsOf(options))
+  return bootPayload(config)
+}
+
+/**
+ * Pre-flight only (no boot): refuse configs that declare no target
+ * collections. Runs before EVERYTHING — including the source-database
+ * probe — so the untouched payload-auth app's config fails here, fast,
+ * with the fix in the message (#75).
+ */
+async function preFlightTargets(options: ImportCommandOptions): Promise<void> {
+  if (options.loadPayload !== undefined) {
+    return
+  }
+  const { config } = await loadConfigModule(options.configPath)
+  assertTargetCollections(config, slugsOf(options))
 }
 
 /** The resolved source layout (`--source-map` over the default layout). */
@@ -150,8 +252,12 @@ export async function runFromPayloadAuth(options: ImportCommandOptions): Promise
   const slugs = slugsOf(options)
   const sourceTables = sourceTablesOf(options)
 
-  // The probe runs before anything else (issue #68): a missing mapped
-  // table or column aborts here — exit 1, nothing planned or written.
+  // The config pre-flight runs before ANYTHING (issue #75): an
+  // untouched payload-auth config has no ba-* targets — refuse here,
+  // before the source probe or any Payload boot. Then the source
+  // probe (issue #68): a missing mapped table or column aborts here —
+  // exit 1, nothing planned or written.
+  await preFlightTargets(options)
   const probeIssues = await probeOrFail(options, log)
   if (probeIssues.length > 0) {
     return {
@@ -200,7 +306,7 @@ export async function runFromPayloadAuth(options: ImportCommandOptions): Promise
   const manifestPath = options.manifestPath ?? defaultManifestPath
   const existingManifest = readManifest(manifestPath)
 
-  const payload = await (options.loadPayload ?? loadPayloadInstance)(options.configPath)
+  const payload = await bootTargetPayload(options)
   const result = await applyImport({
     payload,
     sourceConnectionString: options.databaseUrl,
@@ -247,8 +353,10 @@ export async function runFromPayloadAuth(options: ImportCommandOptions): Promise
 export async function runVerify(options: ImportCommandOptions): Promise<VerifyResult> {
   const log = log_(options)
 
-  // The probe runs first (issue #68): a missing mapped table fails the
-  // check with a blocker — before any Payload boot or read.
+  // The config pre-flight runs first (issue #75), then the probe
+  // (issue #68): a missing mapped table fails the check with a
+  // blocker — before any Payload boot or read.
+  await preFlightTargets(options)
   const probeIssues = await probeOrFail(options, log)
   if (probeIssues.length > 0) {
     const result: VerifyResult = {
@@ -267,7 +375,7 @@ export async function runVerify(options: ImportCommandOptions): Promise<VerifyRe
     return result
   }
 
-  const payload = await (options.loadPayload ?? loadPayloadInstance)(options.configPath)
+  const payload = await bootTargetPayload(options)
   const result = await verifyImport({
     payload,
     sourceConnectionString: options.databaseUrl,
@@ -299,7 +407,7 @@ export async function runRollback(
   if (manifest.finalized) {
     throw new Error('the migration is finalized; rollback is no longer possible')
   }
-  const payload = await (options.loadPayload ?? loadPayloadInstance)(options.configPath)
+  const payload = await bootTargetPayload(options)
   const result = await rollbackImport({ payload, manifest, log })
   return result
 }

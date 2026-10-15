@@ -83,7 +83,9 @@ export declare function pluginsFromCollectionSlugs(slugs: readonly string[]): st
  * Plugin ids found by scanning the config source for plugin factory
  * calls. Regex on purpose: the loaded config cannot reveal these
  * (closure-held options), and the doctor must not execute app code
- * beyond loading its config module.
+ * beyond loading its config module. A file must IMPORT Better Auth for
+ * its `call(` shapes to count — `admin(` in prose, a route handler, or
+ * an unrelated package's API reads as noise otherwise (issue #75).
  */
 export declare function pluginsFromConfigSource(configSource: string): string[];
 /** One plugin factory call found in a source file. */
@@ -243,7 +245,7 @@ export type DatabaseFinding = {
         readonly name: string;
         readonly rows: number;
     }[];
-    /** Users with `emailVerified = false` — they will not JIT-link. */
+    /** Users with `emailVerified = false` — imported pre-linked, but without the verified-email linking proof. */
     readonly unverifiedUsers: number | null;
     readonly orphans: readonly {
         readonly kind: string;

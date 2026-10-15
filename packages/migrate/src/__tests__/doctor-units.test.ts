@@ -40,11 +40,11 @@ describe('doctor units', () => {
       'jwt',
       'oidcProvider',
     ])
-    expect(pluginsFromConfigSource('magicLink({}), nextCookies(), apiKey({})')).toEqual([
-      'api-key',
-      'magic-link',
-      'next-cookies',
-    ])
+    expect(
+      pluginsFromConfigSource(
+        "import { magicLink, nextCookies, apiKey } from 'better-auth/plugins'\nmagicLink({}), nextCookies(), apiKey({})"
+      )
+    ).toEqual(['api-key', 'magic-link', 'next-cookies'])
   })
 
   test('users analysis: collisions block, single-select roles warn, non-canonical values warn', () => {
@@ -200,10 +200,18 @@ describe('doctor robustness (issue #71)', () => {
     try {
       writeFileSync(
         join(dir, 'a.ts'),
-        'export const x = () => admin({}) && bearer({}) && multiSession({})'
+        [
+          "import { admin, bearer, multiSession } from 'better-auth/plugins'",
+          'export const x = () => admin({}) && bearer({}) && multiSession({})',
+        ].join('\n')
       )
       mkdirSync(join(dir, 'nested'))
-      writeFileSync(join(dir, 'nested', 'b.ts'), 'export const y = () => bearer({})')
+      writeFileSync(
+        join(dir, 'nested', 'b.ts'),
+        ["import { bearer } from 'better-auth/plugins'", 'export const y = () => bearer({})'].join(
+          '\n'
+        )
+      )
       const hits = pluginsFromSourceTree(dir)
       const filesById = new Map<string, string[]>()
       for (const hit of hits) {
@@ -216,6 +224,42 @@ describe('doctor robustness (issue #71)', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  test('the scan ignores test files and non-Better-Auth `call(` noise (#75)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'doctor-plugins-noise-'))
+    try {
+      // A security-tail TEST mentioning removed plugins: app-internal
+      // evidence, never the app's Better Auth posture.
+      mkdirSync(join(dir, '__tests__'))
+      writeFileSync(
+        join(dir, '__tests__', 'redirects.security-tail.test.ts'),
+        "import { mcp } from 'better-auth/plugins'\nexport const s = () => mcp({})\n"
+      )
+      // A non-test file whose `admin(` belongs to another package's
+      // API — no Better Auth import anywhere in the file.
+      writeFileSync(join(dir, 'prose.ts'), 'export const f = () => admin({})\n')
+      // The real signal, for contrast.
+      writeFileSync(
+        join(dir, 'auth.ts'),
+        ["import { admin } from 'better-auth/plugins'", 'export const p = [admin()]'].join('\n')
+      )
+      const hits = pluginsFromSourceTree(dir)
+      expect(hits.map((hit) => hit.id)).toEqual(['admin'])
+      expect(hits[0]?.file).toBe('auth.ts')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('config-text plugin detection requires a Better Auth import (#75)', async () => {
+    const { pluginsFromConfigSource: scan } = await import('../doctor/plugins.js')
+    expect(scan('const x = admin({}) && magicLink({})')).toEqual([])
+    expect(
+      scan(
+        "import { admin, magicLink } from 'better-auth/plugins'\nconst x = admin({}) && magicLink({})"
+      )
+    ).toEqual(['admin', 'magic-link'])
   })
 })
 

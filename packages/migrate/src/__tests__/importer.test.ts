@@ -37,6 +37,10 @@ type Harness = {
   }
 }
 const harness = (await import(harnessPath)) as Harness
+const fixtureConfigPath = new URL(
+  '../../../../fixtures/payload-auth-app/payload.config.ts',
+  import.meta.url
+).pathname
 import {
   finalizeManifest,
   readManifest,
@@ -216,6 +220,28 @@ const canReachPostgres = await (async () => {
     return false
   }
 })()
+
+describe.skipIf(!canReachPostgres)(
+  'the importer refuses configs without target collections (#75)',
+  () => {
+    test('an untouched payload-auth config fails fast with the fix in the message — no boot, no hang', async () => {
+      // The payload-auth app's own config declares NO ba-* collections:
+      // exactly the state #75 hung on. The pre-flight must refuse BEFORE
+      // Payload boots (no pool, no silent park).
+      const startedAt = Date.now()
+      const outcome = runFromPayloadAuth({
+        configPath: fixtureConfigPath,
+        databaseUrl: process.env.FIXTURE_DATABASE_URL ?? '',
+        apply: false,
+        sessions: 'carry',
+      })
+      await expect(outcome).rejects.toThrow(/target collections/)
+      // Fast: the failure happens at the config-module read, not after a
+      // database boot. (The old path parked forever; CI budgets seconds.)
+      expect(Date.now() - startedAt).toBeLessThan(30_000)
+    })
+  }
+)
 
 describe.skipIf(!canReachPostgres)(
   'from-payload-auth: runnable, reversible importer (issue #50)',

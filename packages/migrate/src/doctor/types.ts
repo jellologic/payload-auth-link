@@ -70,7 +70,7 @@ export type SourceFinding = {
 /** Database state, as far as a read-only connection can see. */
 export type DatabaseFinding = {
   readonly tables: readonly { readonly name: string; readonly rows: number }[]
-  /** Users with `emailVerified = false` — they will not JIT-link. */
+  /** Users with `emailVerified = false` — imported pre-linked, but without the verified-email linking proof. */
   readonly unverifiedUsers: number | null
   readonly orphans: readonly { readonly kind: string; readonly count: number }[]
   /**

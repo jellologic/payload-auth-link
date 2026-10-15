@@ -182,6 +182,10 @@ export function pluginsFromCollectionSlugs(slugs: readonly string[]): string[] {
 }
 
 /** Plugin call names a config source can name, mapped to plugin ids. */
+/** True when a source file actually imports Better Auth. */
+const betterAuthImport =
+  /(?:from\s*|require\(\s*)['"](?:better-auth(?:\/[\w-]+)?|@better-auth\/[\w-]+)['"]/
+
 const callNameToPlugin: Readonly<Record<string, string>> = {
   magicLink: 'magic-link',
   emailOTP: 'email-otp',
@@ -213,9 +217,14 @@ const callNameToPlugin: Readonly<Record<string, string>> = {
  * Plugin ids found by scanning the config source for plugin factory
  * calls. Regex on purpose: the loaded config cannot reveal these
  * (closure-held options), and the doctor must not execute app code
- * beyond loading its config module.
+ * beyond loading its config module. A file must IMPORT Better Auth for
+ * its `call(` shapes to count — `admin(` in prose, a route handler, or
+ * an unrelated package's API reads as noise otherwise (issue #75).
  */
 export function pluginsFromConfigSource(configSource: string): string[] {
+  if (!betterAuthImport.test(configSource)) {
+    return []
+  }
   const ids = new Set<string>()
   for (const [call, id] of Object.entries(callNameToPlugin)) {
     const pattern = new RegExp(`\\b${call}\\s*\\(`)
@@ -245,20 +254,32 @@ export function pluginsFromSourceTree(srcDir: string): readonly PluginSourceHit[
   const hits: PluginSourceHit[] = []
   const seen = new Set<string>()
   for (const file of listSourceFiles(srcDir)) {
+    // Test files are app-internal evidence, never the app's Better
+    // Auth posture (issue #75: a security-tail test mentioning `mcp(`
+    // blocked the whole doctor).
+    const rel0 = relative(srcDir, file)
+    if (/(^|\/)(__tests__|__fixtures__)(\/|$)/.test(rel0) || /\.(test|spec)\.[jt]sx?$/.test(rel0)) {
+      continue
+    }
     let content: string
     try {
       content = readFileSync(file, 'utf8')
     } catch {
       continue
     }
+    // Only files that actually import Better Auth can carry plugin
+    // factory calls; everything else (`admin(` in prose or another
+    // package's API) is noise.
+    if (!betterAuthImport.test(content)) {
+      continue
+    }
     for (const [call, id] of Object.entries(callNameToPlugin)) {
       const pattern = new RegExp(`\\b${call}\\s*\\(`)
       if (pattern.test(content)) {
-        const rel = relative(srcDir, file)
-        const key = `${id}\n${rel}`
+        const key = `${id}\n${rel0}`
         if (!seen.has(key)) {
           seen.add(key)
-          hits.push({ id, file: rel })
+          hits.push({ id, file: rel0 })
         }
       }
     }

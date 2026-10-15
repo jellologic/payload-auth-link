@@ -23,6 +23,30 @@ jobs:
       - run: bun install --cwd fixtures/payload-auth-app
       - run: bun run check
 
+  # The suites must hold on every Node version `engines` allows — Bun's
+  # runtime masks Node-only loader differences (the CSS-import case),
+  # so the same vitest suite runs under each Node explicitly.
+  test-node:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: bun install --frozen-lockfile
+      # The suites resolve workspace packages through their dist
+      # exports — build once under Bun, run the tests under the matrix
+      # Node.
+      - run: bun run build
+      - run: node node_modules/vitest/vitest.mjs run
+
   # Every user-facing PR carries a changeset (see CONTRIBUTING.md);
   # internal-only PRs add an empty one (`bunx changeset --empty`). The
   # Version Packages PR is exempt: it consumes the changesets by design.

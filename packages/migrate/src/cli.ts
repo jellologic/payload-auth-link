@@ -432,7 +432,10 @@ if (invokedDirectly) {
       process.stderr.write(
         `${command ?? 'cli'} failed: ${error instanceof Error ? error.message : String(error)}\n`
       )
-      process.exitCode = 1
+      // Exit the PROCESS, not just the exit code (#75): the import
+      // commands boot Payload, whose pool and handles would otherwise
+      // keep a failed run alive forever. A failed CLI terminates.
+      process.exit(1)
     })
 }
 

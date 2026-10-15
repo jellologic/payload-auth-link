@@ -5,8 +5,14 @@ export default defineConfig({
     // payload-auth's dist uses directory imports (`export * from
     // "./better-auth"`), which Bun tolerates and Node's ESM loader does
     // not; the doctor loads real payload-auth configs, so vitest must
-    // transform the package instead of externalizing it.
-    server: { deps: { inline: [/payload-auth/] } },
+    // transform the package instead of externalizing it. The UI
+    // component chain is inlined for the same reason: externalized,
+    // its CSS imports (`react-image-crop`'s stylesheet via
+    // `@payloadcms/ui`) reach the raw runtime loader, which fails with
+    // `Unknown file extension ".css"` on some Node versions — inlined,
+    // Vite handles (and with `css: false`, stubs) them.
+    server: { deps: { inline: [/payload-auth/, /@payloadcms[+]ui/, /react-image-crop/] } },
+    css: false,
     exclude: [
       'packages/migrate/src/__tests__/adopt-boot.test.ts',
       'packages/migrate/src/__tests__/importer.test.ts',

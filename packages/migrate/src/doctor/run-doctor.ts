@@ -296,7 +296,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
       if (found.unverifiedUsers !== null && found.unverifiedUsers > 0) {
         warnings.push({
           code: 'unverified-users',
-          detail: `${found.unverifiedUsers} user(s) have emailVerified = false: they will not JIT-link on a provider sign-in; they need a verified email (or a role manager's manual link) after migration`,
+          detail: `${found.unverifiedUsers} user(s) have emailVerified = false: they import without the verified-email linking proof, but each is still pre-linked to their document through the imported identity — they resolve on their next provider sign-in once they verify (issue #69); no operator action is required`,
         })
       }
       // Fail closed on the source layout (issue #68): a mapped model
