@@ -202,6 +202,9 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
+      # The test boots real Payload configs through the built workspace
+      # packages (dist).
+      - run: bun run build
       - run: bunx vitest run packages/plugin/src/__tests__/uninstall.test.ts
 
   # Migration kit (issues #49–#59): the payload-auth fixture is the
