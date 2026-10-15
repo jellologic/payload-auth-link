@@ -108,8 +108,9 @@ export type AuthLinkPluginOptions = {
   /**
    * Server session creation gate (issue #54): controls
    * `authLinkServer(payload).createSessionFor`. `'dev-only'` (the
-   * default) enables it except on a production runtime (`NODE_ENV ===
-   * 'production'`); `true` enables it everywhere; `false` disables it
+   * default) enables it ONLY on a development runtime (`NODE_ENV ===
+   * 'development'` — production, test, staging, and unset all
+   * refuse); `true` enables it everywhere; `false` disables it
    * everywhere. Reads, listings, revocations, and API-key
    * verification are never gated — only minting is.
    */

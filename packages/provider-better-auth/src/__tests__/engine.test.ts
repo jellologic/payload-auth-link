@@ -128,17 +128,21 @@ describe('createBetterAuthEngine', () => {
     expect(seen).toHaveLength(2)
   })
 
-  it('passes the builder plugin list through verbatim, appending nothing', () => {
+  it('passes the builder plugin list through by reference plus the provenance plugin', () => {
     const marker = magicLink({ sendMagicLink: () => Promise.resolve() })
     const engine = createBetterAuthEngine({ getPayload, options: { plugins: [marker] } })
-    // Same reference in, same reference out: no copies, no extras.
-    expect(engine.auth.options.plugins).toHaveLength(1)
+    // Same references in, same references out, plus exactly ONE
+    // engine-owned plugin (session provenance, no endpoints).
+    expect(engine.auth.options.plugins).toHaveLength(2)
     expect(engine.auth.options.plugins?.[0]).toBe(marker)
+    const appended = (engine.auth.options.plugins as readonly { id?: string }[] | undefined)?.[1]
+    expect(appended?.id).toBe('payload-auth-link-session-provenance')
   })
 
-  it('leaves an absent plugin list absent', () => {
+  it('gives an absent plugin list exactly the provenance plugin', () => {
     const engine = createBetterAuthEngine({ getPayload, options: {} })
-    expect(engine.auth.options.plugins ?? []).toHaveLength(0)
+    expect(engine.auth.options.plugins).toHaveLength(1)
+    expect(engine.auth.options.plugins?.[0]?.id).toBe('payload-auth-link-session-provenance')
   })
 
   it('declares impersonation only when the admin plugin is in the plugin list (PORT-2)', () => {

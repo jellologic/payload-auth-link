@@ -476,13 +476,52 @@ describe('CAP-6 two-factor + requireMfaForRoles', () => {
     // TOTP verification rotates the session: use the fresh cookie.
     const mfaCookie = cookieHeaderFrom(verifiedTotp) || cookie
 
-    // Enrollment mapping (spike S3): BA marks no per-session proof, so
-    // `mfa` reflects `twoFactorEnabled` — now true for this user.
+    // Enrollment is not proof (the server-session advisory fix): the
+    // signed-in session records no method, so it still proves nothing
+    // and admin stays withheld — even with twoFactorEnabled now true.
     const portSession = (
       await engine.provider.getSession(new Headers({ cookie: mfaCookie }))
     )._unsafeUnwrap()
-    expect(portSession?.assurance.mfa).toBe(true)
-    const restored = await sessionBody(await pluginSession(mfaCookie))
+    expect(portSession?.assurance.mfa).toBe('unknown')
+    const stillGated = await sessionBody(await pluginSession(mfaCookie))
+    expect(stillGated.user?.roles).toEqual(['user'])
+    expect(stillGated.user?.mfaRequired).toBe(true)
+
+    // The server verified the TOTP itself, so it may VOUCH the step-up:
+    // a minted session with the server-vouched proof records the
+    // method, and the gate restores admin.
+    const found = await payload.find({
+      collection: 'ba-users',
+      where: { email: { equals: email } },
+      limit: 1,
+      overrideAccess: true,
+    })
+    const baUserId = (found.docs[0] as { baId?: unknown } | undefined)?.baId
+    if (typeof baUserId !== 'string') {
+      throw new Error('no ba-users row for the enrolled user')
+    }
+    const createSession = engine.provider.createProviderSession
+    if (createSession === undefined) {
+      throw new Error('the better-auth provider cannot mint sessions')
+    }
+    const created = await createSession(baUserId, {
+      expiresAt: new Date(Date.now() + 3_600_000),
+      mfaProof: true,
+    })
+    if (created.isErr()) {
+      throw new Error(created.error.message)
+    }
+    const buildCookie = engine.provider.sessionCookie
+    if (buildCookie === undefined) {
+      throw new Error('the better-auth provider exposes no sessionCookie')
+    }
+    const stepUpCookie = await buildCookie(created.value.token)
+    const portStepUp = (
+      await engine.provider.getSession(new Headers({ cookie: stepUpCookie }))
+    )._unsafeUnwrap()
+    expect(portStepUp?.assurance.mfa).toBe(true)
+    expect(portStepUp?.assurance.methods).toEqual(['server-step-up'])
+    const restored = await sessionBody(await pluginSession(stepUpCookie))
     expect(restored.user?.roles).toEqual(['admin', 'user'])
     expect(restored.user?.mfaRequired).toBeUndefined()
   })

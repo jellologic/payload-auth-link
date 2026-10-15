@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildConfig, getPayload, type Payload } from 'payload'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import {
   authLink,
   authLinkServer,
@@ -112,6 +112,11 @@ describe('authLinkServer (issue #54)', () => {
     payload = await boot(
       'srv-a',
       optionsWith({
+        // The suite exercises the API surface; the gate itself has
+        // dedicated tests. Explicit opt-in: the 'dev-only' default
+        // mints ONLY on a development runtime, and vitest runs with
+        // NODE_ENV='test'.
+        allowServerSessions: true,
         onAudit: (event) => {
           auditEvents.push(event)
         },
@@ -166,10 +171,29 @@ describe('authLinkServer (issue #54)', () => {
     ).rejects.toBeInstanceOf(ServerSessionsDisabledError)
   })
 
-  it("'dev-only' (the default) mints on a non-production runtime", async () => {
-    const user = await seedUser(payload, 'devonly@test.dev')
-    const minted = await authLinkServer(payload).createSessionFor(user.id, { reason: 'dev' })
-    expect(minted.token).toBeTruthy()
+  it("'dev-only' (the default) mints ONLY on a development runtime", async () => {
+    // The default used to enable minting on every runtime that merely
+    // wasn't 'production' (CI, test, staging, unset) — a gate in name
+    // only. Vitest runs with NODE_ENV='test': the default must now
+    // REFUSE here, and only 'development' mints. Its own boot, so the
+    // suite's explicit opt-in doesn't mask the gate.
+    const payloadGate = await boot('srv-devgate', optionsWith({}))
+    const user = await seedUser(payloadGate, 'devonly@test.dev')
+    expect(process.env.NODE_ENV).not.toBe('development')
+    await expect(
+      authLinkServer(payloadGate).createSessionFor(user.id, { reason: 'dev' })
+    ).rejects.toBeInstanceOf(ServerSessionsDisabledError)
+  })
+
+  it("'dev-only' mints on a development runtime", async () => {
+    vi.stubEnv('NODE_ENV', 'development')
+    try {
+      const user = await seedUser(payload, 'devmint@test.dev')
+      const minted = await authLinkServer(payload).createSessionFor(user.id, { reason: 'dev' })
+      expect(minted.token).toBeTruthy()
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 
   it('lists and revokes sessions', async () => {
