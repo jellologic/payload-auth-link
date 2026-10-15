@@ -211,6 +211,14 @@ const consumerSnippets = {
     imports: "import { createAuthJsEngine } from '@payload-auth-link/provider-authjs'",
     body: [],
   },
+  migrate: {
+    imports:
+      "import { runDoctor, type DoctorReport } from '@payload-auth-link/migrate'",
+    body: [
+      "const doctor: (options: { configPath: string }) => Promise<DoctorReport> =",
+      '  (options) => runDoctor(options)',
+    ],
+  },
 }
 // cross-package wiring keeps at least one multi-package line honest
 // when core+web are both present.
