@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
-import { classifyPlugins } from '../doctor/plugins.js'
+import { classifyPlugins, pluginsFromSourceTree } from '../doctor/plugins.js'
+import { runDoctor } from '../doctor/run-doctor.js'
 import { scanSource } from '../doctor/source-scan.js'
 import { analyzeUsersCollection } from '../doctor/users.js'
 
@@ -121,8 +122,105 @@ describe('doctor units', () => {
   })
 })
 
+describe('doctor robustness (issue #71)', () => {
+  test('an unloadable config is a blocker, not a crash — the static scans still report', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'doctor-unloadable-'))
+    try {
+      writeFileSync(
+        join(dir, 'calls.ts'),
+        [
+          "import { getPayloadAuth } from 'payload-auth'",
+          'export const s = async () => getPayloadAuth().betterAuth.api.getSession({ headers })',
+        ].join('\n')
+      )
+      const report = await runDoctor({
+        configPath: '/nonexistent/payload.config.ts',
+        srcDir: dir,
+        loadModule: () =>
+          Promise.reject(
+            new Error("oidcProvider is not exported by 'payload-auth' (better-auth 1.7 upgrade)")
+          ),
+      })
+      expect(report.blockers.map((issue) => issue.code)).toContain('config-unloadable')
+      expect(report.blockers.find((issue) => issue.code === 'config-unloadable')?.detail).toContain(
+        'better-auth 1.7'
+      )
+      // Config-derived sections are skipped, and the shape stays valid.
+      expect(report.users).toBeNull()
+      expect(report.warnings.map((issue) => issue.code)).not.toContain('payload-auth-not-detected')
+      // The source scan still ran and still reports the call sites.
+      const kinds = new Map(report.source.map((finding) => [finding.kind, finding]))
+      expect(kinds.get('get-payload-auth')?.files).toEqual(['calls.ts'])
+      expect(kinds.get('better-auth-accessor')?.files).toEqual(['calls.ts'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('plugin factory calls in non-config files are reported; removed ones are blocked (#71)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'doctor-plugins-'))
+    try {
+      writeFileSync(
+        join(dir, 'auth-plugins.ts'),
+        [
+          "import { admin, anonymous, magicLink } from 'better-auth/plugins'",
+          "import { nextCookies } from 'better-auth/next-js'",
+          'export const plugins = [',
+          '  admin(),',
+          '  anonymous(),',
+          '  magicLink({ sendMagicLink: async () => {} }),',
+          '  nextCookies(),',
+          ']',
+          '// legacy pre-1.7 config: oidcProvider({ issuer: "https://example.com" })',
+        ].join('\n')
+      )
+      const report = await runDoctor({
+        configPath: new URL('../__fixtures__/doctor-fixture/payload.config.ts', import.meta.url)
+          .pathname,
+        srcDir: dir,
+      })
+      const byId = new Map(report.plugins.map((finding) => [finding.id, finding]))
+      expect(byId.get('admin')?.status).toBe('auto-declarable')
+      expect(byId.get('anonymous')?.files).toEqual(['auth-plugins.ts'])
+      expect(byId.get('magic-link')?.files).toEqual(['auth-plugins.ts'])
+      expect(byId.get('next-cookies')?.status).toBe('auto-declarable')
+      // The removed-in-1.7 plugin is flagged from the static scan alone.
+      expect(byId.get('oidcProvider')?.status).toBe('removed-upstream')
+      expect(byId.get('oidcProvider')?.detail).toContain('1.7')
+      expect(report.blockers.map((issue) => `${issue.code} ${issue.detail}`).join(' ')).toContain(
+        'ba-plugin-removed-upstream'
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('the source-tree plugin scan dedupes and names files', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'doctor-plugins-units-'))
+    try {
+      writeFileSync(
+        join(dir, 'a.ts'),
+        'export const x = () => admin({}) && bearer({}) && multiSession({})'
+      )
+      mkdirSync(join(dir, 'nested'))
+      writeFileSync(join(dir, 'nested', 'b.ts'), 'export const y = () => bearer({})')
+      const hits = pluginsFromSourceTree(dir)
+      const filesById = new Map<string, string[]>()
+      for (const hit of hits) {
+        filesById.set(hit.id, [...(filesById.get(hit.id) ?? []), hit.file])
+      }
+      expect(filesById.get('admin')).toEqual(['a.ts'])
+      // Same plugin in two files: one finding, both files named.
+      expect(filesById.get('bearer')).toEqual(['a.ts', 'nested/b.ts'])
+      expect(filesById.get('multi-session')).toEqual(['a.ts'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('doctor report formatting', () => {
-  test('renders every section of the human-readable report', async () => {
+  test('an unloadable config still prints a report and exits 1 through the CLI', async () => {
     const { cliMain } = await import('../cli.js')
     const chunks: string[] = []
     const sink = {
@@ -130,9 +228,11 @@ describe('doctor report formatting', () => {
         chunks.push(chunk)
       },
     }
-    await expect(
-      cliMain(['doctor', '--config', '/nonexistent/payload.config.ts'], sink, sink)
-    ).rejects.toThrow(/Cannot find module|ERR_MODULE_NOT_FOUND/)
+    const code = await cliMain(['doctor', '--config', '/nonexistent/payload.config.ts'], sink, sink)
+    expect(code).toBe(1)
+    expect(chunks.join('')).toContain('[config-unloadable]')
+    expect(chunks.join('')).toContain('== source scan ==')
+    expect(chunks.join('')).toContain('== database ==')
   })
 
   test('formats blockers, warnings, tables, and behaviour changes as text', async () => {

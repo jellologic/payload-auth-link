@@ -1,4 +1,9 @@
 import { Client } from 'pg'
+import {
+  resolveSourceTables,
+  sourceModelNames,
+  type ResolvedSourceTables,
+} from '../importer/types.js'
 import type { DatabaseFinding } from './types.js'
 
 /**
@@ -6,26 +11,18 @@ import type { DatabaseFinding } from './types.js'
  * payload-auth layout's auth tables, unverified users (who will not
  * JIT-link), and orphans. Only an honest SELECT — the doctor never
  * writes.
+ *
+ * Map-aware (issue #68): the ten source models are counted through the
+ * `--source-map` (defaulting to payload-auth's layout), and a mapped
+ * table that is absent comes back in `missingTables` for the caller to
+ * block on — a missing table is never silently reported as 0 rows.
+ * Satellite tables beyond the map (two-factor, passkey, sso, …) stay
+ * informational: apps drop plugins, and only the mapped models gate.
  */
 
-/**
- * The payload-auth 1.9.x Postgres layout (snake_case columns; Payload's
- * drizzle adapter stores hasMany selects as child tables like
- * `users_role`). Tables that don't exist are simply absent from the
- * report — apps customize slugs and drop plugins.
- */
+/** Satellite/extra tables reported when present, never gating. */
 const knownTables: readonly string[] = [
-  'users',
-  'accounts',
-  'sessions',
-  'verifications',
-  'api_keys',
-  'organizations',
-  'members',
-  'invitations',
-  'jwks',
   'admin_invitations',
-  'users_role',
   'two_factors',
   'passkeys',
   'oauth_applications',
@@ -60,70 +57,156 @@ async function columnsOf(client: Client, table: string): Promise<Set<string>> {
   return new Set(result.rows.map((row) => String((row as { column_name: unknown }).column_name)))
 }
 
-export async function introspectDatabase(connectionString: string): Promise<DatabaseFinding> {
+export type IntrospectOptions = {
+  /** Model → source table map (`--source-map`); defaults to the default layout. */
+  readonly sourceTables?: Readonly<Record<string, string | null>> | undefined
+}
+
+export async function introspectDatabase(
+  connectionString: string,
+  options: IntrospectOptions = {}
+): Promise<DatabaseFinding> {
+  const tables: ResolvedSourceTables = resolveSourceTables(options.sourceTables)
   const client = new Client({ connectionString })
   await client.connect()
   try {
-    const tables: { name: string; rows: number }[] = []
+    const counted: { name: string; rows: number }[] = []
+    const missing: { model: string; table: string }[] = []
+
+    // The mapped models count, and a missing mapped table is reported
+    // for the caller to block on (issue #68).
+    for (const model of sourceModelNames) {
+      const table = tables[model]
+      if (table === null) {
+        continue
+      }
+      if (!(await tableExists(client, table))) {
+        missing.push({ model, table })
+        continue
+      }
+      const result = await client.query(`SELECT count(*)::int AS n FROM ${table}`)
+      const first = result.rows[0] as { n?: number } | undefined
+      counted.push({ name: table, rows: first?.n ?? 0 })
+    }
+
+    // Satellite tables: informational when present.
     for (const table of knownTables) {
       if (!(await tableExists(client, table))) {
         continue
       }
-      const counted = await client.query(`SELECT count(*)::int AS n FROM ${table}`)
-      const first = counted.rows[0] as { n?: number } | undefined
-      tables.push({ name: table, rows: first?.n ?? 0 })
+      const result = await client.query(`SELECT count(*)::int AS n FROM ${table}`)
+      const first = result.rows[0] as { n?: number } | undefined
+      counted.push({ name: table, rows: first?.n ?? 0 })
     }
 
     let unverifiedUsers: number | null = null
-    if (await tableExists(client, 'users')) {
-      const columns = await columnsOf(client, 'users')
+    const usersTable = tables['users']
+    if (usersTable !== null && (await tableExists(client, usersTable))) {
+      const columns = await columnsOf(client, usersTable)
       if (columns.has('email_verified')) {
-        const counted = await client.query(
-          'SELECT count(*)::int AS n FROM users WHERE email_verified = false'
+        const result = await client.query(
+          `SELECT count(*)::int AS n FROM ${usersTable} WHERE email_verified = false`
         )
-        const first = counted.rows[0] as { n?: number } | undefined
+        const first = result.rows[0] as { n?: number } | undefined
         unverifiedUsers = first?.n ?? null
       }
     }
 
     const orphans: { kind: string; count: number }[] = []
-    const orphanChecks: readonly { kind: string; table: string; column: string; target: string }[] =
-      [
-        { kind: 'accounts-without-user', table: 'accounts', column: 'user_id', target: 'users' },
-        {
-          kind: 'members-without-org',
-          table: 'members',
-          column: 'organization_id',
-          target: 'organizations',
-        },
-        { kind: 'members-without-user', table: 'members', column: 'user_id', target: 'users' },
-        {
-          kind: 'invitations-without-org',
-          table: 'invitations',
-          column: 'organization_id',
-          target: 'organizations',
-        },
-      ]
+    const skippedChecks: string[] = []
+    const orphanChecks: readonly {
+      kind: string
+      table: string | null
+      column: string
+      target: string | null
+    }[] = [
+      {
+        kind: 'accounts-without-user',
+        table: tables['accounts'],
+        column: 'user_id',
+        target: usersTable,
+      },
+      {
+        kind: 'members-without-org',
+        table: tables['members'],
+        column: 'organization_id',
+        target: tables['organizations'],
+      },
+      {
+        kind: 'members-without-user',
+        table: tables['members'],
+        column: 'user_id',
+        target: usersTable,
+      },
+      {
+        kind: 'invitations-without-org',
+        table: tables['invitations'],
+        column: 'organization_id',
+        target: tables['organizations'],
+      },
+    ]
     for (const check of orphanChecks) {
+      if (check.table === null || check.target === null) {
+        skippedChecks.push(`${check.kind}: skipped — a mapped model is null-mapped (not installed)`)
+        continue
+      }
       if (
         (await tableExists(client, check.table)) &&
         (await tableExists(client, check.target)) &&
         (await columnsOf(client, check.table)).has(check.column)
       ) {
-        const counted = await client.query(
+        const result = await client.query(
           `SELECT count(*)::int AS n FROM ${check.table}
            WHERE ${check.column} IS NOT NULL
              AND NOT EXISTS (SELECT 1 FROM ${check.target} t WHERE t.id = ${check.table}.${check.column})`
         )
-        const first = counted.rows[0] as { n?: number } | undefined
+        const first = result.rows[0] as { n?: number } | undefined
         const count = first?.n ?? 0
         if (count > 0) {
           orphans.push({ kind: check.kind, count })
         }
+      } else {
+        skippedChecks.push(`${check.kind}: skipped — a table or column involved is absent`)
       }
     }
 
-    return { tables, unverifiedUsers, orphans }
+    // api keys: the owner column is named per layout — probe it
+    // (issue #68: `reference_id` on current layouts, `user_id` on 1.6).
+    const apiKeysTable = tables['api_keys']
+    if (apiKeysTable === null) {
+      skippedChecks.push('api-keys-without-user: skipped — the model is null-mapped')
+    } else if (!(await tableExists(client, apiKeysTable))) {
+      if (!missing.some((entry) => entry.model === 'api_keys')) {
+        skippedChecks.push(`api-keys-without-user: skipped — table '${apiKeysTable}' is absent`)
+      }
+    } else {
+      const columns = await columnsOf(client, apiKeysTable)
+      const column = columns.has('reference_id')
+        ? 'reference_id'
+        : columns.has('user_id')
+          ? 'user_id'
+          : null
+      if (column === null || usersTable === null) {
+        skippedChecks.push(
+          `api-keys-without-user: skipped — neither 'reference_id' nor 'user_id' exists on '${apiKeysTable}'`
+        )
+      } else {
+        // Text casts on both sides: the owner column may be varchar
+        // (reference_id) or integer (1.6-era user_id).
+        const result = await client.query(
+          `SELECT count(*)::int AS n FROM ${apiKeysTable}
+           WHERE ${column} IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM ${usersTable} t WHERE t.id::text = ${apiKeysTable}.${column}::text)`
+        )
+        const first = result.rows[0] as { n?: number } | undefined
+        const count = first?.n ?? 0
+        if (count > 0) {
+          orphans.push({ kind: 'api-keys-without-user', count })
+        }
+      }
+    }
+
+    return { tables: counted, unverifiedUsers, orphans, missingTables: missing, skippedChecks }
   } finally {
     await client.end()
   }

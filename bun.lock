@@ -115,6 +115,7 @@
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
         "pg": "^8.16.3",
+        "typescript": "^6.0.3",
       },
       "devDependencies": {
         "@better-auth/api-key": "1.7.7",
@@ -128,13 +129,11 @@
         "payload": "3.90.2",
       },
       "peerDependencies": {
-        "@payload-auth-link/next": "^0.3.0",
-        "better-auth": ">=1.7.6 <1.8.0",
+        "@payload-auth-link/next": "^0.3.1",
         "payload": "^3.83.0 || 4.0.0-beta.0",
       },
       "optionalPeers": [
         "@payload-auth-link/next",
-        "better-auth",
       ],
     },
     "packages/next": {

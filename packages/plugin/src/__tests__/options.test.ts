@@ -8,7 +8,7 @@ import {
 } from '@payload-auth-link/core'
 import { describe, expect, it } from 'vitest'
 import { wireOptions, type AuthLinkPluginOptions } from '../options.js'
-import { createStubProvider } from './stub-provider.js'
+import { createStubProvider, stubCookieName } from './stub-provider.js'
 
 function options(overrides?: Partial<AuthLinkPluginOptions>): AuthLinkPluginOptions {
   const { provider } = createStubProvider()
@@ -169,5 +169,63 @@ describe('wireOptions', () => {
     const first = createStubProvider().provider
     const second = createStubProvider().provider
     expect(() => wireOptions(options({ providers: [first, second] }))).toThrow(/already registered/)
+  })
+
+  describe('legacySessions cross-check (issue #72)', () => {
+    const pluginWindow = { until: '2099-01-01T00:00:00.000Z', cookieNames: ['bl.session_token'] }
+
+    it('accepts the option when the engine declares the identical window', () => {
+      const { provider } = createStubProvider({ legacySessions: pluginWindow })
+      const wired = wireOptions(options({ providers: [provider], legacySessions: pluginWindow }))
+      expect(wired.legacySessions).toEqual(pluginWindow)
+    })
+
+    it('accepts the same window written in a non-canonical form (instant + trimmed-name comparison)', () => {
+      // The engine port carries the host's raw strings; the plugin
+      // option is normalized. `'…00:00Z'` and `'…00:00.000Z'` are the
+      // same instant, and a stray space in a cookie name is not a
+      // disagreement.
+      const { provider } = createStubProvider({
+        legacySessions: { until: '2099-01-01T00:00:00Z', cookieNames: [' bl.session_token '] },
+      })
+      const wired = wireOptions(options({ providers: [provider], legacySessions: pluginWindow }))
+      expect(wired.legacySessions).toEqual(pluginWindow)
+    })
+
+    it('accepts engine-only configuration without the plugin option', () => {
+      const { provider } = createStubProvider({ legacySessions: pluginWindow })
+      const wired = wireOptions(options({ providers: [provider] }))
+      expect(wired.legacySessions).toBeNull()
+    })
+
+    it('rejects the option when no engine declares a window (the plugin cannot enable coexistence)', () => {
+      const { provider } = createStubProvider()
+      expect(() =>
+        wireOptions(options({ providers: [provider], legacySessions: pluginWindow }))
+      ).toThrow(/no provider engine declares a coexistence window/)
+    })
+
+    it('rejects a disagreeing engine window', () => {
+      const { provider } = createStubProvider({
+        legacySessions: { until: '2020-01-01T00:00:00.000Z', cookieNames: ['bl.session_token'] },
+      })
+      expect(() =>
+        wireOptions(options({ providers: [provider], legacySessions: pluginWindow }))
+      ).toThrow(/disagrees with the plugin option/)
+    })
+
+    it('rejects a legacy cookie name colliding with a current session cookie name', () => {
+      // The engine window matches the plugin option (so the
+      // disagreement check passes) but its cookie name IS the stub's
+      // current session cookie.
+      const colliding = {
+        until: pluginWindow.until,
+        cookieNames: [stubCookieName],
+      }
+      const { provider } = createStubProvider({ legacySessions: colliding })
+      expect(() =>
+        wireOptions(options({ providers: [provider], legacySessions: colliding }))
+      ).toThrow(/also a current session cookie name/)
+    })
   })
 })

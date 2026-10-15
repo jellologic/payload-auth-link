@@ -561,6 +561,73 @@ describe('session cookie names', () => {
   })
 })
 
+describe('server-session cookie (#54, #72)', () => {
+  it('mints a signed cookie Better Auth itself accepts', async () => {
+    await signUpUser('cookie-roundtrip@test.dev', 'Cookie Roundtrip')
+    // The provider user id is the BA user id — the `baId` column for
+    // engine-created models, not the Payload document id.
+    const row = await baUserRow('cookie-roundtrip@test.dev')
+    const baUserId = typeof row?.['baId'] === 'string' ? row['baId'] : null
+    if (baUserId === null) {
+      throw new Error('no ba-users row for the roundtrip user')
+    }
+    const createSession = engine.provider.createProviderSession
+    if (createSession === undefined) {
+      throw new Error('the better-auth provider cannot mint sessions')
+    }
+    const created = await createSession(baUserId, {
+      expiresAt: new Date(Date.now() + 3_600_000),
+    })
+    if (created.isErr()) {
+      throw new Error(created.error.message)
+    }
+    const build = engine.provider.sessionCookie
+    if (build === undefined) {
+      throw new Error('the better-auth provider exposes no sessionCookie')
+    }
+    const setCookie = await build(created.value.token)
+    // The signed form BA reads back with getSignedCookie: the raw
+    // token alone resolves NO session (issue #72's original bug).
+    const name = engine.sessionCookieNames[0] ?? ''
+    expect(setCookie.startsWith(`${name}=${created.value.token}.`)).toBe(true)
+    expect(setCookie).toContain('HttpOnly')
+    expect(setCookie).toContain('SameSite=Lax')
+    // The round trip: BA's own getSession resolves the user from our
+    // cookie alone, with matching attributes from the real context.
+    const session = await engine.auth.api.getSession({
+      headers: new Headers({ cookie: setCookie }),
+    })
+    const user = (session as { user?: { email?: string } | null } | null)?.user
+    expect(user?.email).toBe('cookie-roundtrip@test.dev')
+    const sessionToken = (session as { session?: { token?: string } | null } | null)?.session?.token
+    expect(sessionToken).toBe(created.value.token)
+  })
+
+  it('an unsigned cookie resolves no session', async () => {
+    await signUpUser('unsigned-cookie@test.dev', ' Unsigned Cookie')
+    const row = await baUserRow('unsigned-cookie@test.dev')
+    const baUserId = typeof row?.['baId'] === 'string' ? row['baId'] : null
+    if (baUserId === null) {
+      throw new Error('no ba-users row for the unsigned-cookie user')
+    }
+    const createSession = engine.provider.createProviderSession
+    if (createSession === undefined) {
+      throw new Error('the better-auth provider cannot mint sessions')
+    }
+    const created = await createSession(baUserId, {
+      expiresAt: new Date(Date.now() + 3_600_000),
+    })
+    if (created.isErr()) {
+      throw new Error(created.error.message)
+    }
+    const name = engine.sessionCookieNames[0] ?? ''
+    const unsigned = await engine.auth.api.getSession({
+      headers: new Headers({ cookie: `${name}=${created.value.token}` }),
+    })
+    expect(unsigned?.user ?? null).toBeNull()
+  })
+})
+
 describe('user deletion', () => {
   it('removes provider rows but keeps the Payload user', async () => {
     const signedUp = await engine.auth.handler(

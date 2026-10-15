@@ -132,8 +132,12 @@ export type AuthLinkServer = {
   readonly revokeAllForUser: (userId: number | string) => Promise<void>
   /** Verify an API key; `null` when the key is unknown. */
   readonly verifyApiKey: (key: string) => Promise<ApiKeyVerification | null>
-  /** The provider's signed session cookie for one session token. */
-  readonly sessionCookie: (token: string) => string
+  /**
+   * The provider's signed session cookie for one session token
+   * (`token.<signature>` — Better Auth only accepts the signed form).
+   * Async: the provider resolves its engine's secret on first use.
+   */
+  readonly sessionCookie: (token: string) => Promise<string>
 }
 
 /**
@@ -178,31 +182,19 @@ function firstProviderWith(
   return undefined
 }
 
-async function resolveIdentity(
-  wired: WiredOptions,
-  payload: Payload,
-  userId: number | string,
-  capability: Capability
-): Promise<{ provider: IdentityProviderPort; providerUserId: string }> {
-  const { users } = createServices(wired, payload)
-  const found = await users.findById(asUserId(userId))
-  if (found.isErr() || !found.value) {
-    throw new Error(`no payload-auth-link user ${String(userId)}`)
-  }
-  process.stdout.write(
-    `DBG-resolve user=${String(userId)} cap=${capability} identities=${JSON.stringify(found.value.identities.map((i) => i.providerId))} registry=${wired.registry.ids().join(',')}\n`
-  )
-  for (const identity of found.value.identities) {
-    const required = wired.registry.require(identity.providerId)
+/** Every registered provider carrying a capability, in registry order. */
+function allProvidersWith(wired: WiredOptions, capability: Capability): IdentityProviderPort[] {
+  const providers: IdentityProviderPort[] = []
+  for (const id of wired.registry.ids()) {
+    const required = wired.registry.require(id)
     if (required.isErr()) {
       continue
     }
-    const provider = required.value
-    if (provider.capabilities.has(capability)) {
-      return { provider, providerUserId: identity.providerUserId }
+    if (required.value.capabilities.has(capability)) {
+      providers.push(required.value)
     }
   }
-  throw new ServerSessionUnsupportedError(String(userId), capability)
+  return providers
 }
 
 function buildAuthLinkServer(wired: WiredOptions, payload: Payload): AuthLinkServer {
@@ -257,13 +249,9 @@ function buildAuthLinkServer(wired: WiredOptions, payload: Payload): AuthLinkSer
       for (const identity of record.identities) {
         const required = wired.registry.require(identity.providerId)
         if (required.isErr()) {
-          process.stdout.write(`DBG require failed: ${identity.providerId}\n`)
           continue
         }
         const provider = required.value
-        process.stdout.write(
-          `DBG provider ${identity.providerId} caps=${[...provider.capabilities].join(',')} hasMethod=${String(provider.createProviderSession !== undefined)} identities=${record.identities.length}\n`
-        )
         if (
           !provider.capabilities.has('server-session-create') ||
           provider.createProviderSession === undefined
@@ -292,27 +280,49 @@ function buildAuthLinkServer(wired: WiredOptions, payload: Payload): AuthLinkSer
           sessionId: created.value.sessionId,
           token: created.value.token,
           expiresAt,
-          setCookie: provider.sessionCookie?.(created.value.token),
+          setCookie:
+            provider.sessionCookie === undefined
+              ? undefined
+              : await provider.sessionCookie(created.value.token),
         }
       }
       throw new ServerSessionUnsupportedError(String(userId), 'server-session-create')
     },
 
     async listSessions(userId) {
-      const { provider, providerUserId } = await resolveIdentity(
-        wired,
-        payload,
-        userId,
-        'server-session-list'
-      )
-      if (provider.listProviderSessions === undefined) {
+      // Every linked provider holds its own sessions (matching
+      // `revokeAllForUser`): list them all, so an operator sees the
+      // whole picture and can verify a full revocation.
+      const { users } = createServices(wired, payload)
+      const found = await users.findById(asUserId(userId))
+      if (found.isErr() || !found.value) {
+        throw new Error(`listSessions: no payload-auth-link user ${String(userId)}`)
+      }
+      const sessions: { readonly sessionId: string; readonly expiresAt: Date | null }[] = []
+      let attempted = 0
+      for (const identity of found.value.identities) {
+        const required = wired.registry.require(identity.providerId)
+        if (required.isErr()) {
+          continue
+        }
+        const provider = required.value
+        if (
+          !provider.capabilities.has('server-session-list') ||
+          provider.listProviderSessions === undefined
+        ) {
+          continue
+        }
+        attempted += 1
+        const result = await provider.listProviderSessions(identity.providerUserId)
+        if (result.isErr()) {
+          throw new Error(`listSessions: ${result.error.message}`)
+        }
+        sessions.push(...result.value)
+      }
+      if (attempted === 0) {
         throw new ServerSessionUnsupportedError(String(userId), 'server-session-list')
       }
-      const result = await provider.listProviderSessions(providerUserId)
-      if (result.isErr()) {
-        throw new Error(`listSessions: ${result.error.message}`)
-      }
-      return result.value
+      return sessions
     },
 
     async revokeSession(sessionId) {
@@ -335,18 +345,40 @@ function buildAuthLinkServer(wired: WiredOptions, payload: Payload): AuthLinkSer
     },
 
     async revokeAllForUser(userId) {
-      const { provider, providerUserId } = await resolveIdentity(
-        wired,
-        payload,
-        userId,
-        'revoke-user-sessions'
-      )
-      if (provider.revokeUserSessions === undefined) {
+      // Every linked provider holds its own sessions (issue #72: with
+      // two linked providers, walking only the first left the second
+      // provider's sessions alive), so walk them all and fail closed
+      // — every provider is attempted, any failure aborts the claim.
+      const { users } = createServices(wired, payload)
+      const found = await users.findById(asUserId(userId))
+      if (found.isErr() || !found.value) {
+        throw new Error(`revokeAllForUser: no payload-auth-link user ${String(userId)}`)
+      }
+      const failures: string[] = []
+      let attempted = 0
+      for (const identity of found.value.identities) {
+        const required = wired.registry.require(identity.providerId)
+        if (required.isErr()) {
+          continue
+        }
+        const provider = required.value
+        if (
+          !provider.capabilities.has('revoke-user-sessions') ||
+          provider.revokeUserSessions === undefined
+        ) {
+          continue
+        }
+        attempted += 1
+        const result = await provider.revokeUserSessions(identity.providerUserId)
+        if (result.isErr()) {
+          failures.push(`${identity.providerId}: ${result.error.message}`)
+        }
+      }
+      if (attempted === 0) {
         throw new ServerSessionUnsupportedError(String(userId), 'revoke-user-sessions')
       }
-      const result = await provider.revokeUserSessions(providerUserId)
-      if (result.isErr()) {
-        throw new Error(`revokeAllForUser: ${result.error.message}`)
+      if (failures.length > 0) {
+        throw new Error(`revokeAllForUser: ${failures.join('; ')}`)
       }
     },
 
@@ -368,8 +400,26 @@ function buildAuthLinkServer(wired: WiredOptions, payload: Payload): AuthLinkSer
       return result.value
     },
 
-    sessionCookie(token) {
-      const provider = firstProviderWith(wired, 'server-session-create')
+    async sessionCookie(token) {
+      // The token does not name its provider: with more than one
+      // cookie-transport provider this surface could not know whose
+      // secret/name to sign with — refuse instead of silently signing
+      // with the wrong one. `createSessionFor` is unambiguous (its
+      // setCookie comes from the provider that minted the token).
+      const capable = allProvidersWith(wired, 'server-session-create').filter(
+        (provider) => provider.sessionCookie !== undefined
+      )
+      if (capable.length === 0) {
+        throw new Error(
+          'sessionCookie: the configured provider does not use a cookie session transport'
+        )
+      }
+      if (capable.length > 1) {
+        throw new Error(
+          'sessionCookie: several registered providers mint cookie sessions — use createSessionFor, whose setCookie comes from the provider that minted the token'
+        )
+      }
+      const provider = capable[0]
       if (provider === undefined || provider.sessionCookie === undefined) {
         throw new Error(
           'sessionCookie: the configured provider does not use a cookie session transport'

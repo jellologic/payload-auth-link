@@ -827,17 +827,6 @@ export type BetterAuthProviderDeps = {
      */
     readonly events?: IdentityEventBus | undefined;
     /**
-     * The session cookie's write attributes for
-     * `sessionCookie(token)` (#54): the engine derives the name and
-     * secure flag from the builder's BA options (secure-cookie rule +
-     * `__Secure-` prefix). Absent = the port omits `sessionCookie`.
-     */
-    readonly sessionCookieSpec?: {
-        readonly name: string;
-        readonly secure: boolean;
-        readonly sameSite: 'lax' | 'strict' | 'none';
-    } | undefined;
-    /**
      * Coexistence window (#51): legacy payload-auth session cookie
      * names, honored READ-ONLY until the ISO date `until`. After the
      * window the names are ignored and the lookup refuses with a logged
@@ -881,11 +870,6 @@ export declare function createBetterAuthProviderFromUnknown(auth: unknown, sessi
     readonly legacySessions?: {
         readonly until: string;
         readonly cookieNames: readonly string[];
-    } | undefined;
-    readonly sessionCookieSpec?: {
-        readonly name: string;
-        readonly secure: boolean;
-        readonly sameSite: 'lax' | 'strict' | 'none';
     } | undefined;
 }): IdentityProviderPort;
 

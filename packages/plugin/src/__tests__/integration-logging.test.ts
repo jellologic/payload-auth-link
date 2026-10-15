@@ -126,9 +126,6 @@ describe('one resolution per request (issue #42)', () => {
     const second = await sessions.verify(headersA, req as never)
     const third = await sessions.verify(headersB, req as never)
     expect(first.isErr() && second.isErr() && third.isErr()).toBe(true)
-    process.stdout.write(
-      `DBG42 warns: ${JSON.stringify(warnings)} count: ${getCount.mock.calls.length}\n`
-    )
     expect(getCount).toHaveBeenCalledTimes(1)
     expect(
       warnings.filter((message) => message.includes('no provider session resolved'))
@@ -156,7 +153,6 @@ describe('one provider walk per HTTP request (issue #42 reopen)', () => {
             {
               ...stub.provider,
               getSession: (headers: Headers) => {
-                process.stdout.write(`DBG-WRAPPER-CALL cookie=${String(headers.get('cookie'))}\n`)
                 getCount()
                 return stub.provider.getSession(headers)
               },
@@ -175,7 +171,6 @@ describe('one provider walk per HTTP request (issue #42 reopen)', () => {
       }),
     })
     expect(response.status).toBe(401)
-    process.stdout.write(`DBG42 warns: ${JSON.stringify(warnings)}\n`)
     expect(warnings.filter((m) => m.includes('no provider session resolved'))).toHaveLength(1)
     expect(
       warnings.filter((message) => message.includes('no provider session resolved'))

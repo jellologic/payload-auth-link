@@ -1,4 +1,7 @@
+import { readFileSync } from 'node:fs'
+import { relative } from 'node:path'
 import type { PluginFinding } from './types.js'
+import { listSourceFiles } from './source-scan.js'
 
 /**
  * Better Auth plugin classification (issue #52): for each plugin the
@@ -193,9 +196,17 @@ const callNameToPlugin: Readonly<Record<string, string>> = {
   nextCookies: 'next-cookies',
   tanstackStartCookies: 'tanstack-start-cookies',
   oidcProvider: 'oidcProvider',
+  mcp: 'mcp',
   passkey: 'passkey',
   apiKey: 'api-key',
   sso: 'sso',
+  multiSession: 'multi-session',
+  bearer: 'bearer',
+  oneTimeToken: 'one-time-token',
+  siwe: 'siwe',
+  expo: 'expo',
+  deviceAuthorization: 'device-authorization',
+  subscriptions: 'subscriptions',
 }
 
 /**
@@ -213,4 +224,44 @@ export function pluginsFromConfigSource(configSource: string): string[] {
     }
   }
   return [...ids].sort()
+}
+
+/** One plugin factory call found in a source file. */
+export type PluginSourceHit = {
+  /** The Better Auth plugin id (or payload-auth-era name). */
+  readonly id: string
+  /** The file it was found in, relative to the scanned root. */
+  readonly file: string
+}
+
+/**
+ * Plugin factory calls across the WHOLE source tree (issue #71), not
+ * just the config file: a mid-upgrade app calls `admin(...)` or
+ * `oidcProvider(...)` in helpers too, and a schema-adding plugin that
+ * hides in a non-config file changes what the migration must carry.
+ * Same walk/skip rules as the source scan.
+ */
+export function pluginsFromSourceTree(srcDir: string): readonly PluginSourceHit[] {
+  const hits: PluginSourceHit[] = []
+  const seen = new Set<string>()
+  for (const file of listSourceFiles(srcDir)) {
+    let content: string
+    try {
+      content = readFileSync(file, 'utf8')
+    } catch {
+      continue
+    }
+    for (const [call, id] of Object.entries(callNameToPlugin)) {
+      const pattern = new RegExp(`\\b${call}\\s*\\(`)
+      if (pattern.test(content)) {
+        const rel = relative(srcDir, file)
+        const key = `${id}\n${rel}`
+        if (!seen.has(key)) {
+          seen.add(key)
+          hits.push({ id, file: rel })
+        }
+      }
+    }
+  }
+  return hits
 }

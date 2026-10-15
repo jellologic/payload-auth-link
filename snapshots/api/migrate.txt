@@ -8,12 +8,17 @@ export { main as cliMain };
 
 // ===== codemods.d.ts =====
 /**
- * Codemods (issue #53): rule-based rewrites for the call sites a
- * payload-auth app must migrate. Deliberately textual and scoped —
- * each rule matches an exact, idiomatic payload-auth pattern and
- * leaves anything it cannot fully rewrite untouched (reported in the
- * result), because a half-rewritten call site is worse than an
- * explicit one.
+ * Codemods (issues #53, #70): rule-based rewrites for the call sites a
+ * payload-auth app must migrate, matched on the TypeScript AST and
+ * applied as text splices over the original ranges (no printer —
+ * formatting survives).
+ *
+ * Each rule rewrites only what it can FULLY rewrite and reports the
+ * rest as manual sites ({@link findManualSites}); a half-rewritten
+ * call site is worse than an explicit one. In particular, a file with
+ * ANY unrewritable `getPayloadAuth` reference keeps its whole
+ * `get-payload-auth` state untouched, so the output never references a
+ * symbol no import provides.
  */
 export type CodemodRule = {
     readonly id: string;
@@ -33,8 +38,12 @@ export type CodemodFileResult = {
 };
 export declare const codemodRules: readonly CodemodRule[];
 /**
- * Report call sites the rules cannot fully rewrite — each one needs a
- * human decision (which session API call, which route handler shape).
+ * Report call sites the rules cannot fully rewrite (issue #70.4):
+ * EVERY remaining `getPayloadAuth` reference (calls, type references,
+ * the import itself), every surviving `payload.betterAuth` accessor
+ * (including `.betterAuth.api.<method>` and `$context`), and every
+ * `internalAdapter`. Nothing is silently ignored — the doctor counts
+ * these references, so the codemod must account for them.
  */
 export declare function findManualSites(content: string): readonly string[];
 /** Apply every rule to one file; reports what fired and what needs a human. */
@@ -59,7 +68,11 @@ export declare function checkVersions(fromUrl: string): VersionFinding[];
 
 // ===== doctor/database.d.ts =====
 import type { DatabaseFinding } from './types.js';
-export declare function introspectDatabase(connectionString: string): Promise<DatabaseFinding>;
+export type IntrospectOptions = {
+    /** Model → source table map (`--source-map`); defaults to the default layout. */
+    readonly sourceTables?: Readonly<Record<string, string | null>> | undefined;
+};
+export declare function introspectDatabase(connectionString: string, options?: IntrospectOptions): Promise<DatabaseFinding>;
 
 // ===== doctor/plugins.d.ts =====
 import type { PluginFinding } from './types.js';
@@ -73,6 +86,21 @@ export declare function pluginsFromCollectionSlugs(slugs: readonly string[]): st
  * beyond loading its config module.
  */
 export declare function pluginsFromConfigSource(configSource: string): string[];
+/** One plugin factory call found in a source file. */
+export type PluginSourceHit = {
+    /** The Better Auth plugin id (or payload-auth-era name). */
+    readonly id: string;
+    /** The file it was found in, relative to the scanned root. */
+    readonly file: string;
+};
+/**
+ * Plugin factory calls across the WHOLE source tree (issue #71), not
+ * just the config file: a mid-upgrade app calls `admin(...)` or
+ * `oidcProvider(...)` in helpers too, and a schema-adding plugin that
+ * hides in a non-config file changes what the migration must carry.
+ * Same walk/skip rules as the source scan.
+ */
+export declare function pluginsFromSourceTree(srcDir: string): readonly PluginSourceHit[];
 
 // ===== doctor/run-doctor.d.ts =====
 import type { BehaviourChange, DoctorReport } from './types.js';
@@ -83,6 +111,12 @@ import type { BehaviourChange, DoctorReport } from './types.js';
  * Auth plugins, scans the source tree for call sites that must
  * migrate, and (with a database URL) reports row counts, unverified
  * users, and orphans. It never writes.
+ *
+ * Never crashes (issue #71): a config that cannot even be IMPORTED
+ * (the mid-upgrade state — better-auth 1.7 installed while the config
+ * still calls `oidcProvider`) is a `config-unloadable` blocker, not a
+ * crash. The static scans (config text, source tree, database) still
+ * run and still catch what the load cannot.
  */
 export type DoctorOptions = {
     /** Absolute or cwd-relative path to the app's payload config. */
@@ -91,6 +125,11 @@ export type DoctorOptions = {
     readonly srcDir?: string | undefined;
     /** Postgres connection string. Defaults to `DATABASE_URL`. */
     readonly databaseUrl?: string | undefined;
+    /**
+     * The `--source-map` JSON (issue #68): model → source table name, or
+     * `null` for "model not installed". Shapes the database section.
+     */
+    readonly sourceMapJson?: string | undefined;
     /** Config loader, injectable for tests. Defaults to dynamic import. */
     readonly loadModule?: ((path: string) => Promise<unknown>) | undefined;
 };
@@ -132,6 +171,11 @@ import type { SourceFinding } from './types.js';
  * access-control drift — until `reqUser: 'document'` lands (#57).
  */
 export declare const projectedUserFields: ReadonlySet<string>;
+/**
+ * Every scannable file under `dir` — the walk/skip rules the source
+ * scan uses, shared with the plugin factory scan (issue #71).
+ */
+export declare function listSourceFiles(dir: string): readonly string[];
 export declare function scanSource(srcDir: string): SourceFinding[];
 
 // ===== doctor/types.d.ts =====
@@ -163,6 +207,8 @@ export type PluginFinding = {
     readonly id: string;
     readonly status: 'supported' | 'auto-declarable' | 'unprobed' | 'unsupported' | 'removed-upstream';
     readonly detail: string;
+    /** Files under `--src` whose source names this plugin (issue #71). */
+    readonly files?: readonly string[];
 };
 /** The users collection, as the migration will meet it. */
 export type UsersFinding = {
@@ -203,6 +249,16 @@ export type DatabaseFinding = {
         readonly kind: string;
         readonly count: number;
     }[];
+    /**
+     * Mapped source models whose table is absent (issue #68) — blockers
+     * unless `--source-map` records the model as not installed.
+     */
+    readonly missingTables?: readonly {
+        readonly model: string;
+        readonly table: string;
+    }[];
+    /** Orphan checks that could not run, with the reason (issue #68). */
+    readonly skippedChecks?: readonly string[];
 };
 /** Default-behaviour changes in payload-auth-link 0.7.0 that bite. */
 export type BehaviourChange = {
@@ -259,7 +315,14 @@ export type ExportResult = {
     /** The JSONL document: one JSON object per line, `{"table": …, "row": …}`. */
     readonly jsonl: string;
     readonly totalRows: number;
+    /**
+     * Requested tables that do not exist on the source (issue #68). The
+     * caller decides policy: `--tables` names must abort (exit 1),
+     * default-list gaps are reported but tolerated.
+     */
+    readonly missing: readonly string[];
 };
+export declare function parseExportTables(value: string): readonly string[];
 /** Export the auth tables to lossless JSONL (issue #58). */
 export declare function exportToJsonl(options: ExportOptions): Promise<ExportResult>;
 /** A round-trip verification row: source vs re-import counts. */
@@ -315,6 +378,11 @@ export type ApplyOptions = {
     readonly sourceDatabase: string;
     /** Target collection slugs; defaults must match the engine wiring. */
     readonly slugs?: Readonly<Record<string, string>> | undefined;
+    /**
+     * Source-side model → table map (issue #68). Defaults to
+     * payload-auth's layout; a `null` model is treated as not installed.
+     */
+    readonly sourceTables?: Readonly<Record<string, string | null>> | undefined;
     /** Injectable clock for deterministic `linkedAt` stamps. */
     readonly now?: () => Date;
     readonly log?: (message: string) => void;
@@ -325,7 +393,7 @@ export declare function summarizePlanRows(rows: readonly PlanRow[]): PlanRow[];
 
 // ===== importer/lifecycle.d.ts =====
 import type { Payload } from 'payload';
-import type { ImportManifest } from './types.js';
+import { type ImportManifest } from './types.js';
 /**
  * Manifest lifecycle (issue #50): `verify` checks both sides, `rollback`
  * undoes exactly what the manifest records, and `finalize` marks the
@@ -348,16 +416,25 @@ export type VerifyResult = {
     }[];
 };
 /**
- * Verify (issue #50): per-model counts match, every source user has
- * exactly one target row, every credential account resolves to its
- * user, every API key carries its hash with a resolvable owner, and
- * every member/invitation references an existing org and user. Exits
- * non-zero on any mismatch (the caller maps `ok` to the exit code).
+ * Verify (issues #50, #68, #69): fail closed on the source layout
+ * (the probe runs first), per-model counts match EXACTLY (zero never
+ * skips; every mapped model is either counted or explicitly
+ * null-mapped), every source user has exactly one target row, every
+ * imported user resolves through exactly one `better-auth` identity
+ * pointing at their ba-users id, every credential account resolves to
+ * its user, every API key carries its hash with a resolvable owner,
+ * and every member/invitation references an existing org and user.
+ * Exits non-zero on any mismatch (the caller maps `ok` to the exit
+ * code).
  */
 export declare function verifyImport(options: {
     readonly payload: Payload;
     readonly sourceConnectionString: string;
     readonly slugs?: Readonly<Record<string, string>> | undefined;
+    /** Model → source table map (issue #68); defaults to the default layout. */
+    readonly sourceTables?: Readonly<Record<string, string | null>> | undefined;
+    /** Whether the import carried sessions; `drop` skips the session count. */
+    readonly sessions?: 'carry' | 'drop' | undefined;
 }): Promise<VerifyResult>;
 /**
  * Rollback (issue #50): delete the created rows in reverse order and
@@ -396,6 +473,12 @@ export type ImportCommandOptions = {
     readonly sessions: 'carry' | 'drop';
     readonly manifestPath?: string | undefined;
     readonly slugsJson?: string | undefined;
+    /**
+     * The `--source-map` JSON (issue #68): model → source table name, or
+     * `null` for "model not installed". Missing mapped tables abort the
+     * run before anything is written without it.
+     */
+    readonly sourceMapJson?: string | undefined;
     readonly json?: boolean;
     readonly log?: (message: string) => void;
     readonly loadPayload?: (configPath: string) => Promise<import('payload').Payload>;
@@ -419,12 +502,18 @@ export declare function runFinalize(options: Pick<ImportCommandOptions, 'manifes
 
 // ===== importer/source.d.ts =====
 import { Client } from 'pg';
-import type { Unmappable } from './types.js';
+import { type ResolvedSourceTables, type SourceModel, type Unmappable } from './types.js';
 /**
  * Read side (issue #50): the payload-auth layout, straight from
  * Postgres. Rows are read with plain SELECTs — the source tables are
  * never modified until `finalize` (which only marks the manifest; the
  * drop itself stays the operator's step).
+ *
+ * Fail closed (issue #68): nothing here tolerates a missing table.
+ * `probeSourceLayout` is the gate — the run commands call it first and
+ * abort on any finding — so every read below assumes the mapped tables
+ * exist and throws if they don't. A customized layout renames tables
+ * with `--source-map`, never with silent skips.
  */
 /** One payload-auth source user with its role rows and accounts. */
 export type SourceUser = {
@@ -452,18 +541,55 @@ export type SourceAccount = {
     readonly refreshTokenExpiresAt: Date | null;
 };
 export type SourceRow = Record<string, unknown>;
+/** One fail-closed finding: a mapped model's table or column is absent. */
+export type SourceLayoutIssue = {
+    readonly model: SourceModel;
+    /** The table (or `table.column`) the probe looked for. */
+    readonly key: string;
+    /** Human reason, naming the table and the `--source-map` escape hatch. */
+    readonly reason: string;
+};
 export declare function openSource(connectionString: string): Promise<Client>;
+/**
+ * Fail-closed probe (issue #68): every mapped model's table must
+ * exist (a `null` mapping records "not installed" and is skipped),
+ * and every column the reads dereference must be present. The run
+ * commands call this FIRST and abort on any finding — nothing is
+ * read, planned, or written past a failed probe.
+ */
+export declare function probeSourceLayout(client: Client, tables: ResolvedSourceTables): Promise<readonly SourceLayoutIssue[]>;
+/**
+ * Row counts for the given (mapped, existing) tables. A missing table
+ * throws — the probe owns the structured "missing table" report, so a
+ * throw here means the probe was skipped.
+ */
 export declare function countTables(client: Client, tables: readonly string[]): Promise<Record<string, number>>;
 /** Every source user, with role rows and accounts attached. */
-export declare function readSourceUsers(client: Client): Promise<SourceUser[]>;
-/** Rows of one flat plugin table (sessions, verifications, apiKeys, jwks, …). */
+export declare function readSourceUsers(client: Client, tables?: ResolvedSourceTables): Promise<SourceUser[]>;
+/**
+ * Rows of one flat plugin table (sessions, verifications, apiKeys, jwks, …).
+ * A missing table throws — a `null` mapping keeps the caller from ever
+ * asking for it, and an unmapped missing table aborts at the probe.
+ */
 export declare function readFlatRows(client: Client, table: string, columns: readonly string[]): Promise<SourceRow[]>;
+/** What the orphan sweep found, and which checks could not run (and why). */
+export type OrphanScan = {
+    readonly orphans: readonly Unmappable[];
+    /** Checks skipped with a reason — reported, never silent (issue #68). */
+    readonly skipped: readonly string[];
+};
 /**
  * Members and invitations reference organizations and users by numeric
  * id; the importer remaps to the target's baIds. Orphaned references
  * are unmappable — they abort the run rather than skip silently.
+ *
+ * Every check is table-mapped (issue #68). The api-key check probes
+ * its columns: better-auth names the owner reference `reference_id`
+ * (1.7 / payload-auth layouts) or `user_id` (1.6-era layouts); when
+ * neither exists the check is reported as skipped-with-reason instead
+ * of passing silently.
  */
-export declare function findOrphans(client: Client): Promise<readonly Unmappable[]>;
+export declare function findOrphans(client: Client, tables?: ResolvedSourceTables): Promise<OrphanScan>;
 /** Users whose email never verified — reported, never granted `linkable`. */
 export declare function unverifiedEmails(users: readonly SourceUser[]): readonly string[];
 
@@ -530,6 +656,39 @@ export type ImportResult = {
     readonly fieldWrites: number;
     readonly plan: ImportPlan;
 };
+/**
+ * The models the source side names (issue #68). One entry per
+ * payload-auth table the importer/doctor reads — the keys are stable
+ * model names; the values are whatever the source database actually
+ * called the table.
+ */
+export type SourceModel = 'users' | 'accounts' | 'sessions' | 'verifications' | 'api_keys' | 'jwks' | 'organizations' | 'members' | 'invitations' | 'users_role';
+/**
+ * A model → source-table override for custom layouts (`--source-map`):
+ * `{"accounts":"user_accounts","sessions":"user_sessions"}`. A `null`
+ * value means the model is explicitly NOT installed on the source
+ * (recorded as skipped-by-config, never probed as an error).
+ */
+export type SourceTableMap = {
+    readonly [M in SourceModel]?: string | null;
+};
+/** Every model resolved to its source table (`null` = not installed). */
+export type ResolvedSourceTables = Readonly<Record<SourceModel, string | null>>;
+/** payload-auth's default Postgres layout. */
+export declare const defaultSourceTables: Readonly<Record<SourceModel, string>>;
+/** All known source models — the error message names them. */
+export declare const sourceModelNames: readonly SourceModel[];
+/**
+ * Parse the `--source-map` JSON (same boundary style as `--slugs`):
+ * keys must be known source models, values a table name or `null`
+ * ("model not installed"). Unknown keys throw — a typo would
+ * otherwise silently skip the model it meant to map.
+ */
+export declare function parseSourceMapJson(json: string): SourceTableMap;
+/** Merge `--source-map` overrides onto the default layout. */
+export declare function resolveSourceTables(map: SourceTableMap | undefined): ResolvedSourceTables;
+/** The tables to read (the mapped ones — `null` entries are skipped). */
+export declare function presentTables(tables: ResolvedSourceTables): readonly string[];
 /** The models the importer copies. */
 export type TargetModel = 'user' | 'session' | 'account' | 'verification' | 'apikey' | 'jwks' | 'organization' | 'member' | 'invitation';
 /** Target slugs with the known models always present (index-safe). */
@@ -546,13 +705,15 @@ export declare const defaultTargetSlugs: TargetSlugMap;
 export { runDoctor, behaviourChanges, findPayloadAuthPlugin, betterAuthPluginIds, usersSlugOf, } from './doctor/run-doctor.js';
 export type { DoctorOptions } from './doctor/run-doctor.js';
 export { checkVersions, payloadBand, betterAuthBand, nextBand } from './doctor/bands.js';
-export { classifyPlugins } from './doctor/plugins.js';
-export { scanSource, projectedUserFields } from './doctor/source-scan.js';
+export { classifyPlugins, pluginsFromSourceTree } from './doctor/plugins.js';
+export { scanSource, projectedUserFields, listSourceFiles } from './doctor/source-scan.js';
 export { analyzeUsersCollection, findUsersCollection, localStrategyOn } from './doctor/users.js';
 export { introspectDatabase } from './doctor/database.js';
 export { runFromPayloadAuth, runVerify, runRollback, runFinalize } from './importer/run-import.js';
 export { applyImport, summarizePlanRows } from './importer/apply.js';
+export { countTables, findOrphans, openSource, probeSourceLayout, readFlatRows, readSourceUsers, unverifiedEmails, type OrphanScan, type SourceLayoutIssue, type SourceAccount, type SourceRow, type SourceUser, } from './importer/source.js';
 export { readManifest, writeManifest, verifyImport, rollbackImport, finalizeManifest, defaultManifestPath, type VerifyIssue, type VerifyResult, } from './importer/lifecycle.js';
-export { defaultTargetSlugs, type CreatedRow, type TargetModel, type TargetSlugMap, type FieldWrite, type ImportManifest, type ImportPlan, type ImportResult, type PlanRow, type Unmappable, } from './importer/types.js';
+export { defaultSourceTables, defaultTargetSlugs, parseSourceMapJson, presentTables, resolveSourceTables, sourceModelNames, type CreatedRow, type ResolvedSourceTables, type SourceModel, type SourceTableMap, type TargetModel, type TargetSlugMap, type FieldWrite, type ImportManifest, type ImportPlan, type ImportResult, type PlanRow, type Unmappable, } from './importer/types.js';
+export { exportToJsonl, parseExportTables, exportTables } from './exporters.js';
 export { cliMain } from './cli.js';
 export type { BehaviourChange, DatabaseFinding, DoctorIssue, DoctorReport, PluginFinding, SourceFinding, UsersFinding, VersionFinding, } from './doctor/types.js';

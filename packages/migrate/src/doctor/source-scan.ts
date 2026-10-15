@@ -74,6 +74,16 @@ function walk(dir: string, into: string[]): void {
   }
 }
 
+/**
+ * Every scannable file under `dir` — the walk/skip rules the source
+ * scan uses, shared with the plugin factory scan (issue #71).
+ */
+export function listSourceFiles(dir: string): readonly string[] {
+  const files: string[] = []
+  walk(dir, files)
+  return files
+}
+
 export function scanSource(srcDir: string): SourceFinding[] {
   const files: string[] = []
   walk(srcDir, files)

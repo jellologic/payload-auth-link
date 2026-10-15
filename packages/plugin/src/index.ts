@@ -1,6 +1,7 @@
 import {
   assertSupportedVersion,
   consoleLogger,
+  InvalidConfigError,
   isSilentLogger,
   readInstalledVersion,
   type VersionRange,
@@ -122,10 +123,25 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
   const auditLogger =
     wired.onAudit === null ? wired.logger : composeAuditLogger(wired.logger, wired.onAudit)
   const plugin: Plugin = (config: Config) => {
-    // #55: the provider-backed admin login view. Registered as a
+    // #55/#72: the provider-backed admin login view. Registered as a
     // custom view; the import map must include
-    // `@payload-auth-link/plugin/admin#ProviderLoginView` (the doctor
-    // checks for it).
+    // `@payload-auth-link/plugin/admin#ProviderLoginView` — hence the
+    // explicit `exportName` (a bare `path` would resolve to the
+    // module's non-existent default export). The doctor checks for it.
+    // The view's provider form posts to a cookie-transport provider's
+    // sign-in endpoint, so registering it without one would ship a
+    // form that always 404s — refuse the combination at config time.
+    if (
+      wired.adminProviderLoginView &&
+      ![...wired.registry.ids()].some((id) => {
+        const required = wired.registry.require(id)
+        return required.isOk() && required.value.sessionCookie !== undefined
+      })
+    ) {
+      throw new InvalidConfigError(
+        "admin.loginView: 'provider' renders the cookie-transport provider's sign-in form (/api/auth/sign-in/email) — register a provider that mints cookie sessions (better-auth), or keep the default login view"
+      )
+    }
     const adminConfig = wired.adminProviderLoginView
       ? {
           ...config.admin,
@@ -136,6 +152,7 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
               login: {
                 Component: {
                   path: '@payload-auth-link/plugin/admin',
+                  exportName: 'ProviderLoginView',
                   clientProps: { authBase: '/api/auth' },
                 },
               },

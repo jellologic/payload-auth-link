@@ -20,6 +20,7 @@ function baseOptions() {
 function buildConfigShape(options: Parameters<typeof authLink>[0]): {
   loginViewRegistered: boolean
   viewPath: string | undefined
+  exportName: string | undefined
   clientProps: unknown
 } {
   const plugin = authLink(options)
@@ -29,7 +30,9 @@ function buildConfigShape(options: Parameters<typeof authLink>[0]): {
   } as never) as {
     admin?: {
       components?: {
-        views?: { login?: { Component?: { path?: string; clientProps?: unknown } } }
+        views?: {
+          login?: { Component?: { path?: string; exportName?: string; clientProps?: unknown } }
+        }
       }
     }
   }
@@ -37,15 +40,32 @@ function buildConfigShape(options: Parameters<typeof authLink>[0]): {
   return {
     loginViewRegistered: login !== undefined,
     viewPath: login?.Component?.path,
+    exportName: login?.Component?.exportName,
     clientProps: login?.Component?.clientProps,
   }
 }
 
 describe('provider-backed admin login view (issue #55)', () => {
+  it('refuses loginView provider without a cookie-transport provider (#72)', () => {
+    // The view's provider form posts to the cookie-transport
+    // provider's sign-in endpoint; without one it would always 404.
+    const { provider } = createStubProvider({ omitSessionCookie: true })
+    expect(() =>
+      buildConfigShape({
+        ...baseOptions(),
+        providers: [provider],
+        admin: { loginView: 'provider' },
+      })
+    ).toThrow(/register a provider that mints cookie sessions/)
+  })
+
   it('registers the custom login view when admin.loginView is provider', () => {
     const shape = buildConfigShape({ ...baseOptions(), admin: { loginView: 'provider' } })
     expect(shape.loginViewRegistered).toBe(true)
     expect(shape.viewPath).toBe('@payload-auth-link/plugin/admin')
+    // #72: without the export name the view resolves to the module's
+    // non-existent default export and never renders.
+    expect(shape.exportName).toBe('ProviderLoginView')
     expect(shape.clientProps).toEqual({ authBase: '/api/auth' })
   })
 

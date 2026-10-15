@@ -94,12 +94,6 @@ async function seedUser(
     providerUserId,
   })
   expect(linked.isOk(), linked.isErr() ? 'link failed' : 'ok').toBe(true)
-  const reread = await services.users.findById(created.value.id)
-  if (reread.isOk() && reread.value) {
-    process.stdout.write(
-      'DEBUG identities=' + JSON.stringify(reread.value.identities) + String.fromCharCode(10)
-    )
-  }
   if (!linked.isOk()) {
     throw new Error('unreachable')
   }
@@ -192,6 +186,99 @@ describe('authLinkServer (issue #54)', () => {
     expect(after.map((session) => session.sessionId)).toEqual([second.sessionId])
     await server.revokeAllForUser(user.id)
     expect(await server.listSessions(user.id)).toEqual([])
+  })
+
+  it('revokes sessions on every linked provider, not just the first (#72)', async () => {
+    const providerA = createStubProvider({ id: 'stub-a' })
+    const providerB = createStubProvider({ id: 'stub-b' })
+    const twoProviders = [providerA.provider, providerB.provider]
+    const payloadTwo = await boot('srv-two', optionsWith({ providers: twoProviders }))
+    const { defineProviderId, parseEmail, parseRole } = await import('@payload-auth-link/core')
+    const services = createServices(
+      wireOptions(optionsWith({ providers: twoProviders })),
+      payloadTwo
+    )
+    const parsedEmail = parseEmail('twolink@test.dev')
+    if (parsedEmail.isErr()) {
+      throw new Error('unreachable')
+    }
+    const rolesParsed = [parseRole('user')]
+    const firstRole = rolesParsed[0]
+    if (firstRole === undefined || firstRole.isErr()) {
+      throw new Error('unreachable')
+    }
+    const created = await services.users.create({
+      email: parsedEmail.value,
+      roles: [firstRole.value],
+    })
+    if (!created.isOk()) {
+      throw new Error('user create failed')
+    }
+    const linkedA = await services.users.linkIdentity(created.value.id, {
+      providerId: defineProviderId('stub-a'),
+      providerUserId: 'twolink-a',
+    })
+    const linkedB = await services.users.linkIdentity(created.value.id, {
+      providerId: defineProviderId('stub-b'),
+      providerUserId: 'twolink-b',
+    })
+    if (!linkedA.isOk() || !linkedB.isOk()) {
+      throw new Error('identity link failed')
+    }
+    // Mint one session directly on EACH provider: createSessionFor
+    // walks identities and stops at the first capable one, so only a
+    // direct mint puts a live session on the second provider too.
+    const expiresAt = new Date(Date.now() + 3_600_000)
+    const mintA = await providerA.provider.createProviderSession?.('twolink-a', { expiresAt })
+    const mintB = await providerB.provider.createProviderSession?.('twolink-b', { expiresAt })
+    if (mintA === undefined || mintB === undefined) {
+      throw new Error('providers cannot mint sessions')
+    }
+    if (mintA.isErr()) {
+      throw new Error(mintA.error.message)
+    }
+    if (mintB.isErr()) {
+      throw new Error(mintB.error.message)
+    }
+    const server = authLinkServer(payloadTwo)
+    // listSessions walks EVERY linked provider (matching
+    // revokeAllForUser), so the operator sees the whole picture.
+    const listed = await server.listSessions(created.value.id)
+    expect(listed.map((session) => session.sessionId).sort()).toEqual(
+      [mintA.value.sessionId, mintB.value.sessionId].sort()
+    )
+    await server.revokeAllForUser(created.value.id)
+    const leftA = providerA.provider.listProviderSessions?.('twolink-a')
+    const leftB = providerB.provider.listProviderSessions?.('twolink-b')
+    if (leftA === undefined || leftB === undefined) {
+      throw new Error('providers cannot list sessions')
+    }
+    const listedA = await leftA
+    const listedB = await leftB
+    if (listedA.isErr() || listedB.isErr()) {
+      throw new Error(
+        listedA.isErr()
+          ? listedA.error.message
+          : (listedB as { error: { message: string } }).error.message
+      )
+    }
+    expect(listedA.value).toEqual([])
+    expect(listedB.value).toEqual([])
+  })
+
+  it('refuses sessionCookie when several cookie-transport providers are registered (#72)', async () => {
+    const providerA = createStubProvider({ id: 'stub-a' })
+    const providerB = createStubProvider({ id: 'stub-b' })
+    const payloadTwo = await boot(
+      'srv-cookie-ambiguity',
+      optionsWith({ providers: [providerA.provider, providerB.provider] })
+    )
+    // The token does not name its provider, so the standalone
+    // sessionCookie(token) cannot know whose secret/name to sign
+    // with — refuse instead of silently signing with the wrong one.
+    await expect(authLinkServer(payloadTwo).sessionCookie('some-token')).rejects.toThrow(
+      /several registered providers mint cookie sessions/
+    )
   })
 
   it('throws a typed error when the plugin is not installed on the instance', async () => {

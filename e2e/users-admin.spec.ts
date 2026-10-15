@@ -27,9 +27,13 @@ test('admin users show roles and linked identities', async ({ page }) => {
   // first — otherwise /admin/login bounces straight to the dashboard.
   await page.context().clearCookies()
   await gotoSettled(page, '/admin/login')
-  await page.getByLabel(/email/i).fill(DEV_ADMIN_EMAIL)
-  await page.getByRole('textbox', { name: /password/i }).fill(DEV_ADMIN_PASSWORD)
-  await page.getByRole('button', { name: 'Login', exact: true }).click()
+  // The provider-backed login view (#55/#72) renders two forms; the
+  // seeded operator is unlinked, so it signs in through the
+  // break-glass local form.
+  const localForm = page.locator('form', { hasText: 'Break-glass local sign-in' })
+  await localForm.getByLabel(/email/i).fill(DEV_ADMIN_EMAIL)
+  await localForm.getByRole('textbox', { name: /password/i }).fill(DEV_ADMIN_PASSWORD)
+  await localForm.getByRole('button', { name: 'Sign in locally', exact: true }).click()
   await page.waitForURL('**/admin', { timeout: 15000 })
   // Parallel specs (and earlier engines sharing the database) provision
   // many users: pin a page size that keeps both the seeded admin
