@@ -70,6 +70,10 @@ export default buildConfig({
       // API keys present as a distinct session channel.
       admitChannels: ['cookie', 'api-key'],
       defaultRole: 'user',
+      // #55/#72: /admin/login through the provider (plus the
+      // break-glass local form for unlinked operators) — mirrors the
+      // Next example.
+      admin: { loginView: 'provider' },
       providers: [betterAuthProvider, authJsProvider],
     }),
   ],
