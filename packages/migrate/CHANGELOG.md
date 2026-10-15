@@ -1,5 +1,24 @@
 # @payload-auth-link/migrate
 
+## 0.4.0
+
+### Minor Changes
+
+- [#73](https://github.com/jellologic/payload-auth-link/pull/73) [`6eb5e57`](https://github.com/jellologic/payload-auth-link/commit/6eb5e57824ac8cbd4ad14b03bda851d103d7a94c) Thanks [@jellologic](https://github.com/jellologic)! - The migration kit fails closed, matches real payload-auth layouts, and links imported users so they can actually sign in (issues [#68](https://github.com/jellologic/payload-auth-link/issues/68)–[#71](https://github.com/jellologic/payload-auth-link/issues/71), found running the kit against a production payload-auth database with custom slugs and 17% unverified users).
+
+  - **Fail-closed source layout ([#68](https://github.com/jellologic/payload-auth-link/issues/68)).** The importer, `verify`, the exporter and the doctor no longer hardcode payload-auth's default table names or skip missing tables silently: a missing expected table or column is a blocker (exit 1, nothing written) naming the table and the new `--source-map '{"accounts":"user_accounts","sessions":"user_sessions"}'` override. `verify` is strict — exact per-model equality, zero never skips, extra target rows fail — and the api-key orphan check probes `reference_id` (better-auth's real column) with a `user_id` fallback. `export --tables` reports missing tables and exits non-zero instead of exporting a lossy "lossless" file.
+  - **Imported users can sign in ([#69](https://github.com/jellologic/payload-auth-link/issues/69)).** The importer pre-links every imported user (verified or not, credential-only included) with `{ providerId: 'better-auth', providerUserId: <their ba-users id> }` — the identity the plugin actually looks up — so a user who verifies after the import resolves to their original document instead of being stranded. The verification gate still governs `linkable` proofing; `verify` now checks every imported user's identity resolves.
+  - **Codemods match real usage ([#70](https://github.com/jellologic/payload-auth-link/issues/70)).** Rewritten on the TypeScript compiler API: `getPayloadAuth` from `'payload-auth'` or `'payload-auth/better-auth'` with any argument, `getSession({ headers: … })` in any shape, aliased imports, `import type` — and every reference the rules cannot rewrite is reported under manual follow-up (nothing silently ignored). `typescript` is now a regular dependency.
+  - **The doctor runs where people will use it ([#71](https://github.com/jellologic/payload-auth-link/issues/71)).** `better-auth` is no longer a peer (installing the kit no longer upgrades the app's better-auth and breaks it); an unloadable config becomes a `config-unloadable` blocker with a static-analysis report instead of a crash (including the mid-upgrade `oidcProvider` state); plugin detection scans the whole `--src` tree (admin, anonymous, magicLink, nextCookies, genericOAuth, …) and names files; CLI errors are prefixed with the command name.
+
+  Upgrade impact: none stored — source tables are read, never written. Behavior: runs that silently imported zero credential accounts from custom-slug layouts now abort with the exact fix in the message; re-run `doctor`, then the importer with `--source-map` if your slugs differ. `codemod --write` now persists rewrites for the patterns it actually matches.
+
+### Patch Changes
+
+- Updated dependencies [[`6eb5e57`](https://github.com/jellologic/payload-auth-link/commit/6eb5e57824ac8cbd4ad14b03bda851d103d7a94c)]:
+  - @payload-auth-link/core@0.6.0
+  - @payload-auth-link/next@0.3.2
+
 ## 0.3.1
 
 ### Patch Changes
