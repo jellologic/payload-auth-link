@@ -49,8 +49,8 @@ clear.
 | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `users` (the BA user table)                               | `ba-users` (new rows, `baId` = old Payload user id) + your existing `users` (keep it; add the injected fields)                                       |
 | `user_accounts`                                           | `ba-accounts` (same `providerId`/`accountId`; the `credential` password hash carries over verbatim)                                                  |
-| `user_sessions` / `user_sessions?token`                   | `ba-sessions` — **dropped**; everyone signs in again (say so in your release notes)                                                                  |
-| `verification` rows                                       | `ba-verifications` — droppable; in-flight emails re-send                                                                                             |
+| `user_sessions` / `user_sessions?token`                   | `ba-sessions` — **carried by default** (`--sessions=drop` starts everyone fresh instead)                                                             |
+| `verification` rows                                       | `ba-verifications` — carried verbatim; in-flight links keep working until they expire                                                                |
 | organization / member / invitation / apikey / jwks tables | `ba-organizations` / `ba-members` / `ba-invitations` / `ba-apikeys` / `ba-jwks` — foreign keys rewritten from numeric Payload ids to the text `baId` |
 | your `role` column on `users`                             | **adopted** (see below) — no rename, no second field                                                                                                 |
 
@@ -193,12 +193,13 @@ if your engine wiring overrides them.
 
 ## Session and verification policy
 
-- **Sessions are dropped.** `user_sessions` do not migrate; every
-  user signs in again on the new stack. That is the documented
-  policy — announce it. (Cookie-prefix continuity can make even that
-  unnecessary — see above.)
-- **Verification tokens are dropped.** In-flight verification emails
-  re-send; nothing else is lost.
+- **Sessions carry by default.** `--sessions=carry` (the default)
+  copies `user_sessions` into `ba-sessions`; keep the same
+  `advanced.cookiePrefix` and nobody is logged out. `--sessions=drop`
+  starts everyone fresh instead — if you drop sessions or change the
+  prefix, announce the forced re-login in your release notes.
+- **Verification tokens carry.** In-flight verification links keep
+  working until they expire; nothing is lost.
 - **Sessions after cutover:** new sessions are `ba-sessions` rows;
   old `user_sessions` rows are inert. Keep the old tables until a
   soak period passes, then drop them.

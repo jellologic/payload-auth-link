@@ -21,6 +21,8 @@ export type CodemodFileResult = {
   readonly applied: readonly string[]
   /** Matches the rules could not fully rewrite (reported, never touched). */
   readonly manual: readonly string[]
+  /** The rewritten content — equal to the input when nothing changed. */
+  readonly after: string
 }
 
 export const codemodRules: readonly CodemodRule[] = [
@@ -89,5 +91,5 @@ export function applyCodemods(file: string, content: string): CodemodFileResult 
     }
   }
   const manual = findManualSites(current)
-  return { file, changed: current !== content, applied, manual }
+  return { file, changed: current !== content, applied, manual, after: current }
 }
