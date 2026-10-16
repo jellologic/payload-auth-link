@@ -1,5 +1,21 @@
 # @payload-auth-link/plugin
 
+## 0.11.1
+
+### Patch Changes
+
+- [#97](https://github.com/jellologic/payload-auth-link/pull/97) [`38cc616`](https://github.com/jellologic/payload-auth-link/commit/38cc616cc2420fe265ba71d84ad0aeb10b0b4bd7) Thanks [@jellologic](https://github.com/jellologic)! - The users collection's admin-access wrapper (the impersonation deny) now forwards every argument Payload passes to a host-declared `access.admin`, not just `req`, so host functions that read the other arguments (Payload v4) keep working.
+
+- [#97](https://github.com/jellologic/payload-auth-link/pull/97) [`743e561`](https://github.com/jellologic/payload-auth-link/commit/743e56116b803bf9eb4674267c7405926a762226) Thanks [@jellologic](https://github.com/jellologic)! - An email collision during just-in-time provisioning is recognised structurally, not with `instanceof`, so it is still handled when the host app and the plugin load different copies of `payload` (e.g. a Payload v4 app). Before, the collision surfaced as a raw storage error there and the lost-create-race retry never ran: when two first requests after sign-up raced, one came back signed out.
+
+- [#97](https://github.com/jellologic/payload-auth-link/pull/97) [`a605a5b`](https://github.com/jellologic/payload-auth-link/commit/a605a5b3fa599b4398566d5b060d5fc258453390) Thanks [@jellologic](https://github.com/jellologic)! - `req.user.id` for provider sessions now carries the database's id type (a number on SQLite/Postgres) instead of always a string. Payload v4 fills `createdBy`/`updatedBy` relationships from `req.user`, so on number-id adapters every create by a provider-signed-in user, the organization endpoint included, failed validation (400). The session endpoint's JSON is unchanged.
+
+  The MFA role gate reads and writes `req.user.roles` through a record, so the plugin type-checks against Payload v4's `AuthenticatedUser` as well as v3.
+
+- [#99](https://github.com/jellologic/payload-auth-link/pull/99) [`fb14b12`](https://github.com/jellologic/payload-auth-link/commit/fb14b1284bed261bf473b84f0ad9073d421febd4) Thanks [@jellologic](https://github.com/jellologic)! - `GET /api/users/me` answers for auth-link sessions presented on the bearer channel (`admitChannels: ['cookie', 'bearer']`). Payload's `me` operation decoded the provider's opaque bearer token as a Payload JWT (a 500) and would echo it back as `token`; the plugin's `me` hook now answers for auth-link users with the verified session's `exp` and never returns the provider token. The `admitChannels` TSDoc now states which channels each adapter reports and the bearer CSRF relaxation.
+
+  Upgrade impact: no schema change (no column added, removed or retyped; push and migrations have nothing to do on SQLite, Postgres or MongoDB). The users collection gains a `me` hook, which runs ahead of any host `me` hooks for auth-link sessions only.
+
 ## 0.11.0
 
 ### Minor Changes

@@ -1,5 +1,11 @@
 # @payload-auth-link/provider-authjs
 
+## 0.4.1
+
+### Patch Changes
+
+- [#97](https://github.com/jellologic/payload-auth-link/pull/97) [`45e27c1`](https://github.com/jellologic/payload-auth-link/commit/45e27c1583563cad35197d7a772259053f2888d2) Thanks [@jellologic](https://github.com/jellologic)! - `revokeSession` on a database-session Auth.js engine now fails when no session matches the handle, instead of reporting success. `authLinkServer(payload).revokeSession` no longer stops at an Auth.js provider that revoked nothing, so a session held by another registered provider is still revoked.
+
 ## 0.4.0
 
 ### Minor Changes
