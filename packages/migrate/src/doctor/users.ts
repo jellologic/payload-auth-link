@@ -210,7 +210,7 @@ export function analyzeUsersCollection(
       // new user.
       issues.push({
         code: 'adopt-local-strategy-on',
-        detail: `adopt mode serves Better Auth's users from '${typeof collection.slug === 'string' ? collection.slug : 'users'}', but Payload's local strategy is ON there: Payload requires a password on every create, so every NEW user fails (email sign-up 422, anonymous sign-in 500 "field is invalid: password"). Set auth: { disableLocalStrategy: true } on the collection (payload-auth's disableDefaultPayloadAuth: true did the same), or use the importer (ba-* collections) instead of adopt`,
+        detail: `adopt mode serves Better Auth's users from the collection '${typeof collection.slug === 'string' ? collection.slug : 'users'}', but Payload's local strategy is ON there: Payload requires a password on every create, so every NEW user fails (email sign-up 422, anonymous sign-in 500 "field is invalid: password"). Set auth: { disableLocalStrategy: true } on the collection (payload-auth's disableDefaultPayloadAuth: true did the same), or use the importer (ba-* collections) instead of adopt`,
       })
     }
   } else {
