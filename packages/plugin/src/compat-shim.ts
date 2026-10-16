@@ -24,6 +24,7 @@ function warnOnce(): void {
   // The deprecation warning IS the shim's contract — it must reach
   // the operator. `console.warn` here is the one sanctioned use: the
   // shim is temporary by definition and accepts no logger argument.
+  // eslint-disable-next-line no-console -- sanctioned, see above
   console.warn(
     '[payload-auth-link] payload.betterAuth compatibility shim is DEPRECATED: migrate call ' +
       'sites to authLinkServer(payload) (issue #54) and remove the shim (issue #53).'

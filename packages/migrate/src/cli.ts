@@ -75,6 +75,8 @@ Commands:
   verify            --config ./src/payload.config.ts [--database-url URL] [--json]
                     [--source-map '{"accounts":"user_accounts","sessions":"user_sessions"}']
   rollback          --config ./src/payload.config.ts [--manifest ...]
+                    [--allow-unsigned-manifest]  (a pre-0.6.0 manifest; also
+                    accepted by from-payload-auth / adopt-prelink when resuming)
   finalize          [--manifest ...]
   adopt-prelink     --config ./src/payload.config.ts [--apply] [--json]
                     [--manifest ./payload-auth-link-prelink.json]
@@ -105,7 +107,9 @@ Commands:
   The manifest lands in the CURRENT DIRECTORY unless --manifest says
   otherwise. It holds ids and sealed values only (no emails in the
   clear; sealed with the app's PAYLOAD_SECRET, so rollback must run
-  against the same app) and is written with mode 0600. Delete it once
+  against the same app) and is written with mode 0600. It is signed
+  with the same secret: rollback and a resumed --apply refuse an
+  edited manifest. Delete it once
   the migration is finalized and your soak window has passed.
 
   codemod rewrites the three named payload-auth call-site patterns
@@ -403,6 +407,7 @@ async function main(
           : {}),
         ...(typeof usersSlug === 'string' ? { usersSlug } : {}),
         ...(typeof verifiedField === 'string' ? { verifiedField } : {}),
+        allowUnsignedManifest: flags.get('allow-unsigned-manifest') === true,
       })
       if (json) {
         out.write(`${JSON.stringify(result, null, 2)}\n`)
@@ -435,6 +440,7 @@ async function main(
         : {}),
       json,
       log,
+      allowUnsignedManifest: flags.get('allow-unsigned-manifest') === true,
     }
     if (command === 'from-payload-auth') {
       const outcome = await runFromPayloadAuth(importOptions)

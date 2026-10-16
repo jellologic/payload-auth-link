@@ -8,6 +8,9 @@
  * and every captured prior value is sealed (AES-256-GCM, keyed from the
  * target app's Payload `secret`), so only the same app can restore it.
  * The file is written with mode 0600.
+ *
+ * Integrity: a version-3 manifest is signed (`mac`), and rollback or a
+ * resumed run refuses one that does not verify.
  */
 export type CreatedRow = {
   /** Target collection slug. */
@@ -40,7 +43,7 @@ export type FieldWrite = {
 export type ManifestKind = 'import' | 'adopt-prelink'
 
 export type ImportManifest = {
-  readonly version: 1 | 2
+  readonly version: 1 | 2 | 3
   /** The producing command; absent on version-1 manifests (imports). */
   readonly kind?: ManifestKind | undefined
   readonly createdAt: string
@@ -57,6 +60,11 @@ export type ImportManifest = {
   readonly totals: Readonly<Record<string, number>>
   /** When the last rollback reset this manifest (issue #88). */
   readonly rolledBackAt?: string | undefined
+  /**
+   * Version 3: HMAC over the whole manifest (except `finalized`), keyed
+   * from the target app's Payload secret. See `manifest-mac.ts`.
+   */
+  readonly mac?: string | undefined
 }
 
 /** Per-model plan row for the dry run. */

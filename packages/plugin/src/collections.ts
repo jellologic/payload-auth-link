@@ -59,7 +59,21 @@ function userRoles(user: unknown): readonly string[] {
  */
 export function isRoleManager(req: FieldAccessArgs['req'], wired: WiredOptions): boolean {
   const managers = new Set<string>(wired.roleManagerRoles)
-  return userRoles(req.user).some((role) => managers.has(role))
+  return userRoles(req.user).some((role) => managers.has(canonicalRole(req.user, role, wired)))
+}
+
+/**
+ * The canonical role behind one `req.user.roles` entry (issue #56).
+ * Governance compares canonical roles, but `req.user.roles` holds the
+ * STORED values (`roleValues`) on every session except an auth-link one
+ * projected canonically: Payload's local JWT and API-key strategies hand
+ * over the document as stored, and `projectRolesAs: 'stored'` projects
+ * stored values on purpose.
+ */
+function canonicalRole(user: unknown, role: string, wired: WiredOptions): string {
+  const canonicalProjection =
+    isRecord(user) && user._strategy === strategyName && wired.projectRolesAs === 'canonical'
+  return canonicalProjection ? role : (wired.roleValuesReverse[role] ?? role)
 }
 
 /** Is this request reading/writing its own user document? */
@@ -184,6 +198,12 @@ function withDefaultUserAccess(
     // Payload's default lets any signed-in user unlock any account,
     // which undoes the brute-force lockout for whoever is guessing.
     filled.unlock = ({ req }) => !isImpersonating(req) && isRoleManager(req, wired)
+  }
+  if (filled.readVersions === undefined) {
+    // Payload's default lets any signed-in user list every version of
+    // every user (`/api/users/versions` on a host with `versions`),
+    // which re-opens the user enumeration `read` closes above.
+    filled.readVersions = ({ req }) => isRoleManager(req, wired)
   }
   filled.admin = denyAdminWhileImpersonating(filled.admin, wired)
   return filled
@@ -732,8 +752,13 @@ async function applyAccountControls(
   }
   const roles = rolesOf(user)
   if (Array.isArray(roles)) {
+    // Compared canonically: a local session carries the stored values,
+    // so a `roleValues`-mapped policy role would otherwise never match.
     Object.assign(user, {
-      roles: roles.filter((role): role is string => typeof role === 'string' && !gated.has(role)),
+      roles: roles.filter(
+        (role): role is string =>
+          typeof role === 'string' && !gated.has(canonicalRole(user, role, wired))
+      ),
     })
   }
   return 'ok'
@@ -830,7 +855,15 @@ function withAccountControlledAccess(
       }
       return existing(args)
     }
-  for (const key of ['create', 'read', 'update', 'delete', 'admin', 'unlock'] as const) {
+  for (const key of [
+    'create',
+    'read',
+    'readVersions',
+    'update',
+    'delete',
+    'admin',
+    'unlock',
+  ] as const) {
     const existing = access?.[key]
     if (existing !== undefined) {
       slots[key] = guard(existing)
@@ -838,8 +871,9 @@ function withAccountControlledAccess(
     }
     // Unfilled mutation keys: install Payload's own default
     // (`Boolean(user)`) under the belt, so the permission map cannot
-    // overstate for a suspended session. `read`/`create`/`admin` are
-    // always filled by `withDefaultUserAccess` before this runs.
+    // overstate for a suspended session. `read`/`readVersions`/
+    // `create`/`admin` are always filled by `withDefaultUserAccess`
+    // before this runs.
     if (key === 'update' || key === 'delete' || key === 'unlock') {
       slots[key] = guard(({ req }) => Boolean(req.user))
     }

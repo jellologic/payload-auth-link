@@ -411,6 +411,8 @@ export type ApplyOptions = {
     /** Injectable clock for deterministic `linkedAt` stamps. */
     readonly now?: () => Date;
     readonly log?: (message: string) => void;
+    /** Resume from a pre-0.6.0 manifest that has no MAC (`--allow-unsigned-manifest`). */
+    readonly allowUnsignedManifest?: boolean | undefined;
 };
 /**
  * Plugin user state the target must be able to hold (issue #88),
@@ -550,12 +552,30 @@ export declare function rollbackImport(options: {
      */
     readonly manifestPath?: string | undefined;
     readonly now?: (() => Date) | undefined;
+    /** Accept a pre-0.6.0 manifest that has no MAC (`--allow-unsigned-manifest`). */
+    readonly allowUnsignedManifest?: boolean | undefined;
 }): Promise<{
     deleted: number;
     restored: number;
 }>;
 /** Finalize (issue #50): the point of no return — mark the manifest. */
 export declare function finalizeManifest(manifest: ImportManifest, path: string): ImportManifest;
+
+// ===== importer/manifest-mac.d.ts =====
+import type { ImportManifest } from './types.js';
+/** Stamp `manifest` as version 3 and sign it under the app's secret. */
+export declare function signManifest(secret: string, manifest: ImportManifest): ImportManifest;
+/**
+ * Refuse a manifest this app did not write. A version-3 manifest must
+ * carry a MAC that verifies under `secret`. A version-1/2 manifest
+ * (written before 0.6.0) has no MAC: it is accepted only when the
+ * operator passes `allowUnsigned` (`--allow-unsigned-manifest`) to vouch
+ * for the file, and even then a version-2 manifest may not hold
+ * plaintext values, which that version never wrote.
+ */
+export declare function authenticateManifest(secret: string, manifest: ImportManifest, options?: {
+    readonly allowUnsigned?: boolean | undefined;
+}): void;
 
 // ===== importer/prelink.d.ts =====
 import type { Payload } from 'payload';
@@ -597,6 +617,8 @@ export type PrelinkOptions = {
     readonly emailField?: string | undefined;
     readonly now?: () => Date;
     readonly log?: (message: string) => void;
+    /** Resume from a pre-0.6.0 manifest that has no MAC (`--allow-unsigned-manifest`). */
+    readonly allowUnsignedManifest?: boolean | undefined;
 };
 export type PrelinkResult = {
     readonly users: number;
@@ -643,6 +665,8 @@ export type ImportCommandOptions = {
     readonly json?: boolean;
     readonly log?: (message: string) => void;
     readonly loadPayload?: (configPath: string) => Promise<import('payload').Payload>;
+    /** Accept a pre-0.6.0 manifest without a MAC (`--allow-unsigned-manifest`). */
+    readonly allowUnsignedManifest?: boolean | undefined;
 };
 /** The `from-payload-auth` command: dry-run plan, or `--apply` + manifest. */
 export declare function runFromPayloadAuth(options: ImportCommandOptions): Promise<{
@@ -661,7 +685,7 @@ export declare function runRollback(options: ImportCommandOptions): Promise<{
 /** The `finalize` command — manifest-only; no Payload instance is loaded. */
 export declare function runFinalize(options: Pick<ImportCommandOptions, 'manifestPath' | 'log'>): Promise<ImportManifest>;
 /** Options for `adopt-prelink` (issue #88). */
-export type PrelinkCommandOptions = Pick<ImportCommandOptions, 'configPath' | 'apply' | 'manifestPath' | 'json' | 'log' | 'loadPayload'> & {
+export type PrelinkCommandOptions = Pick<ImportCommandOptions, 'configPath' | 'apply' | 'manifestPath' | 'json' | 'log' | 'loadPayload' | 'allowUnsignedManifest'> & {
     readonly usersSlug?: string | undefined;
     readonly verifiedField?: string | undefined;
 };
@@ -805,6 +829,9 @@ export declare function unverifiedEmails(users: readonly SourceUser[]): readonly
  * and every captured prior value is sealed (AES-256-GCM, keyed from the
  * target app's Payload `secret`), so only the same app can restore it.
  * The file is written with mode 0600.
+ *
+ * Integrity: a version-3 manifest is signed (`mac`), and rollback or a
+ * resumed run refuses one that does not verify.
  */
 export type CreatedRow = {
     /** Target collection slug. */
@@ -834,7 +861,7 @@ export type FieldWrite = {
 /** Which command produced the manifest (issue #88). */
 export type ManifestKind = 'import' | 'adopt-prelink';
 export type ImportManifest = {
-    readonly version: 1 | 2;
+    readonly version: 1 | 2 | 3;
     /** The producing command; absent on version-1 manifests (imports). */
     readonly kind?: ManifestKind | undefined;
     readonly createdAt: string;
@@ -851,6 +878,11 @@ export type ImportManifest = {
     readonly totals: Readonly<Record<string, number>>;
     /** When the last rollback reset this manifest (issue #88). */
     readonly rolledBackAt?: string | undefined;
+    /**
+     * Version 3: HMAC over the whole manifest (except `finalized`), keyed
+     * from the target app's Payload secret. See `manifest-mac.ts`.
+     */
+    readonly mac?: string | undefined;
 };
 /** Per-model plan row for the dry run. */
 export type PlanRow = {

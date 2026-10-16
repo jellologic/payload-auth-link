@@ -1,5 +1,6 @@
 import type { Payload } from 'payload'
 import { capturedKeys, captureBefore } from './host-writes.js'
+import { authenticateManifest, signManifest } from './manifest-mac.js'
 import {
   readFlatRows,
   openSource,
@@ -69,6 +70,8 @@ export type ApplyOptions = {
   /** Injectable clock for deterministic `linkedAt` stamps. */
   readonly now?: () => Date
   readonly log?: (message: string) => void
+  /** Resume from a pre-0.6.0 manifest that has no MAC (`--allow-unsigned-manifest`). */
+  readonly allowUnsignedManifest?: boolean | undefined
 }
 
 const slugsOf = (overrides?: Readonly<Record<string, string>>): TargetSlugMap => ({
@@ -262,6 +265,13 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
   } = options
   const slugs = slugsOf(options.slugs)
   const sourceTables: ResolvedSourceTables = resolveSourceTables(options.sourceTables)
+  if (options.manifest !== null) {
+    // Resuming merges the old entries and re-signs them: never launder
+    // an edited manifest into a signed one.
+    authenticateManifest(payload.secret, options.manifest, {
+      allowUnsigned: options.allowUnsignedManifest,
+    })
+  }
   const created: CreatedRow[] = [...(options.manifest?.created ?? [])]
   const fieldWrites: FieldWrite[] = [...(options.manifest?.fieldWrites ?? [])]
   // First capture wins (issue #88): fields captured by an earlier pass
@@ -732,8 +742,8 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
     if (apply) {
       // The manifest is the run's contract: merge this pass onto any
       // resumed run's rows and write it back (issue #50).
-      const manifest: ImportManifest = {
-        version: 2,
+      const manifest: ImportManifest = signManifest(payload.secret, {
+        version: 3,
         kind: 'import',
         createdAt: options.manifest?.createdAt ?? now().toISOString(),
         sourceDatabase: options.sourceDatabase,
@@ -743,7 +753,7 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
         finalized: options.manifest?.finalized ?? false,
         sourceCounts: options.sourceCounts,
         totals,
-      }
+      })
       const { writeManifest } = await import('./lifecycle.js')
       writeManifest(manifest, options.manifestPath)
     }
