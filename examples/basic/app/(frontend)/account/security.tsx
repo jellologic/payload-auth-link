@@ -31,13 +31,13 @@ export function AccountSecurity() {
     event.preventDefault()
     void run(async () => {
       const result = await authClient.twoFactor.enable({ password })
-      if (result.error !== null || result.data === null) {
+      // Enrollment answers a TOTP setup only for the `totp` method; the
+      // `otp` method (email/SMS codes) carries no URI to show.
+      if (result.error !== null || result.data === null || result.data.method !== 'totp') {
         setError('Could not start two-factor enrollment')
         return
       }
-      const { totpURI } = result.data
-      const totpSecret =
-        typeof totpURI === 'string' ? new URL(totpURI).searchParams.get('secret') : null
+      const totpSecret = new URL(result.data.totpURI).searchParams.get('secret')
       setSecret(totpSecret)
       setStatus('Add the secret to your authenticator, then verify a code.')
     })

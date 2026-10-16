@@ -21,7 +21,7 @@ shipped command, not a sketch. The field report behind it is
 6. **Cut over**: `from-payload-auth --apply` (importer; sessions carry by default), `verify`, watch the window, `finalize`.
 7. **Codemods**: `codemod --src ./src [--write]` rewrites the named call sites (AST-matched, alias- and `import type`-aware); the opt-in `payload.betterAuth` shim covers the rest incrementally (#53).
 8. **Server API**: `authLinkServer(payload)` replaces every `$context` internal bridge (#54).
-9. **Admin**: `admin: { loginView: 'provider' }` restores /admin login through the provider, with the break-glass local form (#55). It registers a Payload admin component, so REGENERATE your import map after enabling it (`payload generate:importmap`) — a stale map renders an empty login page.
+9. **Admin**: `admin: { loginView: 'provider' }` restores /admin login through the provider, with the break-glass local form (#55). It registers a Payload admin component, so REGENERATE your import map after enabling it (`payload generate:importmap`) — a stale map renders an empty login page. The view's break-glass endpoint (`${routes.api}/${usersCollection}/login`) and post-login destination (`routes.admin`) follow your Payload config; set `admin.signInPath` (default `/sign-in`) and `admin.authBase` (default `/api/auth`, where the app serves Better Auth) when yours differ.
 10. **Off-ramp**: `export --database-url … --out …` — lossless JSONL of every auth table (narrow it with `--tables`); uninstall is a tested operation (#58).
 
 ## Step 0: run the doctor (read-only preflight)

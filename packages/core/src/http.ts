@@ -66,15 +66,43 @@ export type OriginResolutionInput = {
    * development passes `true`.
    */
   readonly allowHostFallback: boolean
+  /**
+   * Honor `X-Forwarded-Host` / `X-Forwarded-Proto` in the host
+   * fallback. Default `false`: only the direct `Host` header is read
+   * and the scheme is `http`. Set it only behind a proxy that
+   * overwrites those headers — otherwise any client sets them.
+   */
+  readonly trustProxy?: boolean | undefined
+  /**
+   * Hostnames (no port; IPv6 in brackets, e.g. `[::1]`) the host
+   * fallback may resolve to. When set, any other host throws
+   * `InvalidConfigError`. Omitted: any syntactically valid host.
+   */
+  readonly allowedHosts?: readonly string[] | undefined
+}
+
+/** A bare `host[:port]`: DNS name / IPv4, or a bracketed IPv6 literal. */
+const bareHostPattern = /^(?:[a-z0-9_-]+(?:\.[a-z0-9_-]+)*|\[[0-9a-f:.]+\])(?::\d{1,5})?$/i
+
+/** First entry of a possibly comma-joined proxy header. */
+function firstHeaderValue(value: string | null): string | null {
+  if (value === null) {
+    return null
+  }
+  const first = value.split(',')[0]?.trim()
+  return first === undefined || first === '' ? null : first
 }
 
 /**
  * Single origin resolver behind every server-side session read
  * (`@payload-auth-link/web` verifier, Auth.js engine). The configured
  * base URL wins; without it, the request host is used only when
- * `allowHostFallback` is set. Throws `InvalidConfigError` when no
- * origin can be resolved — a wiring bug, fail loud rather than
- * fetching a nonsense URL.
+ * `allowHostFallback` is set. The fallback reads `X-Forwarded-*` only
+ * under `trustProxy`, accepts only the `http`/`https` schemes, rejects
+ * hosts that are not a bare `host[:port]`, and enforces `allowedHosts`
+ * when given. Throws `InvalidConfigError` when no acceptable origin can
+ * be resolved — fail loud rather than fetching a nonsense (or
+ * attacker-chosen) URL.
  */
 export function resolveOrigin(input: OriginResolutionInput): string {
   if (input.baseUrl !== undefined) {
@@ -85,12 +113,44 @@ export function resolveOrigin(input: OriginResolutionInput): string {
       'cannot resolve origin: no baseUrl configured and the request-host fallback is disabled'
     )
   }
-  const host = input.headers.get('x-forwarded-host') ?? input.headers.get('host')
+  const trustProxy = input.trustProxy === true
+  const forwardedHost = trustProxy ? firstHeaderValue(input.headers.get('x-forwarded-host')) : null
+  const host = forwardedHost ?? input.headers.get('host')
   if (!host) {
     throw new InvalidConfigError('cannot resolve origin: no host header and no baseUrl')
   }
-  const proto = input.headers.get('x-forwarded-proto') ?? 'http'
-  return `${proto}://${host}`
+  const forwardedProto = trustProxy
+    ? firstHeaderValue(input.headers.get('x-forwarded-proto'))
+    : null
+  const proto = (forwardedProto ?? 'http').toLowerCase()
+  if (proto !== 'http' && proto !== 'https') {
+    throw new InvalidConfigError(
+      `cannot resolve origin: request scheme ${JSON.stringify(proto)} is not http or https`
+    )
+  }
+  // Only a bare `host[:port]` (IPv6 in brackets): no credentials,
+  // path, query, or fragment can ride along into the URL.
+  let parsed: URL | undefined
+  if (bareHostPattern.test(host)) {
+    try {
+      parsed = new URL(`${proto}://${host}`)
+    } catch {
+      parsed = undefined
+    }
+  }
+  if (parsed === undefined) {
+    throw new InvalidConfigError(`cannot resolve origin: invalid host ${JSON.stringify(host)}`)
+  }
+  if (input.allowedHosts !== undefined) {
+    const hostname = parsed.hostname.toLowerCase()
+    const allowed = input.allowedHosts.some((entry) => entry.toLowerCase() === hostname)
+    if (!allowed) {
+      throw new InvalidConfigError(
+        `cannot resolve origin: host ${JSON.stringify(parsed.hostname)} is not in the allowed host list`
+      )
+    }
+  }
+  return parsed.origin
 }
 
 /**

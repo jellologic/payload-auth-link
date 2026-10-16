@@ -9,7 +9,7 @@ import {
 } from '@payload-auth-link/core'
 import type { Payload, PayloadRequest } from 'payload'
 import { describe, expect, it, vi } from 'vitest'
-import { createEndpoints } from '../endpoints.js'
+import { createEndpoints, logoutCookieClears } from '../endpoints.js'
 import { wireOptions } from '../options.js'
 import { createStubProvider } from './stub-provider.js'
 
@@ -53,6 +53,53 @@ async function logoutCookies(
 }
 
 describe('logout cookie clearing', () => {
+  it('expires the configured legacySessions cookie names', async () => {
+    const provider: IdentityProviderPort = {
+      ...clearProvider('ba-like', ['better-auth.session_token'], () => undefined),
+      legacySessions: {
+        until: '2999-01-01T00:00:00.000Z',
+        cookieNames: ['__Secure-payload-auth.session_token', 'payload-auth.session_token.sig'],
+      },
+    }
+    const cookies = await logoutCookies([provider])
+    expect(cookies).toEqual([
+      'better-auth.session_token=; Max-Age=0; Path=/',
+      '__Secure-payload-auth.session_token=; Max-Age=0; Path=/; Secure',
+      'payload-auth.session_token.sig=; Max-Age=0; Path=/',
+    ])
+  })
+
+  it('expires session, logout, and legacy names exactly once each', () => {
+    const provider: IdentityProviderPort = {
+      ...clearProvider('ba-like', ['__Secure-ba.session_token', '__Secure-ba.session_data']),
+      logoutCookieNames: [
+        '__Secure-ba.admin_session',
+        '__Secure-ba.dont_remember',
+        'ba.session_token',
+        '__Secure-ba.session_data',
+      ],
+      legacySessions: { until: '2000-01-01T00:00:00.000Z', cookieNames: ['pa.session_token'] },
+    }
+    const wired = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['user'],
+      defaultRole: 'user',
+      roleManagerRoles: ['user'],
+      providers: [provider],
+    })
+    const clears = logoutCookieClears(wired)
+    expect([...clears.keys()]).toEqual([
+      '__Secure-ba.session_token',
+      '__Secure-ba.session_data',
+      '__Secure-ba.admin_session',
+      '__Secure-ba.dont_remember',
+      'ba.session_token',
+      // Legacy names die even after the window closed.
+      'pa.session_token',
+    ])
+    expect(clears.get('__Secure-ba.dont_remember')).toEqual({ maxAge: 0, path: '/', secure: true })
+  })
+
   it('clears plain cookies without Secure', async () => {
     const cookies = await logoutCookies([clearProvider('plain', ['al_session'], () => ({}))])
     expect(cookies).toEqual(['al_session=; Max-Age=0; Path=/'])
@@ -317,7 +364,7 @@ describe('session verify logging', () => {
     const handler = sessionHandler('delete', logs.logger, stub.provider)
     const csrf = { 'x-auth-link-csrf': '1' }
     const alreadyOut = await handler({
-      headers: new Headers(csrf),
+      headers: new Headers({ ...csrf, cookie: 'al_stub_session=stale' }),
       payload: stubPayload({}),
     } as unknown as PayloadRequest)
     expect(alreadyOut.status).toBe(401)
@@ -441,7 +488,7 @@ describe('multi-provider logout', () => {
     // The second provider's session resolves to no linkable user (no
     // docs, no create): verify fails, but its session must still die.
     const alreadyOut = await handler({
-      headers: new Headers(csrf),
+      headers: new Headers({ ...csrf, cookie: '__Secure-second.session=live' }),
       payload: stubPayload({
         find: () => Promise.reject(new Error('db down')),
       }),
@@ -515,6 +562,47 @@ describe('multi-provider logout', () => {
       'logout multi-session revoke failed',
       expect.objectContaining({ providerId: 'stub' })
     )
+  })
+
+  it('answers an anonymous logout without walking any provider', async () => {
+    const logs = capturingLogger()
+    const getSession = vi.fn(() => okAsync(null))
+    const watched: IdentityProviderPort = {
+      ...presentingProvider('second', []),
+      getSession,
+    }
+    const stub = createStubProvider()
+    const handler = sessionHandler('delete', logs.logger, stub.provider, watched)
+    const find = vi.fn(() => Promise.resolve({ docs: [] }))
+    for (const headers of [
+      new Headers(csrf),
+      // Unrelated cookies are not a session credential.
+      new Headers({ ...csrf, cookie: 'theme=dark; payload-token=abc' }),
+    ]) {
+      const anonymous = await handler({
+        headers,
+        payload: stubPayload({ find }),
+      } as unknown as PayloadRequest)
+      expect(anonymous.status).toBe(401)
+      // Residue is still cleared.
+      expect(anonymous.headers.getSetCookie()).toEqual(expectedClears)
+    }
+    expect(getSession).not.toHaveBeenCalled()
+    expect(find).not.toHaveBeenCalled()
+    expect(logs.debug).toHaveBeenCalledWith('logout endpoint: no session credential presented')
+
+    // A presented session cookie (or a bearer credential) still walks.
+    await handler({
+      headers: new Headers({ ...csrf, cookie: '__Secure-second.session=x' }),
+      payload: stubPayload({ find }),
+    } as unknown as PayloadRequest)
+    expect(getSession).toHaveBeenCalled()
+    getSession.mockClear()
+    await handler({
+      headers: new Headers({ ...csrf, authorization: 'Bearer token' }),
+      payload: stubPayload({ find }),
+    } as unknown as PayloadRequest)
+    expect(getSession).toHaveBeenCalled()
   })
 
   it('logs a failing sweep revoke without failing the logout', async () => {

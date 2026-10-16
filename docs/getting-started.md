@@ -235,6 +235,23 @@ import { exampleBaseURL } from './auth-cookie-names'
 export const verifySession = createSessionVerifier({ baseUrl: exampleBaseURL })
 ```
 
+`createSessionVerifier` options worth knowing:
+
+- `baseUrl` — required unless `NODE_ENV` is exactly `'development'`
+  (unset, `test`, `staging`, `preview`, and `production` all throw
+  `InvalidConfigError` at construction). An absolute http(s)
+  `sessionEndpoint` also satisfies it.
+- `trustProxy` (default `false`) — development host fallback only:
+  honor `X-Forwarded-Host`/`X-Forwarded-Proto`. Without it only the
+  direct `Host` header is read, over `http`.
+- `allowedDevelopmentHosts` (default: `localhost`, `127.0.0.1`,
+  `[::1]`) — development host fallback only: any other host fails
+  closed (`null`, reported via `onError`).
+- `timeoutMs` (default `5000`) — the session fetch aborts after this;
+  a timeout fails closed and is reported via `onError`.
+- `sessionEndpoint` — a path starting with a single `/` or an
+  absolute http(s) URL; protocol-relative values (`//host/x`) throw.
+
 ```tsx
 // app/(frontend)/layout.tsx
 import type { ReactNode } from 'react'

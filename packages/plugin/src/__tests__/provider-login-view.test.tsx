@@ -66,4 +66,45 @@ describe('provider login view (#55, #72)', () => {
       await screen.findByText(/check the credentials, or use your identity provider/i)
     ).toBeDefined()
   })
+
+  it('uses the configured endpoints, admin route, and sign-in link', async () => {
+    const fetchMock = vi.fn((input: string) =>
+      Promise.resolve(
+        new Response(input.endsWith('/sign-in/email') ? '{}' : null, {
+          status: input.endsWith('/sign-in/email') ? 200 : 401,
+        })
+      )
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const assign = vi.fn()
+    const location = { href: '' }
+    Object.defineProperty(location, 'href', { set: assign, get: () => '' })
+    vi.stubGlobal('location', location)
+    render(
+      <ProviderLoginView
+        authBase="/backend/auth"
+        loginEndpoint="/backend/operators/login"
+        adminRoute="/cms"
+        signInPath="/login"
+      />
+    )
+    expect(screen.getByRole('link', { name: 'app sign-in page' }).getAttribute('href')).toBe(
+      '/login'
+    )
+    const [providerForm, localForm] = [...document.querySelectorAll('form')]
+    if (providerForm === undefined || localForm === undefined) {
+      throw new Error('forms missing')
+    }
+    fireEvent.submit(localForm)
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/backend/operators/login', expect.anything())
+    })
+    fireEvent.submit(providerForm)
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/backend/auth/sign-in/email', expect.anything())
+    })
+    await waitFor(() => {
+      expect(assign).toHaveBeenCalledWith('/cms')
+    })
+  })
 })

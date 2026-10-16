@@ -46,11 +46,12 @@ export type SessionSnapshot = {
  * Read user AND guest from one session-endpoint response. The body
  * is parsed exactly once; a guest body yields `user: null` plus the
  * guest, a user body the reverse. Fails closed like
- * {@link fetchSessionUser}.
+ * {@link fetchSessionUser}; an aborted `signal` reads as empty.
  */
 export async function fetchSession(
   sessionEndpoint: string = defaultSessionEndpointPath,
-  fetchImpl: HttpFetch = fetch
+  fetchImpl: HttpFetch = fetch,
+  signal?: AbortSignal
 ): Promise<SessionSnapshot> {
   const empty: SessionSnapshot = { user: null, guest: null }
   let response: Response
@@ -60,6 +61,7 @@ export async function fetchSession(
       credentials: 'same-origin',
       cache: 'no-store',
       headers: { accept: 'application/json' },
+      ...(signal === undefined ? {} : { signal }),
     })
   } catch {
     return empty

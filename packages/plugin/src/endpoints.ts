@@ -1,4 +1,11 @@
-import { expiringCookieOptions, serializeCookie, type ProviderId } from '@payload-auth-link/core'
+import {
+  expiringCookieOptions,
+  parseCookieHeader,
+  serializeCookie,
+  type CookieOptions,
+  type IdentityProviderPort,
+  type ProviderId,
+} from '@payload-auth-link/core'
 import type { Endpoint, PayloadRequest } from 'payload'
 import {
   forbidden,
@@ -13,48 +20,114 @@ import { requestVerifiedSession } from './session.js'
 import { createServices } from './services.js'
 
 /**
- * Expire every registered provider's session cookies on a logout
- * response. Revoking the server session without clearing the cookies
- * would leave the browser presenting a dead token: optimistic
- * middleware keeps passing it through and the user looks signed in
- * until the cookie naturally expires.
+ * Legacy session cookie names (issue #51 coexistence window) for one
+ * provider: the engine-declared window plus the plugin option's
+ * cross-check copy. Expired on every logout, inside or after the
+ * window — a stale legacy cookie is residue either way.
+ */
+function legacyCookieNames(wired: WiredOptions, provider: IdentityProviderPort): readonly string[] {
+  return [
+    ...(provider.legacySessions?.cookieNames ?? []),
+    ...(wired.legacySessions?.cookieNames ?? []),
+  ]
+}
+
+/**
+ * Every cookie name a logout must expire, with its clearing
+ * attributes: each registered provider's session cookies, its
+ * non-session logout cookies (BA `admin_session`, `dont_remember`,
+ * cookie-cache `session_data`, …), the per-request multi-session
+ * cookies it enumerates, and the configured legacy names.
  *
  * The clearing write must carry the cookie's live attributes: a `Secure`
  * cookie (in particular any `__Secure-` name) survives a clearing write
  * without `Secure`, and a custom `Domain`/`Path` needs matching or the
  * overwrite misses. Providers report theirs via
- * `sessionCookieClearOptions`; providers that predate that hook fall back
- * to prefix-derived attributes.
+ * `sessionCookieClearOptions`; names they do not know (legacy names,
+ * providers that predate that hook) fall back to prefix-derived
+ * attributes. Exported for the endpoint suite.
  */
-function expireSessionCookies(wired: WiredOptions, response: Response, headers?: Headers): void {
+export function logoutCookieClears(
+  wired: WiredOptions,
+  headers?: Headers
+): ReadonlyMap<string, CookieOptions> {
+  const clears = new Map<string, CookieOptions>()
   for (const id of wired.registry.ids()) {
     const required = wired.registry.require(id)
     if (required.isErr()) {
       continue
     }
-    // Session cookies plus non-session logout cookies (e.g. BA's
-    // `admin_session`, holding the impersonating operator's resumable
-    // token): both must die on logout, deduped in case a provider
-    // lists a name in both.
+    const provider = required.value
+    // Deduped in case a provider lists a name in several sources.
     const names = new Set([
-      ...required.value.sessionCookieNames,
-      ...(required.value.logoutCookieNames ?? []),
+      ...provider.sessionCookieNames,
+      ...(provider.logoutCookieNames ?? []),
       // CAP-13b: per-token multi-session cookie names can only be
       // known from the actual request; the adapter enumerates the
       // presented ones so every multi cookie dies with the logout.
-      ...(headers === undefined
-        ? []
-        : (required.value.presentedLogoutCookieNames?.(headers) ?? [])),
+      ...(headers === undefined ? [] : (provider.presentedLogoutCookieNames?.(headers) ?? [])),
+      ...legacyCookieNames(wired, provider),
     ])
     for (const name of names) {
-      const known = required.value.sessionCookieClearOptions?.(name)
-      const clearing =
+      if (clears.has(name)) {
+        continue
+      }
+      const known = provider.sessionCookieClearOptions?.(name)
+      clears.set(
+        name,
         known === undefined
           ? expiringCookieOptions(name)
           : { ...known, maxAge: 0, path: known.path ?? '/' }
-      response.headers.append('Set-Cookie', serializeCookie(name, '', clearing))
+      )
     }
   }
+  return clears
+}
+
+/**
+ * Expire every logout cookie (see {@link logoutCookieClears}) on a
+ * logout response. Revoking the server session without clearing the
+ * cookies would leave the browser presenting a dead token: optimistic
+ * middleware keeps passing it through and the user looks signed in
+ * until the cookie naturally expires.
+ */
+function expireSessionCookies(wired: WiredOptions, response: Response, headers?: Headers): void {
+  for (const [name, clearing] of logoutCookieClears(wired, headers)) {
+    response.headers.append('Set-Cookie', serializeCookie(name, '', clearing))
+  }
+}
+
+/**
+ * Whether the request presents anything a provider could read as a
+ * session: one of the registered session (or legacy, or per-request
+ * multi-session) cookie names, or a non-cookie credential header
+ * (`Authorization`, `x-api-key`). An anonymous logout presents none,
+ * so it is answered without walking — or querying — any provider.
+ */
+function presentsSessionCredential(wired: WiredOptions, headers: Headers): boolean {
+  if (headers.has('authorization') || headers.has('x-api-key')) {
+    return true
+  }
+  const presented = parseCookieHeader(headers.get('cookie'))
+  if (presented.size === 0) {
+    return false
+  }
+  for (const id of wired.registry.ids()) {
+    const required = wired.registry.require(id)
+    if (required.isErr()) {
+      continue
+    }
+    const provider = required.value
+    const candidates = [
+      ...provider.sessionCookieNames,
+      ...legacyCookieNames(wired, provider),
+      ...(provider.presentedLogoutCookieNames?.(headers) ?? []),
+    ]
+    if (candidates.some((name) => presented.has(name))) {
+      return true
+    }
+  }
+  return false
 }
 
 /**
@@ -202,6 +275,16 @@ export function createEndpoints(wired: WiredOptions): Endpoint[] {
       handler: async (req) => {
         if (!passesCsrfForChannel(req.headers, wired.config.baseUrl, wired.admitChannels)) {
           return forbidden('csrf check failed')
+        }
+        if (!presentsSessionCredential(wired, req.headers)) {
+          // Anonymous logout: nothing to verify or revoke, so no
+          // provider is walked (no per-request database reads). Still
+          // idempotent — same answer as the verify-failure path below
+          // — and still expires every logout cookie, residue included.
+          wired.logger.debug('logout endpoint: no session credential presented')
+          const anonymous = unauthorized()
+          expireSessionCookies(wired, anonymous, req.headers)
+          return anonymous
         }
         const { sessions } = services(req)
         const verified = await requestVerifiedSession(sessions, req)

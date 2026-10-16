@@ -113,6 +113,10 @@ export type AuthLinkProviderProps = {
  * synced into context when its value changes; re-renders passing the
  * same user as a fresh object change nothing, so a client-side sign-out
  * is never undone by a stale snapshot. Refresh stays explicit.
+ *
+ * Loads are sequenced: only the newest read writes state (late,
+ * out-of-order results are dropped), and `signOut` cancels in-flight
+ * reads so none can flip the UI back to authenticated afterwards.
  */
 export declare function AuthLinkProvider({ children, sessionEndpoint, fetchImpl, initialUser, }: AuthLinkProviderProps): ReactNode;
 /** Read the auth context. Throws outside `AuthLinkProvider` — fail loud. */
@@ -138,9 +142,9 @@ export type SessionSnapshot = {
  * Read user AND guest from one session-endpoint response. The body
  * is parsed exactly once; a guest body yields `user: null` plus the
  * guest, a user body the reverse. Fails closed like
- * {@link fetchSessionUser}.
+ * {@link fetchSessionUser}; an aborted `signal` reads as empty.
  */
-export declare function fetchSession(sessionEndpoint?: string, fetchImpl?: HttpFetch): Promise<SessionSnapshot>;
+export declare function fetchSession(sessionEndpoint?: string, fetchImpl?: HttpFetch, signal?: AbortSignal): Promise<SessionSnapshot>;
 /**
  * Revoke the current session through the plugin's session endpoint.
  * Sends the CSRF header the endpoint requires. Returns `true` when the

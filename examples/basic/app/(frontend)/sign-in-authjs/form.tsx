@@ -50,9 +50,8 @@ export function AuthJsSignInForm() {
         setError('Sign-in failed')
         return
       }
-      const { csrfToken } = (await csrf.json().catch(() => null)) as {
-        csrfToken?: unknown
-      } | null
+      const body = (await csrf.json().catch(() => null)) as { csrfToken?: unknown } | null
+      const csrfToken = body?.csrfToken
       if (typeof csrfToken !== 'string') {
         setError('Sign-in failed')
         return
