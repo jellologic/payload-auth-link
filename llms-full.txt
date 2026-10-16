@@ -1942,6 +1942,10 @@ paths, cookie semantics) is the stability anchor and changes only
 with a migration note here; option shapes and internal ports may
 evolve. Read the package CHANGELOGs on every bump.
 
+The post-1.0 contract (what is public, semver per surface,
+deprecation and security-fix policy) is in
+[stability.md](stability.md); it takes effect at 1.0.
+
 ## Supported bands and the version assertion
 
 The validated bands live in [compatibility.md](compatibility.md) and
@@ -2753,6 +2757,989 @@ Reserved registry ids, no packages yet. When they land they will be
 new optional dependencies (`provider-workos`, `provider-clerk`)
 following the same engine → port → collections shape — adopting one
 is additive to the plugin options, never a rewrite.
+
+---
+
+<!-- docs/stability.md -->
+
+# Stability and upgrade policy
+
+> **Status: this policy takes effect when a package reaches 1.0.0.**
+> Until then the [pre-1.0 practice](#today-pre-10) below applies.
+> The packages version independently (for example plugin 0.11,
+> core 0.7, web 0.3), and each package moves to this policy at its
+> own 1.0.
+
+This page defines what counts as the public contract, what each
+semver level may change, how things are deprecated and removed, how
+security fixes ship, and what each release has to document.
+
+## Today (pre-1.0)
+
+This is the current practice, the same one stated under "Pre-1.0
+policy" in [upgrading.md](upgrading.md#pre-10-policy):
+
+- **A minor may break.** Option shapes, exported types and internal
+  ports can change in a `0.x` minor. Every such change ships a
+  changeset, a CHANGELOG entry, and (when you need to do something) a
+  section in [upgrading.md](upgrading.md) named after the release
+  versions.
+- **A patch fixes bugs.** Most security fixes ship as patches (for
+  example 0.10.1 with advisory GHSA-hxgq-9pww-59j4). When the fix has
+  to tighten a default, it can ship in a minor (0.4.0's security
+  default change).
+- **The wire contract is already the anchor.** `SessionUser`, the
+  endpoint paths and cookie behavior change only with a migration
+  note, and new wire fields are additive and optional
+  ([PORT-4](upgrading.md#session-wire-contract-gains-optional-facts-port-4)).
+- **Schema changes are already gated.** The schema-change rules
+  ([below](#collection-schemas)) apply today. CI enforces them with
+  `bun run schema:check` and runs the golden-DB N/N−1 suite.
+- **Exported types are already snapshotted.** `bun run api:check`
+  fails when the built `.d.ts` surface drifts from
+  `snapshots/api/<pkg>.txt`. Before 1.0, that forces a reviewed
+  changeset. After 1.0, it forces the right semver level.
+- **Only the latest `0.x` release gets security fixes**
+  ([SECURITY.md](../SECURITY.md)).
+
+## The public contract (from 1.0)
+
+### 1. Wire contract
+
+Anything a browser, a client bundle built against an older version,
+or a separately deployed service can observe:
+
+- **Routes** under Payload's API route:
+  `GET`/`DELETE /auth-link/session`, and, when organizations are enabled,
+  `GET`/`POST /auth-link/organizations`,
+  `POST /auth-link/organizations/invite` and
+  `POST /auth-link/organizations/accept`. Their methods, CSRF
+  requirement (the `x-auth-link-csrf` header, exported as
+  `csrfHeaderName`) and status codes are part of the contract.
+- **Session endpoint bodies**: `200 { user: SessionUser }`,
+  `200 { user: null, guest: { id, providerId, expiresAt } }` for an
+  anonymous provider session, and `401`/`403` with `{ error }`;
+  logout answers `200 { ok: true }`. The `SessionUser` shape is `id`,
+  `collection`, `email` and `roles`, plus the optional `assurance`,
+  `actor`, `organizationId` and `mfaRequired`. Adding an **optional**
+  field is a minor change. Removing a field, renaming one, or making
+  one required is a major change. Parsers (`parseSessionUser`) must
+  keep ignoring unknown keys, so an older client can read a newer
+  server.
+- **Cookies.** The plugin mints no cookie of its own: session cookies
+  belong to the provider. The contract covers which cookie names each
+  adapter reads, re-presents and expires on logout (the
+  `getBetterAuthSessionCookieNames` / `getAuthJsSessionCookieNames`
+  helpers in the `/cookies` subpaths, including the `__Secure-` and
+  `__Host-` prefix rules). If a change would sign users out or leave
+  a cookie behind on logout, it is a major change.
+
+### 2. Configuration
+
+- `authLink(options)` (`AuthLinkPluginOptions`), the provider engine
+  factories' options (`createBetterAuthEngine`, the Auth.js engine),
+  and the adapter options (`createAuthMiddleware`,
+  `createAuthRequestMiddleware`, `createSessionVerifier`, …).
+- **Defaults are part of the contract.** Changing a default that
+  loosens security, or that changes behavior for code that did not
+  set the option, is a major change. The one exception is
+  tightening a default to fix a vulnerability (see
+  [Security fixes](#security-fixes)).
+
+### 3. Exported API
+
+- Every **package entry point** in a `package.json` `exports` map:
+  `.` for every package, plus `@payload-auth-link/core/testing`,
+  `@payload-auth-link/plugin/admin`,
+  `@payload-auth-link/provider-better-auth/cookies` and
+  `@payload-auth-link/provider-authjs/cookies`. Deep imports into
+  `dist/` are not supported and not covered.
+- **Core's public API is the explicit list in
+  `packages/core/src/index.ts`.** That includes the port interfaces
+  (`IdentityProviderPort`, `UserRepository`, `LoggerPort`, …) that
+  third-party adapters implement. Adding a **required** member to a
+  port is a major change. Adding an optional one is a minor change.
+- **Typed errors** are contract by class (`instanceof`) and by the
+  data they carry, not by message text.
+- **`onAudit` events** are contract: the two messages
+  (`impersonated operation`, `server session created`) and their
+  field names ([audit.md](audit.md)). Audit consumers key on them.
+- The API snapshot (`snapshots/api/`) is the mechanical check. A
+  snapshot diff that removes or narrows anything needs a major
+  changeset.
+- **Not contract:** anything not reachable from an entry point;
+  exports whose TSDoc says "Not public API" (for example
+  `registerAuthLinkServer`); log message text and the fields of
+  logger-only events; error message strings; the admin UI's markup;
+  the example apps.
+
+### 4. Collection schemas
+
+The shapes Payload pushes or migrates are covered by the contract:
+the provider collections (`ba-*`, `aj-*`), the organization
+collections, and the fields the plugin injects into users. The
+committed `snapshots/schema/*.json` is the mechanical check. These
+are the rules from [AGENTS.md](../AGENTS.md), which apply before and
+after 1.0:
+
+- **Additive only by default.** A new column must be nullable or
+  have a database default. Adding a column is a minor change, and
+  the release notes must include migration steps.
+- **No nullability, type or unique change, and no rename,** without
+  a two-release expand → backfill → contract sequence. The previous
+  minor must keep reading **and** writing the new schema. The golden-DB
+  suite tests N against N−1.
+- After 1.0, the **contract** step (dropping or narrowing what was
+  expanded) is a major change.
+- Every shape change ships a regenerated snapshot, a changeset with
+  an `Upgrade impact:` section, an entry in `upgrading.md`, and a
+  golden-DB upgrade test.
+
+### 5. Supported bands
+
+The runtime `supportedPayloadBand`, `supportedBetterAuthBand` and
+`supportedAuthJsBand` constants equal the manifest peer ranges and
+the CI compat matrix ([compatibility.md](compatibility.md)). They
+always move together.
+
+- **Widening** a band to an upstream version the matrix has proven
+  is a patch or minor change.
+- **Dropping** a supported upstream version, a database adapter or a
+  Node major is a major change. The exception is an upstream that
+  is itself end-of-life or has a vulnerability with no fix in that
+  line. That exception ships with an advisory.
+
+## Semver after 1.0
+
+| Level | May contain                                                                                                                                                                                                        |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| major | any breaking change to the contract above; removal of anything deprecated in an earlier minor; schema contract steps; dropped bands                                                                                |
+| minor | new options, exports, endpoints, optional wire fields, optional port members; additive schema (nullable/defaulted, with a migration); deprecations (with warnings); widened bands; security tightening (see below) |
+| patch | bug fixes that restore documented behavior; security fixes that keep the contract; widened bands; docs                                                                                                             |
+
+A fix that makes the code match its documentation is a patch, even if
+someone depended on the bug. If the documentation was wrong instead,
+the docs are corrected and the behavior stays.
+
+## Deprecation policy
+
+1. **Announce in a minor.** The deprecated API gets a TSDoc
+   `@deprecated` tag that names the replacement, a CHANGELOG entry,
+   and an `upgrading.md` entry. Where it can be detected at runtime,
+   it also logs **one** warning through the configured logger (the
+   pattern the payload-auth compat shim already follows).
+2. **Keep it working for at least one minor.** The deprecated path
+   behaves as before for at least one minor release after the one
+   that deprecated it.
+3. **Remove only in a major.** Removal ships in the next major after
+   that window, and the `upgrading.md` section for that major lists
+   every removal.
+
+Time-boxed compatibility windows that are documented as dated (for
+example `legacySessions` for payload-auth cookies) end on their
+documented date. That is not a breaking change.
+
+## Security fixes
+
+- **Report privately** through GitHub security advisories
+  ([SECURITY.md](../SECURITY.md)). Response targets are listed there.
+- **Supported lines:** the latest minor of the current major.
+  Proposed for 1.0: the last minor of the previous major also gets
+  security patches for six months after a new major ships.
+- **Delivery:** a patch release on each supported line, a published
+  GitHub advisory (GHSA) with a CVE where one applies, and an
+  `upgrading.md` entry when you need to do something.
+- **Breaking for safety:** when the only safe fix changes the
+  contract (tightening a default, refusing a credential path that
+  used to work), the fix ships in a **minor** with the advisory and
+  an `Upgrade impact` note that explains the opt-out, if one exists.
+  It does not wait for the next major.
+
+## Upgrade guide requirement
+
+Every **minor** release, and any patch that needs operator action,
+gets a section in [upgrading.md](upgrading.md):
+
+- A heading that names the released version of every package that
+  moved.
+- What changed in behavior, what you have to do (configuration,
+  migrations for each database adapter, cookie or session effects
+  during a rolling deploy), and how to roll back
+  ([N/N−1](upgrading.md#rolling-deploys-and-rollback-n-and-n1)).
+- For schema changes, the `Upgrade impact:` section from the
+  changeset (CI checks that it is there).
+
+Every **major** additionally gets a single "x.y → (x+1).0" section
+that lists every removal and every contract change.
+
+---
+
+<!-- docs/audit.md -->
+
+# Audit trail for production
+
+What the plugin records about security-relevant events, where those
+records go, and how to keep them somewhere that survives log
+rotation. Everything here is read off the code: `audit.ts`,
+`server.ts`, `session.ts`, `collections.ts`, `lifecycle.ts`,
+`organizations.ts`, `repository.ts`, and core's use cases. The
+recipe at the end is tested in
+`packages/plugin/src/__tests__/audit-sink-recipe.test.ts`.
+
+## Two channels: `logger` and `onAudit`
+
+The plugin writes everything through one `LoggerPort`
+(`authLink({ logger })`). The default is `consoleLogger()`, so
+refusals and audit events show up with no configuration: `info` goes
+to `console.info`, `warn`/`error` to the matching console level,
+fields render as a JSON suffix, and `debug` is silent. To mute all
+output, pass `nullLogger()`. In production, pass an adapter for your
+real logger (pino, OpenTelemetry logs and so on). `LoggerPort` is
+`debug`/`info`/`warn`/`error(message, fields?)` plus
+`child(bindings)`.
+
+`authLink({ onAudit })` is a separate **durable sink**. Its type is
+`(event: { message: string; fields: LogFields }) => void`. The type
+is reachable as `NonNullable<AuthLinkPluginOptions['onAudit']>`;
+`AuditSink` itself is not exported from the package root. The plugin
+wraps the logger with `composeAuditLogger(logger, onAudit)`. On every
+`info` call the wrapper first calls `logger.info(message, fields)`,
+then `onAudit({ message, fields: fields ?? {} })`. `warn`, `error`
+and `debug` pass through to the logger and never reach the sink.
+
+**Only two events reach `onAudit`.** The composed logger is used
+only by the impersonation audit hooks, the organization endpoints'
+impersonation refusals, and `authLinkServer(payload).createSessionFor`.
+Every other event in this guide reaches the logger only. To keep
+those durably as well, wrap the logger (see
+[Recipe](#recipe-an-append-only-audit-log-collection)).
+
+When a provider can impersonate (Better Auth's admin plugin), the
+logger is silent (`nullLogger()`) and no `onAudit` is set, the plugin
+prints one `console.warn` at `onInit` saying that impersonation audit
+events will be dropped.
+
+## Events delivered to `onAudit`
+
+### `impersonated operation`
+
+Payload's `beforeOperation` hook does the auditing. The plugin adds
+it to **every collection and every global** in your config, its own
+included, after all hooks you defined. It also fires from the plugin's
+organization endpoints when they refuse a request because the caller
+is impersonating. It is emitted only while an operator is
+impersonating the request's user. Plain requests return before any
+logging.
+
+Because the hook runs `beforeOperation`, attempts that are later
+denied are audited too. For example, a role change that is blocked
+while impersonating still produces an event.
+
+| Field                 | When present                          | Value                                                                     |
+| --------------------- | ------------------------------------- | ------------------------------------------------------------------------- |
+| `actorKind`           | always                                | `'payload-user'`, `'provider-only'`, or `'malformed-actor'`               |
+| `actorProviderUserId` | actor parsed                          | operator's provider user id                                               |
+| `actorUserId`         | `actorKind: 'payload-user'`           | operator's Payload user id (string)                                       |
+| `targetUserId`        | `req.user` has an id                  | impersonated user's Payload id (string)                                   |
+| `operation`           | always                                | Payload's operation name (`read`, `update`, `delete`, …) or endpoint verb |
+| `collection`          | collection hook                       | collection slug                                                           |
+| `global`              | global hook                           | global slug                                                               |
+| `endpoint`            | organization endpoint refusal         | `/auth-link/organizations`, `/auth-link/organizations/invite`, `…/accept` |
+| `denied`              | organization endpoint refusal         | `true` (the endpoint answered 403)                                        |
+| `id`                  | the operation args name a document id | document id (string)                                                      |
+
+The fields carry ids only. Tokens, emails and document data are never
+included. If the request carries an impersonation marker that cannot
+be parsed, the plugin still audits it (fail-closed), with
+`actorKind: 'malformed-actor'` and no made-up attribution.
+
+For the organization endpoints, `operation` is `create`
+(`POST /auth-link/organizations`), `invite`, or `accept`.
+Organization governance refusals that do **not** involve
+impersonation (not a manager, role above your own, invitation not
+yours) return 403 and are not logged.
+
+### `server session created`
+
+Emitted by `authLinkServer(payload).createSessionFor(userId, options)`
+after the provider has stored the session.
+
+| Field        | Value                                                                                                   |
+| ------------ | ------------------------------------------------------------------------------------------------------- |
+| `providerId` | provider that minted the session                                                                        |
+| `userId`     | Payload user id (string)                                                                                |
+| `sessionId`  | opaque session handle (the session row id, never the bearer token)                                      |
+| `reason`     | the caller's required `reason` string                                                                   |
+| `actor`      | the caller's optional `actor` string, when given                                                        |
+| `mfaProof`   | the caller's `mfaProof` boolean, when given                                                             |
+| `expiresAt`  | ISO timestamp of the expiry the provider **stored** (or the requested one if the provider reports none) |
+
+`reason` and `actor` are free text you supply, so keep personal data
+out of them.
+
+## Events that reach the logger only
+
+These are emitted through the configured `logger`, not `onAudit`.
+The list covers the security-relevant ones (diagnostics such as
+storage failures are left out). Message text is diagnostic output,
+**not** a stable contract (see [stability.md](stability.md)). If you
+key durable capture on these strings, pin them in a test of your own.
+
+| Level | Message                                                                                                     | Fields                                                                                                   |
+| ----- | ----------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| info  | `impersonated session used`                                                                                 | `providerId`, `actorProviderUserId`, `actorKind`, `actorUserId?`, `targetProviderUserId`, `targetUserId` |
+| warn  | `impersonated session actor has no linked Payload user`                                                     | `providerId`, `actorProviderUserId`, `targetUserId`                                                      |
+| warn  | `session refused: user suspended`                                                                           | `providerId`, `userId`, `suspendedUntil`                                                                 |
+| warn  | `<scope> verification failed: user suspended` (scope: `strategy`, `session endpoint`, …)                    | `suspendedUntil`                                                                                         |
+| info  | `suspend: provider sessions revoked` (one per linked identity when `suspendedUntil` moves)                  | `providerId`                                                                                             |
+| error | `suspend: provider session revoke failed`                                                                   | `providerId`, `cause`                                                                                    |
+| warn  | `provider session channel not admitted` / `<scope> verification failed: channel not admitted`               | `providerId`, `channel`                                                                                  |
+| warn  | `sso session refused: email domain not verified for any organization`                                       | `providerId`                                                                                             |
+| warn  | `provisioning refused: the email is held by an existing document that is not proven to own it`              | `providerId`, **`email`**                                                                                |
+| warn  | `email link refused: …` (pre-existing document not linkable, or proof bound to another email)               | **`email`**, `userId`                                                                                    |
+| warn  | `link refused: provider email unverified` / `registration refused: provider email unverified`               | **`email`**, `providerId`                                                                                |
+| warn  | `link refused: anonymous identity never links`, `link refused: session carries no email identity claim`     | `providerId`                                                                                             |
+| info  | `identity linked`, `identity linked by verified phone`, `user registered via provider`                      | `userId`, `providerId`                                                                                   |
+| info  | `local sessions revoked on identity link`                                                                   | `userId`, `providerId`                                                                                   |
+| warn  | `identity linked to a document that also holds a local password; …`                                         | `userId`, `providerId`                                                                                   |
+| info  | `email synced from provider`, `phone synced from provider`                                                  | `userId`, `providerId`                                                                                   |
+| info  | `verified email synced onto the linked user` (provider `email-verified` event)                              | `userId`, `providerId`                                                                                   |
+| info  | `email changed outside the provider resync; linking proof reset`                                            | `userId`                                                                                                 |
+| warn  | `identity event ignored: unverified email change (D9)`                                                      | `providerId`, …                                                                                          |
+| warn  | `local password reset refused: document holds linked identities`                                            | `userId`, `operation`                                                                                    |
+| warn  | `membership relocation refused`, `membership user rewrite refused`                                          | `membershipId`                                                                                           |
+| warn  | boot: `payload-auth-link: N user doc(s) carry roles outside the configured set: …` (stored-role drift, B11) | (counts in the message)                                                                                  |
+
+The **bold** fields are emails. Unlike the `onAudit` events, the
+logger-only events are not all limited to ids. Treat your log
+pipeline as holding personal data, or redact `email` in your logger
+adapter.
+
+Role changes have no dedicated event. A change made by an operator
+while impersonating is captured by `impersonated operation`, and the
+plugin's access rules refuse it. To audit every role change by
+anyone, add your own `afterChange` hook on the users collection that
+compares `previousDoc.roles` with `doc.roles`.
+
+## Delivery semantics
+
+- **Synchronous and in-band.** `onAudit` is called synchronously
+  inside the audited code path: Payload's `beforeOperation` hook, the
+  organization endpoint handler, or `createSessionFor`. The plugin
+  does not buffer, batch, retry or deduplicate. Events arrive in call
+  order, once per call.
+- **The return value is ignored.** If your sink returns a promise,
+  the plugin does not await it, and a rejection becomes an unhandled
+  rejection. Start the write, then route its failure somewhere
+  (the recipe below uses `.catch(onError)`).
+- **A sink that throws is fail-closed.** A synchronous throw
+  propagates. Inside `beforeOperation` it fails the operation the
+  impersonating operator attempted (proven by the recipe test). In an
+  organization endpoint, the refusal turns into an error response
+  instead of the 403. In `createSessionFor`, the provider has
+  **already stored** the session, but the call throws before
+  returning the token, so the session stays orphaned until it expires
+  or you revoke it with `revokeAllForUser`. Throw only if you mean
+  "no audit, no action". Otherwise catch inside the sink.
+- **The logger runs first.** If `logger.info` throws, the sink is not
+  called for that event.
+- **Cost on the request path.** Every operation performed while
+  impersonating calls the sink. Keep the synchronous part cheap: an
+  enqueue or a non-awaited insert.
+
+## Recipe: an append-only audit-log collection
+
+Keep the trail in Payload itself. Payload owns the users, so a
+Payload collection keeps the audit records in the same database,
+backups and access model. The collection is append-only: `create`,
+`update` and `delete` are denied to everyone, and the sink writes
+through the Local API with `overrideAccess: true`.
+
+Do not pass `req` to the write. Without `req`, the row is written
+outside the audited operation's transaction, so a denied or
+rolled-back attempt stays recorded. The plugin's audit hook (which
+runs on this collection too) then sees no impersonated user, so
+writing an audit row never audits itself. If you passed the
+impersonated `req`, every write would audit itself again,
+indefinitely.
+
+```ts
+// lib/audit.ts
+import { isRecord, type LoggerPort } from '@payload-auth-link/core'
+import type { AuthLinkPluginOptions } from '@payload-auth-link/plugin'
+import type { CollectionConfig, Payload } from 'payload'
+
+type AuditSink = NonNullable<AuthLinkPluginOptions['onAudit']>
+type AuditEvent = Parameters<AuditSink>[0]
+
+const hasRole = (user: unknown, role: string): boolean =>
+  isRecord(user) && Array.isArray(user.roles) && user.roles.includes(role)
+
+/** Append-only audit trail: rows are written only through `overrideAccess`. */
+export const auditLogCollection: CollectionConfig = {
+  slug: 'audit-log',
+  admin: {
+    useAsTitle: 'message',
+    defaultColumns: ['message', 'operation', 'actorUserId', 'targetUserId', 'createdAt'],
+  },
+  access: {
+    read: ({ req }) => hasRole(req.user, 'admin'),
+    create: () => false,
+    update: () => false,
+    delete: () => false,
+  },
+  fields: [
+    { name: 'message', type: 'text', required: true, index: true },
+    { name: 'operation', type: 'text', index: true },
+    { name: 'actorUserId', type: 'text', index: true },
+    { name: 'targetUserId', type: 'text', index: true },
+    { name: 'fields', type: 'json', required: true },
+  ],
+}
+
+/**
+ * `onAudit` is called synchronously and its return value is ignored,
+ * so the write is started here and never awaited by the plugin.
+ * Every failure is routed to `onError` (never an unhandled rejection).
+ */
+export function createPayloadAuditSink(options: {
+  readonly payload: () => Promise<Payload>
+  readonly onError: (cause: unknown, event: AuditEvent) => void
+}): AuditSink {
+  return (event) => {
+    const text = (key: string): string | undefined => {
+      const value = event.fields[key]
+      return typeof value === 'string' ? value : undefined
+    }
+    void options
+      .payload()
+      .then((payload) =>
+        payload.create({
+          collection: 'audit-log',
+          // No `req`: the row is written outside the audited operation's
+          // transaction (a denied or rolled-back attempt stays recorded),
+          // and the audit hook on this collection sees no impersonated
+          // user, so writing an audit row never audits itself.
+          overrideAccess: true,
+          data: {
+            message: event.message,
+            operation: text('operation'),
+            actorUserId: text('actorUserId'),
+            targetUserId: text('targetUserId') ?? text('userId'),
+            fields: { ...event.fields },
+          },
+        })
+      )
+      .catch((cause: unknown) => {
+        options.onError(cause, event)
+      })
+  }
+}
+
+/**
+ * Optional: forward selected logger-only events (see the table in
+ * docs/audit.md) to the same sink. Message text is diagnostics, not
+ * contract, so pin the set in a test of your own.
+ */
+export function withDurableMessages(
+  logger: LoggerPort,
+  sink: AuditSink,
+  messages: ReadonlySet<string>
+): LoggerPort {
+  const forward = (message: string, fields: AuditEvent['fields'] | undefined): void => {
+    if (messages.has(message)) {
+      sink({ message, fields: fields ?? {} })
+    }
+  }
+  const wrapped: LoggerPort = {
+    ...logger,
+    info: (message, fields) => {
+      logger.info(message, fields)
+      forward(message, fields)
+    },
+    warn: (message, fields) => {
+      logger.warn(message, fields)
+      forward(message, fields)
+    },
+    child: () => wrapped,
+  }
+  return wrapped
+}
+```
+
+Wire it in `payload.config.ts`. `getPayload` is called lazily, at the
+first event, so referring to the config being built is safe:
+
+```ts
+import { authLink } from '@payload-auth-link/plugin'
+import { buildConfig, getPayload } from 'payload'
+import { auditLogCollection, createPayloadAuditSink, withDurableMessages } from './lib/audit'
+import { appLogger } from './lib/logger' // your LoggerPort adapter
+
+const auditSink = createPayloadAuditSink({
+  payload: () => getPayload({ config }),
+  onError: (cause, event) => {
+    appLogger.error('audit write failed', { message: event.message, cause })
+  },
+})
+
+const config = buildConfig({
+  // …
+  collections: [/* users, … */ auditLogCollection],
+  plugins: [
+    authLink({
+      // …
+      onAudit: auditSink,
+      // Optional: also persist chosen logger-only events.
+      logger: withDurableMessages(
+        appLogger,
+        auditSink,
+        new Set(['impersonated session used', 'session refused: user suspended'])
+      ),
+    }),
+  ],
+})
+
+export default config
+```
+
+Notes:
+
+- `hasRole(req.user, 'admin')` checks the roles the plugin puts on
+  `req.user`: canonical slugs by default, or stored values with
+  `projectRolesAs: 'stored'`. Use whatever role your operators hold.
+- Adding the collection is a schema change in **your** app. Create
+  and commit a migration for it, as with any collection
+  ([upgrading.md](upgrading.md#running-production-on-migrations-not-push)).
+- Retention is up to you. Nothing prunes `audit-log`. Schedule a job
+  that deletes rows older than your retention period, using
+  `overrideAccess: true`.
+- Do not include the two `onAudit` messages in the
+  `withDurableMessages` set. They already reach the sink, and
+  including them would write each event twice.
+
+### Shipping to an external store instead
+
+The same shape works for a SIEM or log store. The sink enqueues
+synchronously and a background flusher ships the events (an HTTP
+batch endpoint, a queue, OpenTelemetry logs). Keep the same rules:
+never throw from the sink unless you want fail-closed behavior,
+always catch failures of the async part, and keep the flusher's queue
+bounded. If the store is unavailable, fall back to the logger rather
+than dropping events silently.
+
+---
+
+<!-- docs/rate-limiting.md -->
+
+# Rate limiting
+
+**payload-auth-link ships no rate limiter, so abuse control is your
+job.** Core has no shared counter storage, and a limiter that lives in
+one process protects nothing once you run two. This guide lists
+every HTTP surface the library exposes or relies on, gives a
+starting limit and key for each, and says where to enforce it.
+
+The numbers below are starting points for a typical app with a few
+thousand users. Tune them against your real traffic. Every limit
+should return `429`, with `Retry-After` when you control the
+response.
+
+## Where to enforce
+
+| Layer                                                        | Use it for                                                           | Notes                                                                                                                  |
+| ------------------------------------------------------------ | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Reverse proxy / CDN / WAF (nginx `limit_req`, Cloudflare, …) | Coarse per-IP ceilings on every auth path; the first line of defense | Sees the real client IP; rejects traffic before your app spends anything on it                                         |
+| Better Auth `rateLimit` (in the engine's `options`)          | Everything under Better Auth's base path (`/api/auth/*` by default)  | Built in, per IP + path, path-aware rules; needs shared storage in production ([below](#better-auth-built-in-limiter)) |
+| Next middleware / Start request middleware                   | Payload's users auth routes, `/api/auth-link/*`, GraphQL             | Needs a shared store (Redis, Upstash, Postgres); see [examples](#middleware-examples)                                  |
+| Route wrapper around a handler                               | Auth.js catch-all, your own signup route                             | Wrap the handler you pass to `createRouteHandlers` / `createServerRouteHandlers` (the reference examples do this)      |
+| Payload `auth.maxLoginAttempts` / `lockTime`                 | Per-account lockout on local password login                          | Defaults are 5 attempts / 10 minutes. It is a lockout, not a rate limit ([pitfalls](#pitfalls))                        |
+
+## Endpoint inventory
+
+Paths assume Payload's default `routes.api` (`/api`), a users
+collection with the slug `users`, Better Auth at `/api/auth`, and
+Auth.js at `/api/authjs` (the provider's default `basePath`).
+
+### Plugin endpoints (`/api/auth-link/*`)
+
+Registered by `authLink()` (`endpoints.ts`; `organizations.ts` only
+when `organizations` is configured). Each one verifies the session
+itself, and every state-changing one also requires the CSRF proof.
+None of them takes a password or a code, so these limits protect
+cost (database reads), not credentials.
+
+| Endpoint                                   | Purpose                            | Starting limit (key)            | Notes                                                                                                                                                                                |
+| ------------------------------------------ | ---------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /api/auth-link/session`               | current `SessionUser` (or guest)   | 300 / min (IP)                  | Called on page loads and by the client refresh hooks. Each call reads the provider session and reloads the user. Keep the limit generous: a 429 here looks like a sign-out to the UI |
+| `DELETE /api/auth-link/session`            | logout (revokes provider sessions) | 30 / min (IP)                   | Anonymous calls are cheap (no provider walk)                                                                                                                                         |
+| `GET /api/auth-link/organizations`         | caller's memberships               | 120 / min (IP)                  |                                                                                                                                                                                      |
+| `POST /api/auth-link/organizations`        | create an organization             | 10 / hour (IP); 10 / day (user) | Creates rows; also limit per signed-in user if orgs are self-service                                                                                                                 |
+| `POST /api/auth-link/organizations/invite` | invite by email                    | 30 / hour (IP)                  | Each invite can trigger an email you send; cap it like any outbound-mail path                                                                                                        |
+| `POST /api/auth-link/organizations/accept` | accept an invitation               | 30 / hour (IP)                  |                                                                                                                                                                                      |
+
+The admin login view (`admin.loginView: 'provider'`) adds no endpoint
+of its own. It posts to `${admin.authBase}/sign-in/email` (Better
+Auth's route, see below), and Payload's own admin form posts to
+`/api/users/login`.
+
+### Payload's auth operations on the users collection
+
+Payload 3 has no request-level rate limiter. These are Payload's
+endpoints. The plugin adds hooks that refuse suspended and
+provider-linked accounts, but it does not throttle them. A users
+collection that the plugin creates disables the local strategy
+(`disableLocalStrategy`), so local login and password reset are not
+available there. A **host-owned** users collection that keeps
+`auth: true` exposes all of them.
+
+| Endpoint (REST)                                                  | GraphQL                            | Starting limit (key)                                      |
+| ---------------------------------------------------------------- | ---------------------------------- | --------------------------------------------------------- |
+| `POST /api/users/login`                                          | `loginUsers`                       | 10 / 10 min (IP) + `maxLoginAttempts` (account)           |
+| `POST /api/users/forgot-password`                                | `forgotPasswordUsers`              | 5 / hour (IP); 3 / hour (email, if you can read the body) |
+| `POST /api/users/reset-password`                                 | `resetPasswordUsers`               | 10 / hour (IP)                                            |
+| `POST /api/users/verify/:token`                                  | `verifyEmailUsers`                 | 10 / hour (IP)                                            |
+| `POST /api/users/unlock`                                         | `unlockUsers`                      | 10 / hour (IP); role managers only by default             |
+| `POST /api/users/refresh-token`                                  | `refreshTokenUsers`                | 60 / hour (IP)                                            |
+| `POST /api/users/first-register`                                 | —                                  | 5 / hour (IP); works only on an empty database            |
+| `POST /api/users/logout`, `GET /api/users/me`, `GET /api/access` | `logoutUsers`, `meUsers`, `access` | general API ceiling                                       |
+
+**GraphQL** carries every operation through one `POST /api/graphql`.
+A path-based limiter cannot tell `loginUsers` apart from a harmless
+query, and a single request can batch many operations. Do one of
+these:
+
+- If you do not use GraphQL, disable it (`graphQL: { disable: true }`,
+  and in Next delete `app/(payload)/api/graphql/route.ts`).
+- Otherwise, put a tight overall ceiling on `/api/graphql` (for
+  example 60 / min per IP) and keep `maxLoginAttempts` on. It counts
+  per account whichever transport the login came through.
+
+### Better Auth (`/api/auth/*`)
+
+Every Better Auth route is served by the engine's `auth.handler`
+mounted on the catch-all, so Better Auth's own limiter sees them all.
+The ones that matter for abuse (core plus the plugins the examples
+enable):
+
+| Route family                                                                                                                                        | Built-in default (per IP + path)           | Recommendation                                                                            |
+| --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `/sign-in/*`, `/sign-up/*`, `/change-password`, `/change-email`                                                                                     | 3 / 10 s                                   | keep; it adds up to about 1,000/hour, so add a proxy ceiling for slow-and-steady stuffing |
+| `/request-password-reset`, `/send-verification-email`, `/forget-password*`, `/email-otp/send-verification-otp`, `/email-otp/request-password-reset` | 3 / 60 s                                   | keep, or tighten to an hourly window (outbound mail)                                      |
+| `/two-factor/*` (twoFactor plugin)                                                                                                                  | 3 / 10 s                                   | tighten verify routes, e.g. `/two-factor/verify-totp` 5 / 5 min                           |
+| `/sign-in/magic-link`, `/magic-link/verify` (magicLink plugin)                                                                                      | 5 / 60 s (plugin `rateLimit` option)       | keep                                                                                      |
+| `/sign-in/email-otp`, `/email-otp/verify-email`, `/email-otp/check-verification-otp` (emailOTP)                                                     | 3 / 60 s (plugin `rateLimit` option)       | keep; OTP guesses are the brute-force surface                                             |
+| `/phone-number/*` (phoneNumber plugin)                                                                                                              | 10 / 60 s                                  | tighten send routes (SMS cost)                                                            |
+| `/passkey/*` (`@better-auth/passkey`)                                                                                                               | global rule                                | `customRules` for `/passkey/verify-authentication`, e.g. 10 / min                         |
+| everything else (`/get-session`, `/sign-out`, `/list-sessions`, `/api-key/*`, …)                                                                    | global `window`/`max` (default 100 / 10 s) | set a global `max` that fits your traffic                                                 |
+
+Better Auth API keys (`@better-auth/api-key`) also have a separate
+**per-key** limit, configured with the plugin's
+`rateLimit: { enabled, timeWindow, maxRequests }` and stored on the
+key row. That limit applies when a key is verified, which includes
+`authLinkServer(payload).verifyApiKey`.
+
+The limiter runs only on HTTP requests that pass through
+`auth.handler`. Server-side `auth.api.*` calls are not counted, and
+the plugin's own session reads use those calls. So
+`/api/auth-link/session` traffic does not use up Better Auth limits,
+and Better Auth's limiter does not protect it either.
+
+### Auth.js (`/api/authjs/*`)
+
+Auth.js core ships no limiter. Wrap the catch-all handler, as both
+reference examples do (`app/api/authjs/[...authjs]/route.ts`,
+`src/app/api.authjs.$.ts`):
+
+| Route                                                                 | Starting limit (key)                                     |
+| --------------------------------------------------------------------- | -------------------------------------------------------- |
+| `POST /api/authjs/callback/credentials`                               | 10 / 10 min (IP); also count failures per email          |
+| `GET\|POST /api/authjs/callback/<email provider>` (magic link / code) | 3 / 10 min (email + IP), correct code included           |
+| `POST /api/authjs/signin/<provider>` (starts OAuth / sends mail)      | 10 / 10 min (IP); mail-sending providers per email too   |
+| `GET /api/authjs/callback/<oauth provider>`                           | 30 / 10 min (IP)                                         |
+| `GET /api/authjs/session`, `/csrf`, `/providers`                      | general ceiling                                          |
+| your credentials **signup** route (builder-owned)                     | 10 / 10 min (email); the examples' `authjs-signup` route |
+
+The Auth.js engine reads sessions in-process (it calls `Auth()` with
+a synthesized request), so the plugin's session checks never pass
+through your wrapper.
+
+## Better Auth built-in limiter
+
+```ts
+createBetterAuthEngine({
+  // …
+  options: {
+    // …
+    rateLimit: {
+      enabled: true, // the default is "production only" (NODE_ENV)
+      storage: 'database', // or 'secondary-storage', or customStorage
+      window: 60,
+      max: 300,
+      customRules: {
+        '/two-factor/verify-totp': { window: 300, max: 5 },
+        '/passkey/verify-authentication': { window: 60, max: 10 },
+        // false disables a rule; a function can decide per request
+      },
+    },
+    advanced: {
+      ipAddress: {
+        // Pick ONE header your edge sets and clients cannot spoof...
+        ipAddressHeaders: ['cf-connecting-ip'],
+        // ...or walk X-Forwarded-For past your own proxies:
+        // trustedProxies: ['10.0.0.0/24'],
+      },
+    },
+  },
+})
+```
+
+How the limiter behaves (Better Auth 1.7, read from its source):
+
+- **Enabled** defaults to `NODE_ENV === 'production'`. Set it
+  explicitly so staging behaves like production.
+- **Key** is client IP + path. IPv6 addresses are grouped by
+  `advanced.ipAddress.ipv6Subnet` (default `/64`). If no IP can be
+  resolved, every client shares one bucket per path, and Better Auth
+  logs a warning once. With `disableIpTracking: true`, requests
+  without an IP are not limited at all.
+- **Rule precedence**: built-in special rules, then plugin rules,
+  then your `customRules`. `customRules` keys match the path exactly
+  or with `*` wildcards.
+- **Response**: `429` with an `X-Retry-After` header (in seconds), not
+  `Retry-After`.
+- **Storage**:
+  - `memory` (the default) is per process, so it is wrong for more
+    than one instance or a serverless deploy.
+  - `database` uses the **`ba-rate-limits`** collection, which the
+    provider always declares (`key` unique, `count`, `lastRequest`).
+    There is no extra schema step. This adapter has no native atomic
+    increment, so Better Auth uses its fallback: a snapshot-guarded
+    update with retries. Under heavy contention on one key, that
+    fallback can fail with a "could not complete an atomic increment"
+    error instead of counting. Every limited request also adds
+    database round trips.
+  - `secondary-storage` uses your `secondaryStorage`, which must
+    implement `increment`. This is the right choice at scale (Redis,
+    Upstash). You can also supply `customStorage: { consume(key, rule) }`
+    (atomic check-and-increment).
+
+The reference examples enable the limiter with dev-scale ceilings
+(100 sign-ins/min, because every e2e request shares one IP). Do not
+copy those numbers to production.
+
+## Middleware examples
+
+Both examples count per IP in a shared store that you provide. The
+interface below is yours to implement. One atomic `INCR` with
+`EXPIRE` in Redis is enough:
+
+```ts
+// lib/rate-limit-rules.ts — framework-free, shared by both adapters
+export type RateLimitStore = {
+  /** Count one hit for `key` in a fixed `windowSeconds` window; resolve the new count. */
+  readonly hit: (key: string, windowSeconds: number) => Promise<number>
+}
+
+type Rule = {
+  readonly name: string
+  readonly method: string
+  readonly path: RegExp
+  readonly windowSeconds: number
+  readonly max: number
+}
+
+const rules: readonly Rule[] = [
+  { name: 'login', method: 'POST', path: /^\/api\/users\/login$/, windowSeconds: 600, max: 10 },
+  {
+    name: 'forgot',
+    method: 'POST',
+    path: /^\/api\/users\/forgot-password$/,
+    windowSeconds: 3600,
+    max: 5,
+  },
+  {
+    name: 'reset',
+    method: 'POST',
+    path: /^\/api\/users\/reset-password$/,
+    windowSeconds: 3600,
+    max: 10,
+  },
+  { name: 'verify', method: 'POST', path: /^\/api\/users\/verify\//, windowSeconds: 3600, max: 10 },
+  {
+    name: 'refresh',
+    method: 'POST',
+    path: /^\/api\/users\/refresh-token$/,
+    windowSeconds: 3600,
+    max: 60,
+  },
+  { name: 'graphql', method: 'POST', path: /^\/api\/graphql$/, windowSeconds: 60, max: 60 },
+  {
+    name: 'session',
+    method: 'GET',
+    path: /^\/api\/auth-link\/session$/,
+    windowSeconds: 60,
+    max: 300,
+  },
+  {
+    name: 'org-create',
+    method: 'POST',
+    path: /^\/api\/auth-link\/organizations$/,
+    windowSeconds: 3600,
+    max: 10,
+  },
+  {
+    name: 'org-invite',
+    method: 'POST',
+    path: /^\/api\/auth-link\/organizations\/invite$/,
+    windowSeconds: 3600,
+    max: 30,
+  },
+]
+
+/**
+ * The client IP, from ONE header your edge sets and overwrites
+ * (Vercel: x-real-ip; Cloudflare: cf-connecting-ip). Never trust the
+ * leftmost X-Forwarded-For entry — clients write it.
+ */
+function clientIp(request: Request): string {
+  return request.headers.get('x-real-ip') ?? 'unknown'
+}
+
+/** A 429 to return, or null to let the request through. */
+export async function rateLimit(store: RateLimitStore, request: Request): Promise<Response | null> {
+  const { pathname } = new URL(request.url)
+  const rule = rules.find((r) => r.method === request.method && r.path.test(pathname))
+  if (rule === undefined) {
+    return null
+  }
+  const count = await store.hit(`${rule.name}:${clientIp(request)}`, rule.windowSeconds)
+  if (count <= rule.max) {
+    return null
+  }
+  return Response.json(
+    { error: 'too many requests' },
+    { status: 429, headers: { 'Retry-After': String(rule.windowSeconds) } }
+  )
+}
+```
+
+**Next** (`middleware.ts`, or `proxy.ts` on Next 16). Compose the
+limiter with the optimistic auth bounce using `checkAuthCookies`. The
+matcher must include `/api` for the limiter to see those routes. The
+reference matcher excludes it because the bounce must never run there:
+
+```ts
+import { checkAuthCookies } from '@payload-auth-link/next'
+import { NextResponse, type NextRequest } from 'next/server'
+import { sessionCookieNames } from './lib/auth-cookie-names'
+import { rateLimit } from './lib/rate-limit-rules'
+import { store } from './lib/rate-limit-store' // your Edge-compatible store (e.g. Upstash REST)
+
+export default async function middleware(request: NextRequest): Promise<Response> {
+  if (/^\/api(\/|$)/.test(request.nextUrl.pathname)) {
+    return (await rateLimit(store, request)) ?? NextResponse.next()
+  }
+  if (/^\/admin(\/|$)/.test(request.nextUrl.pathname)) {
+    return NextResponse.next()
+  }
+  return (
+    checkAuthCookies(request, { sessionCookieNames, publicPaths: ['/', '/sign-in'] }) ??
+    NextResponse.next()
+  )
+}
+
+export const config = {
+  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+}
+```
+
+Edge middleware cannot import `payload` or database code (see
+[troubleshooting](troubleshooting.md#edge-build-fails-importing-payload--database-code)),
+so the store must be Edge-compatible, such as an HTTP Redis like
+Upstash. If your store needs Node, wrap the Payload REST route
+handlers in `app/(payload)/api/[...slug]/route.ts` instead.
+
+**TanStack Start** (`src/start.ts`). Add a request middleware in
+front of the existing ones. Returning a `Response` short-circuits the
+request, the same way `createAuthRequestMiddleware` returns its
+redirect:
+
+```ts
+import { createAuthRequestMiddleware } from '@payload-auth-link/tanstack-start'
+import { createCsrfMiddleware, createMiddleware, createStart } from '@tanstack/react-start'
+import { rateLimit } from './lib/rate-limit-rules'
+import { store } from './lib/rate-limit-store'
+import { sessionCookieNames } from './lib/session-cookie-names'
+
+const rateLimitMiddleware = createMiddleware().server(async ({ request, next }) => {
+  const limited = await rateLimit(store, request)
+  return limited ?? next()
+})
+
+const authRequestMiddleware = createAuthRequestMiddleware({
+  sessionCookieNames,
+  publicPaths: ['/', '/sign-in', /^\/api(\/|$)/, /^\/admin(\/|$)/],
+})
+
+const csrfMiddleware = createCsrfMiddleware({
+  filter: (ctx) => ctx.handlerType === 'serverFn',
+})
+
+export const startInstance = createStart(() => ({
+  requestMiddleware: [rateLimitMiddleware, csrfMiddleware, authRequestMiddleware],
+}))
+```
+
+**Route wrapper** (either framework), as in the examples' Auth.js
+catch-all:
+
+```ts
+// Next: app/api/authjs/[...authjs]/route.ts
+export const { GET, POST } = createRouteHandlers(async (request) => {
+  return (await rateLimit(store, request)) ?? handleAuthJsRequest(request)
+})
+// Start: server: { handlers: createServerRouteHandlers(/* same function */) }
+```
+
+## Pitfalls
+
+- **Spoofable client IPs.** Every client can set `X-Forwarded-For`,
+  and any limiter that trusts its leftmost entry can be bypassed by
+  rotating the header. Read one header that your edge overwrites, or
+  walk the chain past known proxies (Better Auth's
+  `trustedProxies`). The examples' `clientKey()` reads the first
+  forwarded entry. That is a dev convenience, not a production
+  design.
+- **Shared IPs.** Offices, universities and carrier-grade NAT put
+  many users behind one address, and IPv6 users get a whole `/64`. A
+  tight per-IP limit there locks out real people. Keep per-IP
+  ceilings generous, and put the tight limits on per-account or
+  per-identifier keys (email + IP for OTP and magic-link callbacks,
+  as the Auth.js examples do).
+- **No IP at all.** Behind a proxy that forwards no client-IP header,
+  every request lands in one bucket. Better Auth warns once. A
+  homegrown limiter falls back to `'unknown'` and throttles everyone
+  together. Fix the proxy rather than raising the limit.
+- **`trustProxy` here is not about IPs.** The `trustProxy` flag on
+  `createSessionVerifier`'s `hostPolicy` controls only the dev-mode
+  origin fallback. Nothing in payload-auth-link resolves client IPs.
+- **Lockout is a denial-of-service tool.** Payload's
+  `maxLoginAttempts` locks the **account**, so anyone who knows an
+  email can lock its owner out. Keep `lockTime` short, alert on
+  lockouts, and stop the attacker with the per-IP limit first.
+- **In-memory counters.** The examples' `lib/rate-limit.ts` and
+  Better Auth's `memory` storage are per process. Behind several
+  instances or on serverless, each instance counts separately, so
+  the effective limit is the configured one times the number of
+  instances.
+- **The session endpoint is hot.** `GET /api/auth-link/session` runs
+  on navigation and refresh. A tight limit makes signed-in users look
+  signed out. Size it for page views, not for logins.
+- **Body-keyed limits need care.** To key on the email in a login
+  body, read `request.clone()` so the downstream handler still gets
+  the body, and normalize the address (lowercase) before using it as
+  a key.
 
 ---
 
