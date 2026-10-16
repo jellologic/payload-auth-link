@@ -143,6 +143,28 @@ describe('translateWhereClause', () => {
     ).toThrow(UnsupportedOperatorError)
   })
 
+  it('refuses case-insensitive equality under an OR connector (post-filter would drop rows)', () => {
+    expect(() =>
+      translateWhereClause([
+        clause({ field: 'email', value: 'A@B.C', mode: 'insensitive' }),
+        clause({ field: 'name', value: 'x', connector: 'OR' }),
+      ])
+    ).toThrow(UnsupportedOperatorError)
+    expect(() =>
+      translateWhereClause([
+        clause({ field: 'name', value: 'x' }),
+        clause({ field: 'email', value: 'A@B.C', mode: 'insensitive', connector: 'OR' }),
+      ])
+    ).toThrow(UnsupportedOperatorError)
+    // The first clause's connector is not a combinator: an insensitive
+    // eq that is AND-ed with everything stays translatable.
+    const { postFilter } = translateWhereClause([
+      clause({ field: 'email', value: 'A@B.C', mode: 'insensitive', connector: 'OR' }),
+      clause({ field: 'name', value: 'x' }),
+    ])
+    expect(postFilter).toBeDefined()
+  })
+
   it('applies documented defaults for undefined operator, connector, and mode', () => {
     const { where } = translateWhereClause([
       {
