@@ -671,7 +671,7 @@ async function applyAccountControls(
           ...document,
           id: user.id,
           email: typeof user.email === 'string' ? user.email : document.email,
-          roles: Array.isArray(user.roles) ? user.roles : document.roles,
+          roles: Array.isArray(rolesOf(user)) ? rolesOf(user) : document.roles,
           collection: user.collection,
           _strategy: user._strategy,
         }
@@ -682,12 +682,21 @@ async function applyAccountControls(
   if (gated.size === 0 || user._strategy === strategyName) {
     return 'ok'
   }
-  if (Array.isArray(user.roles)) {
-    user.roles = user.roles.filter(
-      (role): role is string => typeof role === 'string' && !gated.has(role)
-    )
+  const roles = rolesOf(user)
+  if (Array.isArray(roles)) {
+    Object.assign(user, {
+      roles: roles.filter((role): role is string => typeof role === 'string' && !gated.has(role)),
+    })
   }
   return 'ok'
+}
+
+/**
+ * `roles` of a request user. Read through a record: Payload v4 types
+ * `req.user` without host fields, v3 with them.
+ */
+function rolesOf(user: unknown): unknown {
+  return isRecord(user) ? user.roles : undefined
 }
 
 function throwOnAccountDecision(decision: AccountDecision): void {
