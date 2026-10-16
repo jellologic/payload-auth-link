@@ -78,12 +78,14 @@ function denyAdminWhileImpersonating(
   existing: AdminAccess | undefined,
   wired: WiredOptions
 ): AdminAccess {
-  return async ({ req }) => {
+  return async (args) => {
+    const { req } = args
     if (isImpersonating(req)) {
       return false
     }
     if (existing !== undefined) {
-      return existing({ req })
+      // Forward every argument Payload passes (v4 adds more than `req`).
+      return existing(args)
     }
     return isRoleManager(req, wired)
   }
