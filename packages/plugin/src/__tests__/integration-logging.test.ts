@@ -5,6 +5,9 @@
  * nothing warns with the reason; a truly anonymous probe stays
  * silent so health checks do not spam the log.
  */
+import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
 import { sqliteAdapter } from '@payloadcms/db-sqlite'
 import { consoleLogger, type LoggerPort } from '@payload-auth-link/core'
 import {
@@ -171,10 +174,21 @@ describe('one provider walk per HTTP request (issue #42 reopen)', () => {
       }),
     })
     expect(response.status).toBe(401)
-    expect(warnings.filter((m) => m.includes('no provider session resolved'))).toHaveLength(1)
+    // Payload passes `req` to auth strategies from 3.84.1; before that
+    // (the 3.83.0 band floor, 3.84.0) the strategy cannot share its
+    // resolution with the endpoint, so the refusal is logged twice —
+    // documented in docs/compatibility.md.
+    // `payload` exports no `./package.json`: read it beside the entry.
+    const payloadEntry = createRequire(import.meta.url).resolve('payload')
+    const payloadVersion = (
+      JSON.parse(readFileSync(join(dirname(payloadEntry), '..', 'package.json'), 'utf8')) as {
+        version: string
+      }
+    ).version
+    const strategyGetsReq = !/^3\.(83\.|84\.0$)/.test(payloadVersion)
     expect(
       warnings.filter((message) => message.includes('no provider session resolved'))
-    ).toHaveLength(1)
+    ).toHaveLength(strategyGetsReq ? 1 : 2)
   })
 })
 

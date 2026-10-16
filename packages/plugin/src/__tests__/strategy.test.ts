@@ -335,19 +335,16 @@ describe('reqUser: document (issue #57)', () => {
       providers: [stub.provider],
       logger: nullLogger(),
     })
-    const req = { context: {} } as unknown as Parameters<
-      ReturnType<typeof createAuthLinkStrategy>['authenticate']
-    >[0]['req']
+    // Payload 3.83's strategy args do not declare `req` (later 3.x and
+    // v4 do): build the args as a variable, typed by PayloadRequest.
+    const req = { context: {} } as unknown as import('payload').PayloadRequest
     await authenticateWired(wired, new Headers({ cookie }), payload)
     const strategy = createAuthLinkStrategy(wired)
-    await strategy.authenticate({
-      headers: new Headers({ cookie }),
-      payload,
-      req: req as NonNullable<typeof req>,
-    })
+    const args = { headers: new Headers({ cookie }), payload, req }
+    await strategy.authenticate(args)
     // The document is memoized on the request context, so the endpoint
     // handlers share the exact object the strategy resolved.
-    const memo = (req?.context ?? {}) as Record<string, unknown>
+    const memo = req.context as Record<string, unknown>
     expect(memo['payloadAuthLink:reqUserDocument']).toBeDefined()
   })
 })

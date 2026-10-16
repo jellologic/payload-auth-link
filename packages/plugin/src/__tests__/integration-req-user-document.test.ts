@@ -118,13 +118,17 @@ describe('reqUser: document (issue #57)', () => {
       expiresAt: new Date(Date.now() + 3_600_000),
     })
     headers.set('cookie', cookie)
-    const result = (await strategy?.authenticate({
+    // Payload's own strategy invocation passes the live request; the
+    // document memo only needs a context bag here. A variable, not an
+    // inline literal: Payload 3.83's strategy args do not declare `req`.
+    const args = {
       headers,
       payload,
-      // Payload's own strategy invocation passes the live request; the
-      // document memo only needs a context bag here.
       req: { context: {} } as unknown as import('payload').PayloadRequest,
-    })) as { user?: Record<string, unknown> } | null
+    }
+    const result = (await strategy?.authenticate(args)) as {
+      user?: Record<string, unknown>
+    } | null
     expect(result?.user).not.toBeNull()
     // The document's own field is visible…
     expect(result?.user?.activeOrganization).toBe('org-7')

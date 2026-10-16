@@ -1583,6 +1583,12 @@ setup scripts may need `overrideAccess: true`), and `createdBy` /
 `updatedBy` are filled from `req.user`, whose `id` the plugin keeps in
 the database's own type (a number on SQLite/Postgres).
 
+Payload 3.83.0 and 3.84.0 (the band floor) do not pass `req` to auth
+strategies, so the strategy cannot share its session resolution with
+the plugin's endpoint through `req.context`: a refused request logs
+"no provider session resolved" twice there. From 3.84.1 it is logged
+once. Behaviour and security are otherwise identical.
+
 ## Databases
 
 | Adapter                   | Validated how                                                                         |

@@ -161,6 +161,16 @@ for (const path of manifestPaths) {
     console.log(`compat-install: ${axis}@${version} -> ${join(...path.split('/').slice(-3))}`)
   }
 }
+// Satellites (`@better-auth/api-key`, `/passkey`) depend on
+// `@better-auth/core` by range, which resolves to the newest core: a
+// floor cell then type-checks against two cores. Pin it to the cell.
+if (axis === 'better-auth') {
+  const rootPath = join(root, 'package.json')
+  const rootManifest = JSON.parse(readFileSync(rootPath, 'utf8'))
+  rootManifest.overrides = { ...rootManifest.overrides, '@better-auth/core': version }
+  writeFileSync(rootPath, `${JSON.stringify(rootManifest, null, 2)}\n`)
+  console.log(`compat-install: overrides @better-auth/core -> ${version}`)
+}
 console.log(
   `compat-install: ${touched} pinned entr${touched === 1 ? 'y' : 'ies'} moved to ${axis}@${version}`
 )
