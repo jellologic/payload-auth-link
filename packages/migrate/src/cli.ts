@@ -9,6 +9,7 @@
  * the `--json` echo of what the caller passed, and secrets inside them
  * are the caller's own input.
  */
+import type * as Codemods from './codemods.js'
 import { runDoctor } from './doctor/run-doctor.js'
 import type { DoctorReport } from './doctor/types.js'
 import {
@@ -18,7 +19,6 @@ import {
   runVerify,
   type ImportCommandOptions,
 } from './importer/run-import.js'
-import { applyCodemods } from './codemods.js'
 import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { extname, join, relative } from 'node:path'
 
@@ -280,6 +280,10 @@ async function main(
       }
       const srcDir = new URL(srcFlag, `file://${process.cwd()}/`).pathname
       const write = flags.get('write') === true
+      // Lazy: the codemods parse with the TypeScript compiler API
+      // (~24 MB). Only this command loads it; importing the package
+      // (or running doctor/import/export) never does.
+      const codemods: typeof Codemods = await import('./codemods.js')
       const changed: string[] = []
       const manual: string[] = []
       const walk = (dir: string): void => {
@@ -304,7 +308,7 @@ async function main(
             walk(full)
           } else if (['.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs'].includes(extname(entry))) {
             const before = readFileSync(full, 'utf8')
-            const result = applyCodemods(relative(srcDir, full), before)
+            const result = codemods.applyCodemods(relative(srcDir, full), before)
             if (result.changed) {
               if (write) {
                 writeFileSync(full, result.after)

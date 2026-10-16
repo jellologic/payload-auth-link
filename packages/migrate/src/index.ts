@@ -27,6 +27,7 @@ export {
   readSourceUsers,
   unverifiedEmails,
   type OrphanScan,
+  type SourceClient,
   type SourceLayoutIssue,
   type SourceAccount,
   type SourceRow,

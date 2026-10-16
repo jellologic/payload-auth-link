@@ -53,3 +53,9 @@ emitted route handlers need it). `better-auth` is NOT a peer since
 0.4.0: installing the kit must never touch the app's own better-auth
 dependency (the #71 rehearsal finding), and the doctor falls back to
 static analysis when the app sits outside the validated band.
+
+`typescript` is a dependency only for the `codemod` command (it parses
+call sites with the compiler API); it is imported lazily, so importing
+the package or running `doctor`/import/export never loads it. The
+public types reference no `pg` types (source reads take the structural
+`SourceClient`), so consumers need no `@types/pg`.

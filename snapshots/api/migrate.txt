@@ -503,7 +503,6 @@ export declare function runRollback(options: ImportCommandOptions): Promise<{
 export declare function runFinalize(options: Pick<ImportCommandOptions, 'manifestPath' | 'log'>): Promise<ImportManifest>;
 
 // ===== importer/source.d.ts =====
-import { Client } from 'pg';
 import { type ResolvedSourceTables, type SourceModel, type Unmappable } from './types.js';
 /**
  * Read side (issue #50): the payload-auth layout, straight from
@@ -551,7 +550,18 @@ export type SourceLayoutIssue = {
     /** Human reason, naming the table and the `--source-map` escape hatch. */
     readonly reason: string;
 };
-export declare function openSource(connectionString: string): Promise<Client>;
+/**
+ * The slice of a `pg` client the read side uses. Public signatures take
+ * this structural type (a `pg.Client` satisfies it) so the published
+ * `.d.ts` never references `pg` — consumers need no `@types/pg`.
+ */
+export interface SourceClient {
+    query(text: string, values?: unknown[]): Promise<{
+        rows: unknown[];
+    }>;
+    end(): Promise<void>;
+}
+export declare function openSource(connectionString: string): Promise<SourceClient>;
 /**
  * Fail-closed probe (issue #68): every mapped model's table must
  * exist (a `null` mapping records "not installed" and is skipped),
@@ -559,21 +569,21 @@ export declare function openSource(connectionString: string): Promise<Client>;
  * commands call this FIRST and abort on any finding — nothing is
  * read, planned, or written past a failed probe.
  */
-export declare function probeSourceLayout(client: Client, tables: ResolvedSourceTables): Promise<readonly SourceLayoutIssue[]>;
+export declare function probeSourceLayout(client: SourceClient, tables: ResolvedSourceTables): Promise<readonly SourceLayoutIssue[]>;
 /**
  * Row counts for the given (mapped, existing) tables. A missing table
  * throws — the probe owns the structured "missing table" report, so a
  * throw here means the probe was skipped.
  */
-export declare function countTables(client: Client, tables: readonly string[]): Promise<Record<string, number>>;
+export declare function countTables(client: SourceClient, tables: readonly string[]): Promise<Record<string, number>>;
 /** Every source user, with role rows and accounts attached. */
-export declare function readSourceUsers(client: Client, tables?: ResolvedSourceTables): Promise<SourceUser[]>;
+export declare function readSourceUsers(client: SourceClient, tables?: ResolvedSourceTables): Promise<SourceUser[]>;
 /**
  * Rows of one flat plugin table (sessions, verifications, apiKeys, jwks, …).
  * A missing table throws — a `null` mapping keeps the caller from ever
  * asking for it, and an unmapped missing table aborts at the probe.
  */
-export declare function readFlatRows(client: Client, table: string, columns: readonly string[]): Promise<SourceRow[]>;
+export declare function readFlatRows(client: SourceClient, table: string, columns: readonly string[]): Promise<SourceRow[]>;
 /** What the orphan sweep found, and which checks could not run (and why). */
 export type OrphanScan = {
     readonly orphans: readonly Unmappable[];
@@ -591,7 +601,7 @@ export type OrphanScan = {
  * neither exists the check is reported as skipped-with-reason instead
  * of passing silently.
  */
-export declare function findOrphans(client: Client, tables?: ResolvedSourceTables): Promise<OrphanScan>;
+export declare function findOrphans(client: SourceClient, tables?: ResolvedSourceTables): Promise<OrphanScan>;
 /** Users whose email never verified — reported, never granted `linkable`. */
 export declare function unverifiedEmails(users: readonly SourceUser[]): readonly string[];
 
@@ -713,7 +723,7 @@ export { analyzeUsersCollection, findUsersCollection, localStrategyOn } from './
 export { introspectDatabase } from './doctor/database.js';
 export { runFromPayloadAuth, runVerify, runRollback, runFinalize } from './importer/run-import.js';
 export { applyImport, summarizePlanRows } from './importer/apply.js';
-export { countTables, findOrphans, openSource, probeSourceLayout, readFlatRows, readSourceUsers, unverifiedEmails, type OrphanScan, type SourceLayoutIssue, type SourceAccount, type SourceRow, type SourceUser, } from './importer/source.js';
+export { countTables, findOrphans, openSource, probeSourceLayout, readFlatRows, readSourceUsers, unverifiedEmails, type OrphanScan, type SourceClient, type SourceLayoutIssue, type SourceAccount, type SourceRow, type SourceUser, } from './importer/source.js';
 export { readManifest, writeManifest, verifyImport, rollbackImport, finalizeManifest, defaultManifestPath, type VerifyIssue, type VerifyResult, } from './importer/lifecycle.js';
 export { defaultSourceTables, defaultTargetSlugs, parseSourceMapJson, presentTables, resolveSourceTables, sourceModelNames, type CreatedRow, type ResolvedSourceTables, type SourceModel, type SourceTableMap, type TargetModel, type TargetSlugMap, type FieldWrite, type ImportManifest, type ImportPlan, type ImportResult, type PlanRow, type Unmappable, } from './importer/types.js';
 export { exportToJsonl, parseExportTables, exportTables } from './exporters.js';

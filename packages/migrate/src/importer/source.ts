@@ -76,14 +76,24 @@ const requiredColumns: Readonly<Record<SourceModel, readonly string[]>> = {
   users_role: ['parent_id', 'value'],
 }
 
-export async function openSource(connectionString: string): Promise<Client> {
+/**
+ * The slice of a `pg` client the read side uses. Public signatures take
+ * this structural type (a `pg.Client` satisfies it) so the published
+ * `.d.ts` never references `pg` — consumers need no `@types/pg`.
+ */
+export interface SourceClient {
+  query(text: string, values?: unknown[]): Promise<{ rows: unknown[] }>
+  end(): Promise<void>
+}
+
+export async function openSource(connectionString: string): Promise<SourceClient> {
   const client = new Client({ connectionString })
   await client.connect()
   return client
 }
 
 /** The columns one table actually has (customized layouts drop columns). */
-async function columnsOf(client: Client, table: string): Promise<Set<string>> {
+async function columnsOf(client: SourceClient, table: string): Promise<Set<string>> {
   const result = await client.query(
     `SELECT column_name FROM information_schema.columns
      WHERE table_schema = 'public' AND table_name = $1`,
@@ -92,7 +102,7 @@ async function columnsOf(client: Client, table: string): Promise<Set<string>> {
   return new Set(result.rows.map((row) => String((row as { column_name: unknown }).column_name)))
 }
 
-async function tableExists(client: Client, table: string): Promise<boolean> {
+async function tableExists(client: SourceClient, table: string): Promise<boolean> {
   const result = await client.query(
     `SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1`,
     [table]
@@ -108,7 +118,7 @@ async function tableExists(client: Client, table: string): Promise<boolean> {
  * read, planned, or written past a failed probe.
  */
 export async function probeSourceLayout(
-  client: Client,
+  client: SourceClient,
   tables: ResolvedSourceTables
 ): Promise<readonly SourceLayoutIssue[]> {
   const issues: SourceLayoutIssue[] = []
@@ -146,7 +156,7 @@ export async function probeSourceLayout(
  * throw here means the probe was skipped.
  */
 export async function countTables(
-  client: Client,
+  client: SourceClient,
   tables: readonly string[]
 ): Promise<Record<string, number>> {
   const counts: Record<string, number> = {}
@@ -170,7 +180,7 @@ function text(value: unknown): string | null {
 
 /** Every source user, with role rows and accounts attached. */
 export async function readSourceUsers(
-  client: Client,
+  client: SourceClient,
   tables: ResolvedSourceTables = defaultSourceTables
 ): Promise<SourceUser[]> {
   const usersTable = tables['users']
@@ -244,7 +254,7 @@ export async function readSourceUsers(
  * asking for it, and an unmapped missing table aborts at the probe.
  */
 export async function readFlatRows(
-  client: Client,
+  client: SourceClient,
   table: string,
   columns: readonly string[]
 ): Promise<SourceRow[]> {
@@ -274,7 +284,7 @@ export type OrphanScan = {
  * of passing silently.
  */
 export async function findOrphans(
-  client: Client,
+  client: SourceClient,
   tables: ResolvedSourceTables = defaultSourceTables
 ): Promise<OrphanScan> {
   const orphans: Unmappable[] = []
