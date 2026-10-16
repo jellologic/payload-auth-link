@@ -661,7 +661,7 @@ describe('row 12: Local API with overrideAccess still runs the hooks (real Auth.
     const asOperator = async (): Promise<unknown> =>
       live().find({
         collection: 'pages',
-        user: { ...(await hostDoc(operatorId)), collection: 'users' },
+        user: { ...(await hostDoc(operatorId)), id: operatorId, collection: 'users' },
         overrideAccess: false,
       })
     await expect(asOperator()).resolves.toBeDefined()
@@ -936,7 +936,9 @@ describe('rows 24 + 25: organizations under Auth.js sessions', () => {
       body: { role: 'owner' },
     })
     expect(attempt.status).toBe(403)
-    expect((await live().findByID({ collection: 'memberships', id: row.id })).role).toBe('member')
+    expect(
+      (await live().findByID({ collection: 'memberships', id: row.id, overrideAccess: true })).role
+    ).toBe('member')
     expect((await rest('GET', '/memberships')).status).toBe(403)
   })
 })

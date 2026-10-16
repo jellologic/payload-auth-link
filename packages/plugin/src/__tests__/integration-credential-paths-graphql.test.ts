@@ -5,7 +5,7 @@
  * so every account control must hold there too. This suite proves it
  * against Payload's real GraphQL schema (`@payloadcms/graphql`,
  * executed the way `@payloadcms/next`'s GRAPHQL_POST does: a
- * `createPayloadRequest`-authenticated `req` in the context), not by
+ * web-request-authenticated `req` in the context), not by
  * assertion. The REST walk lives in integration-credential-paths.
  */
 import { configToSchema } from '@payloadcms/graphql'
@@ -13,7 +13,6 @@ import { sqliteAdapter } from '@payloadcms/db-sqlite'
 import { graphql, type GraphQLSchema } from 'graphql'
 import {
   buildConfig,
-  createPayloadRequest,
   getPayload,
   handleEndpoints,
   type Payload,
@@ -21,6 +20,7 @@ import {
 } from 'payload'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { authLink } from '../index.js'
+import { createWebRequest } from './payload-request.js'
 import { createStubProvider } from './stub-provider.js'
 
 const ORIGIN = 'http://auth-link.test'
@@ -54,7 +54,7 @@ function headersFor(channel: Channel): Headers {
 }
 
 async function gql(source: string, channel: Channel = {}): Promise<GqlResult> {
-  const req = await createPayloadRequest({
+  const req = await createWebRequest({
     canSetHeaders: true,
     config,
     request: new Request(`${ORIGIN}/api/graphql`, {

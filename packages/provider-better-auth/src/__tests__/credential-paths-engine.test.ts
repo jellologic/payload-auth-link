@@ -527,7 +527,7 @@ describe('row 12: Local API with overrideAccess still runs the hooks (real BA)',
     await expect(
       live().find({
         collection: 'users',
-        user: { ...operatorDoc, collection: 'users' },
+        user: { ...operatorDoc, id: suspendedId, collection: 'users' },
         overrideAccess: false,
       })
     ).rejects.toThrow()

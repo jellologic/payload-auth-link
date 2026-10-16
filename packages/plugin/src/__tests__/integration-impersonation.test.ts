@@ -66,12 +66,22 @@ function call(method: string, path: string, opts: { cookie?: string; csrf?: bool
 /** The `req.user` shape the auth strategy produces for the target. */
 function targetUser(actor: unknown) {
   return {
-    id: String(targetId),
+    id: targetId,
     collection: 'users',
     email: 'target@test.dev',
     roles: ['user'],
     ...(actor === undefined ? {} : { actor }),
   }
+}
+
+/**
+ * Arguments for a sanitized collection access function, on both
+ * Payload majors: v4 wraps it in base access (which reads
+ * `req.payload.config`) and passes the collection `slug`; v3 ignores
+ * both. Returned (not a literal) so v3's narrower arg type accepts it.
+ */
+function accessArgs(user: unknown) {
+  return { req: { user, payload } as unknown as PayloadRequest, slug: 'users' }
 }
 
 const resolvedActor = () => ({
@@ -86,6 +96,7 @@ async function seedUser(
   roles: string[]
 ): Promise<string | number> {
   const created = await payload.create({
+    overrideAccess: true,
     collection: 'users',
     data: {
       email,
@@ -129,7 +140,11 @@ beforeAll(async () => {
   payload = await getPayload({ config })
   operatorId = await seedUser('operator@test.dev', 'stub-operator', ['admin'])
   targetId = await seedUser('target@test.dev', 'stub-target', ['user'])
-  const post = await payload.create({ collection: 'posts', data: { title: 'hello' } })
+  const post = await payload.create({
+    overrideAccess: true,
+    collection: 'posts',
+    data: { title: 'hello' },
+  })
   postId = post.id
 }, 60_000)
 
@@ -303,8 +318,7 @@ describe('real Payload auth path (strategy -> req.user)', () => {
     if (admin === undefined) {
       throw new Error('users admin access missing')
     }
-    const req = { user: authed.user } as unknown as PayloadRequest
-    await expect(admin({ req })).resolves.toBe(false)
+    await expect(admin(accessArgs(authed.user))).resolves.toBe(false)
     await payload
       .update({
         collection: 'users',
@@ -314,7 +328,11 @@ describe('real Payload auth path (strategy -> req.user)', () => {
         overrideAccess: false,
       })
       .catch(() => undefined)
-    const after = await payload.findByID({ collection: 'users', id: targetId })
+    const after = await payload.findByID({
+      overrideAccess: true,
+      collection: 'users',
+      id: targetId,
+    })
     expect(after.roles).toEqual(['user'])
   })
 
@@ -344,7 +362,11 @@ describe('real Payload auth path (strategy -> req.user)', () => {
     })
     // Denied or field-stripped: either way the stored roles must not move.
     expect([200, 400, 401, 403]).toContain(patch.status)
-    const after = await payload.findByID({ collection: 'users', id: targetId })
+    const after = await payload.findByID({
+      overrideAccess: true,
+      collection: 'users',
+      id: targetId,
+    })
     expect(after.roles).toEqual(['user'])
 
     // Control 1: a plain session can no longer
@@ -366,7 +388,11 @@ describe('real Payload auth path (strategy -> req.user)', () => {
         body: JSON.stringify({ roles: ['admin'] }),
       }),
     })
-    const stripped = await payload.findByID({ collection: 'users', id: targetId })
+    const stripped = await payload.findByID({
+      overrideAccess: true,
+      collection: 'users',
+      id: targetId,
+    })
     expect(stripped.roles).toEqual(['user'])
 
     // Control 2: the identical REST PATCH under the OPERATOR's session
@@ -388,9 +414,18 @@ describe('real Payload auth path (strategy -> req.user)', () => {
       }),
     })
     expect(managerPatch.status).toBe(200)
-    const promoted = await payload.findByID({ collection: 'users', id: targetId })
+    const promoted = await payload.findByID({
+      overrideAccess: true,
+      collection: 'users',
+      id: targetId,
+    })
     expect(promoted.roles).toEqual(['admin'])
-    await payload.update({ collection: 'users', id: targetId, data: { roles: ['user'] } })
+    await payload.update({
+      overrideAccess: true,
+      collection: 'users',
+      id: targetId,
+      data: { roles: ['user'] },
+    })
   })
 })
 
@@ -408,23 +443,30 @@ describe('impersonation restrictions (CAP-8b / D5)', () => {
         overrideAccess: false,
       })
       .catch(() => undefined)
-    const afterAttempt = await payload.findByID({ collection: 'users', id: targetId })
+    const afterAttempt = await payload.findByID({
+      overrideAccess: true,
+      collection: 'users',
+      id: targetId,
+    })
     expect(afterAttempt.roles).toEqual(['user'])
 
     // Control: without an actor, the identical write under a
     // role-manager user goes through, proving the deny above is the
     // impersonation policy at work (a plain user would be denied by
     // the role-manager rule instead).
+    // A variable, not a literal: v4's untyped-config `User` declares no
+    // `roles`, so an inline literal trips the excess-property check.
+    const operator = {
+      id: operatorId,
+      collection: 'users',
+      email: 'operator@test.dev',
+      roles: ['admin'],
+    }
     const promoted = await payload.update({
       collection: 'users',
       id: targetId,
       data: { roles: ['admin'] },
-      user: {
-        id: String(operatorId),
-        collection: 'users',
-        email: 'operator@test.dev',
-        roles: ['admin'],
-      },
+      user: operator,
       overrideAccess: false,
     })
     expect(promoted.roles).toEqual(['admin'])
@@ -443,15 +485,12 @@ describe('impersonation restrictions (CAP-8b / D5)', () => {
     if (admin === undefined) {
       throw new Error('users admin access missing')
     }
-    const impersonatedReq = { user: targetUser(resolvedActor()) } as unknown as PayloadRequest
-    const managerReq = {
-      user: { ...targetUser(undefined), roles: ['admin'] },
-    } as unknown as PayloadRequest
-    const plainReq = { user: targetUser(undefined) } as unknown as PayloadRequest
-    await expect(admin({ req: impersonatedReq })).resolves.toBe(false)
+    await expect(admin(accessArgs(targetUser(resolvedActor())))).resolves.toBe(false)
     // security hardening: the default admin-panel grant is the
     // role-manager roles, not "any signed-in user".
-    await expect(admin({ req: managerReq })).resolves.toBe(true)
-    await expect(admin({ req: plainReq })).resolves.toBe(false)
+    await expect(admin(accessArgs({ ...targetUser(undefined), roles: ['admin'] }))).resolves.toBe(
+      true
+    )
+    await expect(admin(accessArgs(targetUser(undefined)))).resolves.toBe(false)
   })
 })

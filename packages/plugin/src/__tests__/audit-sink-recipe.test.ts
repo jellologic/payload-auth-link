@@ -146,6 +146,7 @@ let activeSink: AuditSink = recipeSink
 
 async function seedUser(email: string, providerUserId: string, roles: string[]) {
   const created = await payload.create({
+    overrideAccess: true,
     collection: 'users',
     data: {
       email,
@@ -211,7 +212,7 @@ beforeAll(async () => {
   resolvePayload(payload)
   operatorId = await seedUser('operator@test.dev', 'stub-operator', ['admin'])
   targetId = await seedUser('target@test.dev', 'stub-target', ['user'])
-  await payload.create({ collection: 'posts', data: { title: 'hello' } })
+  await payload.create({ overrideAccess: true, collection: 'posts', data: { title: 'hello' } })
 }, 60_000)
 
 describe('documented durable audit sink (docs/audit.md)', () => {

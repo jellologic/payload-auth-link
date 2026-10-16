@@ -65,6 +65,15 @@ function requestWith(user: unknown): PayloadRequest {
   return { user } as unknown as PayloadRequest
 }
 
+/**
+ * Access-function arguments valid on both Payload majors: v4 types
+ * every collection access fn with the collection `slug`; v3 does not.
+ * Returned (not a literal) so v3's narrower arg type accepts it.
+ */
+function args(req: PayloadRequest) {
+  return { req, slug: 'users' }
+}
+
 const impersonatedUser = {
   id: 'user-1',
   collection: 'users',
@@ -140,37 +149,37 @@ describe('denyWhileImpersonating (CAP-8b / D5)', () => {
   it('by default denies admin and writes while impersonating, allows reads', async () => {
     const access = denyWhileImpersonating()
     const req = requestWith(impersonatedUser)
-    expect(await access.admin?.({ req })).toBe(false)
-    expect(await access.update?.({ req })).toBe(false)
-    expect(await access.create?.({ req })).toBe(false)
-    expect(await access.delete?.({ req })).toBe(false)
-    expect(await access.unlock?.({ req })).toBe(false)
-    expect(await access.read?.({ req })).toBe(true)
-    expect(await access.readVersions?.({ req })).toBe(true)
+    expect(await access.admin?.(args(req))).toBe(false)
+    expect(await access.update?.(args(req))).toBe(false)
+    expect(await access.create?.(args(req))).toBe(false)
+    expect(await access.delete?.(args(req))).toBe(false)
+    expect(await access.unlock?.(args(req))).toBe(false)
+    expect(await access.read?.(args(req))).toBe(true)
+    expect(await access.readVersions?.(args(req))).toBe(true)
   })
 
   it('allows everything for a non-impersonated request', async () => {
     const access = denyWhileImpersonating()
     const req = requestWith(plainUser)
-    expect(await access.admin?.({ req })).toBe(true)
-    expect(await access.update?.({ req })).toBe(true)
-    expect(await access.read?.({ req })).toBe(true)
+    expect(await access.admin?.(args(req))).toBe(true)
+    expect(await access.update?.(args(req))).toBe(true)
+    expect(await access.read?.(args(req))).toBe(true)
   })
 
   it('honors a custom operation list', async () => {
     const access = denyWhileImpersonating(['read'])
     const req = requestWith(impersonatedUser)
-    expect(await access.read?.({ req })).toBe(false)
-    expect(await access.update?.({ req })).toBe(true)
-    expect(await access.admin?.({ req })).toBe(true)
+    expect(await access.read?.(args(req))).toBe(false)
+    expect(await access.update?.(args(req))).toBe(true)
+    expect(await access.admin?.(args(req))).toBe(true)
   })
 
   it('FAIL-CLOSED: denies while the actor is present but malformed', async () => {
     const access = denyWhileImpersonating()
     const req = requestWith({ ...plainUser, actor: 'operator-1' })
-    expect(await access.admin?.({ req })).toBe(false)
-    expect(await access.update?.({ req })).toBe(false)
-    expect(await access.create?.({ req })).toBe(false)
+    expect(await access.admin?.(args(req))).toBe(false)
+    expect(await access.update?.(args(req))).toBe(false)
+    expect(await access.create?.(args(req))).toBe(false)
   })
 
   it('fails fast on an unknown operation name', () => {
@@ -185,14 +194,12 @@ describe('denyWithoutMfa (CAP-6)', () => {
 
   it('allows only literal mfa:true; absent or malformed assurance fails closed', async () => {
     const access = denyWithoutMfa()
-    expect(await access.admin?.({ req: requestWith(mfaUser) })).toBe(true)
-    expect(await access.update?.({ req: requestWith(mfaUser) })).toBe(true)
-    expect(await access.admin?.({ req: requestWith(unknownUser) })).toBe(false)
-    expect(await access.update?.({ req: requestWith(plainUser) })).toBe(false)
-    expect(await access.update?.({ req: requestWith({ ...plainUser, assurance: 'yes' }) })).toBe(
-      false
-    )
-    expect(await access.read?.({ req: requestWith(plainUser) })).toBe(true)
+    expect(await access.admin?.(args(requestWith(mfaUser)))).toBe(true)
+    expect(await access.update?.(args(requestWith(mfaUser)))).toBe(true)
+    expect(await access.admin?.(args(requestWith(unknownUser)))).toBe(false)
+    expect(await access.update?.(args(requestWith(plainUser)))).toBe(false)
+    expect(await access.update?.(args(requestWith({ ...plainUser, assurance: 'yes' })))).toBe(false)
+    expect(await access.read?.(args(requestWith(plainUser)))).toBe(true)
     expect(sessionMfaSatisfied(requestWith(mfaUser))).toBe(true)
     expect(sessionMfaSatisfied(requestWith(null))).toBe(false)
   })
