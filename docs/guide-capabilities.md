@@ -137,10 +137,27 @@ passkey capability.
 ## Two-factor and MFA policy (CAP-6)
 
 **Better Auth:** install `twoFactor()` (+ `twoFactorEnabled` custom
-field and the `twoFactor` custom model, as in the examples). BA
-marks no per-session TOTP proof, so mapped `assurance.mfa` means
-**enrolled** (`twoFactorEnabled`) — an enrollment gate, not recency
-proof.
+field and the `twoFactor` custom model, as in the examples). The
+engine records HOW each session came into being (a per-session
+`authenticationMethod`), and `assurance.mfa` reads that record —
+never enrollment (`twoFactorEnabled`):
+
+- BA's native two-factor sign-in issues a fresh session recorded
+  `two-factor`.
+- **Step-up:** a correct `/two-factor/verify-totp` (or `verify-otp`,
+  `verify-backup-code`) on an EXISTING session — a password session,
+  an aged one, or a server-minted one — relabels that session
+  `two-factor`, so the same cookie now carries MFA proof. Only the
+  session the verification authenticated is relabelled: the
+  signature-verified request cookie must name the session BA
+  resolved for the request; a request carrying a different session
+  cookie relabels nothing.
+- A failed verification (wrong code, non-200, error) never relabels.
+- Server mints record `server-mint` (`mfa: false`), or
+  `server-step-up` with `createSessionFor(…, { mfaProof: true })`.
+
+The record is a session fact, not recency: a session that passed a
+second factor stays MFA-proven for its lifetime.
 
 Enforce with either or both:
 

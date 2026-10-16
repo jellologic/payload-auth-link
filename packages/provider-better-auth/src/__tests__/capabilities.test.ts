@@ -473,8 +473,14 @@ describe('CAP-6 two-factor + requireMfaForRoles', () => {
       })
     )
     expect(verifiedTotp.status).toBe(200)
-    // TOTP verification rotates the session: use the fresh cookie.
-    const mfaCookie = cookieHeaderFrom(verifiedTotp) || cookie
+    // Enrollment's verify-totp ROTATES the session (BA deletes the
+    // presented one and issues a fresh cookie). No fallback to the old
+    // cookie: a missing rotation must fail here, not silently read the
+    // pre-enrollment session.
+    const mfaCookie = cookieHeaderFrom(verifiedTotp)
+    expect(mfaCookie).toContain('better-auth.session_token=')
+    expect(mfaCookie).not.toBe(cookie)
+    expect((await engine.provider.getSession(new Headers({ cookie })))._unsafeUnwrap()).toBeNull()
 
     // The native flow records the method (#79): the enrollment's
     // verify-totp stamps the session `two-factor`, so the signed-in
