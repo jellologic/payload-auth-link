@@ -1,3 +1,4 @@
+import { Ok, ResultAsync } from 'neverthrow'
 import {
   InvalidConfigError,
   isRecord,
@@ -28,6 +29,7 @@ import { APIError } from 'payload'
 import { isImpersonating } from './access.js'
 import type { WiredOptions } from './options.js'
 import { normalizeUserEmailHook } from './hooks.js'
+import { REQUEST_VERIFY_KEY } from './session.js'
 import { strategyName } from './strategy.js'
 
 type CollectionAccess = NonNullable<CollectionConfig['access']>
@@ -277,6 +279,52 @@ function resetProofOnEmailChange(
       ? String(originalDoc.id)
       : ''
   wired.logger.info('email changed outside the provider resync; linking proof reset', { userId })
+}
+
+/**
+ * `/users/me` for auth-link sessions: Payload's `me` operation decodes
+ * the request's bearer value as a Payload JWT (for `exp`) and echoes it
+ * back as `token`. With the bearer channel admitted, that value is the
+ * PROVIDER's session token: not a JWT (the decode threw, a 500) and not
+ * Payload's to hand out. Answer for auth-link users here; Payload then
+ * skips both. Other strategies fall through untouched.
+ */
+const authLinkMeHook: NonNullable<NonNullable<CollectionConfig['hooks']>['me']>[number] = async ({
+  args,
+  user,
+}) => {
+  const doc: unknown = user
+  const requestUser: unknown = args.req.user
+  // Only when Payload extracted a token for this request (the bearer
+  // channel): cookie sessions carry none, and their `me` stays exactly
+  // Payload's (no `exp`, so the admin never schedules a Payload
+  // refresh-token call for a provider session).
+  const currentToken: unknown = args.currentToken
+  if (
+    doc === null ||
+    typeof currentToken !== 'string' ||
+    currentToken === '' ||
+    !isRecord(requestUser) ||
+    requestUser._strategy !== strategyName
+  ) {
+    return undefined
+  }
+  // `exp` comes from the provider session the strategy verified for this
+  // request (memoized on `req.context`); without it, fall through.
+  const memo: unknown = isRecord(args.req.context)
+    ? args.req.context[REQUEST_VERIFY_KEY]
+    : undefined
+  // The strategy stores the settled Result; endpoint readers store the
+  // pending ResultAsync. Either carries the verified session.
+  const verified: unknown = memo instanceof ResultAsync ? await memo : memo
+  if (
+    !(verified instanceof Ok) ||
+    !isRecord(verified.value) ||
+    !(verified.value.expiresAt instanceof Date)
+  ) {
+    return undefined
+  }
+  return { user: doc, exp: Math.floor(verified.value.expiresAt.getTime() / 1000) }
 }
 
 function linkableField(wired: WiredOptions): CheckboxField {
@@ -1035,6 +1083,7 @@ function createUsersCollection(wired: WiredOptions, strategy: AuthStrategy): Col
       beforeLogin: [accountControlsLoginHook(wired)],
       beforeChange: [linkableMarkerHook(wired)],
       afterChange: [suspendRevokeHook(wired)],
+      me: [authLinkMeHook],
     },
   }
 }
@@ -1208,6 +1257,7 @@ export function applyUsersCollection(
             beforeLogin: [...(existing.hooks?.beforeLogin ?? []), accountControlsLoginHook(wired)],
             beforeChange: [...(existing.hooks?.beforeChange ?? []), linkableMarkerHook(wired)],
             afterChange: [...afterChange, suspendRevokeHook(wired)],
+            me: [authLinkMeHook, ...(existing.hooks?.me ?? [])],
           },
         }
       : collection

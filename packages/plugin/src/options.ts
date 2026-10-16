@@ -226,11 +226,13 @@ export type AuthLinkPluginOptions = {
    * Defaults to `['cookie']`: a live provider session presented any
    * other way (`bearer`, `api-key`, `device`) is refused with a typed
    * `ChannelNotAdmittedError` (401), even though the credential itself
-   * is valid. Admitting a channel here does not make any adapter
-   * present one (both shipped adapters report `cookie` today), and it
-   * does not change CSRF: state-changing endpoints keep requiring
-   * CSRF proof regardless of channel (channel-aware CSRF exemptions
-   * are CAP-13b, when non-cookie channels actually arrive).
+   * is valid. The Better Auth adapter reports `bearer` (BA's `bearer()`
+   * plugin) and `api-key` (`@better-auth/api-key`) besides `cookie`;
+   * the Auth.js adapter reports `cookie` only. Admitting `bearer` also
+   * relaxes CSRF for bearer-presented requests ONLY (CAP-13b,
+   * `passesCsrfForChannel`): an `Authorization: Bearer` header is not
+   * an ambient credential, so the origin check is skipped for it;
+   * cookie-presented requests keep requiring CSRF proof.
    */
   readonly admitChannels?: readonly SessionChannel[] | undefined
   /**

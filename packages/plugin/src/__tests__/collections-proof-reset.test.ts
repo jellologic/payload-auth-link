@@ -7,6 +7,7 @@
  *   and a host's own `access.unlock` is kept.
  */
 import { nullLogger } from '@payload-auth-link/core'
+import { err, ok, okAsync } from 'neverthrow'
 import type { CollectionConfig, PayloadRequest } from 'payload'
 import { describe, expect, it, vi } from 'vitest'
 import { applyUsersCollection } from '../collections.js'
@@ -149,5 +150,61 @@ describe('admin access wrapper', () => {
     const args = { req: request(plain), slug: 'users' }
     expect(await admin?.(args as never)).toBe(true)
     expect(own).toHaveBeenCalledWith(expect.objectContaining({ slug: 'users' }))
+  })
+})
+
+describe('users me hook (bearer-presented auth-link sessions)', () => {
+  const expiresAt = new Date('2031-01-01T00:00:00.000Z')
+  const exp = Math.floor(expiresAt.getTime() / 1000)
+  const session = { id: 's1', userId: 'u1', providerId: 'stub', expiresAt }
+  const doc = { id: 'u1', email: 'a@test.dev' }
+
+  function meHook() {
+    const hook = users().hooks?.me?.[0]
+    if (hook === undefined) {
+      throw new Error('me hook missing')
+    }
+    return hook
+  }
+
+  function run(options: {
+    readonly user?: unknown
+    readonly strategy?: string
+    readonly currentToken?: string
+    readonly memo?: unknown
+  }): Promise<unknown> {
+    const req = {
+      user: { id: 'u1', collection: 'users', _strategy: options.strategy ?? 'auth-link' },
+      context:
+        options.memo === undefined
+          ? {}
+          : { 'payload-auth-link:session-verification': options.memo },
+    }
+    return Promise.resolve(
+      meHook()({
+        args: { req, currentToken: options.currentToken },
+        user: options.user === undefined ? doc : options.user,
+      } as never)
+    )
+  }
+
+  it('answers with the verified session exp, settled or pending, and no token', async () => {
+    expect(await run({ currentToken: 'opaque', memo: ok(session) })).toEqual({ user: doc, exp })
+    expect(await run({ currentToken: 'opaque', memo: okAsync(session) })).toEqual({
+      user: doc,
+      exp,
+    })
+  })
+
+  it("falls through to Payload's own answer otherwise", async () => {
+    // No token extracted (cookie sessions): unchanged.
+    expect(await run({ memo: ok(session) })).toBeUndefined()
+    // Another strategy, a missing document, no memo, or a failed verify.
+    expect(await run({ currentToken: 't', strategy: 'local-jwt', memo: ok(session) })).toBe(
+      undefined
+    )
+    expect(await run({ currentToken: 't', user: null, memo: ok(session) })).toBeUndefined()
+    expect(await run({ currentToken: 't' })).toBeUndefined()
+    expect(await run({ currentToken: 't', memo: err(new Error('nope')) })).toBeUndefined()
   })
 })

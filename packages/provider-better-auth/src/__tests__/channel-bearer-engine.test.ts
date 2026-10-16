@@ -93,19 +93,19 @@ describe('row 2: an admitted bearer channel on real Better Auth', () => {
     expect((await h.accessOf(asBearer(token))).canAccessAdmin).toBe(true)
   })
 
-  // Known bug (found by this walk): with the bearer channel admitted,
-  // `GET /users/me` answers 500. Payload's `me` operation extracts the
-  // `Authorization: Bearer` value as `currentToken` and runs
-  // `decodeJwt` on it; Better Auth's session token is opaque (not a
-  // JWT), so the decode throws after the auth-link strategy already
-  // resolved `req.user`. Every other route works on the same token.
-  it.fails('success: /users/me answers for an admitted bearer session', async () => {
+  // Found by this walk: Payload's `me` operation decoded the provider's
+  // opaque bearer token as a Payload JWT (a 500) and would echo it back
+  // as `token`. The plugin's `me` hook answers for auth-link users.
+  it('success: /users/me answers for an admitted bearer session', async () => {
     const email = 'bearer-me@ba-channel.test'
     const { id } = await h.linkedUser(email)
     const token = await bearerSignIn(email)
     const me = await h.rest('GET', '/users/me', asBearer(token))
     expect(me.status).toBe(200)
     expect(h.userIdOf(me)).toBe(id)
+    // The provider's token is never echoed back as Payload's.
+    expect((me.body as { token?: unknown }).token).toBeUndefined()
+    expect(typeof (me.body as { exp?: unknown }).exp).toBe('number')
   })
 
   it('failure: a tampered (bad-signature) bearer token authenticates nothing', async () => {
