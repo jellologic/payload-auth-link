@@ -1177,6 +1177,13 @@ sensitive deployments; the window is always exactly your `maxAge`.
   (subject + verification timestamp). Yours run first; the claims
   layer wins on its own keys; a `null` jwt return (forced logout)
   is respected.
+- The session endpoint (`GET {basePath}/session`) returns an
+  allowlisted shape on both strategies:
+  `{ user: { name, email, image, id, emailVerified }, expires }` —
+  Auth.js's default shape plus the port's two claims. A `session` callback of yours keeps
+  every key it returns except the adapter session row fields
+  (`sessionToken`, `userId`, `id`), which are always removed; add
+  what the browser needs explicitly rather than relying on them.
 - The port reads sessions through Auth.js's own session action
   (never a hand-rolled JWT decode) and needs a `host` header to
   build the internal request — the plugin endpoints pass live
