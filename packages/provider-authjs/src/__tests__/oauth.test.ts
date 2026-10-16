@@ -10,7 +10,7 @@
 import { createSign, generateKeyPairSync, type KeyObject } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import { sqliteAdapter } from '@payloadcms/db-sqlite'
-import { authLink } from '@payload-auth-link/plugin'
+import { authLink, authLinkServer } from '@payload-auth-link/plugin'
 import type { AuthConfig } from '@auth/core'
 import {
   buildConfig,
@@ -19,7 +19,7 @@ import {
   type Payload,
   type SanitizedConfig,
 } from 'payload'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createAuthJsEngine } from '../engine.js'
 
 const ORIGIN = 'http://oauth-authjs.test'
@@ -372,5 +372,76 @@ describe('OIDC with a local mock IdP (CAP-3, Auth.js)', () => {
       overrideAccess: true,
     })
     expect(stored.docs).toHaveLength(0)
+  })
+})
+
+describe('revoke every session of a user on a real Auth.js engine (row 19, issue #86)', () => {
+  const profile: MockProfile = {
+    sub: 'oidc-revoke-all',
+    email: 'revoke-all@oauth-authjs.test',
+    emailVerified: true,
+    name: 'Revoke All User',
+  }
+
+  async function signedInTwice(): Promise<{ jars: [Jar, Jar]; userId: string }> {
+    nextProfile = profile
+    const first = await runFlow()
+    const second = await runFlow()
+    expect((await pluginSession(first)).status).toBe(200)
+    expect((await pluginSession(second)).status).toBe(200)
+    const stored = await payload.find({
+      collection: 'users',
+      where: { email: { equals: profile.email } },
+      overrideAccess: true,
+    })
+    const user = stored.docs[0]
+    if (user === undefined) {
+      throw new Error('user was not provisioned')
+    }
+    return { jars: [first, second], userId: String(user.id) }
+  }
+
+  it('declares revoke-user-sessions for database sessions', () => {
+    expect(engine.provider.capabilities.has('revoke-user-sessions')).toBe(true)
+  })
+
+  it('authLinkServer.revokeAllForUser deletes every database session row', async () => {
+    const { jars, userId } = await signedInTwice()
+    await authLinkServer(payload).revokeAllForUser(userId)
+    for (const jar of jars) {
+      expect((await pluginSession(jar)).status).toBe(401)
+    }
+  })
+
+  it('fails loudly when Payload reports a partially failed bulk delete', async () => {
+    const { jars, userId } = await signedInTwice()
+    const spy = vi
+      .spyOn(payload, 'delete')
+      .mockResolvedValueOnce({ docs: [], errors: [{ id: 'x', message: 'locked' }] } as never)
+    try {
+      await expect(authLinkServer(payload).revokeAllForUser(userId)).rejects.toThrow(
+        /revokeAllForUser: authjs: Provider authjs failed during revokeUserSessions/
+      )
+    } finally {
+      spy.mockRestore()
+    }
+    // Nothing was actually deleted: the sessions are still live, and
+    // the operator was told so instead of a false success.
+    expect((await pluginSession(jars[0])).status).toBe(200)
+    await authLinkServer(payload).revokeAllForUser(userId)
+    expect((await pluginSession(jars[1])).status).toBe(401)
+  })
+
+  it('fails loudly when rows survive a delete that reported success', async () => {
+    const { userId } = await signedInTwice()
+    const spy = vi.spyOn(payload, 'delete').mockResolvedValueOnce({ docs: [], errors: [] })
+    try {
+      await expect(authLinkServer(payload).revokeAllForUser(userId)).rejects.toThrow(
+        /revokeAllForUser: authjs/
+      )
+    } finally {
+      spy.mockRestore()
+    }
+    await authLinkServer(payload).revokeAllForUser(userId)
   })
 })

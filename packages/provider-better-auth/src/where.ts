@@ -119,8 +119,9 @@ function clauseToWhere(
 
 /**
  * Translate a Better Auth `where` list to Payload `Where`, folding mixed
- * `AND`/`OR` connectors left-associatively. Pattern operators and
- * case-insensitive non-equality have no faithful translation and throw
+ * `AND`/`OR` connectors left-associatively. Pattern operators,
+ * case-insensitive non-equality, and a case-insensitive `eq` combined
+ * with an `OR` connector have no faithful translation and throw
  * {@link UnsupportedOperatorError}.
  *
  * The returned `postFilter` runs over Better Auth-shaped rows (with `id`,
@@ -143,6 +144,17 @@ export function translateWhereClause(
     }
     return { condition: translated.where, connector: clause.connector ?? 'AND' }
   })
+  // The post-filter runs over the WHOLE result (AND-ed), so it is only
+  // exact when every clause is AND-ed: under an OR, rows admitted by
+  // another branch would be dropped for failing the case-insensitive
+  // match (found by the memoryAdapter differential suite). No faithful
+  // translation exists, so fail loud instead of returning too few rows.
+  if (
+    postFilters.length > 0 &&
+    conditions.some((entry, index) => index > 0 && entry.connector === 'OR')
+  ) {
+    throw new UnsupportedOperatorError('eq insensitive combined with an OR connector')
+  }
   let where: Where = {}
   for (const [index, entry] of conditions.entries()) {
     if (index === 0) {
