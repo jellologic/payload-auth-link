@@ -132,4 +132,27 @@ describe('session provenance after-hook', () => {
       }
     }
   })
+
+  it('accepts an unsigned cookie value as the raw token', async () => {
+    const { promise, updateSession } = run('/magic-link/verify', new Response('{}'), {
+      requestCookie: `${COOKIE}=unsigned-token`,
+    })
+    await promise
+    expect(updateSession).toHaveBeenCalledWith('unsigned-token', {
+      authenticationMethod: 'magic-link',
+    })
+  })
+
+  it('records nothing when the request carries no headers at all', async () => {
+    const updateSession = vi.fn()
+    await afterHook().handler({
+      path: '/sign-in/email',
+      context: {
+        returned: { ok: true },
+        authCookies: { sessionToken: { name: COOKIE } },
+        internalAdapter: { updateSession },
+      },
+    })
+    expect(updateSession).not.toHaveBeenCalled()
+  })
 })

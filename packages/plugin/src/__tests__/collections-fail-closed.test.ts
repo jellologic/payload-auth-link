@@ -10,7 +10,8 @@
  *   hatch: with it, linked documents may sign in locally and run the
  *   forgot/reset flow; without it, both are refused (403).
  */
-import type { LoggerPort } from '@payload-auth-link/core'
+import { ProviderError, type LoggerPort } from '@payload-auth-link/core'
+import { errAsync } from 'neverthrow'
 import type { CollectionConfig, PayloadRequest } from 'payload'
 import { describe, expect, it, vi } from 'vitest'
 import {
@@ -238,5 +239,62 @@ describe('allowLocalCredentialsForLinkedDocs (provider-owned credentials)', () =
       })()
     )
     expect(status).toBe(401)
+  })
+})
+
+describe("password issue guard: targets it cannot resolve keep Payload's response", () => {
+  it('no token / unknown token pass through to Payload (enumeration-neutral)', async () => {
+    const users = usersCollection()
+    const find = vi.fn(() => Promise.resolve({ docs: [] }))
+    const req = { payload: { find }, context: {} } as unknown as PayloadRequest
+    for (const data of [{ token: '' }, { token: 'unknown-token' }, {}]) {
+      const status = await statusOfCall(async () => {
+        for (const hook of users.hooks?.beforeOperation ?? []) {
+          await hook({
+            args: { data, req },
+            operation: 'resetPassword',
+            req,
+            collection: users,
+          } as never)
+        }
+      })
+      expect(status).toBeUndefined()
+    }
+    // Only the non-empty token was looked up.
+    expect(find).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('suspension revokes provider sessions best-effort (CAP-7)', () => {
+  it('skips malformed/unknown identity rows and logs (never throws) a failed revoke', async () => {
+    errorSpy.mockClear()
+    const failing = createStubProvider({ id: 'failing' }).provider
+    const revokeUserSessions = vi.fn(() =>
+      errAsync(new ProviderError('failing', 'revokeUserSessions'))
+    )
+    const options = wired({
+      logger: spyLogger(),
+      providers: [{ ...failing, revokeUserSessions }],
+    })
+    const [users] = applyUsersCollection([], options, createAuthLinkStrategy(options))
+    const doc = {
+      id: 'u9',
+      suspendedUntil: new Date(Date.now() + 3_600_000).toISOString(),
+      identities: [
+        'not-a-row',
+        { providerId: 7, providerUserId: 'x' },
+        { providerId: 'not-registered', providerUserId: 'x' },
+        { providerId: 'failing', providerUserId: 'f-1' },
+      ],
+    }
+    for (const hook of users?.hooks?.afterChange ?? []) {
+      await hook({ doc, previousDoc: { id: 'u9', suspendedUntil: null } } as never)
+    }
+    expect(revokeUserSessions).toHaveBeenCalledTimes(1)
+    expect(revokeUserSessions).toHaveBeenCalledWith('f-1')
+    expect(errorSpy).toHaveBeenCalledWith(
+      'suspend: provider session revoke failed',
+      expect.objectContaining({ providerId: 'failing' })
+    )
   })
 })
