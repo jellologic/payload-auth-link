@@ -44,6 +44,13 @@ export type PayloadUserRepositoryDeps = {
   readonly roleValuesReverse?: Readonly<Record<string, string>> | undefined
   /** Canonical role → stored value (issue #56); writes translate through it. */
   readonly roleValues?: Readonly<Record<string, string>> | undefined
+  /**
+   * Keep the document's local credentials (Payload API key) when a
+   * provider identity links to it. Mirrors the plugin's
+   * `allowLocalCredentialsForLinkedDocs`; by default linking clears a
+   * Payload API key enabled before the link.
+   */
+  readonly keepLocalCredentialsOnLink?: boolean | undefined
 }
 
 /**
@@ -93,6 +100,29 @@ function collectionUsesLocalSessions(payload: Payload, slug: string): boolean {
     return false
   }
   return entry.config.auth.useSessions === true
+}
+
+/**
+ * Whether the users collection carries Payload's API-key credential
+ * (`auth.useAPIKey`), and whether its field set still includes the
+ * legacy `enableAPIKey` toggle (Payload v3; v4 keys on `apiKey` alone).
+ */
+function collectionApiKeyShape(
+  payload: Payload,
+  slug: string
+): { readonly useAPIKey: boolean; readonly enableField: boolean } {
+  const collections: unknown = (payload as { collections?: unknown }).collections
+  const entry = isRecord(collections) ? collections[slug] : undefined
+  if (!isRecord(entry) || !isRecord(entry.config) || !isRecord(entry.config.auth)) {
+    return { useAPIKey: false, enableField: false }
+  }
+  const fields: unknown = entry.config.fields
+  return {
+    useAPIKey: entry.config.auth.useAPIKey === true,
+    enableField:
+      Array.isArray(fields) &&
+      fields.some((field: unknown) => isRecord(field) && field.name === 'enableAPIKey'),
+  }
 }
 
 /**
@@ -173,8 +203,8 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
         if (doc.linkable !== true) {
           deps.logger.warn(
             doc._verified === true
-              ? 'email link refused: pre-existing document is verified by Payload but not marked linkable (a role manager must grant the linkable proof)'
-              : 'email link refused: pre-existing document is not marked linkable (was it created outside payload-auth-link?)',
+              ? "email link refused: an existing document holds this email without an ownership proof (Payload's verified flag is not one); resolve the collision: confirm who owns that document, then rename or remove it"
+              : 'email link refused: an existing document holds this email without an ownership proof (created outside payload-auth-link?); resolve the collision: confirm who owns that document, then rename or remove it',
             { email, userId: docId }
           )
           return null
@@ -304,6 +334,14 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
           // next request (hosts without `useSessions` are covered by
           // the provider-owned local-JWT gate in collections.ts).
           const revokeLocalSessions = collectionUsesLocalSessions(deps.payload, collection)
+          // A Payload API key enabled before the link is a local
+          // credential of the same kind: it is cleared in the same
+          // write (`apiKey: null` also drops Payload's lookup index),
+          // unless the host keeps local credentials on linked
+          // documents. The provider-owned gate in collections.ts
+          // refuses any key that survives (e.g. a later re-enable).
+          const apiKeyShape = collectionApiKeyShape(deps.payload, collection)
+          const revokeApiKey = apiKeyShape.useAPIKey && deps.keepLocalCredentialsOnLink !== true
           return ResultAsync.fromPromise<unknown, RepositoryError>(
             deps.payload.update({
               collection,
@@ -311,6 +349,9 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
               data: {
                 [deps.map.identitiesField]: rows,
                 ...(revokeLocalSessions ? { sessions: [] } : {}),
+                ...(revokeApiKey
+                  ? { apiKey: null, ...(apiKeyShape.enableField ? { enableAPIKey: false } : {}) }
+                  : {}),
               },
               overrideAccess: true,
             }),
@@ -318,6 +359,12 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
           ).andThen((doc) => {
             if (revokeLocalSessions) {
               deps.logger.info('local sessions revoked on identity link', {
+                userId,
+                providerId: ref.providerId,
+              })
+            }
+            if (revokeApiKey) {
+              deps.logger.info('local API key cleared on identity link', {
                 userId,
                 providerId: ref.providerId,
               })

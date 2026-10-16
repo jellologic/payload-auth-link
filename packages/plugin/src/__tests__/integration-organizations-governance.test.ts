@@ -509,6 +509,70 @@ describe('organization management is refused while impersonating', () => {
     })
   })
 
+  it('create and invite answer 403 with the onAudit record when the target does not verify', async () => {
+    // An impersonated session whose target cannot be verified (an
+    // unverified, unprovisioned address): the endpoints used to stop
+    // at the session gate with a bare 401 and no denial record.
+    const unverifiedTarget = () =>
+      stub.issue({
+        sessionId: `sess-unverified-imp-${Math.random()}`,
+        providerUserId: 'stub-unverified-target',
+        email: 'unverified-target@gov.test',
+        emailVerified: false,
+        expiresAt: new Date(Date.now() + 3600_000),
+        actorProviderUserId: 'stub-outsider',
+      })
+    const cases = [
+      {
+        endpoint: '/auth-link/organizations',
+        operation: 'create',
+        body: { name: 'Shadow', slug: 'shadow-unverified' },
+      },
+      {
+        endpoint: '/auth-link/organizations/invite',
+        operation: 'invite',
+        body: { organizationId: orgA, email: 'shadow-unverified@gov.test', role: 'member' },
+      },
+      {
+        endpoint: '/auth-link/organizations/accept',
+        operation: 'accept',
+        body: { invitationId: '1' },
+      },
+    ]
+    for (const { endpoint, operation, body } of cases) {
+      const before = audit.length
+      const refused = await call('POST', endpoint, { cookie: unverifiedTarget(), body })
+      expect(refused.status).toBe(403)
+      expect((refused.body as { error: string }).error).toContain('while impersonating')
+      const event = audit.slice(before).find((entry) => entry.fields.endpoint === endpoint)
+      expect(event?.message).toBe('impersonated operation')
+      expect(event?.fields).toMatchObject({
+        operation,
+        denied: true,
+        actorKind: 'provider-only',
+        actorProviderUserId: 'stub-outsider',
+      })
+    }
+    const shadow = await payload.find({
+      collection: 'organizations',
+      where: { slug: { equals: 'shadow-unverified' } },
+      overrideAccess: true,
+    })
+    expect(shadow.totalDocs).toBe(0)
+    // The same session without an actor stays a plain 401.
+    const plain = await call('POST', '/auth-link/organizations', {
+      cookie: stub.issue({
+        sessionId: `sess-unverified-plain-${Math.random()}`,
+        providerUserId: 'stub-unverified-target',
+        email: 'unverified-target@gov.test',
+        emailVerified: false,
+        expiresAt: new Date(Date.now() + 3600_000),
+      }),
+      body: { name: 'Shadow', slug: 'shadow-unverified' },
+    })
+    expect(plain.status).toBe(401)
+  })
+
   it('accept is refused and audited', async () => {
     const pending = await invite('owner', orgA, people.invitee, 'member')
     expect(pending.status).toBe(201)

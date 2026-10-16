@@ -106,8 +106,12 @@ provider's own resync is unaffected), and self-service local
 passwords on plugin-managed documents are stripped: one document
 never holds two independently owned credentials. Documents created
 outside the plugin — pre-upgrade rows, imports that skipped the
-marker — are never JIT-linked until a role manager marks them (the
-migration runbook sets both fields). Unproven documents
+marker — are never JIT-linked until the collision is resolved: the
+conflicting document renamed or removed, or the proof granted only
+after a fresh verification of its CURRENT address or from an
+operator-reviewed list (never from `_verified`, which may predate an
+email change; see [upgrading](upgrading.md)). The migration runbook
+sets both fields from provider-verified emails. Unproven documents
 also cannot be created by end users: collection-level `create` on the
 users collection defaults to role-manager-only, and collection-level
 `read` defaults to self + role managers (no user enumeration), unless

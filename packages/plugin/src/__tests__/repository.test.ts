@@ -254,7 +254,7 @@ describe('findByEmail linkability gate (GHSA-98hq-hh6v-2p2r)', () => {
       logger
     )
     expect((await users.findByEmail(email('linked@test.dev')))._unsafeUnwrap()).toBeNull()
-    expect(warn.some((message) => message.includes('not marked linkable'))).toBe(true)
+    expect(warn.some((message) => message.includes('created outside payload-auth-link'))).toBe(true)
   })
 
   it('refuses when the linkable proof does not match the document email', async () => {
@@ -349,7 +349,7 @@ describe('findByEmail linkability gate (GHSA-98hq-hh6v-2p2r)', () => {
       logger
     )
     expect((await users.findByEmail(email('linked@test.dev')))._unsafeUnwrap()).toBeNull()
-    expect(warnings.some((message) => message.includes('verified by Payload but not marked'))).toBe(
+    expect(warnings.some((message) => message.includes("Payload's verified flag is not one"))).toBe(
       true
     )
   })

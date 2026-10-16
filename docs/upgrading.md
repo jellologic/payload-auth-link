@@ -131,27 +131,44 @@ The changes are behavioural; read each before you bump.
    field access lets any signed-in user write it), so a verified
    document re-pointed at someone else's address used to inherit
    their provider identity. **Operator step:** if you relied on
-   `_verified` alone for pre-existing host accounts, grant the proof
-   to the ones you trust. Audit first: before this release a
-   self-service email change kept `_verified`, so only grant it where
-   the address was verified AFTER its last change.
+   `_verified` alone for pre-existing host accounts, do NOT backfill
+   the proof from `_verified`. Before this release a self-service
+   email change kept `_verified`, and the proof reset only applies to
+   email changes made after the upgrade, so a document verified
+   before the upgrade may carry `_verified: true` for an address it
+   never proved — granting it the proof would link that address's
+   owner's next sign-in to a document they may not own. Grant `linkable` +
+   `linkableEmail` only from one of:
+
+   - **a fresh verification of the CURRENT email**, sent to that
+     address after the upgrade (your app's own confirmation flow, or
+     a reset of `_verified` followed by a new verification mail),
+     granted in that flow's handler and only while the document
+     email still equals the confirmed address; or
+   - **an operator-reviewed, explicit list** of documents and the
+     address each was confirmed to own, re-checked at write time:
 
    ```ts
-   const { docs } = await payload.find({
-     collection: 'users',
-     where: { and: [{ _verified: { equals: true } }, { linkable: { not_equals: true } }] },
-     pagination: false,
-     overrideAccess: true,
-   })
-   for (const doc of docs /* filtered by your audit */) {
+   // Each entry was reviewed by an operator: the document AND the
+   // address confirmed to belong to its owner today. Never build this
+   // list from `_verified`.
+   const reviewed: { id: string | number; email: string }[] = [/* … */]
+   for (const entry of reviewed) {
+     const doc = await payload.findByID({ collection: 'users', id: entry.id, overrideAccess: true })
+     if (doc.email.toLowerCase() !== entry.email.toLowerCase()) {
+       continue // the email changed since the review: re-review it
+     }
      await payload.update({
        collection: 'users',
-       id: doc.id,
+       id: entry.id,
        data: { linkable: true, linkableEmail: doc.email },
        overrideAccess: true,
      })
    }
    ```
+
+   Anything else stays unproven: its address owner's sign-in is
+   refused (logged) until the collision is resolved.
 
    The migration importer (`@payload-auth-link/migrate`) already
    grants `linkable` + `linkableEmail` from verified emails and is
@@ -159,7 +176,10 @@ The changes are behavioural; read each before you bump.
    the existing document now logs
    `provisioning refused: the email is held by an existing document
 that is not proven to own it` and answers a typed 401 (it used to
-   surface as a storage error).
+   surface as a storage error). Resolve such a collision by
+   confirming who owns the existing document — rename or remove it
+   when it is not the address owner's — never by granting the proof
+   without a fresh verification of its current address.
 
 2. **A self-service email change resets the proof.** Changing a
    document's email in any write that is neither the plugin's
@@ -514,11 +534,14 @@ published advisory for the attack they close):
   provider identity is attached by email only to documents carrying
   the plugin's `linkable` marker (set automatically on
   plugin-managed and role-manager creates; role managers can toggle
-  it) or Payload's own verified flag. Documents created outside the
-  plugin start unproven: their returning users are refused (401, with
-  a logged reason) until a role manager marks them linkable or the
-  document is deleted. **Runbook note:** the payload-auth migration
-  script marks imported users `linkable: true`.
+  it) or, in that release, Payload's own verified flag (no longer
+  proof since plugin 0.11.0). Documents created outside the plugin
+  start unproven: their returning users are refused (401, with a
+  logged reason) until the collision is resolved — the document
+  renamed or removed, or the proof granted after a fresh
+  verification of its current address (see "`_verified` is not
+  linking proof" above). **Runbook note:** the payload-auth
+  migration script marks imported users `linkable: true`.
 - **Collection-level `create` defaults to role-manager-only** and
   **`read` to self + role managers** (no user enumeration) — both
   only where the host hasn't declared that access function itself.
