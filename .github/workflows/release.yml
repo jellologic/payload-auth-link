@@ -1,43 +1,131 @@
-# Release via changesets: pushes to main open a "Version Packages" PR;
-# merging it publishes to npm through `bun run release`
-# (scripts/publish.mjs) with provenance attestations via trusted
-# publishing (OIDC) — no long-lived token anywhere.
+# Release via changesets, gated on CI (issue #85): this workflow runs
+# only after the `ci` workflow COMPLETES SUCCESSFULLY for a push to
+# main, and only while that commit is still main's head — a commit CI
+# did not pass can never be versioned or published.
+#
+#   gate     → CI green, push to main, SHA still main's head; decides
+#              between "version" (changesets pending) and "publish".
+#   version  → opens/updates the "Version Packages" PR (no npm access).
+#   publish  → `bun run release` (scripts/publish.mjs) with provenance
+#              via npm trusted publishing (OIDC) — no long-lived token
+#              anywhere. Runs in the `npm-publish` environment.
+#
+# npm's trusted-publisher entries name THIS file (release.yml): keep the
+# publish step here.
 name: release
 
 on:
-  push:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
     branches: [main]
 
 concurrency:
   group: release
   cancel-in-progress: false
 
-permissions:
-  contents: write
-  pull-requests: write
-  id-token: write
+permissions: {}
 
 jobs:
-  release:
+  gate:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      current: ${{ steps.head.outputs.current }}
+      pending: ${{ steps.changesets.outputs.pending }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      # changesets/action resets to GITHUB_SHA (main's head when this
+      # run was queued). Proceed only when that, the CI-tested SHA, and
+      # main's head right now are one commit; otherwise main moved and
+      # the newer commit's own CI run will release it.
+      - id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+          echo "tested=$TESTED_SHA queued=$GITHUB_SHA main=$main_sha"
+          if [ "$TESTED_SHA" = "$GITHUB_SHA" ] && [ "$TESTED_SHA" = "$main_sha" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::main moved past the CI-tested commit; skipping (the newer run releases)."
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.head.outputs.current == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - id: changesets
+        if: steps.head.outputs.current == 'true'
+        run: |
+          if find .changeset -maxdepth 1 -name '*.md' ! -name 'README.md' | grep -q .; then
+            echo "pending=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "pending=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  version:
+    needs: gate
+    if: needs.gate.outputs.current == 'true' && needs.gate.outputs.pending == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.2
-      - uses: actions/setup-node@v4
+      # Versioning needs only the changesets CLI: no install scripts.
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+        with:
+          version: bun run version-packages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish:
+    needs: gate
+    if: needs.gate.outputs.current == 'true' && needs.gate.outputs.pending == 'false'
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      # Push release tags + create GitHub releases.
+      contents: write
+      # npm trusted publishing (OIDC) + provenance.
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
       # Trusted publishing (OIDC) needs npm >= 11.5.1; Node 22 ships
       # npm 10, which cannot exchange the OIDC token and sends an
-      # unauthenticated PUT (npm answers 404).
-      - run: npm install -g npm@^11.5.1 && npm --version
-      - run: bun install --frozen-lockfile
+      # unauthenticated PUT (npm answers 404). Exact pin, no scripts.
+      - run: npm install -g --ignore-scripts npm@11.21.1 && npm --version
+      # The build is `tsc -b` and packing is `bun pm pack`: no
+      # dependency lifecycle script is needed, so none may run here.
+      - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run build
-      - uses: changesets/action@v1
+      - uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
         with:
-          version: bun run version-packages
           publish: bun run release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

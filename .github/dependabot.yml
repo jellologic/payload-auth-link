@@ -2,6 +2,9 @@
 # (PLAN-UPGRADE-RESILIENCE Phase 1 / B5): never a silent float inside
 # a wide range. The compat workflow owns {floor, latest}; these PRs
 # keep the installed versions (the "latest" cells) moving.
+#
+# Validated by `bun run ci:lint` (strict parse: a duplicate key here
+# once silently dropped half the ignore rules).
 version: 2
 updates:
   - package-ecosystem: bun
@@ -9,10 +12,10 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
-    # Toolchain majors are curated migrations (typescript-eslint does
-    # not support TS 7 yet; vitest 5, mongodb 7, size-limit 14 and
-    # @types/node 26 each need their own pass), not routine bumps.
     ignore:
+      # Toolchain majors are curated migrations (typescript-eslint does
+      # not support TS 7 yet; vitest 5, mongodb 7, size-limit 14 and
+      # @types/node 26 each need their own pass), not routine bumps.
       - dependency-name: effect
         versions: ['>=4.0.0-0']
       - dependency-name: typescript
@@ -29,11 +32,10 @@ updates:
         versions: ['>=12.0.0-0']
       - dependency-name: '@size-limit/*'
         versions: ['>=12.0.0-0']
-    # Payload v4 prereleases (internal builds, canaries, betas) move
-    # only via the manual exact pin + compat validation (the version
-    # assertion refuses them; see docs/compatibility.md) — never as a
-    # routine float.
-    ignore:
+      # Payload v4 prereleases (internal builds, canaries, betas) move
+      # only via the manual exact pin + compat validation (the version
+      # assertion refuses them; see docs/compatibility.md) — never as a
+      # routine float.
       - dependency-name: payload
         versions: ['>=4.0.0-0']
       - dependency-name: '@payloadcms/*'
@@ -61,3 +63,15 @@ updates:
         # Effect 4 is deliberate work, not a routine bump.
         exclude-patterns:
           - effect
+
+  # Actions are pinned by commit SHA (scripts/check-ci-config.mjs);
+  # Dependabot bumps the SHA and its version comment together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns:
+          - '*'
