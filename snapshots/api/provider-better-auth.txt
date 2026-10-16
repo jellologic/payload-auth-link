@@ -174,11 +174,20 @@ import type { BetterAuthOptions } from 'better-auth';
 export type BetterAuthCookieOptions = Pick<BetterAuthOptions, 'advanced' | 'baseURL' | 'session'>;
 /**
  * Cookies to expire on logout that do not indicate a live session (the
- * port's `logoutCookieNames`): today only the admin plugin's
- * `admin_session`. Expired unconditionally — when the admin plugin is
- * absent the cookie simply never exists and expiring it is a no-op,
- * while leaving a present one behind would keep the impersonating
- * operator's resumable session token in the browser after logout.
+ * port's `logoutCookieNames`):
+ *
+ * - the admin plugin's `admin_session` (the impersonating operator's
+ *   resumable session token);
+ * - `dont_remember` (sign-in without "remember me");
+ * - the cookie-cache `session_data`, even when the cache is disabled
+ *   now — it may have been enabled when the cookie was set;
+ * - the `__Secure-` / plain counterpart of every session and logout
+ *   name, so a deployment that switched between http and https (or
+ *   toggled `useSecureCookies`) leaves no residue under the other
+ *   name.
+ *
+ * Expired unconditionally — a cookie that was never set makes its
+ * clearing write a no-op.
  */
 export declare function getBetterAuthLogoutCookieNames(options: BetterAuthCookieOptions, environment?: SecureCookieEnvironment): readonly string[];
 /**

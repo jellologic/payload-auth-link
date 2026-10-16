@@ -175,9 +175,26 @@ import React from 'react';
 export type ProviderLoginViewProps = {
     /**
      * The app-relative auth base for provider sign-in requests
-     * (e.g. `/api/auth`). Set by the plugin from its own wiring.
+     * (e.g. `/api/auth`). Set by the plugin from its own wiring
+     * (`admin.authBase`).
      */
     readonly authBase: string;
+    /**
+     * Payload's local login endpoint for the break-glass form —
+     * `${routes.api}/${usersSlug}/login`. Set by the plugin from the
+     * Payload config; defaults to `/api/users/login`.
+     */
+    readonly loginEndpoint?: string | undefined;
+    /**
+     * Where a successful sign-in lands — Payload's `routes.admin`. Set
+     * by the plugin; defaults to `/admin`.
+     */
+    readonly adminRoute?: string | undefined;
+    /**
+     * The app's own sign-in page, for social-only accounts. Set by the
+     * plugin (`admin.signInPath`); defaults to `/sign-in`.
+     */
+    readonly signInPath?: string | undefined;
 };
 declare const ProviderLoginView: React.FC<ProviderLoginViewProps>;
 export default ProviderLoginView;
@@ -251,8 +268,25 @@ export type BetterAuthCompatShim = {
 export declare function createBetterAuthCompatShim(payload: Payload): BetterAuthCompatShim;
 
 // ===== endpoints.d.ts =====
+import { type CookieOptions } from '@payload-auth-link/core';
 import type { Endpoint } from 'payload';
 import type { WiredOptions } from './options.js';
+/**
+ * Every cookie name a logout must expire, with its clearing
+ * attributes: each registered provider's session cookies, its
+ * non-session logout cookies (BA `admin_session`, `dont_remember`,
+ * cookie-cache `session_data`, …), the per-request multi-session
+ * cookies it enumerates, and the configured legacy names.
+ *
+ * The clearing write must carry the cookie's live attributes: a `Secure`
+ * cookie (in particular any `__Secure-` name) survives a clearing write
+ * without `Secure`, and a custom `Domain`/`Path` needs matching or the
+ * overwrite misses. Providers report theirs via
+ * `sessionCookieClearOptions`; names they do not know (legacy names,
+ * providers that predate that hook) fall back to prefix-derived
+ * attributes. Exported for the endpoint suite.
+ */
+export declare function logoutCookieClears(wired: WiredOptions, headers?: Headers): ReadonlyMap<string, CookieOptions>;
 /**
  * Plugin endpoints. Custom endpoints are unauthenticated by default, so each
  * handler checks the session explicitly; state-changing handlers additionally
@@ -471,6 +505,18 @@ export type AuthLinkPluginOptions = {
      */
     readonly admin?: {
         readonly loginView?: 'provider' | undefined;
+        /**
+         * The app's sign-in page the provider login view links
+         * social-only accounts to. Defaults to `/sign-in`.
+         */
+        readonly signInPath?: string | undefined;
+        /**
+         * App-relative mount of the cookie-transport provider's
+         * routes (Better Auth's `basePath` as served by the app) —
+         * the provider form posts to `${authBase}/sign-in/email`.
+         * Defaults to `/api/auth`.
+         */
+        readonly authBase?: string | undefined;
     } | undefined;
     /**
      * Coexistence window (issue #51/#72): the same window you pass to
@@ -671,6 +717,10 @@ export type WiredOptions = {
     readonly allowServerSessions: 'dev-only' | true | false;
     /** Whether the provider-backed admin login view is requested (#55). */
     readonly adminProviderLoginView: boolean;
+    /** The provider login view's app sign-in link (`admin.signInPath`). */
+    readonly adminSignInPath: string;
+    /** The provider login view's provider route base (`admin.authBase`). */
+    readonly adminAuthBase: string;
     /** Validated coexistence window (issue #51), or `null`. */
     readonly legacySessions: {
         readonly until: string;

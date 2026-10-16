@@ -436,14 +436,30 @@ export type OriginResolutionInput = {
      * development passes `true`.
      */
     readonly allowHostFallback: boolean;
+    /**
+     * Honor `X-Forwarded-Host` / `X-Forwarded-Proto` in the host
+     * fallback. Default `false`: only the direct `Host` header is read
+     * and the scheme is `http`. Set it only behind a proxy that
+     * overwrites those headers — otherwise any client sets them.
+     */
+    readonly trustProxy?: boolean | undefined;
+    /**
+     * Hostnames (no port; IPv6 in brackets, e.g. `[::1]`) the host
+     * fallback may resolve to. When set, any other host throws
+     * `InvalidConfigError`. Omitted: any syntactically valid host.
+     */
+    readonly allowedHosts?: readonly string[] | undefined;
 };
 /**
  * Single origin resolver behind every server-side session read
  * (`@payload-auth-link/web` verifier, Auth.js engine). The configured
  * base URL wins; without it, the request host is used only when
- * `allowHostFallback` is set. Throws `InvalidConfigError` when no
- * origin can be resolved — a wiring bug, fail loud rather than
- * fetching a nonsense URL.
+ * `allowHostFallback` is set. The fallback reads `X-Forwarded-*` only
+ * under `trustProxy`, accepts only the `http`/`https` schemes, rejects
+ * hosts that are not a bare `host[:port]`, and enforces `allowedHosts`
+ * when given. Throws `InvalidConfigError` when no acceptable origin can
+ * be resolved — fail loud rather than fetching a nonsense (or
+ * attacker-chosen) URL.
  */
 export declare function resolveOrigin(input: OriginResolutionInput): string;
 /**
@@ -1272,10 +1288,10 @@ export interface IdPort {
 export type SafeRedirectOptions = {
     /**
      * Sign-in page path. A destination equal to it (with or without a
-     * query) falls back: landing a fresh login on the sign-in page loops.
-     * Defaults to `/sign-in`, matching `decideAuthRedirect`. `null`
-     * disables the rule for destinations where sign-in is legitimate
-     * (post-sign-out navigation).
+     * query, or a trailing slash) falls back: landing a fresh login on
+     * the sign-in page loops. Defaults to `/sign-in`, matching
+     * `decideAuthRedirect`. `null` disables the rule for destinations
+     * where sign-in is legitimate (post-sign-out navigation).
      */
     readonly signInPath?: string | null | undefined;
     /**
@@ -1286,13 +1302,17 @@ export type SafeRedirectOptions = {
     readonly apiPrefix?: string | undefined;
 };
 /**
- * Narrow a post-login destination to a safe in-app page path. Returns
- * `value` only when it is a relative path (single leading slash, no
- * scheme, no backslashes, no control characters) that is neither the
- * sign-in page nor under the API prefix; anything else yields
- * `fallback`. Absolute URLs, protocol-relative URLs (`//evil`), and
- * values with surrounding whitespace (header/parsing differentials) all
- * fall back.
+ * Narrow a post-login destination to a safe in-app page path. Accepts
+ * only a relative path (single leading slash, no scheme, no
+ * backslashes, no control characters). The path is then normalised as
+ * a browser would resolve it — dot segments (`.`/`..`, including
+ * percent-encoded `%2e`) collapse — and the result must still be a
+ * same-origin path that is neither the sign-in page nor under the API
+ * prefix, also after percent-decoding (routers decode before
+ * matching). Returns the NORMALISED path with its query and hash;
+ * anything else yields `fallback`. Absolute URLs, protocol-relative
+ * URLs (`//evil`), and values with surrounding whitespace
+ * (header/parsing differentials) all fall back.
  */
 export declare function safeRedirectPath(value: string | null | undefined, fallback?: string, options?: SafeRedirectOptions): string;
 

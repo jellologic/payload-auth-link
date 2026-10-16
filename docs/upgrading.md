@@ -34,6 +34,45 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
+## Next minor (session verifier, logout, and redirect hardening)
+
+No schema change. Behavior changes that may need attention:
+
+1. **`createSessionVerifier` requires `baseUrl` unless
+   `NODE_ENV === 'development'`.** It used to fall back to the
+   request's host headers on every runtime that was not `production`
+   (test, staging, preview, unset). Those now throw
+   `InvalidConfigError` at construction — pass `baseUrl` (or an
+   absolute `sessionEndpoint`). In development the fallback ignores
+   `X-Forwarded-Host`/`-Proto` unless you set `trustProxy: true`,
+   only accepts `localhost`, `127.0.0.1`, and `[::1]` (extend with
+   `allowedDevelopmentHosts`), and protocol-relative `sessionEndpoint`
+   values throw. The verifier's fetch now times out after
+   `timeoutMs` (default 5000) and no longer follows redirects; both
+   fail closed. `resolveSessionUrl`'s host fallback now defaults to
+   off, and `resolveOrigin` (core) honors forwarded headers only with
+   `trustProxy`.
+2. **`safeRedirectPath` returns the normalised path.** Dot segments
+   resolve before the API-prefix and sign-in checks, so
+   `/x/../api/...` and `/./sign-in` fall back, and a benign
+   `/x/../account` comes back as `/account`.
+3. **Logout expires more cookies.** `DELETE /api/auth-link/session`
+   also expires Better Auth's `dont_remember` and cookie-cache
+   `session_data` cookies, the `__Secure-`/plain counterpart of every
+   name, and the configured `legacySessions` names. A logout that
+   presents no session cookie (and no `Authorization`/`x-api-key`
+   header) answers without querying any provider — still the
+   idempotent `401` with the clearing cookies.
+4. **Provider login view paths follow your config.** The break-glass
+   form posts to `${routes.api}/${usersCollection}/login` and lands on
+   `routes.admin`; set `admin.signInPath`/`admin.authBase` when your
+   sign-in page or Better Auth mount differs from `/sign-in` and
+   `/api/auth`. The import map needs no regeneration (same
+   component, new props).
+5. **React provider sequencing.** Only the newest session read writes
+   state; `signOut` aborts in-flight reads. `fetchSession` accepts an
+   optional `AbortSignal`.
+
 ## 0.10.x → 0.11.0 (recorded sign-in methods; opaque session handles)
 
 Two changes to the server-session surface, both driven by the
