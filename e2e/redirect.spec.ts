@@ -16,11 +16,21 @@ function uniqueEmail(): string {
   return `e2e-redirect-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.com`
 }
 
+// In-page fetch, not `page.request`: the browser itself must apply the
+// logout's expiring Set-Cookie headers. WebKit's API request context
+// can leave the revoked session cookie behind, and Better Auth's
+// `anonymous()` sign-in hook then clears the NEW session when it sees
+// the stale one.
 async function signOutQuietly(page: Page): Promise<void> {
-  const response = await page.request.delete('/api/auth-link/session', {
-    headers: { 'x-auth-link-csrf': '1' },
+  const status = await page.evaluate(async () => {
+    const response = await fetch('/api/auth-link/session', {
+      method: 'DELETE',
+      headers: { 'x-auth-link-csrf': '1' },
+      credentials: 'same-origin',
+    })
+    return response.status
   })
-  expect([200, 401]).toContain(response.status())
+  expect([200, 401]).toContain(status)
 }
 
 async function signInWithRedirect(page: Page, email: string, redirect: string): Promise<void> {

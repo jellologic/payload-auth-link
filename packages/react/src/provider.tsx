@@ -136,23 +136,25 @@ export function AuthLinkProvider({
     return aborted
   }, [])
 
-  const load = useCallback(async (): Promise<void> => {
-    generation.current += 1
-    const ticket = generation.current
-    const controller = new AbortController()
-    inFlight.current.add(controller)
-    try {
-      const current = await fetchSession(sessionEndpoint, fetchImpl, controller.signal)
-      if (ticket !== generation.current || controller.signal.aborted) {
-        return
+  const load = useCallback(
+    async (controller: AbortController = new AbortController()): Promise<void> => {
+      generation.current += 1
+      const ticket = generation.current
+      inFlight.current.add(controller)
+      try {
+        const current = await fetchSession(sessionEndpoint, fetchImpl, controller.signal)
+        if (ticket !== generation.current || controller.signal.aborted) {
+          return
+        }
+        setUser(current.user)
+        setGuest(current.guest)
+        setStatus(statusFor(current.user))
+      } finally {
+        inFlight.current.delete(controller)
       }
-      setUser(current.user)
-      setGuest(current.guest)
-      setStatus(statusFor(current.user))
-    } finally {
-      inFlight.current.delete(controller)
-    }
-  }, [sessionEndpoint, fetchImpl])
+    },
+    [sessionEndpoint, fetchImpl]
+  )
 
   const refresh = useCallback(() => load(), [load])
 
@@ -182,12 +184,15 @@ export function AuthLinkProvider({
     }
     // Mount-only initial load (the async boundary keeps this out of the
     // sync-setState-in-effect rule); `refresh` stays the public re-read.
-    void load()
+    const mount = new AbortController()
+    void load(mount)
+    // Cancel only this mount read: the effect re-runs whenever the
+    // `initialUser` prop changes, and an explicit `refresh()` (the
+    // post-sign-in read) in flight at that moment must still land.
     return () => {
-      generation.current += 1
-      abortInFlight()
+      mount.abort()
     }
-  }, [initialUser, load, abortInFlight])
+  }, [initialUser, load])
 
   const value = useMemo<AuthLinkContextValue>(
     () => ({ user, guest, status, refresh, signOut }),
