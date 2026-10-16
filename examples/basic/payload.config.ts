@@ -13,6 +13,16 @@ const filename = fileURLToPath(import.meta.url)
 const dirname = path.dirname(filename)
 const baseUrl = process.env.EXAMPLE_BASE_URL ?? 'http://localhost:3100'
 
+// MFA-policy variant (`E2E_MFA_POLICY=1`, e2e/playwright.mfa.config.ts):
+// `policies.requireMfaForRoles` throws at wiring unless EVERY provider
+// declares the `mfa` capability, and Auth.js cannot (decision D4). The
+// variant therefore registers Better Auth alone and gates a dedicated
+// `auditor` role — never `admin`: the seeded admin signs in with local
+// Payload credentials (no MFA proof), so gating `admin` would withhold
+// the very role that grants roles. It runs on its own SQLite file so
+// the extra role never reaches the default example database.
+const mfaPolicy = process.env.E2E_MFA_POLICY === '1'
+
 // Parity runs point PAYLOAD_DB elsewhere; default local dev stays on
 // the SQLite file. Postgres uses `push` (no migration files in the
 // example) and a per-run database name so every e2e run starts from a
@@ -43,7 +53,7 @@ function exampleDb() {
   }
   return sqliteAdapter({
     client: {
-      url: `file:${path.resolve(dirname, 'payload.db')}`,
+      url: `file:${path.resolve(dirname, mfaPolicy ? 'payload-mfa.db' : 'payload.db')}`,
     },
   })
 }
@@ -70,7 +80,7 @@ export default buildConfig({
   plugins: [
     authLink({
       baseUrl,
-      roles: ['admin', 'user'],
+      roles: mfaPolicy ? ['admin', 'user', 'auditor'] : ['admin', 'user'],
       defaultRole: 'user',
       // #55/#72: /admin/login through the provider (plus the
       // break-glass local form for unlinked operators).
@@ -80,7 +90,8 @@ export default buildConfig({
       admitChannels: ['cookie', 'api-key'],
       // Both providers live side by side: Better Auth at /api/auth,
       // Auth.js at /api/authjs. The session service asks each in turn.
-      providers: [betterAuthProvider, authJsProvider],
+      // The MFA-policy variant drops Auth.js (see `mfaPolicy` above).
+      providers: mfaPolicy ? [betterAuthProvider] : [betterAuthProvider, authJsProvider],
       // CAP-11: Payload-owned organizations + memberships, with the
       // list/create/invite/accept endpoints under
       // /api/auth-link/organizations*.
@@ -88,6 +99,9 @@ export default buildConfig({
       // Asserts the engine's coexistence window (issue #51/#72): wiring
       // throws if the two ever disagree.
       legacySessions: legacySessionWindow,
+      // CAP-6: sessions without MFA proof are treated as missing
+      // `auditor` (variant only; see `mfaPolicy` above).
+      ...(mfaPolicy ? { policies: { requireMfaForRoles: ['auditor'] } } : {}),
     }),
   ],
   onInit: async (payload) => {

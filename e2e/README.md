@@ -29,6 +29,20 @@ House rules for specs:
 | Impersonation (CAP-8)              | `impersonation.spec.ts`   | Better Auth `admin()` + its declared fields; dev-only `/api/dev-provider-admin` |
 | Legacy payload-auth sessions (#51) | `legacy-sessions.spec.ts` | `legacySessions` on the engine and `authLink` (same window object)              |
 | MFA step-up (route level)          | `security.spec.ts`        | Better Auth `twoFactor()`, `requireRoles({ requireMfa: true })`                 |
+| MFA role policy (CAP-6)            | `mfa-policy.e2e.ts`       | `E2E_MFA_POLICY=1` variant: `policies.requireMfaForRoles: ['auditor']`          |
+
+`policies.requireMfaForRoles` gets its own config,
+`playwright.mfa.config.ts` (`bun run e2e:mfa`, :3104, its own
+`payload-mfa.db`). Wiring requires every registered provider to
+declare the `mfa` capability, and both examples also register
+Auth.js, which cannot (decision D4) — the plugin throws
+`UnsupportedCapabilityError` at config time. With `E2E_MFA_POLICY=1`
+`examples/basic` registers Better Auth alone and gates a dedicated
+`auditor` role (never `admin`: the seeded admin is a local-credential
+session with no MFA proof, and it grants the role). The spec is named
+`*.e2e.ts` so the matrix configs (`*.spec.ts`) never pick it up. Better
+Auth's `twoFactor()` caps `/two-factor/*` at 3 requests per 10s per IP,
+so the spec waits out 429s rather than asserting through them.
 
 Known gap: on Payload v4 with a numeric-id adapter, a create by a
 provider-session user fails `createdBy` validation (the plugin
@@ -39,12 +53,6 @@ its organizations as the seeded admin there; see the header of
 
 ## Not covered here, and why
 
-- **`policies.requireMfaForRoles`.** Wiring requires every registered
-  provider to declare the `mfa` capability, and both examples also
-  register Auth.js, which cannot (decision D4) — the plugin throws
-  `UnsupportedCapabilityError` at config time by design. Covered by the
-  plugin's integration credential-path matrix; covering it here needs
-  a Better-Auth-only example variant on its own server.
 - **`roleValues` / `projectRolesAs`.** A non-identity mapping changes
   the stored role values of the shared example database (and its
   Postgres enum), which every other spec and every local dev database

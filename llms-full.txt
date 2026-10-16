@@ -1979,6 +1979,22 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
+## plugin 0.11.x patches (after the hardening release)
+
+**Upgrade impact:** no schema change; nothing to run on any adapter.
+
+- `req.user.id` for provider sessions now has the database's own id type
+  (a number on SQLite/Postgres). Code comparing it with `===` against a
+  string id should compare `String(id)`; Payload's own relationship
+  writes (v4's `createdBy`/`updatedBy`) now accept it.
+- The users collection gains a `me` hook: for auth-link sessions
+  presented as `Authorization: Bearer` (`admitChannels` with
+  `'bearer'`), `GET /api/users/me` answers with the verified session's
+  `exp` and never returns the provider token as `token` (it used to
+  500). Cookie sessions and other strategies are unchanged.
+- `authLinkServer(payload).revokeSession` with an Auth.js database
+  session engine now throws for a handle that matches no session.
+
 ## plugin 0.11.0 / provider-better-auth 0.8.0 / web 0.3.0 / migrate 0.5.0 (hardening release)
 
 One minor release across every package (core 0.7.0, next 0.4.0,

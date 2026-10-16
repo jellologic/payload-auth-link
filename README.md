@@ -84,6 +84,7 @@ bun run dev:example  # example site on :3100
 bun run e2e          # Playwright: SQLite on :3101
 bun run e2e:postgres # Playwright: Postgres on :3102
 bun run e2e:mongo    # Playwright: mongo memory replset on :3103
+bun run e2e:mfa      # Playwright: MFA-policy variant (SQLite) on :3104
 bun run docs:api     # typedoc HTML to docs/api/
 bun run docs:llms    # regenerate llms.txt + llms-full.txt
 ```
