@@ -1,7 +1,7 @@
-import { createHmac } from 'node:crypto'
 import { expect, test, type Page } from '@playwright/test'
 import { adminContext } from './admin-session.js'
 import { gotoOwn, toggleToSignUp } from './helpers.js'
+import { totp } from './totp.js'
 
 /**
  * Account security (CAP-5/6): TOTP enrollment flips the session's
@@ -31,29 +31,6 @@ async function signOut(page: Page): Promise<void> {
     headers: { 'x-auth-link-csrf': '1' },
   })
   await page.context().clearCookies()
-}
-
-/** RFC 6238 TOTP (SHA-1, 30s step, 6 digits) for a base32 secret. */
-function totp(base32Secret: string): string {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
-  let bits = ''
-  for (const char of base32Secret.replaceAll('=', '').toUpperCase()) {
-    bits += alphabet.indexOf(char).toString(2).padStart(5, '0')
-  }
-  const keyBytes: number[] = []
-  for (let index = 0; index + 8 <= bits.length; index += 8) {
-    keyBytes.push(Number.parseInt(bits.slice(index, index + 8), 2))
-  }
-  const counterBuffer = Buffer.alloc(8)
-  counterBuffer.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 1000 / 30)))
-  const digest = createHmac('sha1', Buffer.from(keyBytes)).update(counterBuffer).digest()
-  const offset = (digest[digest.length - 1] ?? 0) & 0x0f
-  const binary =
-    ((digest[offset] ?? 0) & 0x7f) * 2 ** 24 +
-    (digest[offset + 1] ?? 0) * 2 ** 16 +
-    (digest[offset + 2] ?? 0) * 2 ** 8 +
-    (digest[offset + 3] ?? 0)
-  return String(binary % 1_000_000).padStart(6, '0')
 }
 
 test('TOTP verification records a step-up and flips assurance to mfa:true', async ({ page }) => {
