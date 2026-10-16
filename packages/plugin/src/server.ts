@@ -77,8 +77,28 @@ export class UserSuspendedError extends Error {
  * Wiring registered by the plugin's `onInit`; `authLinkServer` reads it.
  * A WeakMap (not an instance property): DNA bans monkey-patching the
  * Payload instance, and the entry dies with the instance.
+ *
+ * One map per PROCESS, not per module copy: bundlers can load this
+ * module more than once (TanStack Start's admin and API route graphs
+ * do) while sharing one cached Payload, so a per-module map registered
+ * by the copy that booted Payload is invisible to the other copy. The
+ * map lives in a `Symbol.for` slot on `globalThis`, shared by every
+ * copy.
  */
-const serverRegistry = new WeakMap<Payload, WiredOptions>()
+const serverRegistryKey = Symbol.for('@payload-auth-link/plugin/server-registry')
+
+function processRegistry(): WeakMap<Payload, WiredOptions> {
+  const slots = globalThis as { [serverRegistryKey]?: WeakMap<Payload, WiredOptions> }
+  const existing = slots[serverRegistryKey]
+  if (existing !== undefined) {
+    return existing
+  }
+  const created = new WeakMap<Payload, WiredOptions>()
+  slots[serverRegistryKey] = created
+  return created
+}
+
+const serverRegistry = processRegistry()
 
 /** Called from the plugin's `onInit`. Not public API. */
 export function registerAuthLinkServer(payload: Payload, wired: WiredOptions): void {
