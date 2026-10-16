@@ -17,6 +17,7 @@ import {
   type UserId,
   type UserRecord,
   type UserRepository,
+  type LoggerPort,
 } from '../ports.js'
 import { parsePhoneNumber, type PhoneNumber } from '../phone.js'
 import { parseRole, type Role } from '../roles.js'
@@ -548,5 +549,269 @@ describe('ensureLinkedUser', () => {
     if (result.isErr()) {
       expect(result.error).toBeInstanceOf(UnverifiedIdentityError)
     }
+  })
+})
+
+/** Phone-capable fake that also syncs (`setPhone`), optionally failing. */
+class PhoneSyncFakeUserRepository extends PhoneFakeUserRepository {
+  readonly setPhoneCalls: { userId: UserId; phone: PhoneNumber }[] = []
+  failSetPhone = false
+
+  setPhone(userId: UserId, phoneNumber: PhoneNumber): ResultAsync<UserRecord, RepositoryError> {
+    this.setPhoneCalls.push({ userId, phone: phoneNumber })
+    if (this.failSetPhone) {
+      return errAsync(new RepositoryError('setPhone: storage down'))
+    }
+    return this.findById(userId).andThen((user) =>
+      user === null
+        ? errAsync(new RepositoryError(`setPhone: missing user ${userId}`))
+        : okAsync({ ...user, phone: phoneNumber })
+    )
+  }
+}
+
+type LogLine = { readonly level: 'info' | 'warn'; readonly message: string }
+
+function recordingLogger(lines: LogLine[]): LoggerPort {
+  const logger: LoggerPort = {
+    ...nullLogger(),
+    info: (message) => {
+      lines.push({ level: 'info', message })
+    },
+    warn: (message) => {
+      lines.push({ level: 'warn', message })
+    },
+    child: () => logger,
+  }
+  return logger
+}
+
+function emailAndPhoneProfile(
+  providerUserId: string,
+  claims: { email: string; emailVerified: boolean; phoneVerified: boolean }
+): ProviderProfile {
+  return profile({
+    providerUserId,
+    identity: {
+      email: { value: email(claims.email), verified: claims.emailVerified },
+      phone: { value: phone('+14155550132'), verified: claims.phoneVerified },
+      anonymous: false,
+    },
+  })
+}
+
+describe('ensureLinkedUser phone handling (CAP-9, issue #110)', () => {
+  it('syncs a verified phone claim onto an already-linked user', async () => {
+    const users = new PhoneSyncFakeUserRepository()
+    const ref = { providerId, providerUserId: 'ba-sync' }
+    await users.create({ email: email('sync@example.com'), roles: [role('user')], identity: ref })
+    const lines: LogLine[] = []
+    const result = await ensureLinkedUser(
+      { users, logger: recordingLogger(lines) },
+      {
+        providerId,
+        profile: emailAndPhoneProfile('ba-sync', {
+          email: 'sync@example.com',
+          emailVerified: true,
+          phoneVerified: true,
+        }),
+        defaultRoles: [role('user')],
+      }
+    )
+    expect(result.isOk() && result.value.phone).toBe('+14155550132')
+    expect(users.setPhoneCalls).toHaveLength(1)
+    expect(lines).toContainEqual({ level: 'info', message: 'phone synced from provider' })
+  })
+
+  it('never syncs an UNVERIFIED phone claim', async () => {
+    const users = new PhoneSyncFakeUserRepository()
+    const ref = { providerId, providerUserId: 'ba-unverified-phone' }
+    await users.create({ email: email('up@example.com'), roles: [role('user')], identity: ref })
+    const result = await ensureLinkedUser(
+      { users, logger: nullLogger() },
+      {
+        providerId,
+        profile: emailAndPhoneProfile('ba-unverified-phone', {
+          email: 'up@example.com',
+          emailVerified: true,
+          phoneVerified: false,
+        }),
+        defaultRoles: [role('user')],
+      }
+    )
+    expect(result.isOk()).toBe(true)
+    expect(users.setPhoneCalls).toEqual([])
+  })
+
+  it('a failed phone sync is logged and keeps the valid link', async () => {
+    const users = new PhoneSyncFakeUserRepository()
+    users.failSetPhone = true
+    const ref = { providerId, providerUserId: 'ba-sync-fail' }
+    await users.create({ email: email('fail@example.com'), roles: [role('user')], identity: ref })
+    const lines: LogLine[] = []
+    const result = await ensureLinkedUser(
+      { users, logger: recordingLogger(lines) },
+      {
+        providerId,
+        profile: emailAndPhoneProfile('ba-sync-fail', {
+          email: 'fail@example.com',
+          emailVerified: true,
+          phoneVerified: true,
+        }),
+        defaultRoles: [role('user')],
+      }
+    )
+    expect(result.isOk() && result.value.email).toBe('fail@example.com')
+    expect(lines).toContainEqual({
+      level: 'warn',
+      message: 'phone sync failed; keeping linked user',
+    })
+  })
+
+  it('a repository without setPhone links without syncing', async () => {
+    const users = new PhoneFakeUserRepository()
+    const ref = { providerId, providerUserId: 'ba-no-setphone' }
+    await users.create({ email: email('nos@example.com'), roles: [role('user')], identity: ref })
+    const result = await ensureLinkedUser(
+      { users, logger: nullLogger() },
+      {
+        providerId,
+        profile: emailAndPhoneProfile('ba-no-setphone', {
+          email: 'nos@example.com',
+          emailVerified: true,
+          phoneVerified: true,
+        }),
+        defaultRoles: [role('user')],
+      }
+    )
+    expect(result.isOk()).toBe(true)
+    expect(result.isOk() && result.value.phone).toBeUndefined()
+  })
+
+  it('an already-linked phone-only identity returns its user without email or phone writes', async () => {
+    const users = new PhoneSyncFakeUserRepository()
+    const ref = { providerId, providerUserId: 'ba-linked-phone' }
+    await users.create({ email: email('lp@example.com'), roles: [role('user')], identity: ref })
+    // The fast path holds under the DEFAULT policy too: the link
+    // already exists, so no email claim is needed to resolve it.
+    const result = await ensureLinkedUser(
+      { users, logger: nullLogger() },
+      { providerId, profile: phoneOnlyProfile('ba-linked-phone'), defaultRoles: [role('user')] }
+    )
+    expect(result.isOk() && result.value.email).toBe('lp@example.com')
+    expect(users.setPhoneCalls).toEqual([])
+  })
+
+  it('an unverified placeholder email links by VERIFIED phone only under the opt-in policy', async () => {
+    const users = new PhoneSyncFakeUserRepository()
+    await users.create({ email: email('owner@example.com'), roles: [role('admin')] })
+    users.phoneOwners.set('+14155550132', email('owner@example.com'))
+    const placeholder = {
+      email: 'temp-123@phone.invalid',
+      emailVerified: false,
+      phoneVerified: true,
+    }
+    const optIn = await ensureLinkedUser(
+      { users, logger: nullLogger() },
+      {
+        providerId,
+        profile: emailAndPhoneProfile('ba-placeholder', placeholder),
+        defaultRoles: [role('user')],
+        linkingPolicy: { kind: 'verified-email-or-phone' },
+      }
+    )
+    expect(optIn.isOk() && optIn.value.email).toBe('owner@example.com')
+    expect(optIn.isOk() && optIn.value.identities.map((i) => i.providerUserId)).toEqual([
+      'ba-placeholder',
+    ])
+
+    // Default policy: the unverified email refuses; the phone is ignored.
+    const byDefault = await ensureLinkedUser(
+      { users, logger: nullLogger() },
+      {
+        providerId,
+        profile: emailAndPhoneProfile('ba-placeholder-default', placeholder),
+        defaultRoles: [role('user')],
+      }
+    )
+    expect(byDefault.isErr() && byDefault.error).toBeInstanceOf(UnverifiedEmailError)
+
+    // Opt-in with an UNVERIFIED phone: still refused, never provisioned.
+    const unverifiedPhone = await ensureLinkedUser(
+      { users, logger: nullLogger() },
+      {
+        providerId,
+        profile: emailAndPhoneProfile('ba-placeholder-unverified', {
+          ...placeholder,
+          phoneVerified: false,
+        }),
+        defaultRoles: [role('user')],
+        linkingPolicy: { kind: 'verified-email-or-phone' },
+      }
+    )
+    expect(unverifiedPhone.isErr() && unverifiedPhone.error).toBeInstanceOf(UnverifiedEmailError)
+    const provisioned = await users.findByEmail(email('temp-123@phone.invalid'))
+    expect(provisioned.isOk() && provisioned.value).toBeNull()
+  })
+
+  it('an unverified email held by an existing user refuses even with a verified phone', async () => {
+    const users = new PhoneSyncFakeUserRepository()
+    await users.create({ email: email('held@example.com'), roles: [role('admin')] })
+    users.phoneOwners.set('+14155550132', email('held@example.com'))
+    const result = await ensureLinkedUser(
+      { users, logger: nullLogger() },
+      {
+        providerId,
+        profile: emailAndPhoneProfile('ba-held', {
+          email: 'held@example.com',
+          emailVerified: false,
+          phoneVerified: true,
+        }),
+        defaultRoles: [role('user')],
+        linkingPolicy: { kind: 'verified-email-or-phone' },
+      }
+    )
+    expect(result.isErr() && result.error).toBeInstanceOf(UnverifiedEmailError)
+    const held = await users.findByEmail(email('held@example.com'))
+    expect(held.isOk() && held.value?.identities).toHaveLength(0)
+  })
+
+  it('a provisioned user carries the verified phone claim', async () => {
+    const users = new PhoneSyncFakeUserRepository()
+    const captured: NewUser[] = []
+    const original = users.create.bind(users)
+    users.create = (input: NewUser) => {
+      captured.push(input)
+      return original(input)
+    }
+    const result = await ensureLinkedUser(
+      { users, logger: nullLogger() },
+      {
+        providerId,
+        profile: emailAndPhoneProfile('ba-new-phone', {
+          email: 'new@example.com',
+          emailVerified: true,
+          phoneVerified: true,
+        }),
+        defaultRoles: [role('user')],
+      }
+    )
+    expect(result.isOk()).toBe(true)
+    expect(captured[0]?.phone).toBe('+14155550132')
+  })
+
+  it('an unknown linking policy kind fails loudly, never as a silent no-op', async () => {
+    const users = new FakeUserRepository()
+    await expect(
+      ensureLinkedUser(
+        { users, logger: nullLogger() },
+        {
+          providerId,
+          profile: phoneOnlyProfile('ba-bogus-policy'),
+          defaultRoles: [role('user')],
+          linkingPolicy: { kind: 'bogus' } as never,
+        }
+      )
+    ).rejects.toThrow(/Unreachable/)
   })
 })

@@ -140,6 +140,36 @@ describe('reqUser: document (issue #57)', () => {
     expect(result?.user?._strategy).toBe('auth-link')
   })
 
+  it("a session's active organization rides on the document shape (#110)", async () => {
+    const strategy = payload.config.collections
+      .find((collection) => collection.slug === 'users')
+      ?.auth?.strategies?.find((candidate) => candidate.name === 'auth-link')
+    const headers = new Headers()
+    headers.set(
+      'cookie',
+      stub.issue({
+        sessionId: 'doc-org',
+        providerUserId: 'stub-1',
+        email: 'doc@test.dev',
+        expiresAt: new Date(Date.now() + 3_600_000),
+        organizationId: 'org-active',
+      })
+    )
+    const args = {
+      headers,
+      payload,
+      req: { context: {} } as unknown as import('payload').PayloadRequest,
+    }
+    const result = (await strategy?.authenticate(args)) as {
+      user?: Record<string, unknown>
+    } | null
+    // The provider-reported organization is projected on top of the
+    // document; the host's own (stale) field is left as stored.
+    expect(result?.user?.organizationId).toBe('org-active')
+    expect(result?.user?.activeOrganization).toBe('org-7')
+    expect(result?.user?.roles).toEqual(['user'])
+  })
+
   it('local sessions are reshaped to the document through the request gate', async () => {
     const created = await payload.create({
       collection: 'users',
