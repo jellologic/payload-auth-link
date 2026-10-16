@@ -2,6 +2,10 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "composite": false,
+    // An app, not a library: no declaration output (whose inference
+    // limits would otherwise fail the check on the engine exports).
+    "declaration": false,
+    "declarationMap": false,
     "noEmit": true,
     "incremental": true,
     "allowJs": true,

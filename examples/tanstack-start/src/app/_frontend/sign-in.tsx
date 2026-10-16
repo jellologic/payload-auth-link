@@ -2,9 +2,10 @@ import { Link, createFileRoute } from '@tanstack/react-router'
 import { SignInForm } from './-sign-in.form.js'
 
 export const Route = createFileRoute('/_frontend/sign-in')({
-  validateSearch: (search: Record<string, unknown>) => ({
-    redirect: typeof search.redirect === 'string' ? search.redirect : undefined,
-  }),
+  // `redirect` is optional (absent, not `undefined`), so plain links to
+  // this page need no `search` prop.
+  validateSearch: (search: Record<string, unknown>): { redirect?: string } =>
+    typeof search.redirect === 'string' ? { redirect: search.redirect } : {},
   component: SignInPage,
 })
 

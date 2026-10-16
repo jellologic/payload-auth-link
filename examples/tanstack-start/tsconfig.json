@@ -2,6 +2,15 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "composite": false,
+    // An app, not a library: no declaration output (whose inference
+    // limits would otherwise fail the check on the engine exports).
+    "declaration": false,
+    "declarationMap": false,
+    // `@payloadcms/tanstack-start`'s route factory hands TanStack Router
+    // an explicit `preload: … | undefined`, which the router's own types
+    // reject under exactOptionalPropertyTypes. Third-party glue, not
+    // app code — the packages keep the strict setting.
+    "exactOptionalPropertyTypes": false,
     "noEmit": true,
     "incremental": true,
     "allowJs": true,
@@ -12,7 +21,14 @@
     "lib": ["DOM", "DOM.Iterable", "ES2022"],
     "paths": {
       "@/*": ["./src/*"],
-      "@payload-config": ["./src/payload.config.ts"]
+      "@payload-config": ["./src/payload.config.ts"],
+      // The workspace packages are built against the repo's Payload v3
+      // dev dependency while this app runs Payload v4; a real install
+      // has exactly one `payload`. Resolve every `payload` import
+      // (including the ones inside the packages' declarations) to the
+      // app's copy, as a consumer's type check would.
+      "payload": ["./node_modules/payload"],
+      "payload/*": ["./node_modules/payload/*"]
     }
   },
   "include": ["src/**/*", "vite.config.ts"],

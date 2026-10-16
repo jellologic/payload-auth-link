@@ -47,6 +47,23 @@ jobs:
       - run: bun run build
       - run: node node_modules/vitest/vitest.mjs run
 
+  # The examples are the documented reference integrations: both must
+  # type-check against the freshly built packages (they import the
+  # workspace packages through their dist exports, hence the build
+  # first), and the Next example must survive a production build.
+  examples:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - run: bunx tsc --noEmit -p examples/basic
+      - run: bunx tsc --noEmit -p examples/tanstack-start
+      - run: bun run --cwd examples/basic build
+
   # Every user-facing PR carries a changeset (see CONTRIBUTING.md);
   # internal-only PRs add an empty one (`bunx changeset --empty`). The
   # Version Packages PR is exempt: it consumes the changesets by design.

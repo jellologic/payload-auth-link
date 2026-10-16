@@ -51,7 +51,13 @@ export async function POST(request: Request): Promise<Response> {
   if (session === null) {
     return NextResponse.json({ error: 'no live session' }, { status: 401 })
   }
-  const minted = await server.createSessionFor(session.id, {
+  // Payload ids are strings (Mongo, UUIDs) or numbers (SQL serials);
+  // anything else is not a user this route can mint for.
+  const userId = session.id
+  if (typeof userId !== 'string' && typeof userId !== 'number') {
+    return NextResponse.json({ error: 'no live session' }, { status: 401 })
+  }
+  const minted = await server.createSessionFor(userId, {
     reason: 'step-up',
     mfaProof: true,
   })

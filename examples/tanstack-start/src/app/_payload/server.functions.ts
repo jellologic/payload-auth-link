@@ -29,7 +29,10 @@ export const getLayoutDataFn = createServerFn({ method: 'GET' }).handler(async (
   return loadLayoutData({ config: await getConfig(), importMap: await getImportMap() })
 })
 
-const runPayloadServerFn = createServerFn({ method: 'POST' })
+// Payload's server-function results are opaque (`unknown`, including RSC
+// handles); `createServerFunctionClient` strips what the wire format
+// cannot carry at runtime, so the compile-time output check cannot apply.
+const runPayloadServerFn = createServerFn({ method: 'POST', strict: { output: false } })
   .validator((args: ServerFunctionClientArgs): ServerFunctionClientArgs => args)
   .handler(async ({ data }) => {
     const { handleServerFunctions } = await import('@payloadcms/tanstack-start/server')
