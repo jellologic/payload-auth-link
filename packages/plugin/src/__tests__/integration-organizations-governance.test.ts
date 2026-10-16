@@ -16,6 +16,7 @@
  * unauthenticated / non-manager / malformed writes) and the
  * endpoints' CSRF and session gates.
  */
+import { postgresAdapter } from '@payloadcms/db-postgres'
 import { sqliteAdapter } from '@payloadcms/db-sqlite'
 import {
   buildConfig,
@@ -30,6 +31,18 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { authLink } from '../index.js'
 import type { AuditEvent } from '../options.js'
 import { createStubProvider } from './stub-provider.js'
+
+/**
+ * SQLite in memory by default. `ORG_PG_URL` (a disposable database)
+ * runs the same suite on Postgres, whose transactions and foreign keys
+ * SQLite in memory does not exercise: CI's migration-fixture job does.
+ */
+const ORG_PG_URL = process.env.ORG_PG_URL
+function database() {
+  return ORG_PG_URL === undefined
+    ? sqliteAdapter({ client: { url: ':memory:' } })
+    : postgresAdapter({ pool: { connectionString: ORG_PG_URL }, push: true })
+}
 
 const ORIGIN = 'http://orgs-governance.test'
 const SECRET = 'organizations-governance-secret!!'
@@ -196,7 +209,7 @@ beforeAll(async () => {
   config = await buildConfig({
     secret: SECRET,
     serverURL: ORIGIN,
-    db: sqliteAdapter({ client: { url: ':memory:' } }),
+    db: database(),
     telemetry: false,
     logger: { options: { level: 'silent' } },
     admin: { user: 'users' },

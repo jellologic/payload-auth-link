@@ -162,6 +162,7 @@
         "neverthrow": "^8.2.0",
       },
       "devDependencies": {
+        "@payloadcms/db-postgres": "3.90.2",
         "@payloadcms/db-sqlite": "3.90.2",
         "@payloadcms/graphql": "3.90.2",
         "@payloadcms/ui": "3.90.2",

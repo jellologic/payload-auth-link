@@ -288,6 +288,14 @@ jobs:
       - run: bun run build
       - run: bun install --cwd fixtures/payload-auth-app
       - run: bun run test:fixture
+      # Organization governance on Postgres: real transactions, foreign
+      # keys and the last-owner race, which SQLite in memory skips.
+      - run: psql -h localhost -p 5433 -U postgres -c "CREATE DATABASE pal_orgs"
+        env:
+          PGPASSWORD: payload
+      - run: bunx vitest run packages/plugin/src/__tests__/integration-organizations-governance.test.ts
+        env:
+          ORG_PG_URL: postgres://postgres:payload@localhost:5433/pal_orgs
 
   release-check:
     runs-on: ubuntu-latest

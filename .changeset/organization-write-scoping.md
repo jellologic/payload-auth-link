@@ -11,3 +11,5 @@ Organization writes are scoped more tightly, and the last-owner guard holds unde
 - Accepting an invitation after joining the organization another way answers `409` (`user is already a member`) instead of a storage validation error.
 
 Upgrade impact: no schema change. No column is added, removed or retyped on any adapter, so push and migrations have nothing to do. Behavioural: org admins get `403` on organization delete; `verifiedDomains` writes from non-role-managers are ignored, so review existing entries once after upgrading; owner removals bump the organization's `updatedAt`. See docs/upgrading.md.
+
+Organization creation now seeds the creator's owner membership inside the organization's own transaction. On Postgres (and other transactional adapters) it used to fail the membership's foreign key, so `POST /api/auth-link/organizations` answered 400.

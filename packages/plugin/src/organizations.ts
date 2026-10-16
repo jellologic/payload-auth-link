@@ -651,8 +651,23 @@ function organizationsCollection(
           ) {
             return
           }
-          const existing = await getOrgMembership(req.payload, wired, { userId, organizationId })
-          if (existing === null) {
+          // Through `req`: the organization row is not committed yet,
+          // so on transactional adapters (Postgres, Mongo replica sets)
+          // a write outside its transaction fails the membership's
+          // foreign key / cannot see the new organization.
+          const existing = await findMemberships(
+            req.payload,
+            wired,
+            {
+              and: [
+                { user: { equals: userId } },
+                { organization: { equals: organizationId } },
+                { status: { equals: 'active' } },
+              ],
+            },
+            req
+          )
+          if (existing.length === 0) {
             await req.payload.create({
               collection: wired.membershipsCollection,
               data: {
@@ -662,6 +677,7 @@ function organizationsCollection(
                 status: 'active',
               },
               overrideAccess: true,
+              req,
             })
           }
           // No return: the hook never modifies the organization doc.
