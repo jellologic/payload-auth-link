@@ -170,7 +170,11 @@ function withDefaultUserAccess(
  * collection level, so the flag cannot be self-granted.
  */
 function linkableMarkerHook(wired: WiredOptions): CollectionBeforeChangeHook {
-  return ({ operation, data, req }) => {
+  return ({ collection, operation, data, originalDoc, req }) => {
+    if (operation === 'update') {
+      resetProofOnEmailChange(wired, { collection, data, originalDoc, req })
+      return
+    }
     if (operation !== 'create') {
       return
     }
@@ -189,6 +193,62 @@ function linkableMarkerHook(wired: WiredOptions): CollectionBeforeChangeHook {
       data.linkable = false
     }
   }
+}
+
+/**
+ * Email-ownership proof never survives an unproven email change: when
+ * a document's email changes in a write that is neither the plugin's
+ * provider-email resync (which re-grants the proof for the new,
+ * provider-verified address in the same write) nor a role manager's,
+ * the `linkable` proof and its `linkableEmail` are cleared — and, on
+ * hosts with `auth.verify`, Payload's `_verified` flag too, which
+ * Payload itself keeps across email changes. The document is then
+ * unproven until a role manager re-grants the proof.
+ *
+ * "Re-granted in the same write" is safe to honor: field access lets
+ * only role managers (and trusted `overrideAccess` Local-API callers,
+ * such as the resync) write `linkable`/`linkableEmail` at all, so a
+ * self-service write never carries them this far.
+ */
+function resetProofOnEmailChange(
+  wired: WiredOptions,
+  args: {
+    readonly collection: { readonly auth?: unknown }
+    readonly data: Record<string, unknown>
+    readonly originalDoc: unknown
+    readonly req: PayloadRequest
+  }
+): void {
+  const { data, originalDoc, req } = args
+  const emailField = wired.config.map.emailField
+  const next = data[emailField]
+  const previous = isRecord(originalDoc) ? originalDoc[emailField] : undefined
+  if (
+    typeof next !== 'string' ||
+    typeof previous !== 'string' ||
+    next.toLowerCase() === previous.toLowerCase()
+  ) {
+    return
+  }
+  const regranted =
+    data.linkable === true &&
+    typeof data.linkableEmail === 'string' &&
+    data.linkableEmail.toLowerCase() === next.toLowerCase()
+  if (regranted || isRoleManager(req, wired)) {
+    return
+  }
+  data.linkable = false
+  data.linkableEmail = null
+  const auth = args.collection.auth
+  if (isRecord(auth) && auth.verify !== undefined && auth.verify !== false) {
+    data._verified = false
+  }
+  const userId =
+    isRecord(originalDoc) &&
+    (typeof originalDoc.id === 'string' || typeof originalDoc.id === 'number')
+      ? String(originalDoc.id)
+      : ''
+  wired.logger.info('email changed outside the provider resync; linking proof reset', { userId })
 }
 
 function linkableField(wired: WiredOptions): CheckboxField {
@@ -416,7 +476,17 @@ const ACCOUNT_STATUS_KEY = 'payload-auth-link:account-status'
  */
 const ACCOUNT_STATUS_INFLIGHT = 'payload-auth-link:account-status-inflight'
 
-type AccountStatus = { readonly suspended: boolean; readonly failed?: boolean }
+type AccountStatus = {
+  readonly suspended: boolean
+  readonly failed?: boolean
+  /** The document holds linked provider identities (provider-owned). */
+  readonly linked?: boolean
+}
+
+/** Payload's local JWT strategy name (`_strategy` on `req.user`). */
+const localJwtStrategyName = 'local-jwt'
+
+type AccountDecision = 'ok' | 'suspended' | 'failed' | 'provider-owned'
 
 async function requestAccountStatus(
   req: PayloadRequest,
@@ -455,7 +525,11 @@ async function requestAccountStatus(
       depth: 0,
       overrideAccess: true,
     })
-    status = { suspended: suspensionActive(doc, wired) }
+    const identities: unknown = isRecord(doc) ? doc[wired.config.map.identitiesField] : undefined
+    status = {
+      suspended: suspensionActive(doc, wired),
+      linked: Array.isArray(identities) && identities.length > 0,
+    }
   } catch (cause) {
     // Fail closed: an unreadable account state must never wave a
     // request through. The same storage failure fails the operation
@@ -484,7 +558,7 @@ async function applyAccountControls(
   req: PayloadRequest,
   wired: WiredOptions,
   gated: ReadonlySet<string>
-): Promise<'ok' | 'suspended' | 'failed'> {
+): Promise<AccountDecision> {
   const user = req.user
   // Local API calls without a request user (the plugin's own engine
   // paths run `overrideAccess` with no `req.user`) are unaffected.
@@ -503,6 +577,20 @@ async function applyAccountControls(
   }
   if (status.suspended) {
     return 'suspended'
+  }
+  // Provider-owned documents hold no local session (GHSA-f4hj
+  // default): local sign-in is refused for them, so a local JWT on a
+  // linked document can only predate the link — issued to whoever
+  // held the document before the provider's verified owner arrived.
+  // Linking clears Payload's `sessions` array (repository
+  // `linkIdentity`); this gate covers hosts without `useSessions`,
+  // where a JWT is otherwise valid until it expires.
+  if (
+    !wired.allowLocalCredentialsForLinkedDocs &&
+    status.linked === true &&
+    user._strategy === localJwtStrategyName
+  ) {
+    return 'provider-owned'
   }
   if (user._strategy !== strategyName) {
     // Issue #57: `reqUser: 'document'` also shapes LOCAL sessions
@@ -551,7 +639,13 @@ async function applyAccountControls(
   return 'ok'
 }
 
-function throwOnAccountDecision(decision: 'ok' | 'suspended' | 'failed'): void {
+function throwOnAccountDecision(decision: AccountDecision): void {
+  if (decision === 'provider-owned') {
+    throw new APIError(
+      'Local sessions are unavailable for provider-linked accounts; sign in with your identity provider',
+      401
+    )
+  }
   if (decision === 'failed') {
     throw new APIError('Account status could not be verified', 503)
   }
@@ -623,7 +717,7 @@ function withAccountControlledAccess(
       if (decision === 'failed') {
         throw new APIError('Account status could not be verified', 503)
       }
-      if (decision === 'suspended') {
+      if (decision === 'suspended' || decision === 'provider-owned') {
         return false
       }
       return existing(args)

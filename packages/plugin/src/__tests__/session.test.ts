@@ -374,7 +374,9 @@ describe('session failover', () => {
     expect(result.isErr()).toBe(true)
     if (result.isErr()) {
       expect(result.error).toBeInstanceOf(SessionInvalidError)
-      expect(result.error.message).toBe('Session is invalid: session has no linked user')
+      expect(result.error.message).toBe(
+        'Session is invalid: email already held by a document not proven to own it'
+      )
     }
   })
 

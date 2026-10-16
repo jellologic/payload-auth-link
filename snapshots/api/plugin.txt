@@ -183,9 +183,21 @@ declare const ProviderLoginView: React.FC<ProviderLoginViewProps>;
 export default ProviderLoginView;
 
 // ===== audit.d.ts =====
-import { type LoggerPort } from '@payload-auth-link/core';
-import type { CollectionBeforeOperationHook, CollectionConfig, GlobalBeforeOperationHook, GlobalConfig } from 'payload';
+import { type LoggerPort, type ResolvedSessionActor } from '@payload-auth-link/core';
+import type { CollectionBeforeOperationHook, CollectionConfig, GlobalBeforeOperationHook, GlobalConfig, PayloadRequest } from 'payload';
 import type { AuditSink } from './options.js';
+/**
+ * Audit an impersonated attempt at a plugin endpoint the plugin then
+ * refuses (organization management while impersonating). Endpoints
+ * run no collection operation for the `beforeOperation` hook to see,
+ * so they report here — same message, same id-only fields, plus the
+ * endpoint path and `denied: true`.
+ */
+export declare function auditImpersonatedEndpoint(logger: LoggerPort, req: PayloadRequest, fields: {
+    readonly operation: string;
+    readonly endpoint: string;
+    readonly sessionActor?: ResolvedSessionActor | undefined;
+}): void;
 /** Collection `beforeOperation` audit hook; leaves args untouched. */
 export declare function impersonatedCollectionAuditHook(logger: LoggerPort): CollectionBeforeOperationHook;
 /** Global `beforeOperation` audit hook; leaves args untouched. */
@@ -721,6 +733,25 @@ import type { WiredOptions } from './options.js';
  * `'owner'` by default). Management operations (invite, role
  * change, org update/delete) require the first role, or `'admin'`
  * when present in the list.
+ *
+ * Membership governance (all enforced server-side, every channel):
+ * - a membership's `organization` and `user` are immutable once
+ *   created — a row can never be relocated into another tenant or
+ *   re-pointed at another user (field access AND a `beforeChange`
+ *   guard, so trusted Local-API writes are held to it too; the only
+ *   sanctioned transition is the plugin's own invite acceptance,
+ *   which binds the accepting user to a pending invitation);
+ * - role writes (create, update, invite) require a manager of the
+ *   row's organization and never exceed the caller's own role —
+ *   `orgRoles` order is the rank, so an `admin` can neither promote
+ *   anyone (themselves included) to owner nor touch an owner's row;
+ * - an organization always keeps at least one active owner: demoting
+ *   or removing the last one is refused with a typed 409;
+ * - deleting an organization cascades its memberships and pending
+ *   invitations in the same transaction;
+ * - every membership/organization write, invite, and acceptance is
+ *   refused while an operator impersonates the caller, and the
+ *   attempt is audited (CAP-8b).
  */
 type MembershipRow = {
     readonly id: string;

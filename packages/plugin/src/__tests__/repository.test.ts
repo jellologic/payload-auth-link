@@ -168,6 +168,40 @@ describe('payload user repository linkIdentity', () => {
     })
   })
 
+  it('clears Payload local sessions when the collection keeps them (useSessions)', async () => {
+    const update = vi.fn<(args: unknown) => Promise<unknown>>(() => Promise.resolve(linkedDoc))
+    const wired = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['user', 'admin'],
+      defaultRole: 'user',
+      providers: [createStubProvider().provider],
+    })
+    const users = createPayloadUserRepository({
+      payload: {
+        collections: { users: { config: { auth: { useSessions: true } } } },
+        find: found([doc]),
+        findByID: () => Promise.resolve({}),
+        update,
+      } as unknown as Payload,
+      map: wired.config.map,
+      defaultRole: wired.config.defaultRole,
+      logger: wired.logger,
+      clock: wired.clock,
+      ids: wired.ids,
+      depth: wired.depth,
+    })
+    expect((await users.linkIdentity(userId, ref)).isOk()).toBe(true)
+    expect(update.mock.calls[0]?.[0]).toMatchObject({ data: { sessions: [] } })
+  })
+
+  it('leaves sessions alone when the collection keeps none', async () => {
+    const update = vi.fn<(args: unknown) => Promise<unknown>>(() => Promise.resolve(linkedDoc))
+    const users = repository({ find: found([doc]), update })
+    expect((await users.linkIdentity(userId, ref)).isOk()).toBe(true)
+    const data = (update.mock.calls[0]?.[0] as { data: Record<string, unknown> }).data
+    expect('sessions' in data).toBe(false)
+  })
+
   it('maps write outages and unmappable results to RepositoryError', async () => {
     expectRepositoryError(
       await repository({ find: found([doc]), update: down }).linkIdentity(userId, ref)
@@ -278,13 +312,37 @@ describe('findByEmail linkability gate (GHSA-98hq-hh6v-2p2r)', () => {
     expect((await users.linkIdentity(userId, ref)).isOk()).toBe(true)
   })
 
-  it('returns documents Payload itself verified', async () => {
-    const verified = { ...doc, linkable: false, _verified: true }
-    const users = repository({
-      find: found([verified]),
-      findByID: () => Promise.resolve({}),
-    })
-    expect((await users.findByEmail(email('linked@test.dev')))._unsafeUnwrap()?.id).toBe('user-1')
+  it('refuses documents Payload verified but never marked linkable (_verified is not proof)', async () => {
+    // Payload keeps `_verified` across email changes: a verified
+    // document re-pointed at a victim's address must not be linked.
+    const verified = { ...doc, linkable: false, linkableEmail: undefined, _verified: true }
+    const warnings: string[] = []
+    const base = nullLogger()
+    const logger: LoggerPort = {
+      ...base,
+      warn: (message) => warnings.push(message),
+      child: () => logger,
+    }
+    const users = repository(
+      { find: found([verified]), findByID: () => Promise.resolve({}) },
+      logger
+    )
+    expect((await users.findByEmail(email('linked@test.dev')))._unsafeUnwrap()).toBeNull()
+    expect(warnings.some((message) => message.includes('verified by Payload but not marked'))).toBe(
+      true
+    )
+  })
+
+  it('refuses a verified document whose linkable proof is bound to another email', async () => {
+    const moved = {
+      ...doc,
+      email: 'victim@test.dev',
+      linkable: true,
+      linkableEmail: 'attacker@test.dev',
+      _verified: true,
+    }
+    const users = repository({ find: found([moved]), findByID: () => Promise.resolve({}) })
+    expect((await users.findByEmail(email('victim@test.dev')))._unsafeUnwrap()).toBeNull()
   })
 })
 

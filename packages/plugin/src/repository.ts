@@ -46,13 +46,37 @@ export type PayloadUserRepositoryDeps = {
   readonly roleValues?: Readonly<Record<string, string>> | undefined
 }
 
+/**
+ * An email collision, in either spelling Payload produces: the
+ * database's unique index ("Value must be unique") or, on auth
+ * collections with the local strategy, Payload's own pre-insert check
+ * ("A user with the given email is already registered."). Both map to
+ * the typed `UserExistsError`, never a raw storage error.
+ */
 function isEmailUniqueViolation(error: unknown, emailField: string): boolean {
   if (!(error instanceof ValidationError)) {
     return false
   }
   return error.data.errors.some(
-    (entry) => entry.path === emailField && /unique/i.test(entry.message)
+    (entry) => entry.path === emailField && /unique|already registered/i.test(entry.message)
   )
+}
+
+/**
+ * Whether the users collection keeps Payload's server-side local
+ * sessions (`auth.useSessions`, Payload's default): a local JWT is
+ * honored only while its `sid` is in the document's `sessions` array.
+ */
+function collectionUsesLocalSessions(payload: Payload, slug: string): boolean {
+  const collections: unknown = (payload as { collections?: unknown }).collections
+  if (!isRecord(collections)) {
+    return false
+  }
+  const entry = collections[slug]
+  if (!isRecord(entry) || !isRecord(entry.config) || !isRecord(entry.config.auth)) {
+    return false
+  }
+  return entry.config.auth.useSessions === true
 }
 
 /**
@@ -105,12 +129,15 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
       // JIT-linking proof gate (GHSA-98hq-hh6v-2p2r): email-based
       // resolution may only return documents PROVEN to own that email
       // — the plugin's `linkable` marker (set on plugin-managed and
-      // role-manager creates; the migration runbook sets it for
-      // imports) or Payload's own verified flag. An unproven document
-      // (say, one a stranger pre-created with a victim's email and
-      // their own password) is invisible here: the link is refused
-      // with a logged reason instead of attaching a verified identity
-      // to it.
+      // role-manager creates; the migration importer sets it for
+      // verified imports), bound to the address it was granted for
+      // (`linkableEmail`). Payload's own `_verified` flag is NOT proof
+      // on its own: Payload keeps it across email changes (and its
+      // default field access lets any signed-in user write it), so a
+      // verified document re-pointed at someone else's address would
+      // otherwise be handed their identity. An unproven document is
+      // invisible here: the link is refused with a logged reason
+      // instead of attaching a verified identity to it.
       return ResultAsync.fromPromise<unknown, RepositoryError>(
         deps.payload.find({
           collection,
@@ -126,32 +153,29 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
         if (!isRecord(doc)) {
           return null
         }
-        if (doc.linkable !== true && doc._verified !== true) {
-          const docId =
-            typeof doc.id === 'string' || typeof doc.id === 'number' ? String(doc.id) : ''
+        const docId = typeof doc.id === 'string' || typeof doc.id === 'number' ? String(doc.id) : ''
+        if (doc.linkable !== true) {
           deps.logger.warn(
-            'email link refused: pre-existing document is not marked linkable (was it created outside payload-auth-link?)',
+            doc._verified === true
+              ? 'email link refused: pre-existing document is verified by Payload but not marked linkable (a role manager must grant the linkable proof)'
+              : 'email link refused: pre-existing document is not marked linkable (was it created outside payload-auth-link?)',
             { email, userId: docId }
           )
           return null
         }
         // GHSA-8524: the linkable proof is bound to the email it was
         // granted for. A self-service email change moves the document
-        // email away from the proven address — the proof no longer
-        // holds and the link is refused (the plugin's own
-        // provider-email resync keeps the two in step).
-        if (doc.linkable === true) {
-          const provenEmail = typeof doc.linkableEmail === 'string' ? doc.linkableEmail : ''
-          const docEmail = typeof doc.email === 'string' ? doc.email : ''
-          if (provenEmail === '' || provenEmail.toLowerCase() !== docEmail.toLowerCase()) {
-            const docId =
-              typeof doc.id === 'string' || typeof doc.id === 'number' ? String(doc.id) : ''
-            deps.logger.warn(
-              'email link refused: linkable proof does not match the document email (unproven email change?)',
-              { email, userId: docId }
-            )
-            return null
-          }
+        // email away from the proven address (and resets the proof) —
+        // the link is refused (the plugin's own provider-email resync
+        // keeps the two in step).
+        const provenEmail = typeof doc.linkableEmail === 'string' ? doc.linkableEmail : ''
+        const docEmail = typeof doc.email === 'string' ? doc.email : ''
+        if (provenEmail === '' || provenEmail.toLowerCase() !== docEmail.toLowerCase()) {
+          deps.logger.warn(
+            'email link refused: linkable proof does not match the document email (unproven email change?)',
+            { email, userId: docId }
+          )
+          return null
         }
         return singleResultRecord(doc, ctx)
       })
@@ -256,15 +280,32 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
             })),
             toIdentityData(ref, existing.email, deps.clock),
           ]
+          // The document becomes (more) provider-owned: local
+          // sessions issued BEFORE the link must not survive it — a
+          // pre-link local JWT belongs to whoever held the document
+          // before the provider's verified owner arrived. Clearing
+          // Payload's `sessions` array kills every such JWT on its
+          // next request (hosts without `useSessions` are covered by
+          // the provider-owned local-JWT gate in collections.ts).
+          const revokeLocalSessions = collectionUsesLocalSessions(deps.payload, collection)
           return ResultAsync.fromPromise<unknown, RepositoryError>(
             deps.payload.update({
               collection,
               id: userId,
-              data: { [deps.map.identitiesField]: rows },
+              data: {
+                [deps.map.identitiesField]: rows,
+                ...(revokeLocalSessions ? { sessions: [] } : {}),
+              },
               overrideAccess: true,
             }),
             (cause) => new RepositoryError('linkIdentity:update', { cause })
           ).andThen((doc) => {
+            if (revokeLocalSessions) {
+              deps.logger.info('local sessions revoked on identity link', {
+                userId,
+                providerId: ref.providerId,
+              })
+            }
             const record = singleResultRecord(doc, ctx)
             if (!record) {
               return err(new RepositoryError('linkIdentity: unmappable result'))
