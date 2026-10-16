@@ -59,6 +59,37 @@ async function signUp(email: string): Promise<string> {
   return id
 }
 
+/** A real key minted by the satellite for a BA user. */
+async function mintKey(userId: string): Promise<{ key: string; keyId: string }> {
+  const created = (await engine.auth.api.createApiKey({ body: { userId } })) as {
+    key?: unknown
+    id?: unknown
+  }
+  if (typeof created.key !== 'string' || typeof created.id !== 'string') {
+    throw new Error('createApiKey returned no key')
+  }
+  return { key: created.key, keyId: created.id }
+}
+
+/** The satellite's `apikey` model, served from a derived collection. */
+function apiKeySlug(): string {
+  const slug = engine.collections.map((c) => c.slug).find((s) => /api-?key/i.test(s))
+  if (slug === undefined) {
+    throw new Error('no api-key collection derived')
+  }
+  return slug
+}
+
+async function updateKeyRow(keyId: string, data: Record<string, unknown>): Promise<void> {
+  const updated = await payload.update({
+    collection: apiKeySlug(),
+    where: { baId: { equals: keyId } },
+    data,
+    overrideAccess: true,
+  })
+  expect(updated.docs).toHaveLength(1)
+}
+
 beforeAll(async () => {
   const config = await buildConfig({
     secret: SECRET,
@@ -111,6 +142,51 @@ describe('verifyApiKey on @better-auth/api-key 1.7.x (#88)', () => {
 
   it('narrows an unknown key to null instead of throwing', async () => {
     await expect(authLinkServer(payload).verifyApiKey('pal_not-a-real-key')).resolves.toBeNull()
+  })
+
+  // Matrix row 20 failure paths on the real satellite: the key's state
+  // lives in the provider's own store (the derived api-key collection),
+  // so each case flips that row and re-verifies the SAME key.
+  it('refuses a disabled key (null), after it verified while enabled', async () => {
+    const userId = await signUp('key-disabled@test.dev')
+    const { key, keyId } = await mintKey(userId)
+    expect((await authLinkServer(payload).verifyApiKey(key))?.userId).toBe(userId)
+    await updateKeyRow(keyId, { enabled: false })
+    await expect(authLinkServer(payload).verifyApiKey(key)).resolves.toBeNull()
+  })
+
+  it('refuses an expired key (null)', async () => {
+    const userId = await signUp('key-expired@test.dev')
+    const { key, keyId } = await mintKey(userId)
+    await updateKeyRow(keyId, { expiresAt: '2020-01-01T00:00:00.000Z' })
+    await expect(authLinkServer(payload).verifyApiKey(key)).resolves.toBeNull()
+  })
+
+  it('refuses a deleted key (null); a sibling key of the same owner still verifies', async () => {
+    const userId = await signUp('key-deleted@test.dev')
+    const first = await mintKey(userId)
+    const second = await mintKey(userId)
+    const removed = await payload.delete({
+      collection: apiKeySlug(),
+      where: { baId: { equals: first.keyId } },
+      overrideAccess: true,
+    })
+    expect(removed.docs).toHaveLength(1)
+    await expect(authLinkServer(payload).verifyApiKey(first.key)).resolves.toBeNull()
+    expect((await authLinkServer(payload).verifyApiKey(second.key))?.userId).toBe(userId)
+  })
+
+  it("resolves each key to its own owner, never another user's", async () => {
+    const alice = await signUp('key-alice@test.dev')
+    const bob = await signUp('key-bob@test.dev')
+    const aliceKey = await mintKey(alice)
+    const bobKey = await mintKey(bob)
+    const server = authLinkServer(payload)
+    expect((await server.verifyApiKey(aliceKey.key))?.userId).toBe(alice)
+    expect((await server.verifyApiKey(bobKey.key))?.userId).toBe(bob)
+    // A key one character off another user's key is unknown, not theirs.
+    const tampered = `${bobKey.key.slice(0, -1)}${bobKey.key.endsWith('a') ? 'b' : 'a'}`
+    await expect(server.verifyApiKey(tampered)).resolves.toBeNull()
   })
 })
 

@@ -541,7 +541,7 @@ describe('rows 3–7 and 22: local credentials on an Auth.js-linked document', (
     expect((await rest('POST', '/pages', { cookie: jwt, body: { title: 'ok' } })).status).toBe(201)
     expect((await rest('POST', '/users/refresh-token', { cookie: jwt, body: {} })).status).toBe(200)
     const refreshed = await rest('POST', '/users/refresh-token', { cookie: preLinkJwt, body: {} })
-    expect(refreshed.status).not.toBe(200)
+    expect(refreshed.status).toBe(403)
   })
 
   it('rows 4 + 5: a suspended local JWT is refused on the next request and cannot refresh', async () => {
@@ -566,11 +566,11 @@ describe('rows 3–7 and 22: local credentials on an Auth.js-linked document', (
       body: { token: 'linked-reset-token', password: 'RotatedByReset-1' },
     })
     expect(reset.status).toBe(403)
-    expect((await localLogin(email, 'RotatedByReset-1')).status).not.toBe(200)
+    expect((await localLogin(email, 'RotatedByReset-1')).status).toBe(401)
     const wrong = await rest('POST', '/users/reset-password', {
       body: { token: 'no-such-token', password: 'RotatedByReset-1' },
     })
-    expect(wrong.status).not.toBe(200)
+    expect(wrong.status).toBe(403)
   })
 })
 
@@ -797,6 +797,28 @@ describe('row 17: plugin session endpoints with an Auth.js session', () => {
   })
 })
 
+/** The `aj-sessions` rows the Auth.js store holds for an address. */
+async function storedSessionTokens(email: string): Promise<string[]> {
+  const users = await live().find({
+    collection: 'aj-users',
+    where: { email: { equals: email } },
+    limit: 1,
+    overrideAccess: true,
+  })
+  const auId: unknown = users.docs[0]?.auId
+  if (typeof auId !== 'string') {
+    throw new Error(`no Auth.js user ${email}`)
+  }
+  const rows = await live().find({
+    collection: 'aj-sessions',
+    where: { userId: { equals: auId } },
+    limit: 0,
+    pagination: false,
+    overrideAccess: true,
+  })
+  return rows.docs.map((row) => String(row.sessionToken)).sort()
+}
+
 describe('rows 18–20: server session API capability gates on Auth.js', () => {
   it('row 20: verifyApiKey is refused by capability (Auth.js has no API keys)', async () => {
     expect(engine.provider.capabilities.has('api-key-verify')).toBe(false)
@@ -805,8 +827,11 @@ describe('rows 18–20: server session API capability gates on Auth.js', () => {
     )
   })
 
-  it('createSessionFor and listSessions are refused by capability (Auth.js lacks both)', async () => {
-    const { id } = await linkedUser('server-gates@authjs-paths.test')
+  it('rows 18 + 18a: createSessionFor and listSessions are refused by capability — the store is untouched', async () => {
+    const email = 'server-gates@authjs-paths.test'
+    const { id, cookie } = await linkedUser(email)
+    const before = await storedSessionTokens(email)
+    expect(before).toEqual([tokenOf(cookie)])
     expect(engine.provider.capabilities.has('server-session-create')).toBe(false)
     expect(engine.provider.capabilities.has('server-session-list')).toBe(false)
     await expect(
@@ -815,37 +840,62 @@ describe('rows 18–20: server session API capability gates on Auth.js', () => {
     await expect(authLinkServer(live()).listSessions(id)).rejects.toBeInstanceOf(
       ServerSessionUnsupportedError
     )
+    // No row was minted (nor dropped) by the refused calls.
+    expect(await storedSessionTokens(email)).toEqual(before)
   })
 
-  it("revokeAllForUser kills one user's sessions and no one else's", async () => {
-    const victim = await linkedUser('revoke-victim@authjs-paths.test')
-    const bystander = await linkedUser('revoke-bystander@authjs-paths.test')
+  it("row 19: revokeAllForUser deletes every row of one user and no one else's", async () => {
+    const victimEmail = 'revoke-victim@authjs-paths.test'
+    const bystanderEmail = 'revoke-bystander@authjs-paths.test'
+    const victim = await linkedUser(victimEmail)
+    const victimSecond = await signIn(victimEmail)
+    const bystander = await linkedUser(bystanderEmail)
+    expect(await storedSessionTokens(victimEmail)).toEqual(
+      [tokenOf(victim.cookie), tokenOf(victimSecond)].sort()
+    )
+    const bystanderRows = await storedSessionTokens(bystanderEmail)
+    expect(bystanderRows).toEqual([tokenOf(bystander.cookie)])
     await authLinkServer(live()).revokeAllForUser(victim.id)
+    expect(await storedSessionTokens(victimEmail)).toEqual([])
+    expect(await storedSessionTokens(bystanderEmail)).toEqual(bystanderRows)
     expect((await pluginSession(victim.cookie)).status).toBe(401)
+    expect((await pluginSession(victimSecond)).status).toBe(401)
     expect(await hostIdOf(bystander.cookie)).toBe(bystander.id)
   })
 
-  it('revokeAllForUser on a user with no linked identity is refused by capability', async () => {
+  it('row 19: revokeAllForUser on a user with no linked identity is refused by capability', async () => {
     const unlinked = await createDoc('revoke-unlinked@authjs-paths.test')
+    const total = (await live().count({ collection: 'aj-sessions', overrideAccess: true }))
+      .totalDocs
     await expect(authLinkServer(live()).revokeAllForUser(unlinked)).rejects.toBeInstanceOf(
       ServerSessionUnsupportedError
     )
+    expect(
+      (await live().count({ collection: 'aj-sessions', overrideAccess: true })).totalDocs
+    ).toBe(total)
   })
 
   // Found by this walk: the adapter's idempotent `deleteSession` made
   // an unknown handle read as revoked, and an Auth.js provider
   // registered first then ended the server API's walk over providers.
-  it('revoking an unknown handle fails loudly', async () => {
+  it('row 19: revoking an unknown handle fails loudly and deletes nothing', async () => {
+    const total = (await live().count({ collection: 'aj-sessions', overrideAccess: true }))
+      .totalDocs
     await expect(authLinkServer(live()).revokeSession('no-such-session-token')).rejects.toThrow(
       /^revokeSession: /
     )
+    expect(
+      (await live().count({ collection: 'aj-sessions', overrideAccess: true })).totalDocs
+    ).toBe(total)
   })
 
-  it('revokeSession revokes exactly the presented handle', async () => {
+  it("row 19: revokeSession deletes exactly the presented handle's row", async () => {
     const email = 'revoke-one@authjs-paths.test'
     const { cookie: first } = await linkedUser(email)
     const second = await signIn(email)
+    expect(await storedSessionTokens(email)).toEqual([tokenOf(first), tokenOf(second)].sort())
     await authLinkServer(live()).revokeSession(tokenOf(first))
+    expect(await storedSessionTokens(email)).toEqual([tokenOf(second)])
     expect((await pluginSession(first)).status).toBe(401)
     await hostIdOf(second)
   })

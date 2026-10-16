@@ -694,7 +694,7 @@ describe('row 14: provider-side change-password (real BA)', () => {
     ).rejects.toThrow()
     expect(
       (await rest('POST', '/users/login', { body: { email, password: rotated } })).status
-    ).not.toBe(200)
+    ).toBe(401)
   })
 })
 
