@@ -14,7 +14,14 @@ import { describe, expect, it } from 'vitest'
 import { createBetterAuthProvider, createBetterAuthProviderFromUnknown } from '../port.js'
 
 const cookieNames = ['better-auth.session_token']
-const context = { internalAdapter: { deleteSession: () => Promise.resolve() } }
+// Owners resolve as live Better Auth users: the owner-is-a-user gate
+// (UnsupportedApiKeyOwnerError) is pinned in api-key-verify.test.ts.
+const context = {
+  internalAdapter: {
+    deleteSession: () => Promise.resolve(),
+    findUserById: (id: string) => Promise.resolve({ id }),
+  },
+}
 
 function ports(response: unknown): readonly IdentityProviderPort[] {
   const verifyApiKey = () => Promise.resolve(response)

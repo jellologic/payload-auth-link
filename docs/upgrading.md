@@ -38,6 +38,95 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
+## plugin 0.13.0 / migrate 0.7.0 / provider-better-auth 0.10.0 / provider-authjs 0.6.0 (one minor across every package)
+
+**Upgrade impact:** no schema change. Push and migrations have nothing to
+do on SQLite, Postgres or MongoDB. The operator steps are below.
+
+**plugin**
+
+- **Payload API keys on provider-linked documents.** With
+  `auth.useAPIKey`, linking a provider identity now clears the
+  document's API key. A key on a linked document, including one
+  enabled after the link, is refused (403) on every collection and
+  global, and `/access` grants it nothing. Documents without linked
+  identities are unaffected. To keep keys working during a migration,
+  set `allowLocalCredentialsForLinkedDocs: true` and remove it once the
+  migration is done.
+  - Operator step: move service integrations that use a linked user's
+    API key to an unlinked service account.
+- **Granting the linking proof.** Do not grant `linkable` /
+  `linkableEmail` based on `_verified`. Grant it only after a fresh
+  verification of the current address, or from an operator-reviewed
+  list checked against the current email. The earlier snippet that
+  granted it from `_verified` is withdrawn.
+  - If you ran that snippet, re-check the documents it touched.
+  - Refusal logs now say to resolve an email collision (confirm the
+    owner, then rename or remove the conflicting document).
+- **Organization endpoints under impersonation.** `POST
+/auth-link/organizations`, `/invite` and `/accept` now answer every
+  impersonated call with the audited 403. That includes calls where the
+  impersonated user's session does not verify, which used to answer
+  401 without an audit record.
+- **`authLinkServer(payload)` across module copies.** The server
+  registry is now shared by every loaded copy of the plugin. Under
+  TanStack Start, an API route no longer throws
+  `AuthLinkServerMissingError` when `/admin` booted Payload first.
+
+**provider-authjs**
+
+- **Session JSON shape.** The Auth.js session endpoint (`GET
+{basePath}/session`) now returns an allowlisted shape on both session
+  strategies: `{ user: { name, email, image, id, emailVerified },
+expires }`.
+  - A custom `session` callback keeps every field it returns except
+    `sessionToken`, `userId` and `id`, which are always removed.
+  - Client code that read those fields from the session JSON must get
+    what it needs from your own `session` callback.
+
+**provider-better-auth**
+
+- **Logout cookies.** Logout now also expires the cookie-cache and
+  `account_data` chunk cookies (`<name>.0` … `<name>.N`).
+- **In-session MFA step-up.** A correct second factor on an existing
+  session now always marks that session MFA-proven. Apps using
+  `requireMfaForRoles` get the roles back after an in-session TOTP
+  step-up.
+- **`not_in` and NULL.** `not_in` on nullable fields now keeps NULL
+  rows, matching Better Auth's memory adapter. Bulk updates and deletes
+  that use `not_in` may now affect more rows.
+- **Non-ASCII email matching.** Case-insensitive `eq` now matches
+  non-ASCII text on SQLite.
+- **`verifyApiKey` owners.** It refuses organization-owned keys and keys
+  of deleted users with `UnsupportedApiKeyOwnerError`.
+
+**migrate**
+
+- **`finalize`.** It now needs `--config`. It records the finalize in
+  the app's database (Payload's `payload-kv`) and re-signs the
+  manifest. Rollback is refused afterwards, whatever the file says.
+  The manifest signature now covers `finalized`.
+- **`rollback`.**
+  - It only deletes rows in the import's own target collections. Pass
+    the same `--slugs` the import used.
+  - A delete that fails exits non-zero, names the rows and keeps the
+    manifest.
+  - `--allow-unsigned-manifest` no longer deletes rows. Add
+    `--allow-unsigned-deletes` after reviewing a pre-0.6.0 manifest's
+    created rows.
+  - To roll back with a 0.6.0 manifest, pass `--allow-unsigned-manifest`.
+- **`export`.** It takes `--source-map`. It exits 1 when a mapped table
+  is missing (map a model to `null` if it isn't installed), and now
+  includes child, plugin, `ba_*` and `oauth_*` tables. Progress goes to
+  stderr.
+- **Other fixes.**
+  - `verify` checks the configured roles field.
+  - A second `--apply` is a true no-op.
+  - The doctor finds `genericOAuth` under nested import paths.
+  - A new doctor blocker flags adopt mode with Payload's local strategy
+    on. In adopt mode, set `auth: { disableLocalStrategy: true }` on the
+    users collection.
+
 ## plugin 0.12.0 / migrate 0.6.0 (one minor across every package)
 
 **Upgrade impact:** no schema change; nothing to run on any adapter.
