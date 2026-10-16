@@ -1,6 +1,6 @@
 {
   "name": "@payload-auth-link/web",
-  "version": "0.2.6",
+  "version": "0.3.0",
   "description": "payload-auth-link framework-free web-adapter toolkit: route handlers, session verification, server authorization, redirect safety.",
   "license": "MIT",
   "repository": {

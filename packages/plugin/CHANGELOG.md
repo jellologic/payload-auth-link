@@ -1,5 +1,118 @@
 # @payload-auth-link/plugin
 
+## 0.11.0
+
+### Minor Changes
+
+- [#89](https://github.com/jellologic/payload-auth-link/pull/89) [`a01ac10`](https://github.com/jellologic/payload-auth-link/commit/a01ac10ddb12338ea46203118c16ca6c2257dedf) Thanks [@jellologic](https://github.com/jellologic)! - Fixes from the real-data payload-auth → payload-auth-link rehearsal (issue [#88](https://github.com/jellologic/payload-auth-link/issues/88)).
+
+  **provider-better-auth** — `authLinkServer(payload).verifyApiKey` resolves valid `@better-auth/api-key` 1.7.x keys. The satellite names the owner `referenceId`; the port demanded `userId` and threw "key block is missing its user id" for every valid key. `referenceId` is read first, `userId` is the fallback.
+
+  **plugin** — a provider verification of the address a linked user ALREADY carries (the post-import verification) now grants the bound linking proof (`linkable` + `linkableEmail`); it used to change nothing. New `emailVerifiedField` option names a host checkbox (e.g. payload-auth's `emailVerified`) the plugin sets `true` on that verification; it must be a checkbox declared on the users collection (wiring throws otherwise).
+
+  **migrate**
+
+  - Every command prints and terminates: `from-payload-auth`, `verify`, `rollback`, and `finalize` log their outcome (`--json` prints one JSON document), and the booted Payload is destroyed with its Postgres pool closed — `@payloadcms/db-postgres` leaks a checked-out client that kept the CLI alive forever.
+  - Rollback is exact after any number of `--apply` passes: only the FIRST captured prior value per field is kept, `users.updated_at` is restored, and rollback resets the manifest so a re-apply starts fresh. Plan totals are per pass and no longer double.
+  - The manifest stores no email in the clear: prior values are sealed with AES-256-GCM under the app's `PAYLOAD_SECRET` (manifest version 2; version-1 manifests still roll back), and the file is written mode 0600.
+  - `verify` scopes the session check to imported rows: sessions created after cutover and expired imported sessions Better Auth cleaned up are reported, not failed.
+  - The importer carries Better Auth admin/anonymous state (`banned`, `banReason`, `banExpires`, `role`, `isAnonymous`) when the target declares those plugins, and refuses the run when a banned/anonymous user's state cannot be held. Row `createdAt`/`updatedAt` carry for accounts, sessions, verifications, API keys, jwks, orgs, members, and invitations.
+  - New `adopt-prelink` command (dry run by default, `--apply` + manifest, undone by `rollback --manifest`): one `better-auth` identity per adopted user plus the verified-email linking proof — the step adopt mode needed but did not ship.
+  - Doctor: no false `injected-field-collision` on a target config where the plugin is already installed; flags banned users, anonymous users (blockers when the target cannot hold them), `oauth_*` tables (not carried), and `genericOAuth` providers.
+
+  Upgrade impact: none on shipped collection shapes — no `ba-*` or plugin-injected users field changed (the bans/anonymous fields come from Better Auth's own plugins via `autoDeclare` when you declare them). Operators: run `rollback` with the same `PAYLOAD_SECRET` that ran `--apply`; delete the manifest after `finalize` and your soak window.
+
+- [#89](https://github.com/jellologic/payload-auth-link/pull/89) [`a0323fd`](https://github.com/jellologic/payload-auth-link/commit/a0323fd102e8b383fde88a9ec4242cbbdb95a3c9) Thanks [@jellologic](https://github.com/jellologic)! - JIT email linking no longer treats Payload's `_verified` flag as proof of email ownership, and proof never survives an unproven email change.
+
+  - `findByEmail` admits a pre-existing document only when it carries the plugin's `linkable` proof bound to its current address (`linkableEmail`), as docs/security-model.md row 8 documents. Payload keeps `_verified` across email changes (and its default field access lets any signed-in user write it), so a verified, unlinked document whose owner changed its email to someone else's address could previously be linked to that person's provider identity.
+  - An email change made neither by the plugin's provider-email resync nor by a role manager clears `linkable` and `linkableEmail` — and `_verified` on `auth.verify` hosts — in the same write.
+  - Linking an identity clears Payload's local `sessions` array for the document (`auth.useSessions`, Payload's default), so a local JWT issued before the link is refused afterwards; on hosts without `useSessions`, the account-control gate refuses `local-jwt` requests on provider-linked documents (401) unless `allowLocalCredentialsForLinkedDocs` is set.
+  - Provisioning that collides with an existing, unproven document holding the same email is a logged, typed refusal (401, `provisioning refused: …` through the logger) instead of a storage error; Payload's "already registered" auth-collection check now maps to `UserExistsError` like the unique-index violation.
+
+  Upgrade impact: no schema change — no column is added, removed or retyped on any adapter, so push and migrations have nothing to do. Operator step: hosts that relied on `_verified` alone to JIT-link pre-existing accounts must grant `linkable` + `linkableEmail` to the accounts they trust (snippet and audit guidance in docs/upgrading.md); the migration importer already does this for verified imports. Users who change their own email on an `auth.verify` host must re-verify before local sign-in.
+
+- [#89](https://github.com/jellologic/payload-auth-link/pull/89) [`a0323fd`](https://github.com/jellologic/payload-auth-link/commit/a0323fd102e8b383fde88a9ec4242cbbdb95a3c9) Thanks [@jellologic](https://github.com/jellologic)! - Organization membership governance is enforced on every write path.
+
+  - A membership's `organization` and `user` are immutable after create: field access drops REST/GraphQL/admin writes, and a `beforeChange` guard throws for any other writer, trusted Local-API calls with `overrideAccess` included. The only sanctioned `user` write is the plugin's own invite acceptance binding the verified user to their pending invitation. Previously a manager of one organization could move their own membership into another organization (as owner) or re-point a membership at any user.
+  - Membership create/update/delete and invites require a manager of the row's organization and never grant a role above the caller's own (`orgRoles` order is the rank): an `admin` can no longer promote anyone (themselves included) to owner, nor edit or remove an owner's membership.
+  - An organization always keeps an active owner: demoting or removing the last one answers a typed `409`.
+  - `DELETE /api/organizations/:id` cascades the organization's memberships and pending invitations in the same request instead of failing with a 500.
+  - While an operator impersonates a user, organization updates/deletes, every membership write, and the invite / accept / create endpoints are refused (`403`); endpoint attempts are audited through the logger and `onAudit` with `denied: true` and the endpoint path (collection operations keep their existing per-operation audit).
+
+  Upgrade impact: no schema change — no column is added, removed or retyped on any adapter, so push and migrations have nothing to do. Behavioural: Local-API scripts that re-pointed memberships must delete and re-create the row; a sole owner must promote a second owner before stepping down. See docs/upgrading.md.
+
+- [#89](https://github.com/jellologic/payload-auth-link/pull/89) [`b9c8a18`](https://github.com/jellologic/payload-auth-link/commit/b9c8a189ed8aa8e810626c81174caad9a7cfe190) Thanks [@jellologic](https://github.com/jellologic)! - Organization writes are scoped more tightly, and the last-owner guard holds under concurrency.
+
+  - Bulk `PATCH`/`DELETE /api/organizations?where=…` (no document id) is scoped to the organizations the caller manages (owns, for delete). Before this change, organization update access read the organization id from the request body when no id was present, so a manager of one organization could rewrite other organizations through a bulk update.
+  - Deleting an organization is owner-only. It removes every membership, the owners' included, which an `admin` must not be able to do.
+  - `verifiedDomains` can be written only by Payload role managers (`roleManagerRoles`), and never while impersonating. A listed domain admits SSO sign-ins (CAP-15) for every address on it, for every registered SSO provider, so organization owners can no longer list one themselves.
+  - Two owners removing or demoting each other at the same moment can no longer leave an organization without an owner. Each removal writes (locks) the organization row before counting owners, and re-counts after its write. If no owner is left, it restores the row and answers `409`.
+  - Accepting an invitation after joining the organization another way answers `409` (`user is already a member`) instead of a storage validation error.
+
+  Upgrade impact: no schema change. No column is added, removed or retyped on any adapter, so push and migrations have nothing to do. Behavioural: org admins get `403` on organization delete; `verifiedDomains` writes from non-role-managers are ignored, so review existing entries once after upgrading; owner removals bump the organization's `updatedAt`. See docs/upgrading.md.
+
+  Organization creation now seeds the creator's owner membership inside the organization's own transaction. On Postgres (and other transactional adapters) it used to fail the membership's foreign key, so `POST /api/auth-link/organizations` answered 400.
+
+- [#89](https://github.com/jellologic/payload-auth-link/pull/89) [`60deb7d`](https://github.com/jellologic/payload-auth-link/commit/60deb7db81c1a74c9a3b0bc5c60f52e4c61f0c79) Thanks [@jellologic](https://github.com/jellologic)! - Release and supply-chain hardening ([#85](https://github.com/jellologic/payload-auth-link/issues/85)).
+
+  - Every package tarball now ships the MIT `LICENSE` (previously no
+    tarball carried it).
+  - Releases publish only after the full CI workflow passes on the exact
+    commit, from a dedicated `npm-publish` environment, with npm
+    provenance. Local publishing is refused outside an explicit,
+    documented emergency override.
+  - `@payload-auth-link/migrate`: the published `.d.ts` no longer
+    references `pg`, so consumers type-checking with
+    `skipLibCheck: false` no longer fail with TS7016 (no `@types/pg`
+    needed). `openSource` and the source readers (`probeSourceLayout`,
+    `countTables`, `readSourceUsers`, `readFlatRows`, `findOrphans`) now
+    type their client as the new exported structural `SourceClient`
+    (`query` + `end`); a `pg.Client` still satisfies it. Code that used
+    `openSource()`'s result as a full `pg.Client` must narrow to those
+    two methods or open its own `pg` client.
+  - `@payload-auth-link/migrate`: the TypeScript compiler API is loaded
+    lazily, only by the `codemod` command; importing the package or
+    running `doctor`/import/export no longer loads it.
+
+  Upgrade impact: none for stored data or schemas (no collection shape
+  changed). Type-level only for `@payload-auth-link/migrate` API
+  consumers, as described above.
+
+- [#89](https://github.com/jellologic/payload-auth-link/pull/89) [`661455c`](https://github.com/jellologic/payload-auth-link/commit/661455c057a02325f24241188305386ae624d8e9) Thanks [@jellologic](https://github.com/jellologic)! - `reset-password` (REST, GraphQL `resetPasswordUser`, Local API) for a
+  SUSPENDED account is now refused (401) in `beforeOperation`, before
+  Payload writes anything. Payload's reset operation stores the new
+  password and clears the account's sessions before it runs
+  `beforeLogin`, so on adapters where that write is not rolled back the
+  previous `beforeLogin` refusal came too late: the "refused" reset had
+  already rotated the credential, which then worked as soon as the
+  suspension lapsed. The check applies whatever
+  `allowLocalCredentialsForLinkedDocs` says, and the guard's lookup now
+  runs inside the operation's transaction (`req`).
+
+- [#89](https://github.com/jellologic/payload-auth-link/pull/89) [`77552bb`](https://github.com/jellologic/payload-auth-link/commit/77552bb11b19a243c89cd8816877f6a956897503) Thanks [@jellologic](https://github.com/jellologic)! - Restrict the users collection's `unlock` operation to role managers by default (never while impersonating). Payload's own default let any signed-in user unlock any account, which undid the brute-force lockout. A host that sets `access.unlock` itself keeps its own function.
+
+  Upgrade impact: no schema change. Self-service "unlock my account" flows run by plain users now get 403; route them through a role manager or set `access.unlock` on your users collection.
+
+- [#89](https://github.com/jellologic/payload-auth-link/pull/89) [`0adba41`](https://github.com/jellologic/payload-auth-link/commit/0adba4178662fb899760cf3708b548ba7874fb36) Thanks [@jellologic](https://github.com/jellologic)! - Close open write defaults on the users collection: with no host-declared access, `update` is now self-or-role-manager and `delete` is role-manager only (never while impersonating), instead of Payload's "any signed-in user". The injected email field lets a non-manager change only their own address, even under a broader host `update`. `migrate export --out` and import manifests are written owner-only (0600) before content lands; sealed manifest values are bound to their entry and rollback restores only the fields the kit writes. `validateSessionEndpoint` rejects whitespace and control characters.
+
+  Upgrade impact: no schema change. Hosts that relied on any signed-in user updating or deleting other users must declare that access explicitly; see docs/upgrading.md.
+
+- [#89](https://github.com/jellologic/payload-auth-link/pull/89) [`d210efe`](https://github.com/jellologic/payload-auth-link/commit/d210efe66ed560e2a8394c399e4b64695219dc71) Thanks [@jellologic](https://github.com/jellologic)! - Web-layer fixes (issue [#87](https://github.com/jellologic/payload-auth-link/issues/87)).
+
+  - `safeRedirectPath` resolves dot segments (including percent-encoded ones) before the API-prefix and sign-in checks and returns the normalised path, so `/x/../api/...` and `/./sign-in` fall back.
+  - `AuthLinkProvider` sequences session reads: only the newest read writes state, and `signOut` aborts in-flight reads so a late response can no longer restore a signed-out session. `fetchSession` accepts an optional `AbortSignal`.
+  - Logout (`DELETE /api/auth-link/session`) also expires Better Auth's `dont_remember` and cookie-cache `session_data` cookies, the `__Secure-`/plain counterpart of each name, and the configured `legacySessions` names (`getBetterAuthLogoutCookieNames` returns the additional names).
+  - A logout presenting no session cookie and no `Authorization`/`x-api-key` header answers without querying any provider (same idempotent response, cookies still expired).
+  - The provider admin login view derives its break-glass endpoint (`${routes.api}/${usersCollection}/login`) and post-login destination (`routes.admin`) from the Payload config; new `admin.signInPath` and `admin.authBase` plugin options cover the app sign-in link and the Better Auth mount.
+  - Docs: `__Host-` cookie setup for single-host deployments.
+
+  Upgrade impact: no schema change, no push or migration needed on any adapter. Operators with a non-default sign-in page or Better Auth mount set `admin.signInPath` / `admin.authBase`. See `docs/upgrading.md`.
+
+### Patch Changes
+
+- Updated dependencies [[`60deb7d`](https://github.com/jellologic/payload-auth-link/commit/60deb7db81c1a74c9a3b0bc5c60f52e4c61f0c79), [`d210efe`](https://github.com/jellologic/payload-auth-link/commit/d210efe66ed560e2a8394c399e4b64695219dc71), [`d210efe`](https://github.com/jellologic/payload-auth-link/commit/d210efe66ed560e2a8394c399e4b64695219dc71)]:
+  - @payload-auth-link/core@0.7.0
+
 ## 0.10.2
 
 ### Patch Changes

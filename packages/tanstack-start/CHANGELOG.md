@@ -1,5 +1,41 @@
 # @payload-auth-link/tanstack-start
 
+## 0.3.0
+
+### Minor Changes
+
+- [#89](https://github.com/jellologic/payload-auth-link/pull/89) [`60deb7d`](https://github.com/jellologic/payload-auth-link/commit/60deb7db81c1a74c9a3b0bc5c60f52e4c61f0c79) Thanks [@jellologic](https://github.com/jellologic)! - Release and supply-chain hardening ([#85](https://github.com/jellologic/payload-auth-link/issues/85)).
+
+  - Every package tarball now ships the MIT `LICENSE` (previously no
+    tarball carried it).
+  - Releases publish only after the full CI workflow passes on the exact
+    commit, from a dedicated `npm-publish` environment, with npm
+    provenance. Local publishing is refused outside an explicit,
+    documented emergency override.
+  - `@payload-auth-link/migrate`: the published `.d.ts` no longer
+    references `pg`, so consumers type-checking with
+    `skipLibCheck: false` no longer fail with TS7016 (no `@types/pg`
+    needed). `openSource` and the source readers (`probeSourceLayout`,
+    `countTables`, `readSourceUsers`, `readFlatRows`, `findOrphans`) now
+    type their client as the new exported structural `SourceClient`
+    (`query` + `end`); a `pg.Client` still satisfies it. Code that used
+    `openSource()`'s result as a full `pg.Client` must narrow to those
+    two methods or open its own `pg` client.
+  - `@payload-auth-link/migrate`: the TypeScript compiler API is loaded
+    lazily, only by the `codemod` command; importing the package or
+    running `doctor`/import/export no longer loads it.
+
+  Upgrade impact: none for stored data or schemas (no collection shape
+  changed). Type-level only for `@payload-auth-link/migrate` API
+  consumers, as described above.
+
+### Patch Changes
+
+- Updated dependencies [[`60deb7d`](https://github.com/jellologic/payload-auth-link/commit/60deb7db81c1a74c9a3b0bc5c60f52e4c61f0c79), [`0adba41`](https://github.com/jellologic/payload-auth-link/commit/0adba4178662fb899760cf3708b548ba7874fb36), [`d210efe`](https://github.com/jellologic/payload-auth-link/commit/d210efe66ed560e2a8394c399e4b64695219dc71), [`d210efe`](https://github.com/jellologic/payload-auth-link/commit/d210efe66ed560e2a8394c399e4b64695219dc71)]:
+  - @payload-auth-link/core@0.7.0
+  - @payload-auth-link/web@0.3.0
+  - @payload-auth-link/react@0.3.0
+
 ## 0.2.5
 
 ### Patch Changes

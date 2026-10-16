@@ -1,5 +1,62 @@
 # @payload-auth-link/migrate
 
+## 0.5.0
+
+### Minor Changes
+
+- [#89](https://github.com/jellologic/payload-auth-link/pull/89) [`a01ac10`](https://github.com/jellologic/payload-auth-link/commit/a01ac10ddb12338ea46203118c16ca6c2257dedf) Thanks [@jellologic](https://github.com/jellologic)! - Fixes from the real-data payload-auth → payload-auth-link rehearsal (issue [#88](https://github.com/jellologic/payload-auth-link/issues/88)).
+
+  **provider-better-auth** — `authLinkServer(payload).verifyApiKey` resolves valid `@better-auth/api-key` 1.7.x keys. The satellite names the owner `referenceId`; the port demanded `userId` and threw "key block is missing its user id" for every valid key. `referenceId` is read first, `userId` is the fallback.
+
+  **plugin** — a provider verification of the address a linked user ALREADY carries (the post-import verification) now grants the bound linking proof (`linkable` + `linkableEmail`); it used to change nothing. New `emailVerifiedField` option names a host checkbox (e.g. payload-auth's `emailVerified`) the plugin sets `true` on that verification; it must be a checkbox declared on the users collection (wiring throws otherwise).
+
+  **migrate**
+
+  - Every command prints and terminates: `from-payload-auth`, `verify`, `rollback`, and `finalize` log their outcome (`--json` prints one JSON document), and the booted Payload is destroyed with its Postgres pool closed — `@payloadcms/db-postgres` leaks a checked-out client that kept the CLI alive forever.
+  - Rollback is exact after any number of `--apply` passes: only the FIRST captured prior value per field is kept, `users.updated_at` is restored, and rollback resets the manifest so a re-apply starts fresh. Plan totals are per pass and no longer double.
+  - The manifest stores no email in the clear: prior values are sealed with AES-256-GCM under the app's `PAYLOAD_SECRET` (manifest version 2; version-1 manifests still roll back), and the file is written mode 0600.
+  - `verify` scopes the session check to imported rows: sessions created after cutover and expired imported sessions Better Auth cleaned up are reported, not failed.
+  - The importer carries Better Auth admin/anonymous state (`banned`, `banReason`, `banExpires`, `role`, `isAnonymous`) when the target declares those plugins, and refuses the run when a banned/anonymous user's state cannot be held. Row `createdAt`/`updatedAt` carry for accounts, sessions, verifications, API keys, jwks, orgs, members, and invitations.
+  - New `adopt-prelink` command (dry run by default, `--apply` + manifest, undone by `rollback --manifest`): one `better-auth` identity per adopted user plus the verified-email linking proof — the step adopt mode needed but did not ship.
+  - Doctor: no false `injected-field-collision` on a target config where the plugin is already installed; flags banned users, anonymous users (blockers when the target cannot hold them), `oauth_*` tables (not carried), and `genericOAuth` providers.
+
+  Upgrade impact: none on shipped collection shapes — no `ba-*` or plugin-injected users field changed (the bans/anonymous fields come from Better Auth's own plugins via `autoDeclare` when you declare them). Operators: run `rollback` with the same `PAYLOAD_SECRET` that ran `--apply`; delete the manifest after `finalize` and your soak window.
+
+- [#89](https://github.com/jellologic/payload-auth-link/pull/89) [`60deb7d`](https://github.com/jellologic/payload-auth-link/commit/60deb7db81c1a74c9a3b0bc5c60f52e4c61f0c79) Thanks [@jellologic](https://github.com/jellologic)! - Release and supply-chain hardening ([#85](https://github.com/jellologic/payload-auth-link/issues/85)).
+
+  - Every package tarball now ships the MIT `LICENSE` (previously no
+    tarball carried it).
+  - Releases publish only after the full CI workflow passes on the exact
+    commit, from a dedicated `npm-publish` environment, with npm
+    provenance. Local publishing is refused outside an explicit,
+    documented emergency override.
+  - `@payload-auth-link/migrate`: the published `.d.ts` no longer
+    references `pg`, so consumers type-checking with
+    `skipLibCheck: false` no longer fail with TS7016 (no `@types/pg`
+    needed). `openSource` and the source readers (`probeSourceLayout`,
+    `countTables`, `readSourceUsers`, `readFlatRows`, `findOrphans`) now
+    type their client as the new exported structural `SourceClient`
+    (`query` + `end`); a `pg.Client` still satisfies it. Code that used
+    `openSource()`'s result as a full `pg.Client` must narrow to those
+    two methods or open its own `pg` client.
+  - `@payload-auth-link/migrate`: the TypeScript compiler API is loaded
+    lazily, only by the `codemod` command; importing the package or
+    running `doctor`/import/export no longer loads it.
+
+  Upgrade impact: none for stored data or schemas (no collection shape
+  changed). Type-level only for `@payload-auth-link/migrate` API
+  consumers, as described above.
+
+- [#89](https://github.com/jellologic/payload-auth-link/pull/89) [`0adba41`](https://github.com/jellologic/payload-auth-link/commit/0adba4178662fb899760cf3708b548ba7874fb36) Thanks [@jellologic](https://github.com/jellologic)! - Close open write defaults on the users collection: with no host-declared access, `update` is now self-or-role-manager and `delete` is role-manager only (never while impersonating), instead of Payload's "any signed-in user". The injected email field lets a non-manager change only their own address, even under a broader host `update`. `migrate export --out` and import manifests are written owner-only (0600) before content lands; sealed manifest values are bound to their entry and rollback restores only the fields the kit writes. `validateSessionEndpoint` rejects whitespace and control characters.
+
+  Upgrade impact: no schema change. Hosts that relied on any signed-in user updating or deleting other users must declare that access explicitly; see docs/upgrading.md.
+
+### Patch Changes
+
+- Updated dependencies [[`60deb7d`](https://github.com/jellologic/payload-auth-link/commit/60deb7db81c1a74c9a3b0bc5c60f52e4c61f0c79), [`d210efe`](https://github.com/jellologic/payload-auth-link/commit/d210efe66ed560e2a8394c399e4b64695219dc71), [`d210efe`](https://github.com/jellologic/payload-auth-link/commit/d210efe66ed560e2a8394c399e4b64695219dc71)]:
+  - @payload-auth-link/core@0.7.0
+  - @payload-auth-link/next@0.4.0
+
 ## 0.4.3
 
 ### Patch Changes

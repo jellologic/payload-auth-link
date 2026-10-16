@@ -1,5 +1,56 @@
 # @payload-auth-link/core
 
+## 0.7.0
+
+### Minor Changes
+
+- [#89](https://github.com/jellologic/payload-auth-link/pull/89) [`60deb7d`](https://github.com/jellologic/payload-auth-link/commit/60deb7db81c1a74c9a3b0bc5c60f52e4c61f0c79) Thanks [@jellologic](https://github.com/jellologic)! - Release and supply-chain hardening ([#85](https://github.com/jellologic/payload-auth-link/issues/85)).
+
+  - Every package tarball now ships the MIT `LICENSE` (previously no
+    tarball carried it).
+  - Releases publish only after the full CI workflow passes on the exact
+    commit, from a dedicated `npm-publish` environment, with npm
+    provenance. Local publishing is refused outside an explicit,
+    documented emergency override.
+  - `@payload-auth-link/migrate`: the published `.d.ts` no longer
+    references `pg`, so consumers type-checking with
+    `skipLibCheck: false` no longer fail with TS7016 (no `@types/pg`
+    needed). `openSource` and the source readers (`probeSourceLayout`,
+    `countTables`, `readSourceUsers`, `readFlatRows`, `findOrphans`) now
+    type their client as the new exported structural `SourceClient`
+    (`query` + `end`); a `pg.Client` still satisfies it. Code that used
+    `openSource()`'s result as a full `pg.Client` must narrow to those
+    two methods or open its own `pg` client.
+  - `@payload-auth-link/migrate`: the TypeScript compiler API is loaded
+    lazily, only by the `codemod` command; importing the package or
+    running `doctor`/import/export no longer loads it.
+
+  Upgrade impact: none for stored data or schemas (no collection shape
+  changed). Type-level only for `@payload-auth-link/migrate` API
+  consumers, as described above.
+
+- [#89](https://github.com/jellologic/payload-auth-link/pull/89) [`d210efe`](https://github.com/jellologic/payload-auth-link/commit/d210efe66ed560e2a8394c399e4b64695219dc71) Thanks [@jellologic](https://github.com/jellologic)! - Harden the server-side session verifier's origin resolution.
+
+  - `createSessionVerifier` now requires `baseUrl` (or an absolute `sessionEndpoint`) unless `NODE_ENV` is exactly `'development'`; unset, `test`, `staging`, `preview`, and `production` all throw `InvalidConfigError` at construction.
+  - In development, the host fallback ignores `X-Forwarded-Host`/`X-Forwarded-Proto` unless the new `trustProxy` option is set, accepts only `http`/`https`, and only resolves to hosts in `allowedDevelopmentHosts` (default `localhost`, `127.0.0.1`, `[::1]`). Rejections fail closed and are reported through `onError`.
+  - Protocol-relative and non-http `sessionEndpoint` values throw at construction (new `validateSessionEndpoint` export).
+  - The verifier fetch aborts after `timeoutMs` (default 5000, new `defaultSessionVerifierTimeoutMs` export) and does not follow redirects; both fail closed.
+  - `resolveSessionUrl`'s host fallback now defaults to off and takes a host policy; core's `resolveOrigin` gains `trustProxy` and `allowedHosts` and validates the scheme and host. The Auth.js engine keeps reading forwarded headers explicitly for its in-process session read.
+  - `packages/next/README.md`: the middleware snippet resolves cookie names with `getBetterAuthSessionCookieNames` (so `__Secure-` names match on https) and ships a matcher.
+
+  Upgrade impact: no schema change. Apps constructing a verifier without `baseUrl` outside `NODE_ENV=development` must pass `baseUrl`; dev setups behind a local proxy set `trustProxy: true` (and `allowedDevelopmentHosts` for non-loopback dev hosts). See `docs/upgrading.md`.
+
+- [#89](https://github.com/jellologic/payload-auth-link/pull/89) [`d210efe`](https://github.com/jellologic/payload-auth-link/commit/d210efe66ed560e2a8394c399e4b64695219dc71) Thanks [@jellologic](https://github.com/jellologic)! - Web-layer fixes (issue [#87](https://github.com/jellologic/payload-auth-link/issues/87)).
+
+  - `safeRedirectPath` resolves dot segments (including percent-encoded ones) before the API-prefix and sign-in checks and returns the normalised path, so `/x/../api/...` and `/./sign-in` fall back.
+  - `AuthLinkProvider` sequences session reads: only the newest read writes state, and `signOut` aborts in-flight reads so a late response can no longer restore a signed-out session. `fetchSession` accepts an optional `AbortSignal`.
+  - Logout (`DELETE /api/auth-link/session`) also expires Better Auth's `dont_remember` and cookie-cache `session_data` cookies, the `__Secure-`/plain counterpart of each name, and the configured `legacySessions` names (`getBetterAuthLogoutCookieNames` returns the additional names).
+  - A logout presenting no session cookie and no `Authorization`/`x-api-key` header answers without querying any provider (same idempotent response, cookies still expired).
+  - The provider admin login view derives its break-glass endpoint (`${routes.api}/${usersCollection}/login`) and post-login destination (`routes.admin`) from the Payload config; new `admin.signInPath` and `admin.authBase` plugin options cover the app sign-in link and the Better Auth mount.
+  - Docs: `__Host-` cookie setup for single-host deployments.
+
+  Upgrade impact: no schema change, no push or migration needed on any adapter. Operators with a non-default sign-in page or Better Auth mount set `admin.signInPath` / `admin.authBase`. See `docs/upgrading.md`.
+
 ## 0.6.2
 
 ### Patch Changes
