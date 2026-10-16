@@ -7,7 +7,10 @@ import {
 } from '@payload-auth-link/core'
 import {
   addDataAndFileToRequest,
+  APIError,
   type Access,
+  type CollectionBeforeChangeHook,
+  type CollectionBeforeDeleteHook,
   type CollectionConfig,
   type Endpoint,
   type Payload,
@@ -21,6 +24,7 @@ import {
   passesCsrfForChannel,
   unauthorized,
 } from './access.js'
+import { auditImpersonatedEndpoint, composeAuditLogger } from './audit.js'
 import type { WiredOptions, WiredOrganizations } from './options.js'
 import { createServices } from './services.js'
 
@@ -41,7 +45,31 @@ import { createServices } from './services.js'
  * `'owner'` by default). Management operations (invite, role
  * change, org update/delete) require the first role, or `'admin'`
  * when present in the list.
+ *
+ * Membership governance (all enforced server-side, every channel):
+ * - a membership's `organization` and `user` are immutable once
+ *   created — a row can never be relocated into another tenant or
+ *   re-pointed at another user (field access AND a `beforeChange`
+ *   guard, so trusted Local-API writes are held to it too; the only
+ *   sanctioned transition is the plugin's own invite acceptance,
+ *   which binds the accepting user to a pending invitation);
+ * - role writes (create, update, invite) require a manager of the
+ *   row's organization and never exceed the caller's own role —
+ *   `orgRoles` order is the rank, so an `admin` can neither promote
+ *   anyone (themselves included) to owner nor touch an owner's row;
+ * - an organization always keeps at least one active owner: demoting
+ *   or removing the last one is refused with a typed 409;
+ * - deleting an organization cascades its memberships and pending
+ *   invitations in the same transaction;
+ * - every membership/organization write, invite, and acceptance is
+ *   refused while an operator impersonates the caller, and the
+ *   attempt is audited (CAP-8b).
  */
+
+/** `req.context` key the accept handler sets: binds `user` on a pending invitation. */
+const acceptInvitationMarker = 'payload-auth-link:accept-invitation'
+/** `req.context` key holding the organization ids being deleted (cascade). */
+const deletingOrganizationsKey = 'payload-auth-link:deleting-organizations'
 
 type MembershipRow = {
   readonly id: string
@@ -134,6 +162,28 @@ export function orgManagerRoles(orgRoles: readonly Role[]): readonly Role[] {
 }
 
 /**
+ * Privilege rank of an org role: its index in `orgRoles` (0 = owner,
+ * highest). Unknown roles rank below every configured one, so they
+ * never outrank anything.
+ */
+function roleRank(orgRoles: readonly Role[], role: string): number {
+  const index = orgRoles.findIndex((candidate) => candidate === role)
+  return index === -1 ? Number.POSITIVE_INFINITY : index
+}
+
+/**
+ * Whether `caller` may write a membership carrying `target` role:
+ * managers only, and never above their own rank.
+ */
+function mayAssignRole(orgRoles: readonly Role[], callerRole: string, target: string): boolean {
+  return (
+    orgManagerRoles(orgRoles).some((role) => role === callerRole) &&
+    orgRoles.some((role) => role === target) &&
+    roleRank(orgRoles, target) >= roleRank(orgRoles, callerRole)
+  )
+}
+
+/**
  * The active membership of a user in an organization, or `null`.
  * Every org authorization decision in this package reads through
  * here (invariant 5 lives in `access.ts` for collections; org role
@@ -218,6 +268,9 @@ async function userOrgIds(
 function managerAccess(wired: WiredOrganizations): Access {
   const managers = orgManagerRoles(wired.orgRoles)
   return async ({ req, id, data }) => {
+    if (isImpersonating(req)) {
+      return false
+    }
     const organizationId =
       typeof id === 'string' || typeof id === 'number'
         ? String(id)
@@ -228,6 +281,153 @@ function managerAccess(wired: WiredOrganizations): Access {
       return false
     }
     return requireOrgRole(req, wired, { organizationId, roles: managers })
+  }
+}
+
+async function membershipById(
+  req: PayloadRequest,
+  wired: WiredOrganizations,
+  id: string | number | undefined
+): Promise<MembershipRow | null> {
+  if (id === undefined) {
+    return null
+  }
+  const doc: unknown = await req.payload
+    .findByID({ collection: wired.membershipsCollection, id, depth: 0, overrideAccess: true })
+    .catch(() => null)
+  return toMembershipRow(doc)
+}
+
+/** The request user's active membership in `organizationId`, or `null`. */
+async function callerMembership(
+  req: PayloadRequest,
+  wired: WiredOrganizations,
+  organizationId: string
+): Promise<MembershipRow | null> {
+  const userId = requestUserId(req)
+  if (userId === null) {
+    return null
+  }
+  return getOrgMembership(req.payload, wired, { userId, organizationId })
+}
+
+/** Organization ids whose cascade delete is running in this request. */
+function deletingOrganizations(req: PayloadRequest): ReadonlySet<string> {
+  const context: unknown = req.context
+  const value = isRecord(context) ? context[deletingOrganizationsKey] : undefined
+  return value instanceof Set ? (value as Set<string>) : new Set<string>()
+}
+
+/**
+ * Whether removing `row`'s active ownership would leave its
+ * organization without an active owner.
+ */
+async function isLastOwner(
+  req: PayloadRequest,
+  wired: WiredOrganizations,
+  row: MembershipRow
+): Promise<boolean> {
+  const [ownerRole] = wired.orgRoles
+  if (ownerRole === undefined || row.role !== ownerRole || row.status !== 'active') {
+    return false
+  }
+  const owners = await findMemberships(req.payload, wired, {
+    and: [
+      { organization: { equals: idValue(row.organizationId) } },
+      { role: { equals: ownerRole } },
+      { status: { equals: 'active' } },
+    ],
+  })
+  return !owners.some((owner) => owner.id !== row.id)
+}
+
+/**
+ * Membership integrity on every write path, trusted Local-API calls
+ * included (`overrideAccess` skips access, never hooks):
+ * - `organization` never changes after create;
+ * - `user` never changes after create, except the plugin's own
+ *   invite acceptance binding a user to a pending invitation;
+ * - the last active owner cannot be demoted or deactivated (409).
+ */
+function membershipIntegrityHook(
+  wiredOpts: WiredOptions,
+  wired: WiredOrganizations
+): CollectionBeforeChangeHook {
+  return async ({ data, operation, originalDoc, req }) => {
+    if (operation !== 'update') {
+      return data
+    }
+    const original = toMembershipRow(originalDoc)
+    if (original === null) {
+      throw new APIError('membership record is malformed', 400)
+    }
+    if ('organization' in data && relationId(data.organization) !== original.organizationId) {
+      wiredOpts.logger.warn('membership relocation refused', { membershipId: original.id })
+      throw new APIError('a membership cannot move to another organization', 403)
+    }
+    if ('user' in data && relationId(data.user) !== original.userId) {
+      const accepting =
+        isRecord(req.context) &&
+        req.context[acceptInvitationMarker] === true &&
+        original.userId === null &&
+        original.status === 'invited'
+      if (!accepting) {
+        wiredOpts.logger.warn('membership user rewrite refused', { membershipId: original.id })
+        throw new APIError('a membership cannot be reassigned to another user', 403)
+      }
+    }
+    const nextRole = typeof data.role === 'string' ? data.role : original.role
+    const nextStatus = typeof data.status === 'string' ? data.status : original.status
+    const [ownerRole] = wired.orgRoles
+    const losesOwnership = nextRole !== ownerRole || nextStatus !== 'active'
+    if (losesOwnership && (await isLastOwner(req, wired, original))) {
+      throw new APIError('an organization must keep at least one owner', 409)
+    }
+    return data
+  }
+}
+
+/**
+ * Refuse removing the last active owner of an organization (409),
+ * except inside that organization's own cascade delete.
+ */
+function membershipDeleteGuard(wired: WiredOrganizations): CollectionBeforeDeleteHook {
+  return async ({ id, req }) => {
+    const row = await membershipById(req, wired, id)
+    if (row === null || deletingOrganizations(req).has(row.organizationId)) {
+      return
+    }
+    if (await isLastOwner(req, wired, row)) {
+      throw new APIError('an organization must keep at least one owner', 409)
+    }
+  }
+}
+
+/**
+ * Organization delete cascades its memberships and pending
+ * invitations in the same request (and transaction): the required
+ * `organization` relationship would otherwise fail the delete on a
+ * constraint, and orphaned rows must never outlive their tenant.
+ */
+function cascadeOrganizationDelete(wired: WiredOrganizations): CollectionBeforeDeleteHook {
+  return async ({ id, req }) => {
+    const organizationId = String(id)
+    const context: Record<string, unknown> = isRecord(req.context) ? req.context : {}
+    const existing = context[deletingOrganizationsKey]
+    const deleting = existing instanceof Set ? (existing as Set<string>) : new Set<string>()
+    deleting.add(organizationId)
+    context[deletingOrganizationsKey] = deleting
+    req.context = context
+    try {
+      await req.payload.delete({
+        collection: wired.membershipsCollection,
+        where: { organization: { equals: idValue(organizationId) } },
+        overrideAccess: true,
+        req,
+      })
+    } finally {
+      deleting.delete(organizationId)
+    }
   }
 }
 
@@ -278,6 +478,7 @@ function organizationsCollection(wired: WiredOrganizations): CollectionConfig {
       },
     ],
     hooks: {
+      beforeDelete: [cascadeOrganizationDelete(wired)],
       afterChange: [
         async ({ doc, operation, req }) => {
           // The creator becomes the first member with the owner role
@@ -345,50 +546,54 @@ function membershipsCollection(
         }
         return { or: clauses }
       },
-      // Membership writes go to org managers; the owner-bootstrap
-      // hook and the invite/accept endpoints use overrideAccess
-      // after their own checks.
+      // Membership writes go to org managers, never while
+      // impersonating, and never above the caller's own role; the
+      // owner-bootstrap hook and the invite/accept endpoints use
+      // overrideAccess after their own checks.
       create: async ({ req, data }) => {
+        if (isImpersonating(req)) {
+          return false
+        }
         const organizationId = isRecord(data) ? relationId(data.organization) : null
-        if (organizationId === null) {
+        const role = isRecord(data) && typeof data.role === 'string' ? data.role : null
+        if (organizationId === null || role === null) {
           return false
         }
-        return requireOrgRole(req, wired, {
-          organizationId,
-          roles: orgManagerRoles(wired.orgRoles),
-        })
+        const caller = await callerMembership(req, wired, organizationId)
+        return caller !== null && mayAssignRole(wired.orgRoles, caller.role, role)
       },
-      update: async ({ req, id }) => {
-        if (id === undefined) {
+      update: async ({ req, id, data }) => {
+        if (isImpersonating(req)) {
           return false
         }
-        const doc = await req.payload
-          .findByID({ collection: wired.membershipsCollection, id, depth: 0, overrideAccess: true })
-          .catch(() => null)
-        const row = toMembershipRow(doc)
+        const row = await membershipById(req, wired, id)
         if (row === null) {
           return false
         }
-        return requireOrgRole(req, wired, {
-          organizationId: row.organizationId,
-          roles: orgManagerRoles(wired.orgRoles),
-        })
-      },
-      delete: async ({ req, id }) => {
-        if (id === undefined) {
+        const caller = await callerMembership(req, wired, row.organizationId)
+        if (caller === null || !mayAssignRole(wired.orgRoles, caller.role, row.role)) {
+          // Not a manager here, or the row outranks the caller (an
+          // admin editing an owner's membership).
           return false
         }
-        const doc = await req.payload
-          .findByID({ collection: wired.membershipsCollection, id, depth: 0, overrideAccess: true })
-          .catch(() => null)
-        const row = toMembershipRow(doc)
-        return row !== null
-          ? requireOrgRole(req, wired, {
-              organizationId: row.organizationId,
-              roles: orgManagerRoles(wired.orgRoles),
-            })
-          : false
+        const nextRole = isRecord(data) && typeof data.role === 'string' ? data.role : row.role
+        return mayAssignRole(wired.orgRoles, caller.role, nextRole)
       },
+      delete: async ({ req, id }) => {
+        if (isImpersonating(req)) {
+          return false
+        }
+        const row = await membershipById(req, wired, id)
+        if (row === null) {
+          return false
+        }
+        const caller = await callerMembership(req, wired, row.organizationId)
+        return caller !== null && mayAssignRole(wired.orgRoles, caller.role, row.role)
+      },
+    },
+    hooks: {
+      beforeChange: [membershipIntegrityHook(wiredOpts, wired)],
+      beforeDelete: [membershipDeleteGuard(wired)],
     },
     fields: [
       {
@@ -396,6 +601,9 @@ function membershipsCollection(
         type: 'relationship',
         relationTo: wiredOpts.config.map.usersCollection,
         index: true,
+        // Immutable after create (the integrity hook also holds
+        // trusted Local-API writes to it).
+        access: { update: () => false },
       },
       { name: 'invitedEmail', type: 'email', index: true },
       {
@@ -404,6 +612,8 @@ function membershipsCollection(
         relationTo: wired.organizationsCollection,
         required: true,
         index: true,
+        // Immutable after create: a membership never moves tenants.
+        access: { update: () => false },
       },
       {
         name: 'role',
@@ -495,6 +705,31 @@ export function createOrganizationEndpoints(wired: WiredOptions): Endpoint[] {
   }
   const csrf = (req: PayloadRequest): boolean =>
     passesCsrfForChannel(req.headers, wired.config.baseUrl, wired.admitChannels)
+  // CAP-8b: the same audit surface the collection hooks write to
+  // (logger + the durable `onAudit` sink).
+  const auditLogger =
+    wired.onAudit === null ? wired.logger : composeAuditLogger(wired.logger, wired.onAudit)
+  /**
+   * Organization management is refused while impersonating, on
+   * either signal (fail-closed): the strategy-projected `req.user`
+   * actor or the explicitly verified session's actor. Every refusal
+   * is audited. Returns the 403 to send, or `null` to proceed.
+   */
+  const refuseWhileImpersonating = async (
+    req: PayloadRequest,
+    operation: string,
+    endpoint: string,
+    message: string
+  ): Promise<Response | null> => {
+    const { sessions } = createServices(wired, req.payload)
+    const session = await sessions.verify(req.headers)
+    const sessionActor = session.isOk() ? session.value.actor : undefined
+    if (!isImpersonating(req) && sessionActor === undefined) {
+      return null
+    }
+    auditImpersonatedEndpoint(auditLogger, req, { operation, endpoint, sessionActor })
+    return forbidden(message)
+  }
 
   return [
     {
@@ -557,8 +792,14 @@ export function createOrganizationEndpoints(wired: WiredOptions): Endpoint[] {
         if (user === null) {
           return unauthorized()
         }
-        if (isImpersonating(req)) {
-          return forbidden('organizations cannot be created while impersonating')
+        const impersonated = await refuseWhileImpersonating(
+          req,
+          'create',
+          '/auth-link/organizations',
+          'organizations cannot be created while impersonating'
+        )
+        if (impersonated !== null) {
+          return impersonated
         }
         const body = await readJsonBody(req)
         const name = body === null ? null : stringField(body, 'name')
@@ -613,6 +854,15 @@ export function createOrganizationEndpoints(wired: WiredOptions): Endpoint[] {
         if (user === null) {
           return unauthorized()
         }
+        const impersonated = await refuseWhileImpersonating(
+          req,
+          'invite',
+          '/auth-link/organizations/invite',
+          'organization membership cannot be managed while impersonating'
+        )
+        if (impersonated !== null) {
+          return impersonated
+        }
         const body = await readJsonBody(req)
         const organizationId = body === null ? null : stringField(body, 'organizationId')
         const rawEmail = body === null ? null : stringField(body, 'email')
@@ -635,10 +885,13 @@ export function createOrganizationEndpoints(wired: WiredOptions): Endpoint[] {
           userId: String(user.id),
           organizationId,
         })
-        const allowed =
-          caller !== null && orgManagerRoles(orgs.orgRoles).some((role) => role === caller.role)
-        if (!allowed) {
+        if (caller === null || !orgManagerRoles(orgs.orgRoles).some((r) => r === caller.role)) {
           return forbidden('organization managers only')
+        }
+        // Never invite above the inviter's own role (an admin cannot
+        // mint an owner).
+        if (!mayAssignRole(orgs.orgRoles, caller.role, role)) {
+          return forbidden('cannot grant a role above your own')
         }
         // An existing Payload user with that email becomes a member
         // immediately; otherwise the invitation waits for acceptance
@@ -707,6 +960,15 @@ export function createOrganizationEndpoints(wired: WiredOptions): Endpoint[] {
         if (user === null) {
           return unauthorized()
         }
+        const impersonated = await refuseWhileImpersonating(
+          req,
+          'accept',
+          '/auth-link/organizations/accept',
+          'organization membership cannot be managed while impersonating'
+        )
+        if (impersonated !== null) {
+          return impersonated
+        }
         const body = await readJsonBody(req)
         const invitationId = body === null ? null : stringField(body, 'invitationId')
         if (invitationId === null) {
@@ -731,6 +993,10 @@ export function createOrganizationEndpoints(wired: WiredOptions): Endpoint[] {
           collection: orgs.membershipsCollection,
           id: invitationId,
           data: { user: idValue(String(user.id)), status: 'active', invitedEmail: null },
+          // The one sanctioned `user` write on an existing row:
+          // binding the verified accepting user to their pending
+          // invitation (the integrity hook checks the row is one).
+          context: { [acceptInvitationMarker]: true },
           overrideAccess: true,
         })
         return jsonResponse(

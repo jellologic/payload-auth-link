@@ -1,4 +1,4 @@
-import { isRecord, type LoggerPort } from '@payload-auth-link/core'
+import { isRecord, type LoggerPort, type ResolvedSessionActor } from '@payload-auth-link/core'
 import type {
   CollectionBeforeOperationHook,
   CollectionConfig,
@@ -36,17 +36,26 @@ function auditOperation(
     readonly operation: string
     readonly collection?: string
     readonly global?: string
+    readonly endpoint?: string
+    readonly denied?: boolean
     readonly args: unknown
+    /** The verified session's actor, for endpoints that verify explicitly. */
+    readonly sessionActor?: ResolvedSessionActor | undefined
   }
 ): void {
   // Fail-closed: a present-but-malformed actor is audited too
   // (actorKind 'malformed-actor', no fabricated attribution) — an
   // unparseable impersonation marker must never vanish from audit.
   const state = impersonationStateFromRequest(req)
-  if (state.kind === 'none') {
+  if (state.kind === 'none' && fields.sessionActor === undefined) {
     return
   }
-  const actor = state.kind === 'actor' ? state.actor : null
+  const actor =
+    state.kind === 'actor'
+      ? state.actor
+      : state.kind === 'none'
+        ? (fields.sessionActor ?? null)
+        : null
   const args: unknown = fields.args
   const documentId =
     isRecord(args) && (typeof args.id === 'string' || typeof args.id === 'number')
@@ -65,8 +74,29 @@ function auditOperation(
     operation: fields.operation,
     ...(fields.collection === undefined ? {} : { collection: fields.collection }),
     ...(fields.global === undefined ? {} : { global: fields.global }),
+    ...(fields.endpoint === undefined ? {} : { endpoint: fields.endpoint }),
+    ...(fields.denied === true ? { denied: true } : {}),
     ...(documentId === undefined ? {} : { id: documentId }),
   })
+}
+
+/**
+ * Audit an impersonated attempt at a plugin endpoint the plugin then
+ * refuses (organization management while impersonating). Endpoints
+ * run no collection operation for the `beforeOperation` hook to see,
+ * so they report here — same message, same id-only fields, plus the
+ * endpoint path and `denied: true`.
+ */
+export function auditImpersonatedEndpoint(
+  logger: LoggerPort,
+  req: PayloadRequest,
+  fields: {
+    readonly operation: string
+    readonly endpoint: string
+    readonly sessionActor?: ResolvedSessionActor | undefined
+  }
+): void {
+  auditOperation(logger, req, { ...fields, denied: true, args: undefined })
 }
 
 /** Collection `beforeOperation` audit hook; leaves args untouched. */
