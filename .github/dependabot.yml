@@ -38,8 +38,16 @@ updates:
       # routine float.
       - dependency-name: payload
         versions: ['>=4.0.0-0']
+      - dependency-name: payload
+        update-types: ['version-update:semver-major']
       - dependency-name: '@payloadcms/*'
         versions: ['>=4.0.0-0']
+      - dependency-name: '@payloadcms/*'
+        update-types: ['version-update:semver-major']
+      # The Start example's exact v4 beta pin moves only by hand, with
+      # the payload-4-beta compat cell as evidence: grouped with the v3
+      # packages it pulled the whole group onto v4 internal builds.
+      - dependency-name: '@payloadcms/tanstack-start'
       # Payload's GraphQL package (@payloadcms/graphql) pins graphql 16;
       # graphql 17 moves together with Payload, not on its own.
       - dependency-name: graphql
