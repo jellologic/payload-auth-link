@@ -34,7 +34,13 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
-## Next minor: users-collection write defaults
+## plugin 0.11.0 / provider-better-auth 0.8.0 / web 0.3.0 / migrate 0.5.0 (hardening release)
+
+One minor release across every package (core 0.7.0, next 0.4.0,
+react 0.3.0, tanstack-start 0.3.0, provider-authjs 0.4.0 too). No
+schema change. Read each section before you bump.
+
+### Users-collection write defaults
 
 **Upgrade impact:** no schema change; access defaults only.
 
@@ -61,7 +67,7 @@ an explicit `exact` entry — canaries never float in through a range.
    throw** `InvalidConfigError` (URL parsing would strip them and could
    resolve the path protocol-relative).
 
-## Next minor: organization governance; `_verified` is not linking proof
+### Organization governance; `_verified` is not linking proof
 
 **Upgrade impact:** no schema change. No column is added, removed,
 or retyped (the users snapshot is unchanged; the memberships
@@ -155,7 +161,7 @@ that is not proven to own it` and answers a typed 401 (it used to
    - Accepting an invitation after already joining the organization
      answers `409` instead of a storage validation error.
 
-## Next minor: session verifier, logout, and redirect hardening
+### Session verifier, logout, and redirect hardening
 
 No schema change. Behavior changes that may need attention:
 
