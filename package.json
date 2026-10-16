@@ -29,6 +29,7 @@
     "e2e:tanstack-postgres": "bun run build && playwright test -c e2e/playwright.tanstack-postgres.config.ts",
     "e2e:tanstack-mongo": "bun run build && bun e2e/run-tanstack-mongo.mjs",
     "e2e:seed-gate": "bun run build && playwright test -c e2e/playwright.seed-gate.config.ts",
+    "e2e:mfa": "bun run build && playwright test -c e2e/playwright.mfa.config.ts",
     "release:check": "bun run build && bun scripts/release-check.mjs && bun run release:smoke",
     "docs:api": "typedoc",
     "docs:media": "bun run build && bun scripts/capture-media.mjs",
