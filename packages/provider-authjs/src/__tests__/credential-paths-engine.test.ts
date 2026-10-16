@@ -832,19 +832,10 @@ describe('rows 18–20: server session API capability gates on Auth.js', () => {
     )
   })
 
-  // KNOWN BUG (found by this walk, not fixed here — tests-only change):
-  // on Auth.js `authLinkServer.revokeSession` RESOLVES for a handle
-  // that names no session. The engine's `revokeSession` calls the
-  // adapter's idempotent `deleteSession` (a no-op on a missing row,
-  // and a no-op outright for JWT sessions) and the port maps that to
-  // ok, so the server walk returns success. Better Auth fails loudly
-  // for the same call (server-gates-engine.test.ts, row 19). Impact:
-  // an operator's mistyped / stale revoke reports success while
-  // nothing was revoked, and with Auth.js registered BEFORE another
-  // provider, its unconditional ok short-circuits the registry walk so
-  // the other provider's session is never revoked. Flip to `it` once
-  // the Auth.js revoke reports a missing session as an error.
-  it.fails('revoking an unknown handle fails loudly (BUG: resolves silently)', async () => {
+  // Found by this walk: the adapter's idempotent `deleteSession` made
+  // an unknown handle read as revoked, and an Auth.js provider
+  // registered first then ended the server API's walk over providers.
+  it('revoking an unknown handle fails loudly', async () => {
     await expect(authLinkServer(live()).revokeSession('no-such-session-token')).rejects.toThrow(
       /^revokeSession: /
     )

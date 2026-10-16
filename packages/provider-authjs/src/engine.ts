@@ -443,12 +443,14 @@ export function createAuthJsEngine(input: AuthJsEngineInput): AuthJsEngine {
         // token; revoking nothing must not read as revoked (and must not
         // end the server API's walk over the registered providers).
         const payload = await input.getPayload()
-        const found = await payload.count({
+        const found = await payload.find({
           collection: slugs.session,
           where: { sessionToken: { equals: sessionId } },
+          limit: 1,
+          depth: 0,
           overrideAccess: true,
         })
-        if (found.totalDocs === 0) {
+        if (found.docs.length === 0) {
           throw new AdapterOperationError('revokeSession', {
             cause: new Error('no session matches the handle'),
           })
