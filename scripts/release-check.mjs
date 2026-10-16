@@ -20,6 +20,33 @@ const packages = readdirSync(join(root, 'packages'), { withFileTypes: true })
   .map((entry) => entry.name)
   .sort()
 
+// Does `name` (resolved from the package directory) ship its own
+// declarations, or does the manifest depend on `@types/<name>`?
+function hasTypes(dir, name, manifest) {
+  const typesName = `@types/${name.startsWith('@') ? name.slice(1).replace('/', '__') : name}`
+  if (typesName in (manifest.dependencies ?? {})) {
+    return true
+  }
+  let current = dir
+  for (;;) {
+    const candidate = join(current, 'node_modules', name, 'package.json')
+    if (existsSync(candidate)) {
+      const dep = JSON.parse(readFileSync(candidate, 'utf8'))
+      return (
+        typeof dep.types === 'string' ||
+        typeof dep.typings === 'string' ||
+        JSON.stringify(dep.exports ?? {}).includes('"types"') ||
+        existsSync(join(dirname(candidate), 'index.d.ts'))
+      )
+    }
+    const parent = dirname(current)
+    if (parent === current) {
+      return false
+    }
+    current = parent
+  }
+}
+
 // Inspect exactly what consumers get: pack the way `scripts/publish.mjs`
 // publishes (bun rewrites `workspace:*` to real versions), extract, and
 // check the shipped files — not the local build output.
@@ -42,6 +69,7 @@ function inspectPacked(dir) {
     ])
     const files = []
     const imports = new Set()
+    const typeImports = new Set()
     const walk = (current) => {
       for (const entry of readdirSync(current, { withFileTypes: true })) {
         const path = join(current, entry.name)
@@ -50,7 +78,12 @@ function inspectPacked(dir) {
           continue
         }
         files.push(path.slice(shipped.length + 1))
-        if (!entry.name.endsWith('.js')) {
+        const target = entry.name.endsWith('.d.ts')
+          ? typeImports
+          : entry.name.endsWith('.js')
+            ? imports
+            : null
+        if (target === null) {
           continue
         }
         // Strip comments first: TSDoc examples survive compilation and
@@ -64,7 +97,7 @@ function inspectPacked(dir) {
             continue
           }
           const parts = specifier.split('/')
-          imports.add(specifier.startsWith('@') ? parts.slice(0, 2).join('/') : (parts[0] ?? ''))
+          target.add(specifier.startsWith('@') ? parts.slice(0, 2).join('/') : (parts[0] ?? ''))
         }
       }
     }
@@ -73,7 +106,18 @@ function inspectPacked(dir) {
       leaksWorkspace: manifestText.includes('workspace:'),
       // Undeclared imports install fine here (hoisting) and crash for
       // real consumers with ERR_MODULE_NOT_FOUND.
-      undeclared: [...imports].filter((name) => !declared.has(name)).sort(),
+      undeclared: [...imports, ...typeImports].filter((name) => !declared.has(name)).sort(),
+      // A shipped .d.ts importing a package that has no types of its
+      // own (and no @types/* dependency) is TS7016 for every consumer
+      // compiling with skipLibCheck off (issue #85: `pg`). Peers are
+      // excluded: their types (e.g. @types/react) are the consumer's
+      // install, like the peer itself.
+      untyped: [...typeImports]
+        .filter((name) => name in (manifest.dependencies ?? {}))
+        .filter((name) => !hasTypes(dir, name, manifest))
+        .sort(),
+      // MIT requires the notice to travel with every copy.
+      license: files.includes('LICENSE'),
       testFiles: files.filter((file) => /(^|\/)__(tests|fixtures)__\//.test(file)),
     }
   } finally {
@@ -89,6 +133,26 @@ for (const name of packages) {
     console.error(
       `release:check failed: ${name} ships imports of undeclared packages: ${packed.undeclared.join(', ')}`
     )
+    failed = true
+  }
+  if (packed.untyped.length > 0) {
+    console.error(
+      `release:check failed: ${name} ships .d.ts imports of packages without types (add @types/* to dependencies or stop exposing them): ${packed.untyped.join(', ')}`
+    )
+    failed = true
+  }
+  // Each package commits a copy of the root LICENSE (`files` would
+  // otherwise leave it out of the tarball); copies must not drift.
+  if (!packed.license) {
+    console.error(`release:check failed: ${name} tarball has no LICENSE`)
+    failed = true
+  }
+  const licensePath = join(dir, 'LICENSE')
+  if (
+    !existsSync(licensePath) ||
+    readFileSync(licensePath, 'utf8') !== readFileSync(join(root, 'LICENSE'), 'utf8')
+  ) {
+    console.error(`release:check failed: packages/${name}/LICENSE must equal the root LICENSE`)
     failed = true
   }
   if (packed.testFiles.length > 0) {
