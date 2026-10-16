@@ -1662,8 +1662,12 @@ in your build:
   pinned; a new import (which sets the real Payload floor) fails CI
   until it is verified against the band and noted here.
   `CollectionBeforeDeleteHook` (organization delete cascade and the
-  last-owner guard) is a type-only import present across the whole
-  Payload 3 band and v4.
+  last-owner guard) and `CollectionAfterDeleteHook` (the last-owner
+  guard's post-write re-check) are type-only imports present across
+  the whole Payload 3 band and v4. The guard also calls
+  `payload.db.updateOne` and `payload.db.create` (the database
+  adapter contract, present on every adapter in the band) to lock
+  the organization row and to restore a refused removal.
 
 ## Schema interoperability (Zod, Effect, Standard Schema)
 
@@ -2055,6 +2059,25 @@ that is not proven to own it` and answers a typed 401 (it used to
    refused (`403`) and audited while impersonating. Seed scripts that
    re-pointed memberships through the Local API must delete and
    re-create the row instead.
+
+5. **Organization write scoping.** Also with `organizations.enabled`:
+   - Bulk `PATCH`/`DELETE /api/organizations?where=…` only reaches
+     organizations the caller manages (owns, for delete). A request
+     body field no longer decides which organization authorizes the
+     write.
+   - Deleting an organization is owner-only. An org `admin` now gets
+     `403`.
+   - `verifiedDomains` can be written only by Payload role managers
+     (`roleManagerRoles`), and not while impersonating. Org owners and
+     admins who set domains through REST or the admin panel will see
+     the field ignored. Review existing `verifiedDomains` entries once
+     after upgrading, because before this release any organization
+     creator could list any domain.
+   - Removing or demoting an owner now writes the organization row
+     first (it bumps `updatedAt`). This serializes concurrent owner
+     removals.
+   - Accepting an invitation after already joining the organization
+     answers `409` instead of a storage validation error.
 
 ## Next minor: session verifier, logout, and redirect hardening
 

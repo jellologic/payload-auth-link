@@ -234,8 +234,16 @@ export declare function withImpersonationAuditCollections(collections: readonly 
 export declare function withImpersonationAuditGlobals(globals: readonly GlobalConfig[] | undefined, logger: LoggerPort): GlobalConfig[];
 
 // ===== collections.d.ts =====
-import type { AuthStrategy, CollectionBeforeOperationHook, CollectionConfig, Field, GlobalBeforeOperationHook } from 'payload';
+import type { AuthStrategy, CollectionBeforeOperationHook, CollectionConfig, Field, FieldAccessArgs, GlobalBeforeOperationHook } from 'payload';
 import type { WiredOptions } from './options.js';
+/**
+ * May this request govern the auth system — write roles/governance
+ * fields, read operator-facing fields, reach the admin panel by
+ * default? Fails closed: no user, no roles
+ * array, or no intersection with the configured manager roles means
+ * no.
+ */
+export declare function isRoleManager(req: FieldAccessArgs['req'], wired: WiredOptions): boolean;
 /**
  * `req.context` key the plugin sets on engine-driven Local-API creates
  * (JIT provisioning, credentials registration): proof the document was
