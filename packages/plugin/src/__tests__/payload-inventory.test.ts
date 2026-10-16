@@ -99,6 +99,7 @@ describe('payload import inventory (Phase 3)', () => {
         'AuthStrategy',
         'CheckboxField',
         'CollectionAfterChangeHook',
+        'CollectionAfterDeleteHook',
         'CollectionBeforeChangeHook',
         'CollectionBeforeDeleteHook',
         'CollectionBeforeOperationHook',

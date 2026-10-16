@@ -9,6 +9,8 @@ import {
   addDataAndFileToRequest,
   APIError,
   type Access,
+  type CollectionAfterChangeHook,
+  type CollectionAfterDeleteHook,
   type CollectionBeforeChangeHook,
   type CollectionBeforeDeleteHook,
   type CollectionConfig,
@@ -25,6 +27,7 @@ import {
   unauthorized,
 } from './access.js'
 import { auditImpersonatedEndpoint, composeAuditLogger } from './audit.js'
+import { isRoleManager } from './collections.js'
 import type { WiredOptions, WiredOrganizations } from './options.js'
 import { createServices } from './services.js'
 
@@ -131,7 +134,8 @@ function toMembershipRow(doc: unknown): MembershipRow | null {
 async function findMemberships(
   payload: Payload,
   wired: RequireOrgRoleWiring,
-  where: Where
+  where: Where,
+  req?: PayloadRequest
 ): Promise<MembershipRow[]> {
   const result = await payload.find({
     collection: wired.membershipsCollection,
@@ -139,6 +143,9 @@ async function findMemberships(
     depth: 0,
     limit: 1000,
     overrideAccess: true,
+    // Inside a write, read through its request so the query runs in
+    // the same transaction and sees the write.
+    ...(req === undefined ? {} : { req }),
   })
   const rows: MembershipRow[] = []
   for (const doc of result.docs) {
@@ -265,22 +272,37 @@ async function userOrgIds(
   return [...new Set(rows.map((row) => row.organizationId))]
 }
 
-function managerAccess(wired: WiredOrganizations): Access {
-  const managers = orgManagerRoles(wired.orgRoles)
-  return async ({ req, id, data }) => {
+/**
+ * Organization update/delete access. The target is the organization
+ * document itself, so only Payload's `id` names it — never a value in
+ * the request body. Bulk operations (no `id`) are scoped by a `Where`
+ * to the organizations the caller manages: answering them with a
+ * boolean would apply `true` to every row the bulk query matches,
+ * other tenants included.
+ */
+function managerAccess(wired: WiredOrganizations, managers: readonly Role[]): Access {
+  return async ({ req, id }) => {
     if (isImpersonating(req)) {
       return false
     }
-    const organizationId =
-      typeof id === 'string' || typeof id === 'number'
-        ? String(id)
-        : isRecord(data)
-          ? relationId(data.organization)
-          : null
-    if (organizationId === null) {
+    if (typeof id === 'string' || typeof id === 'number') {
+      return requireOrgRole(req, wired, { organizationId: String(id), roles: managers })
+    }
+    const userId = requestUserId(req)
+    if (userId === null) {
       return false
     }
-    return requireOrgRole(req, wired, { organizationId, roles: managers })
+    const managed = await findMemberships(req.payload, wired, {
+      and: [
+        { user: { equals: userId } },
+        { status: { equals: 'active' } },
+        { role: { in: [...managers] } },
+      ],
+    })
+    if (managed.length === 0) {
+      return false
+    }
+    return { id: { in: [...new Set(managed.map((row) => row.organizationId))] } }
   }
 }
 
@@ -321,6 +343,17 @@ function deletingOrganizations(req: PayloadRequest): ReadonlySet<string> {
 /**
  * Whether removing `row`'s active ownership would leave its
  * organization without an active owner.
+ *
+ * Concurrency: two owners removing each other would both pass a
+ * plain count (each still sees the other). So the check first writes
+ * the organization row through the caller's request — inside the
+ * write's transaction that takes the row's write lock — and only then
+ * counts, through the same request. A concurrent removal in the same
+ * organization waits for that lock and, once the first commits, sees
+ * its removal. That needs a transactional adapter (Postgres, SQLite
+ * with `transactionOptions`, Mongo replica sets); without one, the
+ * post-write re-check ({@link ownerRemainsAfterRemoval}) restores a
+ * removal that left no owner.
  */
 async function isLastOwner(
   req: PayloadRequest,
@@ -331,13 +364,25 @@ async function isLastOwner(
   if (ownerRole === undefined || row.role !== ownerRole || row.status !== 'active') {
     return false
   }
-  const owners = await findMemberships(req.payload, wired, {
-    and: [
-      { organization: { equals: idValue(row.organizationId) } },
-      { role: { equals: ownerRole } },
-      { status: { equals: 'active' } },
-    ],
+  await req.payload.db.updateOne({
+    collection: wired.organizationsCollection,
+    id: idValue(row.organizationId),
+    data: { updatedAt: new Date().toISOString() },
+    req,
+    returning: false,
   })
+  const owners = await findMemberships(
+    req.payload,
+    wired,
+    {
+      and: [
+        { organization: { equals: idValue(row.organizationId) } },
+        { role: { equals: ownerRole } },
+        { status: { equals: 'active' } },
+      ],
+    },
+    req
+  )
   return !owners.some((owner) => owner.id !== row.id)
 }
 
@@ -403,6 +448,99 @@ function membershipDeleteGuard(wired: WiredOrganizations): CollectionBeforeDelet
   }
 }
 
+/** Whether `row` is an active membership holding the owner role. */
+function isActiveOwner(wired: WiredOrganizations, row: MembershipRow | null): row is MembershipRow {
+  const [ownerRole] = wired.orgRoles
+  return (
+    row !== null && ownerRole !== undefined && row.role === ownerRole && row.status === 'active'
+  )
+}
+
+/**
+ * Post-write half of the last-owner guard: after an owner's row was
+ * removed or demoted, re-count the organization's active owners
+ * through the write's own request. When none is left (concurrent
+ * removals that each passed the pre-write count), `restore` puts the
+ * row back and the write is refused with 409 (inside a transaction
+ * the throw also rolls it back). Racing removals can both lose, but
+ * never leave the organization ownerless.
+ */
+async function ownerRemainsAfterRemoval(
+  req: PayloadRequest,
+  wired: WiredOrganizations,
+  row: MembershipRow,
+  restore: () => Promise<unknown>
+): Promise<void> {
+  const [ownerRole] = wired.orgRoles
+  if (ownerRole === undefined || deletingOrganizations(req).has(row.organizationId)) {
+    return
+  }
+  const owners = await findMemberships(
+    req.payload,
+    wired,
+    {
+      and: [
+        { organization: { equals: idValue(row.organizationId) } },
+        { role: { equals: ownerRole } },
+        { status: { equals: 'active' } },
+      ],
+    },
+    req
+  )
+  if (owners.length > 0) {
+    return
+  }
+  // Put the row back before refusing. Inside a transaction the
+  // throw rolls both writes back; without one (Payload's default on
+  // some adapters), this restore is what keeps an owner in place.
+  await restore()
+  throw new APIError('an organization must keep at least one owner', 409)
+}
+
+function membershipOwnerAfterChange(wired: WiredOrganizations): CollectionAfterChangeHook {
+  return async ({ doc, previousDoc, operation, req }) => {
+    const before = toMembershipRow(previousDoc)
+    if (
+      operation === 'update' &&
+      isActiveOwner(wired, before) &&
+      !isActiveOwner(wired, toMembershipRow(doc))
+    ) {
+      await ownerRemainsAfterRemoval(req, wired, before, () =>
+        req.payload.db.updateOne({
+          collection: wired.membershipsCollection,
+          id: idValue(before.id),
+          data: { role: before.role, status: before.status },
+          req,
+          returning: false,
+        })
+      )
+    }
+    // No return: the hook never modifies the membership doc.
+  }
+}
+
+function membershipOwnerAfterDelete(wired: WiredOrganizations): CollectionAfterDeleteHook {
+  return async ({ doc, req }) => {
+    const row = toMembershipRow(doc)
+    if (!isActiveOwner(wired, row)) {
+      return
+    }
+    await ownerRemainsAfterRemoval(req, wired, row, () =>
+      req.payload.db.create({
+        collection: wired.membershipsCollection,
+        data: {
+          id: idValue(row.id),
+          organization: idValue(row.organizationId),
+          ...(row.userId === null ? {} : { user: idValue(row.userId) }),
+          role: row.role,
+          status: row.status,
+        },
+        req,
+      })
+    )
+  }
+}
+
 /**
  * Organization delete cascades its memberships and pending
  * invitations in the same request (and transaction): the required
@@ -431,7 +569,17 @@ function cascadeOrganizationDelete(wired: WiredOrganizations): CollectionBeforeD
   }
 }
 
-function organizationsCollection(wired: WiredOrganizations): CollectionConfig {
+function organizationsCollection(
+  wiredOpts: WiredOptions,
+  wired: WiredOrganizations
+): CollectionConfig {
+  // CAP-15: a verified domain admits SSO sign-ins for every address
+  // on it, across all organizations, so listing one is an operator
+  // act (Payload role managers), never an org-owner self-service
+  // claim — otherwise any signed-in user could create an org listing
+  // `gmail.com` and void the gate. Refused while impersonating.
+  const domainWrite = ({ req }: { req: PayloadRequest }) =>
+    !isImpersonating(req) && isRoleManager(req, wiredOpts)
   return {
     slug: wired.organizationsCollection,
     admin: {
@@ -451,8 +599,12 @@ function organizationsCollection(wired: WiredOrganizations): CollectionConfig {
         return { id: { in: orgIds } }
       },
       create: ({ req }) => requestUserId(req) !== null && !isImpersonating(req),
-      update: managerAccess(wired),
-      delete: managerAccess(wired),
+      update: managerAccess(wired, orgManagerRoles(wired.orgRoles)),
+      // Deleting an organization removes every membership, the
+      // owners' included, so it is an owner-only act: an `admin`
+      // cannot touch an owner's row, and must not be able to remove
+      // it wholesale through the organization either.
+      delete: managerAccess(wired, wired.orgRoles.slice(0, 1)),
     },
     fields: [
       { name: 'name', type: 'text', required: true },
@@ -460,9 +612,10 @@ function organizationsCollection(wired: WiredOrganizations): CollectionConfig {
       {
         name: 'verifiedDomains',
         type: 'array',
+        access: { create: domainWrite, update: domainWrite },
         admin: {
           description:
-            'Email domains verified for this organization (CAP-15): SSO sign-ins through a provider registered for SSO-domain enforcement link only when the asserted email is on one of these domains.',
+            'Email domains verified for this organization (CAP-15): SSO sign-ins through a provider registered for SSO-domain enforcement link only when the asserted email is on a domain listed by any organization. Only Payload role managers can edit this list.',
         },
         fields: [
           {
@@ -594,6 +747,8 @@ function membershipsCollection(
     hooks: {
       beforeChange: [membershipIntegrityHook(wiredOpts, wired)],
       beforeDelete: [membershipDeleteGuard(wired)],
+      afterChange: [membershipOwnerAfterChange(wired)],
+      afterDelete: [membershipOwnerAfterDelete(wired)],
     },
     fields: [
       {
@@ -656,7 +811,11 @@ export function applyOrganizationCollections(
       )
     }
   }
-  return [...(collections ?? []), organizationsCollection(orgs), membershipsCollection(wired, orgs)]
+  return [
+    ...(collections ?? []),
+    organizationsCollection(wired, orgs),
+    membershipsCollection(wired, orgs),
+  ]
 }
 
 async function readJsonBody(req: PayloadRequest): Promise<Record<string, unknown> | null> {
@@ -988,6 +1147,17 @@ export function createOrganizationEndpoints(wired: WiredOptions): Endpoint[] {
         // never a value from the request body.
         if (row === null || row.status !== 'invited' || row.invitedEmail !== user.email) {
           return forbidden('invitation is not yours to accept')
+        }
+        // Joined another way since the invite (a manager added them
+        // directly): binding this row would hit the (user,
+        // organization) unique index. Say so instead of surfacing a
+        // storage validation error.
+        const member = await getOrgMembership(req.payload, orgs, {
+          userId: String(user.id),
+          organizationId: row.organizationId,
+        })
+        if (member !== null) {
+          return jsonResponse({ error: 'user is already a member' }, 409)
         }
         await req.payload.update({
           collection: orgs.membershipsCollection,
