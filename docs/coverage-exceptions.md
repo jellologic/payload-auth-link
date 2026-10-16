@@ -13,27 +13,27 @@ lost its test.
 
 Each cell is lines / functions / branches / statements.
 
-| File                                             | Floor             | Notes                  |
-| ------------------------------------------------ | ----------------- | ---------------------- |
-| `core/src/cookies.ts`                            | 95 / 95 / 95 / 95 | at target              |
-| `plugin/src/access.ts`                           | 95 / 95 / 95 / 95 | at target              |
-| `plugin/src/audit.ts`                            | 95 / 91 / 88 / 95 | see below              |
-| `plugin/src/collections.ts`                      | 95 / 95 / 86 / 95 | see below              |
-| `plugin/src/compat-shim.ts`                      | 95 / 95 / 95 / 95 | at target              |
-| `plugin/src/endpoints.ts`                        | 95 / 95 / 91 / 95 | see below              |
-| `plugin/src/organizations.ts`                    | 70 / 69 / 60 / 70 | provisional, see below |
-| `plugin/src/repository.ts`                       | 95 / 95 / 95 / 95 | at target              |
-| `plugin/src/server.ts`                           | 95 / 95 / 94 / 95 | see below              |
-| `plugin/src/session.ts`                          | 95 / 95 / 94 / 95 | see below              |
-| `plugin/src/strategy.ts`                         | 95 / 95 / 86 / 95 | see below              |
-| `provider-authjs/src/port.ts`                    | 95 / 95 / 95 / 95 | at target              |
-| `provider-better-auth/src/adapter.ts`            | 80 / 91 / 73 / 81 | see below              |
-| `provider-better-auth/src/cookies.ts`            | 95 / 95 / 89 / 95 | see below              |
-| `provider-better-auth/src/port.ts`               | 86 / 86 / 77 / 86 | see below              |
-| `provider-better-auth/src/session-provenance.ts` | 95 / 95 / 95 / 95 | at target              |
-| `provider-better-auth/src/where.ts`              | 95 / 95 / 95 / 95 | at target              |
-| `web/src/authz.ts`                               | 95 / 95 / 95 / 95 | at target              |
-| `web/src/verify.ts`                              | 95 / 95 / 95 / 95 | at target              |
+| File                                             | Floor             | Notes     |
+| ------------------------------------------------ | ----------------- | --------- |
+| `core/src/cookies.ts`                            | 95 / 95 / 95 / 95 | at target |
+| `plugin/src/access.ts`                           | 95 / 95 / 95 / 95 | at target |
+| `plugin/src/audit.ts`                            | 95 / 91 / 88 / 95 | see below |
+| `plugin/src/collections.ts`                      | 95 / 95 / 86 / 95 | see below |
+| `plugin/src/compat-shim.ts`                      | 95 / 95 / 95 / 95 | at target |
+| `plugin/src/endpoints.ts`                        | 95 / 95 / 91 / 95 | see below |
+| `plugin/src/organizations.ts`                    | 95 / 95 / 95 / 95 | see below |
+| `plugin/src/repository.ts`                       | 95 / 95 / 95 / 95 | at target |
+| `plugin/src/server.ts`                           | 95 / 95 / 94 / 95 | see below |
+| `plugin/src/session.ts`                          | 95 / 95 / 94 / 95 | see below |
+| `plugin/src/strategy.ts`                         | 95 / 95 / 86 / 95 | see below |
+| `provider-authjs/src/port.ts`                    | 95 / 95 / 95 / 95 | at target |
+| `provider-better-auth/src/adapter.ts`            | 80 / 91 / 73 / 81 | see below |
+| `provider-better-auth/src/cookies.ts`            | 95 / 95 / 89 / 95 | see below |
+| `provider-better-auth/src/port.ts`               | 86 / 86 / 77 / 86 | see below |
+| `provider-better-auth/src/session-provenance.ts` | 95 / 95 / 95 / 95 | at target |
+| `provider-better-auth/src/where.ts`              | 95 / 95 / 95 / 95 | at target |
+| `web/src/authz.ts`                               | 95 / 95 / 95 / 95 | at target |
+| `web/src/verify.ts`                              | 95 / 95 / 95 / 95 | at target |
 
 ## Recurring kinds of uncovered branch
 
@@ -99,11 +99,26 @@ here and referred to by name below.
 Another change is editing this file at the same time (cookie expiry).
 Re-measure after it lands.
 
-### `plugin/src/organizations.ts` (provisional: 70 / 69 / 60 / 70)
+### `plugin/src/organizations.ts` (branches 99.05%)
 
-This floor is the value measured on this branch. Organization
-membership-access tests are being added in a separate change, and the
-floor should go up to the measured value once those tests land.
+Measured 100 / 100 / 99.05 / 100 (lines / functions / branches /
+statements). The floor is capped at 95. The
+three uncovered arms are:
+
+- Line 178: `roleRank` returning `Infinity` for a role that is not in
+  `orgRoles`. Its only caller, `mayAssignRole`, checks that both roles
+  are configured before ranking them, so the unknown-role arm cannot
+  run. The arm stays so that an unknown role can never outrank a
+  configured one if a future caller skips that check.
+- Line 885: `refuseWhileImpersonating` when the second
+  `sessions.verify` fails. Every endpoint verifies the same session
+  just before this call, so it can fail only if the session is revoked
+  between the two reads. If that happens, the check falls back to the
+  `req.user` actor alone (`isImpersonating(req)`), which still refuses
+  an impersonated request.
+- Line 1032: `orgRoles.at(-1) ?? null` in the invite endpoint. Wiring
+  falls back to `owner`/`admin`/`member` when `orgRoles` is empty, so
+  the list is never empty at runtime.
 
 ### `plugin/src/server.ts` (branches 94.64%)
 

@@ -81,10 +81,10 @@ export default defineConfig({
           statements: 95,
         },
         'packages/plugin/src/organizations.ts': {
-          lines: 70,
-          functions: 69,
-          branches: 60,
-          statements: 70,
+          lines: 95,
+          functions: 95,
+          branches: 95,
+          statements: 95,
         },
         'packages/plugin/src/repository.ts': {
           lines: 95,

@@ -55,7 +55,7 @@ function userRoles(user: unknown): readonly string[] {
  * array, or no intersection with the configured manager roles means
  * no.
  */
-function isRoleManager(req: FieldAccessArgs['req'], wired: WiredOptions): boolean {
+export function isRoleManager(req: FieldAccessArgs['req'], wired: WiredOptions): boolean {
   const managers = new Set<string>(wired.roleManagerRoles)
   return userRoles(req.user).some((role) => managers.has(role))
 }
