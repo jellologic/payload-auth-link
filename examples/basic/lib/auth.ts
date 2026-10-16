@@ -104,10 +104,10 @@ export const engine = createBetterAuthEngine({
     rateLimit: {
       enabled: true,
       window: 60,
-      max: 1000,
+      max: 5000,
       customRules: {
-        '/sign-up/email': { window: 60, max: 100 },
-        '/sign-in/email': { window: 60, max: 100 },
+        '/sign-up/email': { window: 60, max: 1000 },
+        '/sign-in/email': { window: 60, max: 1000 },
         // Verify/send routes are attempt-capped per IP (CAP-18): OTP
         // guesses and link requests are the brute-force surface.
         // Generous here (shared-IP dev); production tunes these down

@@ -152,10 +152,10 @@ export const engine = createBetterAuthEngine({
     rateLimit: {
       enabled: true,
       window: 60,
-      max: 1000,
+      max: 5000,
       customRules: {
-        '/sign-up/email': { window: 60, max: 100 },
-        '/sign-in/email': { window: 60, max: 100 },
+        '/sign-up/email': { window: 60, max: 1000 },
+        '/sign-in/email': { window: 60, max: 1000 },
         // Attempt caps on the passwordless routes (CAP-18).
         '/sign-in/magic-link': { window: 60, max: 30 },
         '/email-otp/send-verification-otp': { window: 60, max: 30 },
