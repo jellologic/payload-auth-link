@@ -18,6 +18,7 @@ type Harness = {
   }
 }
 const harness = (await import(harnessPath)) as Harness
+import { cliMain } from '../cli.js'
 import { exportToJsonl, parseExportTables } from '../exporters.js'
 
 describe('--tables flag parsing (#68)', () => {
@@ -75,7 +76,13 @@ describe.skipIf(!canReachPostgres)('export --to jsonl (issue #58)', () => {
     expect(byName.get('members')).toBe(3)
     expect(byName.get('invitations')).toBe(2)
     expect(byName.get('jwks')).toBe(1)
-    expect(result.totalRows).toBe(32)
+    // Every auth table (#110): org child tables and payload-auth's other
+    // Better Auth plugin tables export too, when present.
+    expect(byName.get('organizations_tags')).toBe(2)
+    expect(byName.get('admin_invitations')).toBe(0)
+    expect(byName.has('payload_kv')).toBe(false)
+    expect(result.missing).toEqual([])
+    expect(result.totalRows).toBe(34)
 
     // Lossless: the JSONL re-parses to the exact rows, including
     // plugin-injected and role child rows.
@@ -107,5 +114,62 @@ describe.skipIf(!canReachPostgres)('export --to jsonl (issue #58)', () => {
     })
     expect(result.missing).toEqual(['not_a_real_table'])
     expect(result.tables.map((table) => table.name)).toEqual(['users'])
+  })
+
+  test('--source-map: a custom-slug layout exports every table; a missing mapped table exits 1 (#110)', async () => {
+    const { password, port, user } = harness.targetFromEnv(database)
+    const url = `postgres://${user}:${password}@localhost:${port}/${database}`
+    const client = harness.fixtureClient(database)
+    await client.connect()
+    await client.query(
+      'ALTER TABLE accounts RENAME TO user_accounts; ALTER TABLE sessions RENAME TO user_sessions'
+    )
+    try {
+      const run = async (argv: readonly string[]) => {
+        const out: string[] = []
+        const err: string[] = []
+        const code = await cliMain(
+          argv,
+          { write: (chunk) => void out.push(chunk) },
+          { write: (chunk) => void err.push(chunk) }
+        )
+        return { code, out: out.join(''), err: err.join('') }
+      }
+      // Without the map, the renamed tables are mapped-but-missing.
+      const unmapped = await run(['export', '--database-url', url])
+      expect(unmapped.code).toBe(1)
+      expect(unmapped.err).toContain("table 'accounts' does not exist")
+      expect(unmapped.err).toContain("table 'sessions' does not exist")
+      // With it, they export — and stdout is pure JSONL.
+      const mapped = await run([
+        'export',
+        '--database-url',
+        url,
+        '--source-map',
+        '{"accounts":"user_accounts","sessions":"user_sessions"}',
+      ])
+      expect(mapped.code, mapped.err).toBe(0)
+      const tables = mapped.out
+        .trim()
+        .split('\n')
+        .map((line) => (JSON.parse(line) as { table: string }).table)
+      expect(tables.filter((table) => table === 'user_accounts')).toHaveLength(6)
+      expect(tables.filter((table) => table === 'user_sessions')).toHaveLength(6)
+      // A model mapped to a table that does not exist is an error, too.
+      const typo = await run([
+        'export',
+        '--database-url',
+        url,
+        '--source-map',
+        '{"accounts":"user_acounts","sessions":"user_sessions"}',
+      ])
+      expect(typo.code).toBe(1)
+      expect(typo.err).toContain("table 'user_acounts' does not exist")
+    } finally {
+      await client.query(
+        'ALTER TABLE user_accounts RENAME TO accounts; ALTER TABLE user_sessions RENAME TO sessions'
+      )
+      await client.end()
+    }
   })
 })

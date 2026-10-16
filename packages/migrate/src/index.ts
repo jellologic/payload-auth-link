@@ -22,6 +22,7 @@ export {
   runRollback,
   runFinalize,
   runAdoptPrelink,
+  type FinalizeCommandOptions,
   type ImportCommandOptions,
   type PrelinkCommandOptions,
 } from './importer/run-import.js'
@@ -50,6 +51,8 @@ export {
   finalizeManifest,
   defaultManifestPath,
   defaultPrelinkManifestPath,
+  type FinalizeOptions,
+  type RollbackOptions,
   type VerifyIssue,
   type VerifyResult,
 } from './importer/lifecycle.js'
@@ -74,7 +77,13 @@ export {
   type PlanRow,
   type Unmappable,
 } from './importer/types.js'
-export { exportToJsonl, parseExportTables, exportTables } from './exporters.js'
+export {
+  exportToJsonl,
+  parseExportTables,
+  exportTables,
+  optionalAuthTables,
+  resolveAuthTables,
+} from './exporters.js'
 export { cliMain } from './cli.js'
 export type {
   BehaviourChange,

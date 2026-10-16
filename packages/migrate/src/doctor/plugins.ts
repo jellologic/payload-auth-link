@@ -181,10 +181,15 @@ export function pluginsFromCollectionSlugs(slugs: readonly string[]): string[] {
   return [...ids].sort()
 }
 
-/** Plugin call names a config source can name, mapped to plugin ids. */
-/** True when a source file actually imports Better Auth. */
+/**
+ * True when a source file actually imports Better Auth — any subpath
+ * depth (`better-auth/plugins/generic-oauth`, issue #110), static or
+ * dynamic `import()`, or `require()`.
+ */
 const betterAuthImport =
-  /(?:from\s*|require\(\s*)['"](?:better-auth(?:\/[\w-]+)?|@better-auth\/[\w-]+)['"]/
+  /(?:from\s*|require\(\s*|import\(\s*)['"](?:better-auth(?:\/[\w.-]+)*|@better-auth\/[\w.-]+(?:\/[\w.-]+)*)['"]/
+
+/** Plugin call names a config source can name, mapped to plugin ids. */
 
 const callNameToPlugin: Readonly<Record<string, string>> = {
   magicLink: 'magic-link',

@@ -17,7 +17,7 @@
  *   them aborts the run); row `created_at` carries;
  * - `verify` tolerates sessions created after cutover.
  */
-import { existsSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -275,13 +275,22 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
     expect(raw).not.toMatch(/@example\.com/)
     const manifest = readManifestFile()
     expect(manifest.version).toBe(3)
-    expect(manifest.mac).toMatch(/^v1\./)
+    expect(manifest.mac).toMatch(/^v2\./)
     expect(manifest.totals['user']).toBe(4)
     expect(manifest.fieldWrites.every((write) => write.sealedBefore !== undefined)).toBe(true)
   })
 
   test('a second --apply neither doubles totals nor re-captures prior values', async () => {
     const first = readManifestFile()
+    // Every host row as stored, surrogate ids included (#110: a second
+    // pass used to bump updated_at and linked_at, and re-create the
+    // users_role rows with new ids).
+    const exact = async (): Promise<unknown[]> => [
+      await query('SELECT * FROM users ORDER BY id'),
+      await query('SELECT * FROM users_identities ORDER BY _parent_id, _order'),
+      await query('SELECT * FROM users_role ORDER BY parent_id, "order"'),
+    ]
+    const hostBefore = await exact()
     const result = await run([
       'from-payload-auth',
       '--config',
@@ -299,6 +308,8 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
     expect(second.totals).toEqual(first.totals)
     expect(second.fieldWrites).toEqual(first.fieldWrites)
     expect(second.created).toEqual(first.created)
+    // A true no-op on the host: byte-identical rows.
+    expect(await exact()).toEqual(hostBefore)
   })
 
   test('verify prints its checks, passes, and tolerates sessions created after cutover', async () => {
@@ -316,6 +327,77 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
       await expectNoLingeringConnections()
     } finally {
       await client.query("DELETE FROM ba_sessions WHERE ba_id = 'live-after-cutover'")
+    }
+  })
+
+  test('rollback with an unsigned manifest deletes nothing without --allow-unsigned-deletes', async () => {
+    const signed = readFileSync(manifestPath, 'utf8')
+    const manifest = readManifestFile()
+    const downgraded = { ...manifest, version: 2, mac: undefined }
+    writeFileSync(manifestPath, JSON.stringify(downgraded))
+    try {
+      const baBefore = await query<{ n: number }>('SELECT count(*)::int AS n FROM ba_users')
+      const refused = await run([
+        'rollback',
+        '--config',
+        adminConfig,
+        '--manifest',
+        manifestPath,
+        '--allow-unsigned-manifest',
+      ])
+      expect(refused.code).toBe(1)
+      expect(refused.err).toContain('--allow-unsigned-deletes')
+      // A row injected into a host collection is refused even with both flags.
+      writeFileSync(
+        manifestPath,
+        JSON.stringify({
+          ...downgraded,
+          created: [...manifest.created, { collection: 'users', id: 1, sourceKey: 'user:1' }],
+        })
+      )
+      const injected = await run([
+        'rollback',
+        '--config',
+        adminConfig,
+        '--manifest',
+        manifestPath,
+        '--allow-unsigned-manifest',
+        '--allow-unsigned-deletes',
+      ])
+      expect(injected.code).toBe(1)
+      expect(injected.err).toContain("outside the import's target collections")
+      expect(await query('SELECT count(*)::int AS n FROM ba_users')).toEqual(baBefore)
+      expect(await query('SELECT id FROM users WHERE id = 1')).toEqual([{ id: 1 }])
+      await expectNoLingeringConnections()
+    } finally {
+      writeFileSync(manifestPath, signed, { mode: 0o600 })
+    }
+  })
+
+  test('a delete that fails aborts rollback non-zero, names the row, and keeps the manifest', async () => {
+    const before = readFileSync(manifestPath, 'utf8')
+    const hostUsers = await query('SELECT * FROM users ORDER BY id')
+    const pinned = await query<{ id: number }>(
+      "SELECT id FROM ba_users WHERE email = 'alice@example.com'"
+    )
+    const pinnedId = pinned[0]?.id
+    expect(pinnedId).toBeDefined()
+    // Something that references a ba_users row: its delete fails on the FK.
+    await client.query(`
+      CREATE TABLE rollback_fk_probe (ba_user_id integer REFERENCES ba_users(id));
+      INSERT INTO rollback_fk_probe VALUES (${String(pinnedId)});
+    `)
+    try {
+      const result = await run(['rollback', '--config', adminConfig, '--manifest', manifestPath])
+      expect(result.code).toBe(1)
+      expect(result.err).toContain('could not delete 1')
+      expect(result.err).toContain(`ba-users#${String(pinnedId)}`)
+      // Nothing was restored and the manifest is intact for a re-run.
+      expect(readFileSync(manifestPath, 'utf8')).toBe(before)
+      expect(await query('SELECT * FROM users ORDER BY id')).toEqual(hostUsers)
+      await expectNoLingeringConnections()
+    } finally {
+      await client.query('DROP TABLE rollback_fk_probe')
     }
   })
 
@@ -370,10 +452,43 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
     expect(manifest.created.filter((row) => row.collection === 'ba-users')).toHaveLength(4)
     await expectNoLingeringConnections()
 
-    const finalized = await run(['finalize', '--manifest', manifestPath])
-    expect(finalized.code).toBe(0)
+    // finalize boots the target app now: it signs and records the marker.
+    const noConfig = await run(['finalize', '--manifest', manifestPath])
+    expect(noConfig.code).toBe(3)
+    expect(noConfig.err).toContain('--config')
+    const preFinalize = readFileSync(manifestPath, 'utf8')
+
+    const finalized = await run(['finalize', '--config', adminConfig, '--manifest', manifestPath])
+    expect(finalized.code, finalized.err).toBe(0)
     expect(finalized.out).toContain('finalized: the manifest at')
-    expect(readManifestFile().finalized).toBe(true)
+    expect(finalized.out).toContain('legacy payload-auth tables may be dropped')
+    await expectNoLingeringConnections()
+    const sealed = readManifestFile()
+    expect(sealed.finalized).toBe(true)
+    expect(sealed.mac).toMatch(/^v2\./)
+    const markers = await query<{ key: string }>(
+      "SELECT key FROM payload_kv WHERE key LIKE 'payload-auth-link/migrate/finalized/%'"
+    )
+    expect(markers).toHaveLength(1)
+
+    const baBefore = await query('SELECT count(*)::int AS n FROM ba_users')
+    const finalizedText = readFileSync(manifestPath, 'utf8')
+    try {
+      // Flipping the flag breaks the signature.
+      writeFileSync(manifestPath, JSON.stringify({ ...sealed, finalized: false }))
+      const flipped = await run(['rollback', '--config', adminConfig, '--manifest', manifestPath])
+      expect(flipped.code).toBe(1)
+      expect(flipped.err).toContain('integrity check')
+      // The signed copy from BEFORE finalize: the database marker refuses it.
+      writeFileSync(manifestPath, preFinalize)
+      const stale = await run(['rollback', '--config', adminConfig, '--manifest', manifestPath])
+      expect(stale.code).toBe(1)
+      expect(stale.err).toContain('database records this migration as finalized')
+      await expectNoLingeringConnections()
+    } finally {
+      writeFileSync(manifestPath, finalizedText, { mode: 0o600 })
+    }
+    expect(await query('SELECT count(*)::int AS n FROM ba_users')).toEqual(baBefore)
   })
 })
 

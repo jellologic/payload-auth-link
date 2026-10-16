@@ -1,10 +1,19 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { writePrivateFile } from '../private-file.js'
 import type { Payload } from 'payload'
+import {
+  assertCreatedRowsScoped,
+  baIdMismatch,
+  finalizeMarkerState,
+  hostRolesField,
+  recordFinalizeMarker,
+  targetSlugsOf,
+} from './guards.js'
 import { restoreCaptured } from './host-writes.js'
 import { authenticateManifest, signManifest } from './manifest-mac.js'
 import {
   defaultTargetSlugs,
+  type CreatedRow,
   resolveSourceTables,
   sourceModelNames,
   type ResolvedSourceTables,
@@ -13,9 +22,10 @@ import {
 
 /**
  * Manifest lifecycle (issue #50): `verify` checks both sides, `rollback`
- * undoes exactly what the manifest records, and `finalize` marks the
- * manifest so the source tables may be dropped — by the operator, as a
- * separate later step.
+ * undoes exactly what the manifest records, and `finalize` records the
+ * point of no return (a database marker plus the re-signed manifest) so
+ * the source tables may be dropped — by the operator, as a separate
+ * later step.
  */
 
 /**
@@ -262,6 +272,9 @@ export async function verifyImport(options: {
     // lookup findByProviderIdentity issues on the next provider
     // sign-in. The host docs also carry the stored roles (issue #68's
     // users_role accounting) whenever the host declares the field.
+    // The roles field the app configured on authLink (issue #110: a
+    // hard-coded `roles` silently skipped the check on `role` layouts).
+    const rolesField = hostRolesField(payload)
     let identityIssues = 0
     let roleMismatchDocs = 0
     let hostDocsWithRoles = 0
@@ -301,7 +314,7 @@ export async function verifyImport(options: {
       if (identities.length !== 1 || resolving.length !== 1) {
         identityIssues += 1
       }
-      const roles = record['roles']
+      const roles = record[rolesField]
       if (Array.isArray(roles)) {
         hostDocsWithRoles += 1
         const stored = new Set(roles.map((role) => String(role)))
@@ -319,11 +332,11 @@ export async function verifyImport(options: {
       check(
         'source roles carried onto the host docs',
         roleMismatchDocs === 0,
-        `${roleMismatchDocs} host doc(s) missing stored role values`
+        `${roleMismatchDocs} host doc(s) missing stored role values in '${rolesField}'`
       )
     } else if (sourceTables['users_role'] !== null && users.some((user) => user.roles.length > 0)) {
       checks.push({
-        name: 'source roles carried onto the host docs (skipped: the host users carry no roles field)',
+        name: `source roles carried onto the host docs (skipped: the host users carry no '${rolesField}' field)`,
         passed: true,
       })
     }
@@ -486,13 +499,8 @@ export async function verifyImport(options: {
   return { ok: issues.length === 0, issues, checks }
 }
 
-/**
- * Rollback (issue #50): delete the created rows in reverse order and
- * restore every captured field value. The manifest records exactly
- * what to undo — nothing else is touched, and the source tables were
- * never modified.
- */
-export async function rollbackImport(options: {
+/** Options of {@link rollbackImport}. */
+export type RollbackOptions = {
   readonly payload: Payload
   readonly manifest: ImportManifest
   readonly log?: (message: string) => void
@@ -504,9 +512,44 @@ export async function rollbackImport(options: {
    */
   readonly manifestPath?: string | undefined
   readonly now?: (() => Date) | undefined
-  /** Accept a pre-0.6.0 manifest that has no MAC (`--allow-unsigned-manifest`). */
+  /** Target slugs the import ran with (`--slugs`); defaults to the ba-* set. */
+  readonly slugs?: Readonly<Record<string, string>> | undefined
+  /**
+   * Accept a manifest without a full signature (`--allow-unsigned-manifest`):
+   * a pre-0.6.0 manifest without a MAC, or a 0.6.0 manifest whose MAC
+   * does not cover `finalized`.
+   */
   readonly allowUnsignedManifest?: boolean | undefined
-}): Promise<{ deleted: number; restored: number }> {
+  /**
+   * Let a rollback driven by an UNSIGNED (pre-0.6.0) manifest delete the
+   * rows it lists and restore plaintext (version-1) values
+   * (`--allow-unsigned-deletes`). Without it, an unsigned manifest may
+   * only restore sealed field values.
+   */
+  readonly allowUnsignedDeletes?: boolean | undefined
+}
+
+/**
+ * Rollback (issue #50): delete the created rows in reverse order and
+ * restore every captured field value. The manifest records exactly
+ * what to undo — nothing else is touched, and the source tables were
+ * never modified.
+ *
+ * Before anything is written, rollback refuses: a finalized manifest,
+ * or a migration the DATABASE records as finalized (the marker
+ * `finalize` writes — a manifest file alone cannot reopen it); a
+ * manifest that fails its signature; created rows outside the import's
+ * own target collections (signed or not), or whose row no longer
+ * carries the importer's deterministic `baId`; and any delete or
+ * plaintext restore driven by an unsigned manifest without
+ * `allowUnsignedDeletes`. A row already absent is fine (the goal is
+ * "absent"); a delete that FAILS (a foreign key, a hook, a permission)
+ * aborts the rollback with the rows named, before any field is
+ * restored or the manifest reset — so it can be re-run once fixed.
+ */
+export async function rollbackImport(
+  options: RollbackOptions
+): Promise<{ deleted: number; restored: number }> {
   const { payload, manifest, log = () => {} } = options
   if (manifest.finalized) {
     // The point of no return: after `finalize`, the manifest's rows are
@@ -515,21 +558,93 @@ export async function rollbackImport(options: {
   }
   // Every row below is deleted, and every field restored, with
   // overrideAccess: only a manifest this app signed may drive that.
-  authenticateManifest(payload.secret, manifest, { allowUnsigned: options.allowUnsignedManifest })
-  let deleted = 0
+  const trust = authenticateManifest(payload.secret, manifest, {
+    allowUnsigned: options.allowUnsignedManifest,
+  })
+  if (trust === 'signed-legacy' && options.allowUnsignedManifest !== true) {
+    throw new Error(
+      "the manifest was signed by migrate 0.6.0, whose signature does not cover the 'finalized' flag. If you are sure this migration was never finalized and nobody has edited the manifest, re-run with --allow-unsigned-manifest; the rollback re-signs what it leaves behind"
+    )
+  }
+  // The database's own record of `finalize`, independent of the file.
+  // A manifest whose `createdAt` is not covered by a full signature is
+  // checked against every finalized migration of its kind.
+  const marker = await finalizeMarkerState(payload, manifest, { anyOfKind: trust !== 'signed' })
+  if (marker === 'finalized') {
+    throw new Error(
+      'the database records this migration as finalized; rollback is no longer possible (the manifest file does not override that)'
+    )
+  }
+  if (marker === 'unavailable') {
+    log(
+      "rollback: Payload's key-value store is unavailable, so the database finalize marker could not be checked; relying on the manifest's own flag"
+    )
+  }
+  assertCreatedRowsScoped(manifest, targetSlugsOf(options.slugs))
+  if (trust === 'unsigned' && options.allowUnsignedDeletes !== true) {
+    const plaintext = manifest.fieldWrites.filter((write) => write.before !== undefined).length
+    if (manifest.created.length > 0 || plaintext > 0) {
+      throw new Error(
+        `the manifest is unsigned: --allow-unsigned-manifest lets it restore sealed field values only, and it lists ${manifest.created.length} row(s) to delete and ${plaintext} plaintext value(s) to restore. Review the manifest's created rows, then re-run with --allow-unsigned-deletes as well — nothing was changed`
+      )
+    }
+  }
+
+  // Pre-flight every created row BEFORE the first delete: a present row
+  // must still carry the importer's deterministic baId for its source
+  // key (the imported row, not one that took its id since).
+  const present: CreatedRow[] = []
+  const foreign: string[] = []
+  let absent = 0
   for (const row of [...manifest.created].reverse()) {
+    const doc = await findRow(payload, row)
+    if (doc === null) {
+      absent += 1
+    } else if (baIdMismatch(row, doc)) {
+      foreign.push(`${row.collection}#${String(row.id)} (${row.sourceKey})`)
+    } else {
+      present.push(row)
+    }
+  }
+  if (foreign.length > 0) {
+    throw new Error(
+      `${foreign.length} created row(s) no longer carry the baId the importer gave them, so they are not the imported rows: ${listSome(foreign, ', ')}. Refusing to delete anything`
+    )
+  }
+
+  let deleted = 0
+  const failed: string[] = []
+  for (const row of present) {
     try {
       await payload.delete({ collection: row.collection, id: row.id, overrideAccess: true })
       deleted += 1
-    } catch {
-      // Already gone (a crash after delete, a manual cleanup) — the
-      // goal state is "row absent", so absence is success.
-      log(`rollback: ${row.collection}#${row.id} already absent`)
+    } catch (error) {
+      if ((await findRow(payload, row)) === null) {
+        // Removed concurrently: the goal state is "row absent".
+        absent += 1
+        continue
+      }
+      failed.push(
+        `${row.collection}#${String(row.id)}: ${error instanceof Error ? error.message : String(error)}`
+      )
     }
+  }
+  if (failed.length > 0) {
+    for (const line of failed) {
+      log(`rollback: FAILED to delete ${line}`)
+    }
+    throw new Error(
+      `rollback deleted ${deleted} row(s) but could not delete ${failed.length}: ${listSome(failed, '; ')}. No field value was restored and the manifest was kept — fix the cause (e.g. rows that reference them) and re-run rollback`
+    )
+  }
+  if (absent > 0) {
+    log(`rollback: ${absent} created row(s) were already absent`)
   }
   // Captured values go back through the adapter, one write per
   // document, `updatedAt` included — see host-writes.ts for why.
-  const restored = await restoreCaptured(payload, manifest)
+  const restored = await restoreCaptured(payload, manifest, {
+    rolesField: hostRolesField(payload),
+  })
   if (options.manifestPath !== undefined) {
     const reset: ImportManifest = signManifest(payload.secret, {
       ...manifest,
@@ -544,12 +659,53 @@ export async function rollbackImport(options: {
   return { deleted, restored }
 }
 
-/** Finalize (issue #50): the point of no return — mark the manifest. */
-export function finalizeManifest(manifest: ImportManifest, path: string): ImportManifest {
-  if (manifest.finalized) {
-    return manifest
-  }
-  const finalized: ImportManifest = { ...manifest, finalized: true }
-  writeManifest(finalized, path)
+/** The created row as stored, or `null` when it does not exist. */
+async function findRow(payload: Payload, row: CreatedRow): Promise<unknown> {
+  const doc: unknown = await payload.findByID({
+    collection: row.collection,
+    id: row.id,
+    depth: 0,
+    overrideAccess: true,
+    disableErrors: true,
+  })
+  return doc ?? null
+}
+
+function listSome(items: readonly string[], separator: string): string {
+  return `${items.slice(0, 10).join(separator)}${items.length > 10 ? `${separator}…` : ''}`
+}
+
+/** Options of {@link finalizeManifest}. */
+export type FinalizeOptions = {
+  readonly payload: Payload
+  readonly manifest: ImportManifest
+  /** Where the finalized, re-signed manifest is written. */
+  readonly path: string
+  readonly now?: (() => Date) | undefined
+  /** Accept a manifest without a full signature (`--allow-unsigned-manifest`). */
+  readonly allowUnsignedManifest?: boolean | undefined
+}
+
+/**
+ * Finalize (issue #50): the point of no return. Records a one-way
+ * marker in the target database (Payload's key-value store) that every
+ * later rollback checks independently of the file, then marks the
+ * manifest `finalized` and re-signs it — the signature covers the flag.
+ * Idempotent: finalizing a finalized manifest re-records the marker and
+ * upgrades its signature.
+ */
+export async function finalizeManifest(options: FinalizeOptions): Promise<ImportManifest> {
+  const { payload, manifest } = options
+  authenticateManifest(payload.secret, manifest, { allowUnsigned: options.allowUnsignedManifest })
+  const finalizedAt = manifest.finalizedAt ?? (options.now ?? (() => new Date()))().toISOString()
+  // The database marker first: a finalize that cannot record it fails
+  // with the manifest unchanged.
+  await recordFinalizeMarker(payload, manifest, finalizedAt)
+  const finalized: ImportManifest = signManifest(payload.secret, {
+    ...manifest,
+    finalized: true,
+    finalizedAt,
+  })
+  writeManifest(finalized, options.path)
   return finalized
 }
