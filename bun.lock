@@ -131,7 +131,7 @@
         "payload": "3.90.2",
       },
       "peerDependencies": {
-        "@payload-auth-link/next": "^0.3.1",
+        "@payload-auth-link/next": "^0.4.0",
         "payload": "^3.83.0 || 4.0.0-beta.0",
       },
       "optionalPeers": [
@@ -188,6 +188,7 @@
       },
       "devDependencies": {
         "@payload-auth-link/plugin": "workspace:*",
+        "@payload-auth-link/web": "workspace:*",
         "@payloadcms/db-mongodb": "3.90.2",
         "@payloadcms/db-postgres": "3.90.2",
         "@payloadcms/db-sqlite": "3.90.2",
