@@ -42,6 +42,30 @@ function toPayloadValue(
   return coerced
 }
 
+/**
+ * The case-insensitive `eq` narrowing value: the value's ASCII
+ * alphanumeric runs, space-joined (Payload's `like` requires EACH
+ * space-separated word to be contained, case-insensitively).
+ *
+ * SQLite's `LIKE` folds ASCII case only, so `"ÄRGER" LIKE '%ärger%'`
+ * misses (#110); a non-ASCII character therefore never reaches the
+ * pattern, it only splits it. So does every ASCII symbol (`%`/`_` are
+ * LIKE wildcards, `.`/`(` regex syntax on MongoDB), and so do `i`/`k`:
+ * they are the only ASCII letters a non-ASCII character lowercases to
+ * (`İ` → `i̇`, Kelvin `K` → `k`), so a stored row could match the
+ * post-filter without containing them. Every remaining fragment is a
+ * necessary condition for `actual.toLowerCase() === wanted` on every
+ * Payload database, so the narrowing never drops a match; the
+ * post-filter stays the exact test. An empty result means nothing safe
+ * to narrow on (`exists`).
+ */
+function asciiLikeFragments(value: string): string {
+  return value
+    .split(/[^A-Za-z0-9]|[iIkK]/u)
+    .filter((fragment) => fragment !== '')
+    .join(' ')
+}
+
 function clauseToWhere(
   clause: CleanedWhere,
   mapField?: FieldResolver,
@@ -70,10 +94,13 @@ function clauseToWhere(
     case 'eq': {
       if (mode === 'insensitive' && typeof clause.value === 'string') {
         const wanted = clause.value.toLowerCase()
+        const narrowing = asciiLikeFragments(clause.value)
         return {
           // `like` narrows case-insensitively; the post-filter exacts the
-          // match so a contains-query never returns the wrong row.
-          where: { [field]: { like: clause.value } },
+          // match so a contains-query never returns the wrong row. The
+          // narrowing uses ASCII fragments only (see
+          // `asciiLikeFragments`): SQLite's LIKE folds ASCII case only.
+          where: { [field]: narrowing === '' ? { exists: true } : { like: narrowing } },
           postFilter: (row) => {
             const actual = row[clause.field]
             return typeof actual === 'string' && actual.toLowerCase() === wanted
@@ -99,11 +126,20 @@ function clauseToWhere(
     case 'gte':
       return { where: { [field]: { greater_than_equal: value } } }
     case 'in':
+      if (mode === 'insensitive') {
+        throw new UnsupportedOperatorError(`${operator} insensitive`)
+      }
+      return { where: { [field]: { in: value } } }
     case 'not_in':
       if (mode === 'insensitive') {
         throw new UnsupportedOperatorError(`${operator} insensitive`)
       }
-      return { where: { [field]: { [operator]: value } } }
+      // SQL `NOT IN` is never true for a NULL column, but Better Auth's
+      // semantics (the memoryAdapter oracle) keep NULL rows: a NULL is
+      // not in the list (#110). `ne` needs no such clause: Payload's
+      // SQL adapters already translate `not_equals` as
+      // `IS NULL OR <>` (the differential suite pins both).
+      return { where: { or: [{ [field]: { not_in: value } }, { [field]: { exists: false } }] } }
     case 'contains':
     case 'starts_with':
     case 'ends_with':

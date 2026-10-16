@@ -1,4 +1,4 @@
-import { AuthLinkError } from '@payload-auth-link/core'
+import { AuthLinkError, ProviderError, wellKnownProviderIds } from '@payload-auth-link/core'
 
 /** A Better Auth adapter operation against Payload failed. Wraps the cause. */
 export class AdapterOperationError extends AuthLinkError {
@@ -32,5 +32,28 @@ export class UnsupportedOperatorError extends AuthLinkError {
 export class UnsupportedSchemaError extends AuthLinkError {
   constructor(detail: string) {
     super('UNSUPPORTED_SCHEMA', `Better Auth schema is not mappable to Payload: ${detail}`)
+  }
+}
+
+/**
+ * A valid API key whose owner (`referenceId`) is not a Better Auth
+ * user — in practice an organization-owned key
+ * (`apiKey({ references: 'organization' })`), whose `referenceId` is an
+ * organization id. `verifyApiKey` resolves a USER; returning an
+ * organization id as `userId` would confuse principals, so such keys
+ * are refused (fail closed) until organization-owned keys are
+ * supported. A `ProviderError`, so every existing failure path treats
+ * it as a refusal.
+ */
+export class UnsupportedApiKeyOwnerError extends ProviderError {
+  /** The key's owner reference (an organization id, or a deleted user's id). */
+  readonly referenceId: string
+
+  constructor(referenceId: string) {
+    super(
+      wellKnownProviderIds.betterAuth,
+      "verifyApiKey: the key's owner is not a user; organization-owned API keys (references: 'organization') are not supported"
+    )
+    this.referenceId = referenceId
   }
 }

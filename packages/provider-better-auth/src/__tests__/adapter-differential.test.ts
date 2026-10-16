@@ -70,7 +70,7 @@ const memoryDb: Record<string, Record<string, unknown>[]> = {
 }
 const oracle = memoryAdapter(memoryDb)(options)
 
-type Adapter = Pick<typeof oracle, 'create' | 'findMany' | 'findOne' | 'count'>
+type Adapter = Pick<typeof oracle, 'create' | 'findMany' | 'findOne' | 'count' | 'updateMany'>
 type FindManyArgs = Parameters<Adapter['findMany']>[0]
 type WhereList = NonNullable<FindManyArgs['where']>
 type Row = { id: string } & Record<string, unknown>
@@ -110,6 +110,26 @@ const mixedSeed = [
   seenAt: day('2025-01-01'),
 }))
 
+/**
+ * Non-ASCII names (#110): SQLite's LIKE folds ASCII case only, so the
+ * case-insensitive `eq` narrowing must not depend on it. Includes the
+ * two characters whose lowercase is ASCII (`İ`, Kelvin `K`).
+ */
+const unicodeSeed = [
+  { id: 'x1', name: 'ärger', age: 81 },
+  { id: 'x2', name: 'Ärger', age: 82 },
+  { id: 'x3', name: 'ÄRGERLICH', age: 83 },
+  { id: 'x4', name: 'İstanbul', age: 84 },
+  { id: 'x5', name: '\u212Aelvin', age: 85 },
+].map((row) => ({
+  ...row,
+  grp: 'unicode',
+  email: `${row.id}@x.dev`,
+  emailVerified: true,
+  nickname: null,
+  seenAt: day('2025-02-01'),
+}))
+
 beforeAll(async () => {
   const config = await buildConfig({
     secret: SECRET,
@@ -122,7 +142,7 @@ beforeAll(async () => {
   })
   latePayload = await getPayload({ config })
   subject = (await engine.auth.$context).adapter
-  for (const row of [...seed, ...mixedSeed]) {
+  for (const row of [...seed, ...mixedSeed, ...unicodeSeed]) {
     await subject.create({ model: 'user', data: { ...row }, forceAllowId: true })
     await oracle.create({ model: 'user', data: { ...row }, forceAllowId: true })
   }
@@ -169,6 +189,36 @@ const agreeing: readonly (readonly [string, WhereList])[] = [
   ['in (no match)', [{ field: 'name', value: ['zulu'], operator: 'in' }]],
   ['not_in strings', [{ field: 'name', value: ['alpha', 'echo'], operator: 'not_in' }]],
   ['not_in numbers', [{ field: 'age', value: [10, 60, 71], operator: 'not_in' }]],
+  // #110: SQL `NOT IN` is never true for NULL; Better Auth keeps NULL rows.
+  [
+    'not_in over nullable (null rows kept)',
+    [{ field: 'nickname', value: ['dd', 'ee'], operator: 'not_in' }],
+  ],
+  [
+    'not_in over nullable, every value listed (only null rows)',
+    [{ field: 'nickname', value: ['dd', 'cc', 'ee', 'ff'], operator: 'not_in' }],
+  ],
+  [
+    'not_in over nullable AND another clause',
+    [
+      { field: 'nickname', value: ['dd'], operator: 'not_in' },
+      { field: 'grp', value: 'lower', operator: 'eq', connector: 'AND' },
+    ],
+  ],
+  [
+    'not_in over nullable OR another clause',
+    [
+      { field: 'nickname', value: ['dd', 'cc', 'ee', 'ff'], operator: 'not_in' },
+      { field: 'name', value: 'delta', operator: 'eq', connector: 'OR' },
+    ],
+  ],
+  [
+    'ne over nullable AND another clause',
+    [
+      { field: 'nickname', value: 'ee', operator: 'ne' },
+      { field: 'grp', value: 'lower', operator: 'eq', connector: 'AND' },
+    ],
+  ],
   ['eq null', [{ field: 'nickname', value: null, operator: 'eq' }]],
   ['ne null', [{ field: 'nickname', value: null, operator: 'ne' }]],
   [
@@ -215,6 +265,23 @@ const agreeing: readonly (readonly [string, WhereList])[] = [
       { field: 'name', value: 'BANANA', operator: 'eq', mode: 'insensitive' },
       { field: 'age', value: 72, operator: 'gt', connector: 'AND' },
     ],
+  ],
+  // #110: non-ASCII case-insensitive equality on SQLite.
+  [
+    'eq insensitive non-ASCII upper → lower/mixed',
+    [{ field: 'name', value: 'ÄRGER', operator: 'eq', mode: 'insensitive' }],
+  ],
+  [
+    'eq insensitive non-ASCII lower → upper',
+    [{ field: 'name', value: 'ärgerlich', operator: 'eq', mode: 'insensitive' }],
+  ],
+  [
+    'eq insensitive dotted capital I',
+    [{ field: 'name', value: 'i\u0307stanbul', operator: 'eq', mode: 'insensitive' }],
+  ],
+  [
+    'eq insensitive Kelvin sign',
+    [{ field: 'name', value: 'KELVIN', operator: 'eq', mode: 'insensitive' }],
   ],
   [
     'eq sensitive keeps case',
@@ -358,7 +425,7 @@ describe('Payload adapter vs memoryAdapter: sorting and pagination', () => {
   it('pages the whole table without overlap or loss (numeric sort)', async () => {
     const seen: string[] = []
     const oracleSeen: string[] = []
-    for (let offset = 0; offset < 12; offset += 3) {
+    for (let offset = 0; offset < 18; offset += 3) {
       const { actual, expected } = await both({
         model: 'user',
         limit: 3,
@@ -369,7 +436,7 @@ describe('Payload adapter vs memoryAdapter: sorting and pagination', () => {
       oracleSeen.push(...expected.map((row) => row.id))
     }
     expect(seen).toEqual(oracleSeen)
-    expect(new Set(seen).size).toBe(seed.length + mixedSeed.length)
+    expect(new Set(seen).size).toBe(seed.length + mixedSeed.length + unicodeSeed.length)
   })
 
   it('documented difference: mixed-case string sort is database binary order, not localeCompare', async () => {
@@ -402,5 +469,25 @@ describe('Payload adapter vs memoryAdapter: sorting and pagination', () => {
     })
     expect(actual.map((row) => row.name)).toEqual(['Apple', 'Banana'])
     expect(expected.map((row) => row.name)).toEqual(['apple', 'Apple'])
+  })
+})
+
+// Runs LAST: it writes. `updateMany` goes through the same translation,
+// so a NULL-dropping `not_in` touched 2 rows instead of 7 (#110).
+describe('Payload adapter vs memoryAdapter: writes over nullable columns', () => {
+  it('updateMany with not_in over a nullable column touches the same rows', async () => {
+    const where: WhereList = [{ field: 'nickname', value: ['dd', 'ee'], operator: 'not_in' }]
+    const [touched, oracleTouched] = await Promise.all([
+      subject.updateMany({ model: 'user', where: [...where], update: { grp: 'touched' } }),
+      oracle.updateMany({ model: 'user', where: [...where], update: { grp: 'touched' } }),
+    ])
+    expect(touched).toBe(oracleTouched)
+    const { actual, expected } = await both({
+      model: 'user',
+      where: [{ field: 'grp', value: 'touched', operator: 'eq' }],
+      limit: 100,
+    })
+    expect(ids(actual)).toEqual(ids(expected))
+    expect(actual.length).toBeGreaterThan(seed.length)
   })
 })

@@ -7,6 +7,7 @@ import {
   isPlaceholderEmail,
   type BetterAuthServerApi,
 } from '../port.js'
+import { UnsupportedApiKeyOwnerError } from '../errors.js'
 
 const cookieNames = ['better-auth.session_token']
 
@@ -543,7 +544,80 @@ describe('createBetterAuthProviderFromUnknown', () => {
     ])
     const bare = createBetterAuthProvider({ auth: api(null), sessionCookieNames: cookieNames })
     expect(bare.listPresentedSessionIds).toBeUndefined()
-    expect(bare.presentedLogoutCookieNames).toBeUndefined()
+    // Without the multi-session plugin, multi cookies are not
+    // enumerated (they cannot have been set by this instance).
+    expect(bare.presentedLogoutCookieNames?.(multiHeaders)).toEqual([])
+  })
+
+  it('enumerates presented cookie chunks of session and logout cookies (#110)', () => {
+    const provider = createBetterAuthProvider({
+      auth: api(null),
+      sessionCookieNames: ['better-auth.session_token', 'better-auth.session_data'],
+      logoutCookieNames: ['better-auth.account_data', '__Secure-better-auth.session_data'],
+    })
+    const headers = new Headers({
+      cookie: [
+        'better-auth.session_data.0=a',
+        'better-auth.session_data.1=b',
+        '__Secure-better-auth.session_data.0=c',
+        'better-auth.account_data.2=d',
+        // Not canonical chunk indexes, and not a known base: ignored.
+        'better-auth.session_data.01=x',
+        'better-auth.session_data.-1=x',
+        'better-auth.session_data.a=x',
+        'other.0=x',
+      ].join('; '),
+    })
+    expect(provider.presentedLogoutCookieNames?.(headers)).toEqual([
+      'better-auth.session_data.0',
+      'better-auth.session_data.1',
+      '__Secure-better-auth.session_data.0',
+      'better-auth.account_data.2',
+    ])
+    expect(provider.presentedLogoutCookieNames?.(new Headers())).toEqual([])
+  })
+
+  it('gates verifyApiKey on the owner being a BA user (#110)', async () => {
+    const valid = { valid: true, key: { referenceId: 'owner-1', name: 'k' } }
+    const withLookup = (findUserById: ((id: string) => Promise<unknown>) | undefined) =>
+      createBetterAuthProvider({
+        auth: {
+          api: { getSession: () => Promise.resolve(null) },
+          $context: Promise.resolve({
+            internalAdapter: {
+              deleteSession: () => Promise.resolve(),
+              ...(findUserById === undefined ? {} : { findUserById }),
+            },
+          }),
+          verifyApiKey: () => Promise.resolve(valid),
+        },
+        sessionCookieNames: cookieNames,
+      })
+    const user = await withLookup((id) => Promise.resolve({ id })).verifyApiKey?.('k')
+    expect(user?._unsafeUnwrap()?.userId).toBe('owner-1')
+    // An organization id (or a deleted user) resolves no user: refused, typed.
+    const org = await withLookup(() => Promise.resolve(null)).verifyApiKey?.('k')
+    expect(org?._unsafeUnwrapErr()).toBeInstanceOf(UnsupportedApiKeyOwnerError)
+    // No lookup to prove the owner with: refused (fail closed).
+    const blind = await withLookup(undefined).verifyApiKey?.('k')
+    expect(blind?.isErr()).toBe(true)
+    // A failing lookup refuses too.
+    const broken = await withLookup(() => Promise.reject(new Error('db down'))).verifyApiKey?.('k')
+    expect(broken?.isErr()).toBe(true)
+    // An invalid key never reaches the owner lookup.
+    const lookup = vi.fn(() => Promise.resolve({ id: 'x' }))
+    const invalid = createBetterAuthProvider({
+      auth: {
+        api: { getSession: () => Promise.resolve(null) },
+        $context: Promise.resolve({
+          internalAdapter: { deleteSession: () => Promise.resolve(), findUserById: lookup },
+        }),
+        verifyApiKey: () => Promise.resolve({ valid: false, key: null }),
+      },
+      sessionCookieNames: cookieNames,
+    })
+    expect((await invalid.verifyApiKey?.('k'))?._unsafeUnwrap()).toBeNull()
+    expect(lookup).not.toHaveBeenCalled()
   })
 
   it('derives capabilities from installed plugin ids (PORT-2)', () => {

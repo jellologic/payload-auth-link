@@ -46,7 +46,7 @@ describe('translateWhereClause', () => {
     ).toEqual({ baId: { in: ['a', 'b'] } })
     expect(
       translateWhereClause([clause({ field: 'id', operator: 'not_in', value: ['a'] })]).where
-    ).toEqual({ baId: { not_in: ['a'] } })
+    ).toEqual({ or: [{ baId: { not_in: ['a'] } }, { baId: { exists: false } }] })
   })
 
   it('translates the remaining range operators', () => {
@@ -117,11 +117,30 @@ describe('translateWhereClause', () => {
     const { where, postFilter } = translateWhereClause([
       clause({ field: 'email', value: 'A@B.C', mode: 'insensitive' }),
     ])
-    expect(where).toEqual({ email: { like: 'A@B.C' } })
+    // Symbols split the narrowing into words (LIKE/regex-safe).
+    expect(where).toEqual({ email: { like: 'A B C' } })
     expect(postFilter).toBeDefined()
     expect(postFilter?.({ email: 'a@b.c' })).toBe(true)
     expect(postFilter?.({ email: 'a@b.cx' })).toBe(false)
     expect(postFilter?.({ email: 42 })).toBe(false)
+  })
+
+  it('narrows non-ASCII case-insensitive equality on ASCII fragments only (#110)', () => {
+    const narrowed = (value: string) =>
+      translateWhereClause([clause({ field: 'name', value, mode: 'insensitive' })]).where
+    // SQLite LIKE folds ASCII only: non-ASCII letters never reach it.
+    expect(narrowed('ÄRGER')).toEqual({ name: { like: 'RGER' } })
+    expect(narrowed('Straße Müller')).toEqual({ name: { like: 'Stra e M ller' } })
+    // i/k are what İ and the Kelvin sign lowercase to: never narrowed on.
+    expect(narrowed('Kiki')).toEqual({ name: { exists: true } })
+    expect(narrowed('ÄÖÜ')).toEqual({ name: { exists: true } })
+    expect(narrowed('100%_x')).toEqual({ name: { like: '100 x' } })
+    const { postFilter } = translateWhereClause([
+      clause({ field: 'name', value: 'ÄRGER', mode: 'insensitive' }),
+    ])
+    expect(postFilter?.({ name: 'ärger' })).toBe(true)
+    expect(postFilter?.({ name: 'Ärger' })).toBe(true)
+    expect(postFilter?.({ name: 'ärgerlich' })).toBe(false)
   })
 
   it('throws on pattern operators', () => {

@@ -571,4 +571,150 @@ describe('real-engine server sessions', () => {
     expect(session.value.assurance.methods).toEqual(['password'])
     expect(session.value.assurance.mfa).toBe(false)
   })
+
+  describe('step-up: a correct second factor on an EXISTING session (#110)', () => {
+    /**
+     * An enrolled user holding a live PASSWORD session that is not the
+     * enrollment session: sign in, start enrollment, sign in AGAIN
+     * while 2FA is not yet enabled (a plain password session), then
+     * finish enrollment from the first session (BA rotates that one).
+     */
+    async function enrolledWithPasswordSession(prefix: string): Promise<{
+      secret: string
+      passwordCookie: string
+      userId: string
+    }> {
+      const email = uniqueEmail(prefix)
+      await signUp(email)
+      const userId = await baUserIdOf(email)
+      const signInBody = { email, password: 'correct-horse-battery' }
+      const enrollCookie = cookieOf(
+        await engine.auth.handler(
+          authRequest('/sign-in/email', { method: 'POST', body: signInBody })
+        )
+      )
+      const enabled = await engine.auth.handler(
+        authRequest('/two-factor/enable', {
+          method: 'POST',
+          body: { password: 'correct-horse-battery' },
+          cookie: enrollCookie,
+        })
+      )
+      expect(enabled.status).toBe(200)
+      const secret = await totpSecretOf(enabled)
+      const second = await engine.auth.handler(
+        authRequest('/sign-in/email', { method: 'POST', body: signInBody })
+      )
+      expect(second.status).toBe(200)
+      const passwordCookie = cookieOf(second)
+      const enrolled = await verifyTotp(secret, enrollCookie)
+      expect(enrolled.status, `enroll: ${await enrolled.text()}`).toBe(200)
+      const before = await assuranceOf(passwordCookie)
+      expect(before.methods).toEqual(['password'])
+      expect(before.mfa).toBe(false)
+      return { secret, passwordCookie, userId }
+    }
+
+    async function assuranceOf(
+      cookie: string
+    ): Promise<{ readonly methods: readonly string[] | 'unknown'; readonly mfa: unknown }> {
+      const session = await engine.provider.getSession(new Headers({ cookie }))
+      if (session.isErr() || session.value === null) {
+        throw new Error(session.isErr() ? session.error.message : 'no session')
+      }
+      return session.value.assurance
+    }
+
+    function setsSessionCookie(response: Response): boolean {
+      const name = engine.sessionCookieNames[0] ?? ''
+      return response.headers.getSetCookie().some((entry) => entry.startsWith(`${name}=`))
+    }
+
+    async function mintedCookieFor(userId: string): Promise<string> {
+      const created = await mint(userId, new Date(Date.now() + 3_600_000))
+      const buildCookie = engine.provider.sessionCookie
+      if (buildCookie === undefined) {
+        throw new Error('the better-auth provider exposes no sessionCookie')
+      }
+      return (await buildCookie(created.token)).split(';')[0] ?? ''
+    }
+
+    it('relabels a fresh password session two-factor, without any cookie re-set', async () => {
+      const { secret, passwordCookie } = await enrolledWithPasswordSession('stepup-fresh')
+      // The code is generated inside verifyTotp, right before the call.
+      const verified = await verifyTotp(secret, passwordCookie)
+      expect(verified.status, `verify: ${await verified.clone().text()}`).toBe(200)
+      // The discriminating fact: BA did NOT re-set the session cookie,
+      // so only the presented-session path can have relabelled it.
+      expect(setsSessionCookie(verified)).toBe(false)
+      const after = await assuranceOf(passwordCookie)
+      expect(after.methods).toEqual(['two-factor'])
+      expect(after.mfa).toBe(true)
+    })
+
+    it('relabels an aged session that BA refreshes during the verification', async () => {
+      const { secret, passwordCookie } = await enrolledWithPasswordSession('stepup-aged')
+      // Age the row past BA's updateAge (default 1 day of a 7-day
+      // session): the verification's own session read refreshes it.
+      const ctx = await engine.auth.$context
+      const token =
+        decodeURIComponent(passwordCookie.slice(passwordCookie.indexOf('=') + 1)).split('.')[0] ??
+        ''
+      await ctx.internalAdapter.updateSession(token, {
+        expiresAt: new Date(Date.now() + 2 * 24 * 3600 * 1000),
+      })
+      const verified = await verifyTotp(secret, passwordCookie)
+      expect(verified.status, `verify: ${await verified.clone().text()}`).toBe(200)
+      expect(setsSessionCookie(verified)).toBe(true)
+      const after = await assuranceOf(passwordCookie)
+      expect(after.methods).toEqual(['two-factor'])
+      expect(after.mfa).toBe(true)
+    })
+
+    it('relabels a server-minted session two-factor', async () => {
+      const { secret, userId } = await enrolledWithPasswordSession('stepup-minted')
+      const mintedCookie = await mintedCookieFor(userId)
+      expect((await assuranceOf(mintedCookie)).methods).toEqual(['server-mint'])
+      const verified = await verifyTotp(secret, mintedCookie)
+      expect(verified.status, `verify: ${await verified.clone().text()}`).toBe(200)
+      const after = await assuranceOf(mintedCookie)
+      expect(after.methods).toEqual(['two-factor'])
+      expect(after.mfa).toBe(true)
+    })
+
+    it('a wrong code leaves the password session unchanged', async () => {
+      const { secret, passwordCookie } = await enrolledWithPasswordSession('stepup-wrong')
+      // A code wrong for every step BA could accept around now.
+      const step = Math.floor(Date.now() / 30_000)
+      const key = base32Decode(secret)
+      const accepted = new Set(
+        [step - 2, step - 1, step, step + 1, step + 2].map((c) => hotp(key, c))
+      )
+      let wrongCode = '000000'
+      while (accepted.has(wrongCode)) {
+        wrongCode = String((Number(wrongCode) + 1) % 1_000_000).padStart(6, '0')
+      }
+      const wrong = await engine.auth.handler(
+        authRequest('/two-factor/verify-totp', {
+          method: 'POST',
+          body: { code: wrongCode },
+          cookie: passwordCookie,
+        })
+      )
+      expect([400, 401]).toContain(wrong.status)
+      const after = await assuranceOf(passwordCookie)
+      expect(after.methods).toEqual(['password'])
+      expect(after.mfa).toBe(false)
+    })
+
+    it('relabels only the session BA authenticated when two session cookies are presented', async () => {
+      const { secret, passwordCookie, userId } = await enrolledWithPasswordSession('stepup-two')
+      const mintedCookie = await mintedCookieFor(userId)
+      // Better Call's parser (BA's own) takes the FIRST session cookie.
+      const verified = await verifyTotp(secret, `${passwordCookie}; ${mintedCookie}`)
+      expect(verified.status, `verify: ${await verified.clone().text()}`).toBe(200)
+      expect((await assuranceOf(passwordCookie)).methods).toEqual(['two-factor'])
+      expect((await assuranceOf(mintedCookie)).methods).toEqual(['server-mint'])
+    })
+  })
 })
