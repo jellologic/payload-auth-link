@@ -14,7 +14,7 @@ ESM-only, Node 20.9 or later.
 
 ## What it provides
 
-- `createSessionVerifier`: full session validation against the plugin's session endpoint, anchored to your `baseUrl`
+- `createSessionVerifier`: full session validation against the plugin's session endpoint, anchored to your `baseUrl` (required unless `NODE_ENV=development`; the dev host fallback ignores `X-Forwarded-*` without `trustProxy` and only accepts loopback hosts by default; fetches time out after `timeoutMs`, default 5s)
 - `requireSessionUser`, `requireRoles`: server-side enforcement that runs before protected content renders
 - `createRouteHandlers`: mount the identity provider's routes
 - `decideAuthRedirect`, `safeRedirectPath`: the optimistic bounce and post-login destination safety

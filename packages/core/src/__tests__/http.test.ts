@@ -223,9 +223,13 @@ describe('resolveOrigin', () => {
     ).toBe('https://app.example.com')
   })
 
-  it('derives the origin from forwarded headers when allowed', () => {
-    expect(resolveOrigin({ headers: forwarded(), allowHostFallback: true })).toBe(
+  it('derives the origin from forwarded headers only under trustProxy', () => {
+    expect(resolveOrigin({ headers: forwarded(), allowHostFallback: true, trustProxy: true })).toBe(
       'https://app.example.com'
+    )
+    const spoofed = new Headers({ host: 'localhost:3000', 'x-forwarded-host': 'evil.example.com' })
+    expect(resolveOrigin({ headers: spoofed, allowHostFallback: true })).toBe(
+      'http://localhost:3000'
     )
     expect(
       resolveOrigin({ headers: new Headers({ host: 'localhost:3000' }), allowHostFallback: true })
@@ -236,6 +240,34 @@ describe('resolveOrigin', () => {
     expect(() => resolveOrigin({ headers: forwarded(), allowHostFallback: false })).toThrow(
       InvalidConfigError
     )
+  })
+
+  it('rejects non-http schemes, malformed hosts, and hosts outside the allowlist', () => {
+    const bad: Array<Record<string, string>> = [
+      { host: 'localhost', 'x-forwarded-proto': 'file' },
+      { host: 'user@localhost' },
+      { host: 'localhost/path' },
+      { host: 'localhost?x' },
+      { host: 'evil.example.com' },
+    ]
+    for (const entries of bad) {
+      expect(() =>
+        resolveOrigin({
+          headers: new Headers(entries),
+          allowHostFallback: true,
+          trustProxy: true,
+          allowedHosts: ['localhost'],
+        })
+      ).toThrow(InvalidConfigError)
+    }
+    expect(
+      resolveOrigin({
+        headers: new Headers({ host: 'LOCALHOST:3000', 'x-forwarded-proto': 'HTTPS' }),
+        allowHostFallback: true,
+        trustProxy: true,
+        allowedHosts: ['localhost'],
+      })
+    ).toBe('https://localhost:3000')
   })
 
   it('throws when no host header and no baseUrl', () => {

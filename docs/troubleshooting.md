@@ -125,6 +125,13 @@ split them, as the example does.
   it — and spoofed host headers would redirect the forwarded
   session cookie, so set the canonical origin in production
   instead of relying on the fallback.
+- **Verifier returns `null` in development.** `createSessionVerifier`
+  without `baseUrl` reads only the direct `Host` header (set
+  `trustProxy: true` behind a local proxy) and only accepts
+  `localhost`, `127.0.0.1`, `[::1]` (extend with
+  `allowedDevelopmentHosts`). Rejections and timeouts are reported
+  through `onError`. Outside `NODE_ENV=development` it throws at
+  construction without `baseUrl`.
 - **Clock skew.** Expiry checks run against the injected clock;
   wild skew reads as expired.
 

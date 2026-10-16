@@ -220,14 +220,20 @@ function assertTrustIsNotDangerous(
  * it is set. The host fallback stays allowed here: unlike the web
  * verifier's real `fetch`, this URL feeds an in-process `Auth()`
  * call, so a spoofed host cannot exfiltrate the cookie — it only
- * affects Auth.js's internal host checks.
+ * affects Auth.js's internal host checks. Forwarded headers stay
+ * trusted (`trustProxy`) to match Auth.js's own `trustHost` reading.
  */
 function sessionRequestUrl(
   baseURL: string | undefined,
   basePath: string,
   headers: Headers
 ): string {
-  const origin = resolveOrigin({ baseUrl: baseURL, headers, allowHostFallback: true })
+  const origin = resolveOrigin({
+    baseUrl: baseURL,
+    headers,
+    allowHostFallback: true,
+    trustProxy: true,
+  })
   return new URL(`${basePath}/session`, origin).toString()
 }
 
