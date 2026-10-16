@@ -426,10 +426,23 @@ export declare function summarizePlanRows(rows: readonly PlanRow[]): PlanRow[];
 // ===== importer/host-writes.d.ts =====
 import type { Payload } from 'payload';
 import type { FieldWrite, ImportManifest } from './types.js';
-/** Seal one JSON-serialized value under the app's Payload secret. */
-export declare function sealValue(secret: string, plaintext: string): string;
+/**
+ * Seal one JSON-serialized value under the app's Payload secret. The
+ * entry it belongs to (`collection\0id\0field`) is bound as GCM
+ * associated data, so a sealed value cannot be moved onto another
+ * entry of the manifest.
+ */
+export declare function sealValue(secret: string, plaintext: string, entry: string): string;
 /** Open a sealed value; throws when the secret is not the sealing one. */
-export declare function unsealValue(secret: string, sealed: string): string;
+export declare function unsealValue(secret: string, sealed: string, entry: string): string;
+/**
+ * The only host fields the kit ever writes (importer and
+ * `adopt-prelink`), plus the `updatedAt` it captures alongside them.
+ * Rollback restores nothing else: a manifest is a file on disk, and an
+ * edited one must not become a way to set arbitrary fields (roles are
+ * restored only because the importer writes them).
+ */
+export declare const restorableFields: ReadonlySet<string>;
 /** The captured prior value of one manifest entry, JSON-parsed. */
 export declare function priorValue(secret: string, write: FieldWrite): unknown;
 /** Keys of the field writes a manifest already holds (first capture wins). */
@@ -928,3 +941,12 @@ export { defaultSourceTables, defaultTargetSlugs, parseSourceMapJson, presentTab
 export { exportToJsonl, parseExportTables, exportTables } from './exporters.js';
 export { cliMain } from './cli.js';
 export type { BehaviourChange, DatabaseFinding, DoctorIssue, DoctorReport, PluginFinding, SourceFinding, UsersFinding, VersionFinding, } from './doctor/types.js';
+
+// ===== private-file.d.ts =====
+/**
+ * Write `content` to `path` readable by the owner only (0600). The
+ * mode is tightened on the open descriptor BEFORE any content lands, so
+ * a pre-existing world-readable file (an older kit's manifest, a
+ * reused `--out` path) never holds the new content with its old mode.
+ */
+export declare function writePrivateFile(path: string, content: string): void;

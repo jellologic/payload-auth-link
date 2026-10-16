@@ -21,6 +21,7 @@ import {
   type ImportCommandOptions,
 } from './importer/run-import.js'
 import { summarizePlanRows } from './importer/apply.js'
+import { writePrivateFile } from './private-file.js'
 import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { extname, join, relative } from 'node:path'
 
@@ -297,7 +298,9 @@ async function main(
         return 1
       }
       if (typeof flags.get('out') === 'string') {
-        writeFileSync(flags.get('out') as string, result.jsonl)
+        // The export carries credential material (password hashes, OAuth
+        // tokens, sessions, API keys, JWKS private keys): owner-only.
+        writePrivateFile(flags.get('out') as string, result.jsonl)
         out.write(`wrote ${result.totalRows} row(s) to ${String(flags.get('out'))}\n`)
       } else {
         out.write(result.jsonl)

@@ -155,6 +155,27 @@ function withDefaultUserAccess(
       return false
     }
   }
+  if (filled.update === undefined) {
+    // Payload's default lets any signed-in user update ANY user —
+    // with JIT sign-up that is anyone. Managers update everyone;
+    // everyone else only their own document.
+    filled.update = ({ req }) => {
+      if (isImpersonating(req)) {
+        return false
+      }
+      if (isRoleManager(req, wired)) {
+        return true
+      }
+      const user = req.user
+      if (isRecord(user) && (typeof user.id === 'string' || typeof user.id === 'number')) {
+        return { id: { equals: user.id } }
+      }
+      return false
+    }
+  }
+  if (filled.delete === undefined) {
+    filled.delete = ({ req }) => !isImpersonating(req) && isRoleManager(req, wired)
+  }
   if (filled.unlock === undefined) {
     // Payload's default lets any signed-in user unlock any account,
     // which undoes the brute-force lockout for whoever is guessing.
@@ -302,12 +323,19 @@ function linkableEmailField(wired: WiredOptions): TextField {
  * unaffected.
  */
 function emailUpdateAccess(wired: WiredOptions): FieldAccess {
-  return ({ req, doc }) => {
+  return ({ req, doc, id }) => {
     if (isImpersonating(req)) {
       return false
     }
     if (isRoleManager(req, wired)) {
       return true
+    }
+    // A non-manager only ever changes their OWN email: a host whose
+    // collection-level update is broader must not let one user re-point
+    // another's address (and then reset that account's password).
+    const target = id ?? (isRecord(doc) ? (doc.id as FieldAccessArgs['id']) : undefined)
+    if (!isSelfDoc(req, target)) {
+      return false
     }
     const identities = isRecord(doc) ? doc[wired.config.map.identitiesField] : undefined
     const hasIdentities = Array.isArray(identities) && identities.length > 0

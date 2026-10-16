@@ -1,4 +1,5 @@
-import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { writePrivateFile } from '../private-file.js'
 import type { Payload } from 'payload'
 import { restoreCaptured } from './host-writes.js'
 import {
@@ -49,8 +50,7 @@ export function readManifest(path: string): ImportManifest | null {
  * is tightened too.
  */
 export function writeManifest(manifest: ImportManifest, path: string): void {
-  writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 })
-  chmodSync(path, 0o600)
+  writePrivateFile(path, `${JSON.stringify(manifest, null, 2)}\n`)
 }
 
 export type VerifyIssue = {

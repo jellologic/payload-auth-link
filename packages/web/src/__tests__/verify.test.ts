@@ -127,6 +127,11 @@ describe('resolveSessionUrl', () => {
       'javascript:alert(1)',
       'file:///etc/passwd',
       'api/auth-link/session',
+      // URL parsing strips these, turning the path protocol-relative.
+      '/\t/evil.example.com/session',
+      '/\n/evil.example.com/session',
+      '/\r\\evil.example.com/session',
+      '/api/auth-link/session ',
     ]) {
       expect(() => resolveSessionUrl(headers(), endpoint, 'https://app.example.com')).toThrow(
         InvalidConfigError

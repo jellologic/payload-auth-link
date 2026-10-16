@@ -272,11 +272,17 @@ describe('applyUsersCollection', () => {
       const email = users.fields.find((f) => fieldName(f) === 'email') as {
         access?: { update?: (args: { req: { user?: unknown }; doc?: unknown }) => boolean }
       }
-      const req = (roles: string[]) => ({ user: { roles } })
-      const doc = { identities: [{ providerId: 'stub', providerUserId: '1' }] }
+      const req = (roles: string[]) => ({ user: { id: 'self', roles } })
+      const doc = { id: 'self', identities: [{ providerId: 'stub', providerUserId: '1' }] }
       expect(email.access?.update?.({ req: req(['admin']), doc })).toBe(true)
       expect(email.access?.update?.({ req: req(['user']), doc })).toBe(false)
-      expect(email.access?.update?.({ req: req(['user']), doc: { identities: [] } })).toBe(true)
+      expect(
+        email.access?.update?.({ req: req(['user']), doc: { id: 'self', identities: [] } })
+      ).toBe(true)
+      // Never another user's address, linked or not.
+      expect(
+        email.access?.update?.({ req: req(['user']), doc: { id: 'other', identities: [] } })
+      ).toBe(false)
     })
 
     it('strips password writes from non-managers in beforeOperation; managers keep them', () => {

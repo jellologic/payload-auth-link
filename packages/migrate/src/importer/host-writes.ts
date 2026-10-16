@@ -31,6 +31,9 @@ import type { FieldWrite, ImportManifest } from './types.js'
 
 const sealPrefix = 'v1.'
 
+const writeKey = (collection: string, id: string | number, field: string): string =>
+  `${collection}\u0000${String(id)}\u0000${field}`
+
 function keyFor(secret: string): Buffer {
   return createHash('sha256')
     .update('payload-auth-link/migrate/manifest-seal/v1\u0000')
@@ -38,17 +41,23 @@ function keyFor(secret: string): Buffer {
     .digest()
 }
 
-/** Seal one JSON-serialized value under the app's Payload secret. */
-export function sealValue(secret: string, plaintext: string): string {
+/**
+ * Seal one JSON-serialized value under the app's Payload secret. The
+ * entry it belongs to (`collection\0id\0field`) is bound as GCM
+ * associated data, so a sealed value cannot be moved onto another
+ * entry of the manifest.
+ */
+export function sealValue(secret: string, plaintext: string, entry: string): string {
   const iv = randomBytes(12)
   const cipher = createCipheriv('aes-256-gcm', keyFor(secret), iv)
+  cipher.setAAD(Buffer.from(entry, 'utf8'))
   const body = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
   const tag = cipher.getAuthTag()
   return `${sealPrefix}${Buffer.concat([iv, tag, body]).toString('base64url')}`
 }
 
 /** Open a sealed value; throws when the secret is not the sealing one. */
-export function unsealValue(secret: string, sealed: string): string {
+export function unsealValue(secret: string, sealed: string, entry: string): string {
   if (!sealed.startsWith(sealPrefix)) {
     throw new Error('manifest value is not a sealed v1 value')
   }
@@ -58,28 +67,48 @@ export function unsealValue(secret: string, sealed: string): string {
   const body = raw.subarray(28)
   const decipher = createDecipheriv('aes-256-gcm', keyFor(secret), iv)
   decipher.setAuthTag(tag)
+  decipher.setAAD(Buffer.from(entry, 'utf8'))
   try {
     return Buffer.concat([decipher.update(body), decipher.final()]).toString('utf8')
   } catch {
     throw new Error(
-      'cannot open the manifest: its values were sealed with a different PAYLOAD_SECRET — run rollback against the same app (same secret) that ran the import'
+      'cannot open the manifest: a value was sealed with a different PAYLOAD_SECRET or for a different entry (edited manifest) — run rollback against the same app (same secret) that ran the import, with the manifest it wrote'
     )
   }
 }
 
+/**
+ * The only host fields the kit ever writes (importer and
+ * `adopt-prelink`), plus the `updatedAt` it captures alongside them.
+ * Rollback restores nothing else: a manifest is a file on disk, and an
+ * edited one must not become a way to set arbitrary fields (roles are
+ * restored only because the importer writes them).
+ */
+export const restorableFields: ReadonlySet<string> = new Set([
+  'identities',
+  'roles',
+  'linkable',
+  'linkableEmail',
+  'updatedAt',
+])
+
 /** The captured prior value of one manifest entry, JSON-parsed. */
 export function priorValue(secret: string, write: FieldWrite): unknown {
+  if (!restorableFields.has(write.field)) {
+    throw new Error(
+      `manifest entry for '${write.collection}.${write.field}' is not a field this kit writes; refusing to restore it (edited manifest?)`
+    )
+  }
   if (write.sealedBefore !== undefined) {
-    return JSON.parse(unsealValue(secret, write.sealedBefore)) as unknown
+    return JSON.parse(
+      unsealValue(secret, write.sealedBefore, writeKey(write.collection, write.id, write.field))
+    ) as unknown
   }
   // Version-1 manifests stored the value in the clear.
   return write.before === null || write.before === undefined
     ? null
     : (JSON.parse(write.before) as unknown)
 }
-
-const writeKey = (collection: string, id: string | number, field: string): string =>
-  `${collection}\u0000${String(id)}\u0000${field}`
 
 /** Keys of the field writes a manifest already holds (first capture wins). */
 export function capturedKeys(writes: readonly FieldWrite[]): Set<string> {
@@ -127,7 +156,7 @@ export async function captureBefore(options: {
       collection,
       id,
       field,
-      sealedBefore: sealValue(payload.secret, JSON.stringify(record[field] ?? null)),
+      sealedBefore: sealValue(payload.secret, JSON.stringify(record[field] ?? null), key),
     })
     newlyCaptured += 1
   }

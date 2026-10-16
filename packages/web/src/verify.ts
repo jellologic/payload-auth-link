@@ -92,6 +92,14 @@ export type SessionUrlHostPolicy = {
  * throw `InvalidConfigError`.
  */
 export function validateSessionEndpoint(sessionEndpoint: string): string {
+  // URL parsing strips tabs/newlines and trims control characters, so
+  // `/\t/evil.example` would resolve as `//evil.example`: refuse them.
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u0020\u007f]/.test(sessionEndpoint)) {
+    throw new InvalidConfigError(
+      `sessionEndpoint must not contain whitespace or control characters, got ${JSON.stringify(sessionEndpoint)}`
+    )
+  }
   if (/^https?:\/\//i.test(sessionEndpoint)) {
     return normalizeBaseUrl(sessionEndpoint)
   }

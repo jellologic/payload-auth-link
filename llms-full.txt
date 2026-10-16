@@ -1954,6 +1954,33 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
+## Next minor: users-collection write defaults
+
+**Upgrade impact:** no schema change; access defaults only.
+
+1. **Users `update` and `delete` are no longer open to every signed-in
+   user.** When your users collection declares no `access.update`, the
+   plugin now allows a user to update only their own document (role
+   managers: every document); with no `access.delete`, only role
+   managers delete users. Neither is allowed while impersonating.
+   Payload's own default (`Boolean(req.user)`) let any signed-in user
+   (with JIT sign-up, anyone) rewrite or delete any user, including
+   re-pointing a local admin's email and resetting its password. If
+   you relied on the open default, declare the access you want
+   explicitly.
+2. **A non-manager only ever changes their own email**, even when your
+   collection-level `update` is broader.
+3. **`unlock` is role managers only** by default (it was any signed-in
+   user).
+4. **`migrate export --out` and the import manifest are written
+   owner-only (0600)**, tightened before content lands. Manifest
+   values are bound to their entry, and rollback restores only the
+   fields the kit writes (`identities`, `roles`, `linkable`,
+   `linkableEmail`, `updatedAt`).
+5. **`sessionEndpoint` values with whitespace or control characters
+   throw** `InvalidConfigError` (URL parsing would strip them and could
+   resolve the path protocol-relative).
+
 ## Next minor: organization governance; `_verified` is not linking proof
 
 **Upgrade impact:** no schema change. No column is added, removed,
