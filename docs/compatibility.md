@@ -59,6 +59,14 @@ Module resolution: shipped code builds under `nodenext`, except
 Next.js ships no `exports` map for `next/*` subpaths. Tests run
 under bundler resolution for the same reason.
 
+Payload v4 (4.0.0-beta.0): the plugin's whole test suite runs on it in
+the compat matrix (`payload-4-beta`). Two v4 changes matter to host
+code next to the plugin: the Local API now defaults to
+`overrideAccess: false` (every plugin call sets it explicitly; your own
+setup scripts may need `overrideAccess: true`), and `createdBy` /
+`updatedBy` are filled from `req.user`, whose `id` the plugin keeps in
+the database's own type (a number on SQLite/Postgres).
+
 ## Databases
 
 | Adapter                   | Validated how                                                                         |
