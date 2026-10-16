@@ -476,8 +476,23 @@ describe('unlock (row 9)', () => {
     expect(suspended.status).toBe(401)
   })
 
-  it('an admin-collection session may unlock', async () => {
+  it('a plain signed-in user may not unlock (not even their own account)', async () => {
     const opened = await login('unproven@test.dev', 'AttackerKnows-1')
+    expect(opened.status).toBe(200)
+    const refused = await raw('POST', '/users/unlock', {
+      jar: setCookieOf(opened.headers),
+      body: { email: 'mfa@test.dev' },
+    })
+    expect(refused.status).toBe(403)
+  })
+
+  it('a role manager may unlock', async () => {
+    await payload.create({
+      collection: 'users',
+      data: { email: 'unlocker@test.dev', password: PASSWORD, roles: ['admin'] },
+      overrideAccess: true,
+    })
+    const opened = await login('unlocker@test.dev', PASSWORD)
     expect(opened.status).toBe(200)
     const unlocked = await raw('POST', '/users/unlock', {
       jar: setCookieOf(opened.headers),

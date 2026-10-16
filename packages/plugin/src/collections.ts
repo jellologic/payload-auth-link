@@ -155,6 +155,11 @@ function withDefaultUserAccess(
       return false
     }
   }
+  if (filled.unlock === undefined) {
+    // Payload's default lets any signed-in user unlock any account,
+    // which undoes the brute-force lockout for whoever is guessing.
+    filled.unlock = ({ req }) => !isImpersonating(req) && isRoleManager(req, wired)
+  }
   filled.admin = denyAdminWhileImpersonating(filled.admin, wired)
   return filled
 }
