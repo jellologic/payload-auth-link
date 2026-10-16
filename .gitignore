@@ -14,3 +14,4 @@ test-results/
 *.tsbuildinfo
 docs/api/
 e2e/.auth/
+.claude/worktrees/

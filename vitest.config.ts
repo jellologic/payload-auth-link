@@ -76,7 +76,7 @@ export default defineConfig({
         'packages/plugin/src/endpoints.ts': {
           lines: 95,
           functions: 95,
-          branches: 89,
+          branches: 91,
           statements: 95,
         },
         'packages/plugin/src/organizations.ts': {
@@ -141,7 +141,7 @@ export default defineConfig({
           statements: 95,
         },
         'packages/web/src/authz.ts': { lines: 95, functions: 95, branches: 95, statements: 95 },
-        'packages/web/src/verify.ts': { lines: 95, functions: 95, branches: 94, statements: 95 },
+        'packages/web/src/verify.ts': { lines: 95, functions: 95, branches: 95, statements: 95 },
       },
     },
   },

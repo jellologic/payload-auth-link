@@ -20,7 +20,7 @@ Each cell is lines / functions / branches / statements.
 | `plugin/src/audit.ts`                            | 95 / 91 / 88 / 95 | see below              |
 | `plugin/src/collections.ts`                      | 95 / 95 / 86 / 95 | see below              |
 | `plugin/src/compat-shim.ts`                      | 95 / 95 / 95 / 95 | at target              |
-| `plugin/src/endpoints.ts`                        | 95 / 95 / 89 / 95 | see below              |
+| `plugin/src/endpoints.ts`                        | 95 / 95 / 91 / 95 | see below              |
 | `plugin/src/organizations.ts`                    | 70 / 69 / 60 / 70 | provisional, see below |
 | `plugin/src/repository.ts`                       | 95 / 95 / 95 / 95 | at target              |
 | `plugin/src/server.ts`                           | 95 / 95 / 94 / 95 | see below              |
@@ -33,7 +33,7 @@ Each cell is lines / functions / branches / statements.
 | `provider-better-auth/src/session-provenance.ts` | 95 / 95 / 95 / 95 | at target              |
 | `provider-better-auth/src/where.ts`              | 95 / 95 / 95 / 95 | at target              |
 | `web/src/authz.ts`                               | 95 / 95 / 95 / 95 | at target              |
-| `web/src/verify.ts`                              | 95 / 95 / 94 / 95 | provisional, see below |
+| `web/src/verify.ts`                              | 95 / 95 / 95 / 95 | at target              |
 
 ## Recurring kinds of uncovered branch
 
@@ -185,10 +185,3 @@ and clearing behaviour is covered by `cookies.test.ts`.
   instances missing optional internal-adapter methods.
   `port-failures.test.ts` covers the revoke and verify arms; the rest
   are capability-probe fallbacks.
-
-### `web/src/verify.ts` (provisional: branches 94.44%)
-
-- Line 89: `environment?.nodeEnv ?? process.env.NODE_ENV ?? ''`, the
-  final `''` arm (`NODE_ENV` unset with no injected environment).
-  Another change is editing this file at the same time; re-measure
-  after it lands.
