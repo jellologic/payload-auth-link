@@ -39,8 +39,9 @@ import {
  * Dry run prints planned row counts per model, collisions, and
  * anything unmappable; unmappable data aborts `--apply` before any
  * write. The manifest records every created row and field change;
- * source tables are never modified — `finalize` only marks the
- * manifest, and dropping them stays the operator's later step.
+ * source tables are never modified — `finalize` records the point of
+ * no return (in the database and the re-signed manifest), and dropping
+ * them stays the operator's later step.
  */
 
 export type ImportCommandOptions = {
@@ -59,8 +60,18 @@ export type ImportCommandOptions = {
   readonly json?: boolean
   readonly log?: (message: string) => void
   readonly loadPayload?: (configPath: string) => Promise<import('payload').Payload>
-  /** Accept a pre-0.6.0 manifest without a MAC (`--allow-unsigned-manifest`). */
+  /**
+   * Accept a manifest without a full signature (`--allow-unsigned-manifest`):
+   * a pre-0.6.0 manifest without a MAC, or a 0.6.0 one whose MAC does
+   * not cover `finalized`.
+   */
   readonly allowUnsignedManifest?: boolean | undefined
+  /**
+   * `rollback` only (`--allow-unsigned-deletes`): let an UNSIGNED
+   * manifest delete its created rows and restore plaintext values.
+   * Without it, `--allow-unsigned-manifest` never deletes anything.
+   */
+  readonly allowUnsignedDeletes?: boolean | undefined
 }
 
 const log_ = (options: Pick<ImportCommandOptions, 'log'>): ((message: string) => void) =>
@@ -517,27 +528,57 @@ export async function runRollback(
         manifest,
         log,
         manifestPath,
+        slugs: slugsOf(options),
         allowUnsignedManifest: options.allowUnsignedManifest,
+        allowUnsignedDeletes: options.allowUnsignedDeletes,
       }),
     requireTargets
   )
 }
 
-/** The `finalize` command — manifest-only; no Payload instance is loaded. */
-export function runFinalize(
-  options: Pick<ImportCommandOptions, 'manifestPath' | 'log'>
-): Promise<ImportManifest> {
+/** Options for `finalize`: the target app (for the secret and the database marker). */
+export type FinalizeCommandOptions = Pick<
+  ImportCommandOptions,
+  'configPath' | 'manifestPath' | 'log' | 'loadPayload' | 'allowUnsignedManifest' | 'slugsJson'
+>
+
+/**
+ * The `finalize` command: boots the target app (like `rollback`), records
+ * the one-way finalize marker in its database, and re-signs the manifest
+ * with `finalized` covered by the signature.
+ */
+export async function runFinalize(options: FinalizeCommandOptions): Promise<ImportManifest> {
   const log = log_(options)
   const manifestPath = options.manifestPath ?? defaultManifestPath
   const manifest = readManifest(manifestPath)
   if (manifest === null) {
-    return Promise.reject(new Error(`no manifest at ${manifestPath}; run --apply first`))
+    throw new Error(`no manifest at ${manifestPath}; run --apply first`)
   }
-  const finalized = finalizeManifest(manifest, manifestPath)
-  log(
-    `finalized: the manifest at ${manifestPath} is now read-only. Legacy tables may be dropped in a separate, later migration — nothing is dropped for you.`
+  const importOptions: ImportCommandOptions = {
+    configPath: options.configPath,
+    databaseUrl: '',
+    apply: true,
+    sessions: 'carry',
+    ...(options.slugsJson === undefined ? {} : { slugsJson: options.slugsJson }),
+    ...(options.loadPayload === undefined ? {} : { loadPayload: options.loadPayload }),
+  }
+  const finalized = await withTargetPayload(
+    importOptions,
+    (payload) =>
+      finalizeManifest({
+        payload,
+        manifest,
+        path: manifestPath,
+        allowUnsignedManifest: options.allowUnsignedManifest,
+      }),
+    manifest.kind !== 'adopt-prelink'
   )
-  return Promise.resolve(finalized)
+  log(
+    manifest.kind === 'adopt-prelink'
+      ? `finalized: the pre-link manifest at ${manifestPath} is now read-only, and the database records the finalize. Rollback is no longer possible. Adopt mode serves Better Auth from your existing tables — they are the LIVE tables; do not drop them.`
+      : `finalized: the manifest at ${manifestPath} is now read-only, and the database records the finalize. Rollback is no longer possible. The legacy payload-auth tables may be dropped in a separate, later migration — nothing is dropped for you.`
+  )
+  return finalized
 }
 
 /** Options for `adopt-prelink` (issue #88). */

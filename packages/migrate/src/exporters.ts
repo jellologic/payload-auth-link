@@ -1,4 +1,5 @@
 import { Client } from 'pg'
+import { presentTables, resolveSourceTables, type ResolvedSourceTables } from './importer/types.js'
 
 /**
  * Off-ramp exporters (issue #58): every payload-auth-link collection's
@@ -14,12 +15,42 @@ export type ExportFormat = 'jsonl'
 export type ExportOptions = {
   readonly connectionString: string
   readonly format: ExportFormat
-  /** Tables to export; defaults to the full auth-table set. */
+  /**
+   * Tables to export, exactly (`--tables`). Without it, the export
+   * covers EVERY auth table (see {@link resolveAuthTables}).
+   */
   readonly tables?: readonly string[] | undefined
+  /**
+   * The source layout (`--source-map`, issue #110): model → table, or
+   * `null` for "not installed". Defaults to payload-auth's layout. A
+   * mapped table that does not exist lands in `missing`.
+   */
+  readonly sourceTables?: ResolvedSourceTables | undefined
   readonly log?: (message: string) => void
 }
 
-/** The auth-table set, in dependency order for re-import. */
+/**
+ * Better Auth plugin tables payload-auth creates beyond the importer's
+ * models — exported whenever present (they are auth data the off-ramp
+ * must not lose).
+ */
+export const optionalAuthTables: readonly string[] = [
+  'admin_invitations',
+  'two_factors',
+  'passkeys',
+  'sso_providers',
+  'organization_roles',
+  'teams',
+  'team_members',
+  'device_code',
+  'subscriptions',
+]
+
+/**
+ * The legacy default auth-table list (payload-auth's default layout plus
+ * the plugin's users child tables). Kept for callers that name it;
+ * {@link resolveAuthTables} is what the export uses.
+ */
 export const exportTables: readonly string[] = [
   'users',
   'users_role',
@@ -40,9 +71,9 @@ export type ExportResult = {
   readonly jsonl: string
   readonly totalRows: number
   /**
-   * Requested tables that do not exist on the source (issue #68). The
-   * caller decides policy: `--tables` names must abort (exit 1),
-   * default-list gaps are reported but tolerated.
+   * Required tables that do not exist on the source (issues #68, #110):
+   * a `--tables` name, or a mapped model's table. The CLI exits 1 on
+   * any; optional tables (children, ba_*, oauth_*) never land here.
    */
   readonly missing: readonly string[]
 }
@@ -81,32 +112,102 @@ export function parseExportTables(value: string): readonly string[] {
   return names
 }
 
+/**
+ * "Every auth table" (issue #110), resolved against what the database
+ * actually holds, in dependency order:
+ *
+ * 1. each mapped model's table (`--source-map` over payload-auth's
+ *    layout; `null` = not installed) — REQUIRED: a missing one lands in
+ *    `missing`;
+ * 2. every child table of those (`<table>_*`: `users_role`,
+ *    `users_identities`, `users_sessions`, `organizations_tags`, `_rels`
+ *    tables, …) and payload-auth's other Better Auth plugin tables
+ *    ({@link optionalAuthTables}) — when present;
+ * 3. every `ba_*` (payload-auth-link engine) and `oauth_*` (OAuth
+ *    provider) table — when present.
+ */
+export function resolveAuthTables(
+  existing: ReadonlySet<string>,
+  sourceTables: ResolvedSourceTables = resolveSourceTables(undefined)
+): { readonly tables: readonly string[]; readonly missing: readonly string[] } {
+  const tables: string[] = []
+  const missing: string[] = []
+  const add = (table: string): void => {
+    if (!tables.includes(table)) {
+      tables.push(table)
+    }
+  }
+  const mapped = presentTables(sourceTables)
+  for (const table of mapped) {
+    if (existing.has(table)) {
+      add(table)
+    } else {
+      missing.push(table)
+    }
+  }
+  const sorted = [...existing].sort()
+  for (const table of [...mapped, ...optionalAuthTables]) {
+    if (!mapped.includes(table) && existing.has(table)) {
+      add(table)
+    }
+    for (const child of sorted) {
+      if (child.startsWith(`${table}_`)) {
+        add(child)
+      }
+    }
+  }
+  for (const table of sorted) {
+    if (table.startsWith('ba_') || table.startsWith('oauth_')) {
+      add(table)
+    }
+  }
+  return { tables, missing }
+}
+
 /** Export the auth tables to lossless JSONL (issue #58). */
 export async function exportToJsonl(options: ExportOptions): Promise<ExportResult> {
-  const tables = options.tables ?? exportTables
   const client = new Client({ connectionString: options.connectionString })
   await client.connect()
   try {
+    const listed = await client.query(
+      `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`
+    )
+    const existing = new Set(
+      listed.rows.map((row) => String((row as { table_name: unknown }).table_name))
+    )
     const lines: string[] = []
     const exported: { name: string; rows: number }[] = []
     const missing: string[] = []
+    let tables: readonly string[]
+    if (options.tables === undefined) {
+      const resolved = resolveAuthTables(existing, options.sourceTables)
+      tables = resolved.tables
+      for (const table of resolved.missing) {
+        missing.push(table)
+        options.log?.(
+          `mapped table '${table}' does not exist on the source — not exported (map its model null with --source-map if it is not installed)`
+        )
+      }
+    } else {
+      tables = options.tables
+    }
     let totalRows = 0
     for (const table of tables) {
-      const exists = await client.query(
-        `SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1`,
-        [table]
-      )
-      if (exists.rows.length === 0) {
+      if (!existing.has(table)) {
         // Nothing is silently omitted (issue #68): every absent table
         // is logged and lands in `missing` for the caller's policy.
         missing.push(table)
         options.log?.(`table '${table}' does not exist on the source — not exported`)
         continue
       }
+      const columns = await client.query(
+        `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'id'`,
+        [table]
+      )
       // Export EVERY column raw (JSON types preserved by ::jsonb cast
       // per row via row_to_json) — lossless by construction.
       const result = await client.query(
-        `SELECT row_to_json(t)::jsonb AS row FROM ${table} t ORDER BY t.id`
+        `SELECT row_to_json(t)::jsonb AS row FROM "${table}" t${columns.rows.length > 0 ? ' ORDER BY t.id' : ''}`
       )
       exported.push({ name: table, rows: result.rows.length })
       totalRows += result.rows.length

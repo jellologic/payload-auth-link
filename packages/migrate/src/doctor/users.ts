@@ -70,11 +70,6 @@ export function findUsersCollection(
   return null
 }
 
-/**
- * Payload's local email+password strategy for a collection. payload-auth
- * leaves it on (its own Better Auth strategy rides alongside), which is
- * exactly the surface 0.7.0 closes for provider-linked documents.
- */
 /** Names of the custom auth strategies a collection declares. */
 function strategiesOf(collection: Record<string, unknown>): string[] {
   const auth: unknown = collection.auth
@@ -87,6 +82,11 @@ function strategiesOf(collection: Record<string, unknown>): string[] {
     .filter((name): name is string => typeof name === 'string')
 }
 
+/**
+ * Payload's local email+password strategy for a collection, as the
+ * BUILT config has it. payload-auth leaves it on unless the app set
+ * `disableDefaultPayloadAuth: true`; either way, this reads the result.
+ */
 export function localStrategyOn(collection: Record<string, unknown>): boolean {
   const auth: unknown = collection.auth
   if (auth === undefined || auth === null) {
@@ -109,7 +109,15 @@ const pluginStrategyName = 'auth-link'
 
 export function analyzeUsersCollection(
   collection: Record<string, unknown> | null,
-  rolesFieldName: string
+  rolesFieldName: string,
+  options: {
+    /**
+     * The config is an adopt-mode TARGET: payload-auth-link is installed
+     * and Better Auth serves its users from this collection (no ba-users
+     * collection). Enables the target-side adopt checks.
+     */
+    readonly adoptTarget?: boolean | undefined
+  } = {}
 ): { finding: UsersFinding | null; issues: DoctorIssue[] } {
   if (collection === null) {
     return {
@@ -193,8 +201,18 @@ export function analyzeUsersCollection(
   const local = localStrategyOn(collection)
   if (local) {
     notes.push(
-      'Payload local strategy is ON (payload-auth leaves it active): since 0.7.0, provider-linked documents refuse local sign-in and forgot/reset by default — break-glass operator accounts keep theirs; allowLocalCredentialsForLinkedDocs: true reopens it only for a migration window'
+      'Payload local strategy is ON for this collection: since 0.7.0, provider-linked documents refuse local sign-in and forgot/reset by default — break-glass operator accounts keep theirs; allowLocalCredentialsForLinkedDocs: true reopens it only for a migration window'
     )
+    if (options.adoptTarget === true) {
+      // Adopt mode (issue #110): Better Auth creates its users IN this
+      // collection, and Payload's local strategy demands a password on
+      // every create — sign-up and anonymous sign-in fail for every
+      // new user.
+      issues.push({
+        code: 'adopt-local-strategy-on',
+        detail: `adopt mode serves Better Auth's users from '${typeof collection.slug === 'string' ? collection.slug : 'users'}', but Payload's local strategy is ON there: Payload requires a password on every create, so every NEW user fails (email sign-up 422, anonymous sign-in 500 "field is invalid: password"). Set auth: { disableLocalStrategy: true } on the collection (payload-auth's disableDefaultPayloadAuth: true did the same), or use the importer (ba-* collections) instead of adopt`,
+      })
+    }
   } else {
     const strategies = Array.isArray(collection.auth) ? [] : strategiesOf(collection)
     notes.push(

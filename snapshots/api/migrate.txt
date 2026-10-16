@@ -295,14 +295,27 @@ export type DoctorReport = {
 import type { DoctorIssue, UsersFinding } from './types.js';
 /** Find the payload-auth-shaped users collection (or the app's own users slug). */
 export declare function findUsersCollection(config: unknown, usersSlug: string): Record<string, unknown> | null;
+/**
+ * Payload's local email+password strategy for a collection, as the
+ * BUILT config has it. payload-auth leaves it on unless the app set
+ * `disableDefaultPayloadAuth: true`; either way, this reads the result.
+ */
 export declare function localStrategyOn(collection: Record<string, unknown>): boolean;
-export declare function analyzeUsersCollection(collection: Record<string, unknown> | null, rolesFieldName: string): {
+export declare function analyzeUsersCollection(collection: Record<string, unknown> | null, rolesFieldName: string, options?: {
+    /**
+     * The config is an adopt-mode TARGET: payload-auth-link is installed
+     * and Better Auth serves its users from this collection (no ba-users
+     * collection). Enables the target-side adopt checks.
+     */
+    readonly adoptTarget?: boolean | undefined;
+}): {
     finding: UsersFinding | null;
     issues: DoctorIssue[];
 };
 export declare function injectedFieldNamesForDocs(): readonly string[];
 
 // ===== exporters.d.ts =====
+import { type ResolvedSourceTables } from './importer/types.js';
 /**
  * Off-ramp exporters (issue #58): every payload-auth-link collection's
  * rows as lossless JSONL — each line is one row with every column
@@ -315,11 +328,30 @@ export type ExportFormat = 'jsonl';
 export type ExportOptions = {
     readonly connectionString: string;
     readonly format: ExportFormat;
-    /** Tables to export; defaults to the full auth-table set. */
+    /**
+     * Tables to export, exactly (`--tables`). Without it, the export
+     * covers EVERY auth table (see {@link resolveAuthTables}).
+     */
     readonly tables?: readonly string[] | undefined;
+    /**
+     * The source layout (`--source-map`, issue #110): model → table, or
+     * `null` for "not installed". Defaults to payload-auth's layout. A
+     * mapped table that does not exist lands in `missing`.
+     */
+    readonly sourceTables?: ResolvedSourceTables | undefined;
     readonly log?: (message: string) => void;
 };
-/** The auth-table set, in dependency order for re-import. */
+/**
+ * Better Auth plugin tables payload-auth creates beyond the importer's
+ * models — exported whenever present (they are auth data the off-ramp
+ * must not lose).
+ */
+export declare const optionalAuthTables: readonly string[];
+/**
+ * The legacy default auth-table list (payload-auth's default layout plus
+ * the plugin's users child tables). Kept for callers that name it;
+ * {@link resolveAuthTables} is what the export uses.
+ */
 export declare const exportTables: readonly string[];
 export type ExportResult = {
     readonly tables: readonly {
@@ -330,13 +362,31 @@ export type ExportResult = {
     readonly jsonl: string;
     readonly totalRows: number;
     /**
-     * Requested tables that do not exist on the source (issue #68). The
-     * caller decides policy: `--tables` names must abort (exit 1),
-     * default-list gaps are reported but tolerated.
+     * Required tables that do not exist on the source (issues #68, #110):
+     * a `--tables` name, or a mapped model's table. The CLI exits 1 on
+     * any; optional tables (children, ba_*, oauth_*) never land here.
      */
     readonly missing: readonly string[];
 };
 export declare function parseExportTables(value: string): readonly string[];
+/**
+ * "Every auth table" (issue #110), resolved against what the database
+ * actually holds, in dependency order:
+ *
+ * 1. each mapped model's table (`--source-map` over payload-auth's
+ *    layout; `null` = not installed) — REQUIRED: a missing one lands in
+ *    `missing`;
+ * 2. every child table of those (`<table>_*`: `users_role`,
+ *    `users_identities`, `users_sessions`, `organizations_tags`, `_rels`
+ *    tables, …) and payload-auth's other Better Auth plugin tables
+ *    ({@link optionalAuthTables}) — when present;
+ * 3. every `ba_*` (payload-auth-link engine) and `oauth_*` (OAuth
+ *    provider) table — when present.
+ */
+export declare function resolveAuthTables(existing: ReadonlySet<string>, sourceTables?: ResolvedSourceTables): {
+    readonly tables: readonly string[];
+    readonly missing: readonly string[];
+};
 /** Export the auth tables to lossless JSONL (issue #58). */
 export declare function exportToJsonl(options: ExportOptions): Promise<ExportResult>;
 /** A round-trip verification row: source vs re-import counts. */
@@ -425,6 +475,56 @@ export declare function applyImport(options: ApplyOptions): Promise<ImportResult
 /** Collapse per-row plan entries into one line per model (dry-run print). */
 export declare function summarizePlanRows(rows: readonly PlanRow[]): PlanRow[];
 
+// ===== importer/guards.d.ts =====
+import type { Payload } from 'payload';
+import { type CreatedRow, type ImportManifest, type TargetModel, type TargetSlugMap } from './types.js';
+/**
+ * The model and deterministic `baId` a created row's `sourceKey`
+ * (`<model>:<source id>`) names, or `null` when it names none.
+ */
+export declare function expectedBaId(sourceKey: string): {
+    readonly model: TargetModel;
+    readonly baId: string;
+} | null;
+/** The target slugs with the defaults filled in. */
+export declare function targetSlugsOf(overrides?: Readonly<Record<string, string>>): TargetSlugMap;
+/**
+ * Refuse a manifest whose created rows reach outside what the importer
+ * creates, BEFORE anything is deleted (or re-signed): an `adopt-prelink`
+ * manifest creates no rows at all, and an import's rows must sit in the
+ * import's own target collections, under the model their source key
+ * names. Signed or not — the signature proves who wrote the file, this
+ * proves the file only names the kit's own rows.
+ */
+export declare function assertCreatedRowsScoped(manifest: Pick<ImportManifest, 'kind' | 'created'>, slugs: TargetSlugMap): void;
+/** A created row whose `baId` no longer matches its source key. */
+export declare function baIdMismatch(row: CreatedRow, doc: unknown): boolean;
+/** The finalize marker key of one manifest (its kind + first-apply stamp). */
+export declare function finalizeMarkerKey(manifest: Pick<ImportManifest, 'kind' | 'createdAt'>): string;
+/**
+ * Record the point of no return in the target database. One-way: the
+ * kit never deletes the marker. Throws when the store is unavailable —
+ * `finalize` must not report success it cannot back.
+ */
+export declare function recordFinalizeMarker(payload: Payload, manifest: Pick<ImportManifest, 'kind' | 'createdAt'>, finalizedAt: string): Promise<void>;
+/**
+ * Whether the database says this migration was finalized. `anyOfKind`
+ * widens the check to every finalized manifest of the same kind — used
+ * when the manifest's own `createdAt` is not covered by a signature.
+ * Returns `'unavailable'` when the store cannot be read; the caller
+ * decides (and logs) what that means.
+ */
+export declare function finalizeMarkerState(payload: Payload, manifest: Pick<ImportManifest, 'kind' | 'createdAt'>, options: {
+    readonly anyOfKind: boolean;
+}): Promise<'finalized' | 'open' | 'unavailable'>;
+/**
+ * The host roles field the app configured (`authLink({ rolesField })`),
+ * read off the plugin entry in the booted config (Payload keeps each
+ * plugin's `slug` and `options` for cross-plugin discovery). Defaults to
+ * the plugin's own default, `roles`.
+ */
+export declare function hostRolesField(payload: Payload): string;
+
 // ===== importer/host-writes.d.ts =====
 import type { Payload } from 'payload';
 import type { FieldWrite, ImportManifest } from './types.js';
@@ -445,8 +545,10 @@ export declare function unsealValue(secret: string, sealed: string, entry: strin
  * restored only because the importer writes them).
  */
 export declare const restorableFields: ReadonlySet<string>;
+/** {@link restorableFields} plus the app's configured roles field. */
+export declare function restorableFieldsFor(rolesField: string): ReadonlySet<string>;
 /** The captured prior value of one manifest entry, JSON-parsed. */
-export declare function priorValue(secret: string, write: FieldWrite): unknown;
+export declare function priorValue(secret: string, write: FieldWrite, restorable?: ReadonlySet<string>): unknown;
 /** Keys of the field writes a manifest already holds (first capture wins). */
 export declare function capturedKeys(writes: readonly FieldWrite[]): Set<string>;
 /**
@@ -471,16 +573,19 @@ export declare function captureBefore(options: {
  * `updatedAt` lands exactly as captured. Returns the number of field
  * values restored.
  */
-export declare function restoreCaptured(payload: Payload, manifest: Pick<ImportManifest, 'fieldWrites'>): Promise<number>;
+export declare function restoreCaptured(payload: Payload, manifest: Pick<ImportManifest, 'fieldWrites'>, options?: {
+    readonly rolesField?: string | undefined;
+}): Promise<number>;
 
 // ===== importer/lifecycle.d.ts =====
 import type { Payload } from 'payload';
 import { type ImportManifest } from './types.js';
 /**
  * Manifest lifecycle (issue #50): `verify` checks both sides, `rollback`
- * undoes exactly what the manifest records, and `finalize` marks the
- * manifest so the source tables may be dropped — by the operator, as a
- * separate later step.
+ * undoes exactly what the manifest records, and `finalize` records the
+ * point of no return (a database marker plus the re-signed manifest) so
+ * the source tables may be dropped — by the operator, as a separate
+ * later step.
  */
 /**
  * The importer's default manifest location: the CURRENT WORKING
@@ -534,13 +639,8 @@ export declare function verifyImport(options: {
     /** Injectable clock: what counts as an expired source session. */
     readonly now?: (() => Date) | undefined;
 }): Promise<VerifyResult>;
-/**
- * Rollback (issue #50): delete the created rows in reverse order and
- * restore every captured field value. The manifest records exactly
- * what to undo — nothing else is touched, and the source tables were
- * never modified.
- */
-export declare function rollbackImport(options: {
+/** Options of {@link rollbackImport}. */
+export type RollbackOptions = {
     readonly payload: Payload;
     readonly manifest: ImportManifest;
     readonly log?: (message: string) => void;
@@ -552,30 +652,91 @@ export declare function rollbackImport(options: {
      */
     readonly manifestPath?: string | undefined;
     readonly now?: (() => Date) | undefined;
-    /** Accept a pre-0.6.0 manifest that has no MAC (`--allow-unsigned-manifest`). */
+    /** Target slugs the import ran with (`--slugs`); defaults to the ba-* set. */
+    readonly slugs?: Readonly<Record<string, string>> | undefined;
+    /**
+     * Accept a manifest without a full signature (`--allow-unsigned-manifest`):
+     * a pre-0.6.0 manifest without a MAC, or a 0.6.0 manifest whose MAC
+     * does not cover `finalized`.
+     */
     readonly allowUnsignedManifest?: boolean | undefined;
-}): Promise<{
+    /**
+     * Let a rollback driven by an UNSIGNED (pre-0.6.0) manifest delete the
+     * rows it lists and restore plaintext (version-1) values
+     * (`--allow-unsigned-deletes`). Without it, an unsigned manifest may
+     * only restore sealed field values.
+     */
+    readonly allowUnsignedDeletes?: boolean | undefined;
+};
+/**
+ * Rollback (issue #50): delete the created rows in reverse order and
+ * restore every captured field value. The manifest records exactly
+ * what to undo — nothing else is touched, and the source tables were
+ * never modified.
+ *
+ * Before anything is written, rollback refuses: a finalized manifest,
+ * or a migration the DATABASE records as finalized (the marker
+ * `finalize` writes — a manifest file alone cannot reopen it); a
+ * manifest that fails its signature; created rows outside the import's
+ * own target collections (signed or not), or whose row no longer
+ * carries the importer's deterministic `baId`; and any delete or
+ * plaintext restore driven by an unsigned manifest without
+ * `allowUnsignedDeletes`. A row already absent is fine (the goal is
+ * "absent"); a delete that FAILS (a foreign key, a hook, a permission)
+ * aborts the rollback with the rows named, before any field is
+ * restored or the manifest reset — so it can be re-run once fixed.
+ */
+export declare function rollbackImport(options: RollbackOptions): Promise<{
     deleted: number;
     restored: number;
 }>;
-/** Finalize (issue #50): the point of no return — mark the manifest. */
-export declare function finalizeManifest(manifest: ImportManifest, path: string): ImportManifest;
+/** Options of {@link finalizeManifest}. */
+export type FinalizeOptions = {
+    readonly payload: Payload;
+    readonly manifest: ImportManifest;
+    /** Where the finalized, re-signed manifest is written. */
+    readonly path: string;
+    readonly now?: (() => Date) | undefined;
+    /** Accept a manifest without a full signature (`--allow-unsigned-manifest`). */
+    readonly allowUnsignedManifest?: boolean | undefined;
+};
+/**
+ * Finalize (issue #50): the point of no return. Records a one-way
+ * marker in the target database (Payload's key-value store) that every
+ * later rollback checks independently of the file, then marks the
+ * manifest `finalized` and re-signs it — the signature covers the flag.
+ * Idempotent: finalizing a finalized manifest re-records the marker and
+ * upgrades its signature.
+ */
+export declare function finalizeManifest(options: FinalizeOptions): Promise<ImportManifest>;
 
 // ===== importer/manifest-mac.d.ts =====
 import type { ImportManifest } from './types.js';
-/** Stamp `manifest` as version 3 and sign it under the app's secret. */
+/** Stamp `manifest` as version 3 and sign every field under the app's secret. */
 export declare function signManifest(secret: string, manifest: ImportManifest): ImportManifest;
+/**
+ * How far a manifest is vouched for:
+ *
+ * - `signed`: a `v2.` MAC verified; every field, `finalized` included,
+ *   is the app's own.
+ * - `signed-legacy`: a 0.6.0 `v1.` MAC verified; rows and field writes
+ *   are the app's own, `finalized` is NOT covered.
+ * - `unsigned`: a version-1/2 manifest (pre-0.6.0) the operator vouched
+ *   for with `--allow-unsigned-manifest`; nothing is covered.
+ */
+export type ManifestTrust = 'signed' | 'signed-legacy' | 'unsigned';
 /**
  * Refuse a manifest this app did not write. A version-3 manifest must
  * carry a MAC that verifies under `secret`. A version-1/2 manifest
  * (written before 0.6.0) has no MAC: it is accepted only when the
  * operator passes `allowUnsigned` (`--allow-unsigned-manifest`) to vouch
  * for the file, and even then a version-2 manifest may not hold
- * plaintext values, which that version never wrote.
+ * plaintext values, which that version never wrote. Returns how far the
+ * manifest is vouched for; destructive callers gate on it.
  */
 export declare function authenticateManifest(secret: string, manifest: ImportManifest, options?: {
     readonly allowUnsigned?: boolean | undefined;
-}): void;
+}): ManifestTrust;
 
 // ===== importer/prelink.d.ts =====
 import type { Payload } from 'payload';
@@ -646,8 +807,9 @@ import { type ImportManifest, type ImportPlan, type ImportResult } from './types
  * Dry run prints planned row counts per model, collisions, and
  * anything unmappable; unmappable data aborts `--apply` before any
  * write. The manifest records every created row and field change;
- * source tables are never modified — `finalize` only marks the
- * manifest, and dropping them stays the operator's later step.
+ * source tables are never modified — `finalize` records the point of
+ * no return (in the database and the re-signed manifest), and dropping
+ * them stays the operator's later step.
  */
 export type ImportCommandOptions = {
     readonly configPath: string;
@@ -665,8 +827,18 @@ export type ImportCommandOptions = {
     readonly json?: boolean;
     readonly log?: (message: string) => void;
     readonly loadPayload?: (configPath: string) => Promise<import('payload').Payload>;
-    /** Accept a pre-0.6.0 manifest without a MAC (`--allow-unsigned-manifest`). */
+    /**
+     * Accept a manifest without a full signature (`--allow-unsigned-manifest`):
+     * a pre-0.6.0 manifest without a MAC, or a 0.6.0 one whose MAC does
+     * not cover `finalized`.
+     */
     readonly allowUnsignedManifest?: boolean | undefined;
+    /**
+     * `rollback` only (`--allow-unsigned-deletes`): let an UNSIGNED
+     * manifest delete its created rows and restore plaintext values.
+     * Without it, `--allow-unsigned-manifest` never deletes anything.
+     */
+    readonly allowUnsignedDeletes?: boolean | undefined;
 };
 /** The `from-payload-auth` command: dry-run plan, or `--apply` + manifest. */
 export declare function runFromPayloadAuth(options: ImportCommandOptions): Promise<{
@@ -682,8 +854,14 @@ export declare function runRollback(options: ImportCommandOptions): Promise<{
     deleted: number;
     restored: number;
 }>;
-/** The `finalize` command — manifest-only; no Payload instance is loaded. */
-export declare function runFinalize(options: Pick<ImportCommandOptions, 'manifestPath' | 'log'>): Promise<ImportManifest>;
+/** Options for `finalize`: the target app (for the secret and the database marker). */
+export type FinalizeCommandOptions = Pick<ImportCommandOptions, 'configPath' | 'manifestPath' | 'log' | 'loadPayload' | 'allowUnsignedManifest' | 'slugsJson'>;
+/**
+ * The `finalize` command: boots the target app (like `rollback`), records
+ * the one-way finalize marker in its database, and re-signs the manifest
+ * with `finalized` covered by the signature.
+ */
+export declare function runFinalize(options: FinalizeCommandOptions): Promise<ImportManifest>;
 /** Options for `adopt-prelink` (issue #88). */
 export type PrelinkCommandOptions = Pick<ImportCommandOptions, 'configPath' | 'apply' | 'manifestPath' | 'json' | 'log' | 'loadPayload' | 'allowUnsignedManifest'> & {
     readonly usersSlug?: string | undefined;
@@ -830,8 +1008,8 @@ export declare function unverifiedEmails(users: readonly SourceUser[]): readonly
  * target app's Payload `secret`), so only the same app can restore it.
  * The file is written with mode 0600.
  *
- * Integrity: a version-3 manifest is signed (`mac`), and rollback or a
- * resumed run refuses one that does not verify.
+ * Integrity: a version-3 manifest is signed (`mac`), and rollback,
+ * finalize, or a resumed run refuses one that does not verify.
  */
 export type CreatedRow = {
     /** Target collection slug. */
@@ -878,9 +1056,12 @@ export type ImportManifest = {
     readonly totals: Readonly<Record<string, number>>;
     /** When the last rollback reset this manifest (issue #88). */
     readonly rolledBackAt?: string | undefined;
+    /** When `finalize` ran (recorded alongside the database marker). */
+    readonly finalizedAt?: string | undefined;
     /**
-     * Version 3: HMAC over the whole manifest (except `finalized`), keyed
-     * from the target app's Payload secret. See `manifest-mac.ts`.
+     * Version 3: HMAC over the whole manifest, keyed from the target
+     * app's Payload secret. `v2.` MACs cover every field; 0.6.0's `v1.`
+     * MACs left `finalized` out. See `manifest-mac.ts`.
      */
     readonly mac?: string | undefined;
 };
@@ -964,13 +1145,13 @@ export { classifyPlugins, pluginsFromSourceTree } from './doctor/plugins.js';
 export { scanSource, projectedUserFields, listSourceFiles } from './doctor/source-scan.js';
 export { analyzeUsersCollection, findUsersCollection, localStrategyOn } from './doctor/users.js';
 export { introspectDatabase } from './doctor/database.js';
-export { runFromPayloadAuth, runVerify, runRollback, runFinalize, runAdoptPrelink, type ImportCommandOptions, type PrelinkCommandOptions, } from './importer/run-import.js';
+export { runFromPayloadAuth, runVerify, runRollback, runFinalize, runAdoptPrelink, type FinalizeCommandOptions, type ImportCommandOptions, type PrelinkCommandOptions, } from './importer/run-import.js';
 export { prelinkUsers, type PrelinkOptions, type PrelinkResult } from './importer/prelink.js';
 export { applyImport, summarizePlanRows } from './importer/apply.js';
 export { countTables, findOrphans, openSource, probeSourceLayout, readFlatRows, readSourceUsers, unverifiedEmails, type OrphanScan, type SourceClient, type SourceLayoutIssue, type SourceAccount, type SourceRow, type SourceUser, } from './importer/source.js';
-export { readManifest, writeManifest, verifyImport, rollbackImport, finalizeManifest, defaultManifestPath, defaultPrelinkManifestPath, type VerifyIssue, type VerifyResult, } from './importer/lifecycle.js';
+export { readManifest, writeManifest, verifyImport, rollbackImport, finalizeManifest, defaultManifestPath, defaultPrelinkManifestPath, type FinalizeOptions, type RollbackOptions, type VerifyIssue, type VerifyResult, } from './importer/lifecycle.js';
 export { defaultSourceTables, defaultTargetSlugs, parseSourceMapJson, presentTables, resolveSourceTables, sourceModelNames, type CreatedRow, type ResolvedSourceTables, type SourceModel, type SourceTableMap, type TargetModel, type TargetSlugMap, type FieldWrite, type ImportManifest, type ManifestKind, type ImportPlan, type ImportResult, type PlanRow, type Unmappable, } from './importer/types.js';
-export { exportToJsonl, parseExportTables, exportTables } from './exporters.js';
+export { exportToJsonl, parseExportTables, exportTables, optionalAuthTables, resolveAuthTables, } from './exporters.js';
 export { cliMain } from './cli.js';
 export type { BehaviourChange, DatabaseFinding, DoctorIssue, DoctorReport, PluginFinding, SourceFinding, UsersFinding, VersionFinding, } from './doctor/types.js';
 

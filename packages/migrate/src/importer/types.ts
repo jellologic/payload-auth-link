@@ -9,8 +9,8 @@
  * target app's Payload `secret`), so only the same app can restore it.
  * The file is written with mode 0600.
  *
- * Integrity: a version-3 manifest is signed (`mac`), and rollback or a
- * resumed run refuses one that does not verify.
+ * Integrity: a version-3 manifest is signed (`mac`), and rollback,
+ * finalize, or a resumed run refuses one that does not verify.
  */
 export type CreatedRow = {
   /** Target collection slug. */
@@ -60,9 +60,12 @@ export type ImportManifest = {
   readonly totals: Readonly<Record<string, number>>
   /** When the last rollback reset this manifest (issue #88). */
   readonly rolledBackAt?: string | undefined
+  /** When `finalize` ran (recorded alongside the database marker). */
+  readonly finalizedAt?: string | undefined
   /**
-   * Version 3: HMAC over the whole manifest (except `finalized`), keyed
-   * from the target app's Payload secret. See `manifest-mac.ts`.
+   * Version 3: HMAC over the whole manifest, keyed from the target
+   * app's Payload secret. `v2.` MACs cover every field; 0.6.0's `v1.`
+   * MACs left `finalized` out. See `manifest-mac.ts`.
    */
   readonly mac?: string | undefined
 }

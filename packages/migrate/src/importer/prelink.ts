@@ -1,4 +1,5 @@
 import type { Payload } from 'payload'
+import { assertCreatedRowsScoped, finalizeMarkerState, targetSlugsOf } from './guards.js'
 import { capturedKeys, captureBefore } from './host-writes.js'
 import { authenticateManifest, signManifest } from './manifest-mac.js'
 import type { FieldWrite, ImportManifest, Unmappable } from './types.js'
@@ -81,9 +82,20 @@ export async function prelinkUsers(options: PrelinkOptions): Promise<PrelinkResu
   const emailField = options.emailField ?? 'email'
   if (options.manifest !== null) {
     // Resuming re-signs the old entries: verify them first.
-    authenticateManifest(payload.secret, options.manifest, {
+    const trust = authenticateManifest(payload.secret, options.manifest, {
       allowUnsigned: options.allowUnsignedManifest,
     })
+    // A pre-link creates no rows: never re-sign a manifest that lists some.
+    assertCreatedRowsScoped({ ...options.manifest, kind: 'adopt-prelink' }, targetSlugsOf())
+    if (
+      apply &&
+      (options.manifest.finalized ||
+        (await finalizeMarkerState(payload, options.manifest, {
+          anyOfKind: trust !== 'signed',
+        })) === 'finalized')
+    ) {
+      throw new Error('the pre-link is finalized; nothing to pre-link')
+    }
   }
   const fieldWrites: FieldWrite[] = [...(options.manifest?.fieldWrites ?? [])]
   const captured = capturedKeys(fieldWrites)

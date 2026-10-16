@@ -1,4 +1,6 @@
+import { isRecord } from '@payload-auth-link/core'
 import type { Payload } from 'payload'
+import { assertCreatedRowsScoped, finalizeMarkerState, hostRolesField } from './guards.js'
 import { capturedKeys, captureBefore } from './host-writes.js'
 import { authenticateManifest, signManifest } from './manifest-mac.js'
 import {
@@ -254,6 +256,41 @@ function identityRows(
   ]
 }
 
+/** The host user document as stored (depth 0). */
+async function hostDoc(payload: Payload, id: number): Promise<Record<string, unknown> | null> {
+  const doc: unknown = await payload.findByID({
+    collection: 'users',
+    id,
+    depth: 0,
+    overrideAccess: true,
+  })
+  return isRecord(doc) ? doc : null
+}
+
+/** The doc already carries exactly the identity the import writes. */
+function hasExactIdentity(doc: Record<string, unknown> | null, user: SourceUser): boolean {
+  const identities = doc?.['identities']
+  if (!Array.isArray(identities) || identities.length !== 1) {
+    return false
+  }
+  const only: unknown = identities[0]
+  return (
+    isRecord(only) &&
+    only['providerId'] === 'better-auth' &&
+    String(only['providerUserId']) === String(user.id) &&
+    only['email'] === user.email
+  )
+}
+
+/** Same stored values, same order. */
+function sameValues(stored: unknown, wanted: readonly string[]): boolean {
+  return (
+    Array.isArray(stored) &&
+    stored.length === wanted.length &&
+    stored.every((value, index) => String(value) === wanted[index])
+  )
+}
+
 export async function applyImport(options: ApplyOptions): Promise<ImportResult> {
   const {
     payload,
@@ -267,11 +304,26 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
   const sourceTables: ResolvedSourceTables = resolveSourceTables(options.sourceTables)
   if (options.manifest !== null) {
     // Resuming merges the old entries and re-signs them: never launder
-    // an edited manifest into a signed one.
-    authenticateManifest(payload.secret, options.manifest, {
+    // an edited manifest into a signed one, never sign created rows
+    // outside the import's own targets, and never resume a migration
+    // the database records as finalized.
+    const trust = authenticateManifest(payload.secret, options.manifest, {
       allowUnsigned: options.allowUnsignedManifest,
     })
+    assertCreatedRowsScoped(options.manifest, slugs)
+    const finalized =
+      options.manifest.finalized ||
+      (apply &&
+        (await finalizeMarkerState(payload, options.manifest, {
+          anyOfKind: trust !== 'signed',
+        })) === 'finalized')
+    if (apply && finalized) {
+      throw new Error(
+        'the migration is finalized; a finalized manifest is not resumed — keep it as the record, and pass a different --manifest for a new run'
+      )
+    }
   }
+  const rolesField = hostRolesField(payload)
   const created: CreatedRow[] = [...(options.manifest?.created ?? [])]
   const fieldWrites: FieldWrite[] = [...(options.manifest?.fieldWrites ?? [])]
   // First capture wins (issue #88): fields captured by an earlier pass
@@ -353,35 +405,53 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
         // restores the pre-import document exactly.
         const hostId = Number(baId)
         if (Number.isSafeInteger(hostId)) {
-          const { present, newlyCaptured } = await captureBefore({
-            payload,
-            collection: 'users',
-            id: hostId,
-            fields: ['identities', 'roles', 'linkable', 'linkableEmail'],
-            captured,
-            into: fieldWrites,
-          })
-          fieldWriteCount += newlyCaptured
-          const writes: Record<string, unknown> = {
-            identities: identityRows(user, now),
+          // Only the values that DIFFER are written (issue #110): a
+          // second --apply over an imported user is a true no-op — no
+          // Local API update, so no fresh `updatedAt`, `linkedAt`, or
+          // re-created hasMany child rows.
+          const current = await hostDoc(payload, hostId)
+          const writes: Record<string, unknown> = {}
+          if (!hasExactIdentity(current, user)) {
+            writes.identities = identityRows(user, now)
           }
-          if (user.roles.length > 0 && present.has('roles')) {
+          if (
+            user.roles.length > 0 &&
+            current !== null &&
+            rolesField in current &&
+            !sameValues(current[rolesField], user.roles)
+          ) {
             // Stored role values pass through unchanged (issue #56: the
             // storage edge owns translation; the map is the app's).
-            writes.roles = user.roles
+            writes[rolesField] = user.roles
           }
-          if (user.emailVerified) {
+          if (
+            user.emailVerified &&
+            (current?.['linkable'] !== true || current['linkableEmail'] !== user.email)
+          ) {
             // Grant-only: the proof is bound to the address (both
             // fields), and an existing proof is never revoked here.
             writes.linkable = true
             writes.linkableEmail = user.email
           }
-          await payload.update({
-            collection: 'users',
-            id: hostId,
-            data: writes,
-            overrideAccess: true,
-          })
+          if (Object.keys(writes).length > 0) {
+            // The prior values (and the doc's updatedAt) are captured
+            // first — once — so rollback restores the pre-import doc.
+            const { newlyCaptured } = await captureBefore({
+              payload,
+              collection: 'users',
+              id: hostId,
+              fields: ['identities', rolesField, 'linkable', 'linkableEmail'],
+              captured,
+              into: fieldWrites,
+            })
+            fieldWriteCount += newlyCaptured
+            await payload.update({
+              collection: 'users',
+              id: hostId,
+              data: writes,
+              overrideAccess: true,
+            })
+          }
         }
       }
       record({
