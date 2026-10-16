@@ -31,6 +31,9 @@
       "payload/*": ["./node_modules/payload/*"]
     }
   },
-  "include": ["src/**/*", "vite.config.ts"],
+  // `payload-types.ts` is what `vite dev` / `payload generate:types`
+  // write (an ignored file): when present, the app is checked against
+  // the generated slug union, as a real app is.
+  "include": ["src/**/*", "vite.config.ts", "payload-types.ts"],
   "exclude": ["node_modules"]
 }

@@ -861,6 +861,32 @@ describe('SSO domain gate (CAP-15)', () => {
     })
     expect((await allowed.verify(new Headers())).isOk()).toBe(true)
   })
+
+  it('an email-less session reaches the guard as null, never as the deprecated alias (#110)', async () => {
+    const users = new CountingUserRepository()
+    // No email CLAIM; the deprecated alias still carries an address on
+    // a verified domain. The guard must judge the claim (null), so the
+    // alias can never satisfy the SSO domain check.
+    const provider = countingProvider(
+      'sso',
+      sessionFor('u-sso-noemail', {
+        email: email('alias@verified.test'),
+        identity: { email: null, phone: null, anonymous: false },
+      })
+    )
+    const seen: (string | null)[] = []
+    const service = createSessionService({
+      ...depsWithUsers(users, provider.provider),
+      ssoDomainAllowed: (_providerId, claim) => {
+        seen.push(claim)
+        return okAsync(claim === 'alias@verified.test')
+      },
+    })
+    const refused = await service.verify(new Headers())
+    expect(seen).toEqual([null])
+    expect(refused.isErr()).toBe(true)
+    expect(users.emailReads).toBe(0)
+  })
 })
 
 describe('throwing provider reads', () => {

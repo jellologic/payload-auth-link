@@ -401,13 +401,43 @@ describe('revoke every session of a user on a real Auth.js engine (row 19, issue
     return { jars: [first, second], userId: String(user.id) }
   }
 
+  /** How many `aj-sessions` rows the Auth.js store holds for the profile. */
+  async function storedSessions(): Promise<number> {
+    const users = await payload.find({
+      collection: 'aj-users',
+      where: { email: { equals: profile.email } },
+      limit: 1,
+      overrideAccess: true,
+    })
+    const auId: unknown = users.docs[0]?.auId
+    if (typeof auId !== 'string') {
+      throw new Error('no Auth.js user for the profile')
+    }
+    return (
+      await payload.count({
+        collection: 'aj-sessions',
+        where: { userId: { equals: auId } },
+        overrideAccess: true,
+      })
+    ).totalDocs
+  }
+
   it('declares revoke-user-sessions for database sessions', () => {
     expect(engine.provider.capabilities.has('revoke-user-sessions')).toBe(true)
   })
 
   it('authLinkServer.revokeAllForUser deletes every database session row', async () => {
     const { jars, userId } = await signedInTwice()
+    const totalBefore = (await payload.count({ collection: 'aj-sessions', overrideAccess: true }))
+      .totalDocs
+    const own = await storedSessions()
+    expect(own).toBeGreaterThanOrEqual(2)
     await authLinkServer(payload).revokeAllForUser(userId)
+    // The store itself: every row of this user gone, nobody else's touched.
+    expect(await storedSessions()).toBe(0)
+    expect(
+      (await payload.count({ collection: 'aj-sessions', overrideAccess: true })).totalDocs
+    ).toBe(totalBefore - own)
     for (const jar of jars) {
       expect((await pluginSession(jar)).status).toBe(401)
     }
@@ -425,10 +455,12 @@ describe('revoke every session of a user on a real Auth.js engine (row 19, issue
     } finally {
       spy.mockRestore()
     }
-    // Nothing was actually deleted: the sessions are still live, and
-    // the operator was told so instead of a false success.
+    // Nothing was actually deleted: the rows and sessions are still
+    // live, and the operator was told so instead of a false success.
+    expect(await storedSessions()).toBeGreaterThanOrEqual(2)
     expect((await pluginSession(jars[0])).status).toBe(200)
     await authLinkServer(payload).revokeAllForUser(userId)
+    expect(await storedSessions()).toBe(0)
     expect((await pluginSession(jars[1])).status).toBe(401)
   })
 
@@ -442,6 +474,8 @@ describe('revoke every session of a user on a real Auth.js engine (row 19, issue
     } finally {
       spy.mockRestore()
     }
+    expect(await storedSessions()).toBeGreaterThanOrEqual(2)
     await authLinkServer(payload).revokeAllForUser(userId)
+    expect(await storedSessions()).toBe(0)
   })
 })

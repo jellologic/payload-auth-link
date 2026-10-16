@@ -34,6 +34,9 @@ const auditLogger: LoggerPort = {
   child: () => auditLogger,
 }
 
+/** The durable audit sink (`onAudit`): what "audited" must survive. */
+const auditEvents: { message: string; fields: Record<string, unknown> }[] = []
+
 let config: SanitizedConfig
 let latePayload: Payload | undefined
 const engine = createBetterAuthEngine({
@@ -114,7 +117,56 @@ let payload: Payload
 let adminBaUserId = ''
 let targetBaUserId = ''
 let adminCookie = ''
+let targetCookie = ''
 let impersonatedCookie = ''
+
+async function rest(
+  method: string,
+  path: string,
+  cookie: string,
+  body?: unknown
+): Promise<{ status: number; body: unknown }> {
+  const response = await handleEndpoints({
+    config,
+    request: new Request(`${ORIGIN}/api${path}`, {
+      method,
+      headers: {
+        cookie,
+        origin: ORIGIN,
+        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }),
+  })
+  let parsed: unknown
+  try {
+    parsed = await response.json()
+  } catch {
+    parsed = null
+  }
+  return { status: response.status, body: parsed }
+}
+
+async function hostDoc(email: string): Promise<Record<string, unknown>> {
+  const found = await payload.find({
+    collection: 'users',
+    where: { email: { equals: email } },
+    limit: 1,
+    depth: 0,
+    overrideAccess: true,
+  })
+  const doc = found.docs[0]
+  if (doc === undefined) {
+    throw new Error(`no host user ${email}`)
+  }
+  return doc
+}
+
+async function canAccessAdmin(cookie: string): Promise<unknown> {
+  const access = await rest('GET', '/access', cookie)
+  expect(access.status).toBe(200)
+  return (access.body as { canAccessAdmin?: unknown }).canAccessAdmin
+}
 
 beforeAll(async () => {
   config = await buildConfig({
@@ -132,6 +184,9 @@ beforeAll(async () => {
         defaultRole: 'user',
         providers: [engine.provider],
         logger: auditLogger,
+        onAudit: (event) => {
+          auditEvents.push(event)
+        },
       }),
     ],
   })
@@ -144,6 +199,7 @@ beforeAll(async () => {
   adminCookie = operator.cookie
   const target = await signUp(TARGET_EMAIL, 'Target')
   targetBaUserId = target.baUserId
+  targetCookie = target.cookie
 
   // BA-side operator role + verified emails (the plugin JIT gate reads
   // the verified flag; BA's admin middleware reads the role).
@@ -212,6 +268,82 @@ describe('impersonated provider session (CAP-8a)', () => {
     )
   })
 
+  // Matrix row 15, deny half, on the real engine: the target is a role
+  // manager, so every refusal below is the impersonation policy — the
+  // target's OWN session makes the identical requests succeed.
+  it('denies admin-panel access and role / email writes while impersonating (real BA)', async () => {
+    const target = await hostDoc(TARGET_EMAIL)
+    const targetId = String(target.id)
+    await payload.update({
+      collection: 'users',
+      id: targetId,
+      data: { roles: ['admin'] },
+      overrideAccess: true,
+    })
+    const bystander = await payload.create({
+      collection: 'users',
+      data: { email: 'bystander@impersonation.test', password: 'unused-1', roles: ['user'] },
+      overrideAccess: true,
+      disableVerificationEmail: true,
+    })
+    const bystanderId = String(bystander.id)
+
+    // Control: the target's own session is a role manager.
+    expect(await canAccessAdmin(targetCookie)).toBe(true)
+    // Impersonated: no admin panel.
+    expect(await canAccessAdmin(impersonatedCookie)).toBeFalsy()
+
+    // A role write under impersonation never lands.
+    await rest('PATCH', `/users/${bystanderId}`, impersonatedCookie, { roles: ['admin'] })
+    expect((await hostDoc('bystander@impersonation.test')).roles).toEqual(['user'])
+    // An email write under impersonation never lands (own doc included).
+    await rest('PATCH', `/users/${targetId}`, impersonatedCookie, {
+      email: 'hijacked@impersonation.test',
+    })
+    expect((await hostDoc(TARGET_EMAIL)).email).toBe(TARGET_EMAIL)
+
+    // Control: the identical role write under the target's own session lands.
+    const plain = await rest('PATCH', `/users/${bystanderId}`, targetCookie, { roles: ['admin'] })
+    expect(plain.status).toBe(200)
+    expect((await hostDoc('bystander@impersonation.test')).roles).toEqual(['admin'])
+  })
+
+  // Matrix row 15, audit half: every collection operation under the
+  // impersonated session reaches BOTH the logger and the durable
+  // `onAudit` sink with the real BA actor; plain sessions audit nothing.
+  it('audits impersonated collection operations to logger AND onAudit (real BA)', async () => {
+    const targetId = String((await hostDoc(TARGET_EMAIL)).id)
+    auditInfo.mockClear()
+    auditEvents.length = 0
+    const read = await rest('GET', `/users/${targetId}`, impersonatedCookie)
+    expect(read.status).toBe(200)
+    const expected = expect.objectContaining({
+      actorProviderUserId: adminBaUserId,
+      targetUserId: targetId,
+      collection: 'users',
+      id: targetId,
+    }) as unknown
+    expect(auditInfo).toHaveBeenCalledWith('impersonated operation', expected)
+    expect(auditEvents).toContainEqual({ message: 'impersonated operation', fields: expected })
+
+    // A refused write is audited too (beforeOperation runs before access).
+    auditEvents.length = 0
+    await rest('PATCH', `/users/${targetId}`, impersonatedCookie, { roles: ['user'] })
+    expect(auditEvents).toContainEqual({
+      message: 'impersonated operation',
+      fields: expect.objectContaining({
+        actorProviderUserId: adminBaUserId,
+        operation: 'update',
+        collection: 'users',
+      }) as unknown,
+    })
+
+    // The target's own session is not impersonated: no audit line.
+    auditEvents.length = 0
+    expect((await rest('GET', `/users/${targetId}`, targetCookie)).status).toBe(200)
+    expect(auditEvents.some((event) => event.message === 'impersonated operation')).toBe(false)
+  })
+
   it('expires the admin_session cookie (and the session token) on plugin logout', async () => {
     const response = await handleEndpoints({
       config,
@@ -224,5 +356,40 @@ describe('impersonated provider session (CAP-8a)', () => {
     const cleared = response.headers.getSetCookie()
     expect(cleared).toContain('better-auth.session_token=; Max-Age=0; Path=/')
     expect(cleared).toContain('better-auth.admin_session=; Max-Age=0; Path=/')
+  })
+})
+
+// Runs last: suspending the target revokes every session it holds,
+// impersonated ones included.
+describe('impersonated session of a suspended target (row 15, real BA)', () => {
+  it('a fresh impersonation is refused once the TARGET is suspended', async () => {
+    const signIn = await engine.auth.handler(
+      authRequest('/sign-in/email', {
+        method: 'POST',
+        body: { email: ADMIN_EMAIL, password: 'correct-horse-battery' },
+      })
+    )
+    expect(signIn.status).toBe(200)
+    const impersonation = await engine.auth.handler(
+      authRequest('/admin/impersonate-user', {
+        method: 'POST',
+        body: { userId: targetBaUserId },
+        cookie: cookieHeaderFrom(signIn),
+      })
+    )
+    expect(impersonation.status).toBe(200)
+    const cookie = cookieHeaderFrom(impersonation)
+    expect((await rest('GET', '/auth-link/session', cookie)).status).toBe(200)
+    const targetId = String((await hostDoc(TARGET_EMAIL)).id)
+    expect((await rest('GET', `/users/${targetId}`, cookie)).status).toBe(200)
+
+    await payload.update({
+      collection: 'users',
+      id: targetId,
+      data: { suspendedUntil: '2031-01-01T00:00:00.000Z' },
+      overrideAccess: true,
+    })
+    expect((await rest('GET', '/auth-link/session', cookie)).status).toBe(401)
+    expect((await rest('GET', `/users/${targetId}`, cookie)).status).toBe(403)
   })
 })

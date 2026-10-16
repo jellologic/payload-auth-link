@@ -159,7 +159,7 @@ describe('rows 3–7 and 22: local credentials on a BA-linked document', () => {
       200
     )
     const refreshed = await h.rest('POST', '/users/refresh-token', { cookie: preLinkJwt, body: {} })
-    expect(refreshed.status).not.toBe(200)
+    expect(refreshed.status).toBe(403)
   })
 
   it('rows 4 + 5: a suspended local JWT is refused on the next request and cannot refresh', async () => {
@@ -189,13 +189,13 @@ describe('rows 3–7 and 22: local credentials on a BA-linked document', () => {
       body: { token: 'linked-reset-token', password: 'RotatedByReset-1' },
     })
     expect(reset.status).toBe(403)
-    expect((await h.localLogin(email, 'RotatedByReset-1')).status).not.toBe(200)
+    expect((await h.localLogin(email, 'RotatedByReset-1')).status).toBe(401)
     // The provider credential is untouched.
     expect(await h.hostIdOf(await h.signIn(email))).toBe(id)
     const wrong = await h.rest('POST', '/users/reset-password', {
       body: { token: 'no-such-token', password: 'RotatedByReset-1' },
     })
-    expect(wrong.status).not.toBe(200)
+    expect(wrong.status).toBe(403)
   })
 
   it('row 7: a suspended unlinked user cannot reset into a session (401)', async () => {

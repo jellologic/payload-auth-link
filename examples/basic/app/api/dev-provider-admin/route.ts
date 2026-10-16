@@ -1,5 +1,11 @@
-import { defaultBetterAuthSlugs } from '@payload-auth-link/provider-better-auth'
+import type { CollectionSlug } from 'payload'
 import { loadPayload } from '../../../lib/auth'
+
+// The Better Auth users collection (`defaultBetterAuthSlugs.user`), as a
+// literal: once `payload generate:types` has run, Payload's Local API
+// only accepts the generated slug union, and `satisfies` checks the
+// literal against it.
+const baUsers = 'ba-users' satisfies CollectionSlug
 
 /**
  * LOCAL EXAMPLE ONLY: grants a Better Auth user the provider-side
@@ -23,7 +29,7 @@ export async function POST(request: Request): Promise<Response> {
   }
   const payload = await loadPayload()
   const found = await payload.find({
-    collection: defaultBetterAuthSlugs.user,
+    collection: baUsers,
     where: { email: { equals: body.email } },
     limit: 1,
     overrideAccess: true,
@@ -33,7 +39,7 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: 'no such user' }, { status: 404 })
   }
   await payload.update({
-    collection: defaultBetterAuthSlugs.user,
+    collection: baUsers,
     id: row.id,
     data: { role: 'admin' },
     overrideAccess: true,
