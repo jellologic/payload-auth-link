@@ -134,6 +134,27 @@ describe('payload user repository create', () => {
     expect((await users.create(input))._unsafeUnwrapErr()).toBeInstanceOf(UserExistsError)
   })
 
+  it('maps a collision thrown by another copy of payload (no shared class) too', async () => {
+    // A Payload v4 host with the plugin resolving another `payload`: the
+    // error is structurally a ValidationError but not `instanceof` ours.
+    const foreign = Object.assign(new Error('The following field is invalid: email'), {
+      name: 'ValidationError',
+      data: {
+        collection: 'users',
+        errors: [{ path: 'email', message: 'A user with the given email is already registered.' }],
+      },
+    })
+    const users = repository({ create: () => Promise.reject(foreign) })
+    expect((await users.create(input))._unsafeUnwrapErr()).toBeInstanceOf(UserExistsError)
+    const unrelated = Object.assign(new Error('x'), {
+      name: 'ValidationError',
+      data: { errors: [{ path: 'roles', message: 'required' }] },
+    })
+    expectRepositoryError(
+      await repository({ create: () => Promise.reject(unrelated) }).create(input)
+    )
+  })
+
   it('maps other failures and unmappable results to RepositoryError', async () => {
     expectRepositoryError(await repository({ create: down }).create(input))
     const otherValidation = () =>

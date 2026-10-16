@@ -54,11 +54,27 @@ export type PayloadUserRepositoryDeps = {
  * the typed `UserExistsError`, never a raw storage error.
  */
 function isEmailUniqueViolation(error: unknown, emailField: string): boolean {
-  if (!(error instanceof ValidationError)) {
+  // Structural, not `instanceof`: the host app and the plugin can load
+  // different copies of `payload` (e.g. a Payload v4 app with the plugin
+  // resolving v3 types), and `instanceof` fails across copies — the
+  // collision then surfaced as a raw storage error and the lost-create
+  // race retry never ran (the second of two concurrent first requests
+  // after sign-up came back signed out).
+  const isValidationError =
+    error instanceof ValidationError || (isRecord(error) && error.name === 'ValidationError')
+  if (!isValidationError || !isRecord(error) || !isRecord(error.data)) {
     return false
   }
-  return error.data.errors.some(
-    (entry) => entry.path === emailField && /unique|already registered/i.test(entry.message)
+  const errors = error.data.errors
+  return (
+    Array.isArray(errors) &&
+    errors.some(
+      (entry: unknown) =>
+        isRecord(entry) &&
+        entry.path === emailField &&
+        typeof entry.message === 'string' &&
+        /unique|already registered/i.test(entry.message)
+    )
   )
 }
 
