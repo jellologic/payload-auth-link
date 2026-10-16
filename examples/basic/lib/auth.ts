@@ -6,6 +6,7 @@ import { admin, anonymous, emailOTP, magicLink, twoFactor } from 'better-auth/pl
 import { getPayload, type Payload } from 'payload'
 import { exampleBaseURL, legacySessionWindow } from './auth-cookie-names'
 import { recordDevMail } from './dev-mailbox'
+import { idpBetterAuthPlugins } from './e2e-idp'
 
 const baseURL = exampleBaseURL
 
@@ -84,6 +85,9 @@ export const engine = createBetterAuthEngine({
       // denies the admin panel, role writes, and organization writes
       // while impersonating.
       admin(),
+      // E2E variant only (`E2E_MOCK_IDP`, see lib/e2e-idp.ts): generic
+      // OIDC, One Tap, phone, multi-session. Empty otherwise.
+      ...idpBetterAuthPlugins(),
       // Cookie integration goes LAST so plugin-set cookies forward.
       nextCookies(),
     ],
