@@ -85,6 +85,18 @@ export type AuthLinkPluginOptions = {
   readonly admin?:
     | {
         readonly loginView?: 'provider' | undefined
+        /**
+         * The app's sign-in page the provider login view links
+         * social-only accounts to. Defaults to `/sign-in`.
+         */
+        readonly signInPath?: string | undefined
+        /**
+         * App-relative mount of the cookie-transport provider's
+         * routes (Better Auth's `basePath` as served by the app) —
+         * the provider form posts to `${authBase}/sign-in/email`.
+         * Defaults to `/api/auth`.
+         */
+        readonly authBase?: string | undefined
       }
     | undefined
   /**
@@ -288,6 +300,10 @@ export type WiredOptions = {
   readonly allowServerSessions: 'dev-only' | true | false
   /** Whether the provider-backed admin login view is requested (#55). */
   readonly adminProviderLoginView: boolean
+  /** The provider login view's app sign-in link (`admin.signInPath`). */
+  readonly adminSignInPath: string
+  /** The provider login view's provider route base (`admin.authBase`). */
+  readonly adminAuthBase: string
   /** Validated coexistence window (issue #51), or `null`. */
   readonly legacySessions: {
     readonly until: string
@@ -339,6 +355,20 @@ function parseRoleList(values: readonly string[] | undefined, label: string): Ro
     }
   }
   return roles
+}
+
+/**
+ * An app-relative path option rendered into the admin login view:
+ * one leading `/`, never protocol-relative, no backslashes or
+ * whitespace — the view uses it as a link and a fetch target.
+ */
+function validateAppPath(option: string, value: string): string {
+  if (!value.startsWith('/') || value.startsWith('//') || /[\\\s]/.test(value)) {
+    throw new InvalidConfigError(
+      `${option} must be an app-relative path starting with a single "/", got ${JSON.stringify(value)}`
+    )
+  }
+  return value
 }
 
 /**
@@ -701,6 +731,8 @@ export function wireOptions(raw: AuthLinkPluginOptions): WiredOptions {
       raw.providers
     ),
     adminProviderLoginView: raw.admin?.loginView === 'provider',
+    adminSignInPath: validateAppPath('admin.signInPath', raw.admin?.signInPath ?? '/sign-in'),
+    adminAuthBase: validateAppPath('admin.authBase', raw.admin?.authBase ?? '/api/auth'),
     roleManagerRoles,
     onAudit: raw.onAudit ?? null,
     organizations,

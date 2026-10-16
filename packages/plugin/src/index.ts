@@ -139,9 +139,10 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
       })
     ) {
       throw new InvalidConfigError(
-        "admin.loginView: 'provider' renders the cookie-transport provider's sign-in form (/api/auth/sign-in/email) — register a provider that mints cookie sessions (better-auth), or keep the default login view"
+        `admin.loginView: 'provider' renders the cookie-transport provider's sign-in form (${wired.adminAuthBase}/sign-in/email) — register a provider that mints cookie sessions (better-auth), or keep the default login view`
       )
     }
+    const apiRoute = config.routes?.api ?? '/api'
     const adminConfig = wired.adminProviderLoginView
       ? {
           ...config.admin,
@@ -153,7 +154,14 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
                 Component: {
                   path: '@payload-auth-link/plugin/admin',
                   exportName: 'ProviderLoginView',
-                  clientProps: { authBase: '/api/auth' },
+                  // Derived from the Payload config (custom `routes`,
+                  // users slug) and plugin options, never hard-coded.
+                  clientProps: {
+                    authBase: wired.adminAuthBase,
+                    loginEndpoint: `${apiRoute}/${wired.config.map.usersCollection}/login`,
+                    adminRoute: config.routes?.admin ?? '/admin',
+                    signInPath: wired.adminSignInPath,
+                  },
                 },
               },
             },
