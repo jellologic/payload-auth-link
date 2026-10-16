@@ -27,8 +27,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 // Peers a consumer installs to actually import everything. Pin to the
 // validated band (compatibility.md) so the smoke tests the claim.
 const PEERS = {
-  payload: '3.90.2',
-  '@payloadcms/ui': '3.90.2',
+  payload: '3.91.0',
+  '@payloadcms/ui': '3.91.0',
   'better-auth': '1.7.7',
   '@auth/core': '0.41.3',
   next: '16.4.0',
