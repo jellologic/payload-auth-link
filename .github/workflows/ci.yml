@@ -192,6 +192,43 @@ jobs:
           path: test-results/
           retention-days: 7
 
+  # External-IdP variant (issue #84): social OAuth, One Tap, phone, SSO
+  # domains, multi-session, roleValues, reqUser against a local mock
+  # OIDC provider (e2e/mock-idp.ts). Own port and SQLite file per app.
+  e2e-idp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bunx playwright install --with-deps chromium webkit
+      - run: bun run e2e:idp -- --project=chromium --project=webkit
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: playwright-traces-idp
+          path: test-results/
+          retention-days: 7
+
+  e2e-tanstack-idp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bunx playwright install --with-deps chromium webkit
+      - run: bun run e2e:tanstack-idp -- --project=chromium --project=webkit
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: playwright-traces-tanstack-idp
+          path: test-results/
+          retention-days: 7
+
   e2e-tanstack:
     runs-on: ubuntu-latest
     steps:

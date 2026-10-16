@@ -9,6 +9,7 @@
     "dev:e2e": "EXAMPLE_BASE_URL=http://localhost:3201 vite dev --port 3201",
     "dev:e2e-pg": "EXAMPLE_BASE_URL=http://localhost:3202 vite dev --port 3202",
     "dev:e2e-mongo": "EXAMPLE_BASE_URL=http://localhost:3203 vite dev --port 3203",
+    "dev:e2e-idp": "EXAMPLE_BASE_URL=http://localhost:3205 E2E_MOCK_IDP=http://localhost:3190 vite dev --port 3205",
     "build": "vite build",
     "generate:importmap": "payload generate:importmap"
   },
