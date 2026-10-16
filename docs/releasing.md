@@ -50,7 +50,11 @@ criteria — releases must never break a user's database or install.
    commit is still `main`'s head), and the publish job runs in the
    `npm-publish` environment — approve it there if the environment
    requires reviewers. Staged publishing makes new versions 404 for a
-   few minutes after upload.
+   few minutes after upload. `changesets/action` v2 pushes the Version
+   PR commit and the release tags through the GitHub API (at the
+   CI-tested SHA), and takes its token only via `github-token`. The
+   tags come from the git-tag events that `scripts/publish.mjs`
+   appends to `$CHANGESETS_OUTPUT`.
 
    **Never publish locally.** `scripts/publish.mjs` refuses outside
    GitHub Actions. The emergency-only override (Actions down, a

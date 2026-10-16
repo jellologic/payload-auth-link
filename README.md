@@ -31,7 +31,7 @@ full matrix — databases, browsers, capability-by-provider):
 
 |                          | Validated                                     |
 | ------------------------ | --------------------------------------------- |
-| Payload                  | 3.90.2 (Next) · 4.0.0-beta.0 (TanStack Start) |
+| Payload                  | 3.91.0 (Next) · 4.0.0-beta.0 (TanStack Start) |
 | Next.js / TanStack Start | 16.4.0 / 1.168.61                             |
 | Better Auth / Auth.js    | 1.7.7 / `@auth/core` 0.41.3                   |
 | Databases                | SQLite · Postgres · MongoDB                   |

@@ -352,6 +352,17 @@ with AES-256-GCM under a key derived from the app's `PAYLOAD_SECRET`,
 so `rollback` must run against the same app with the same secret. The
 file is written with mode `0600`.
 
+The manifest is also **signed** (version 3, migrate 0.6.0+): an
+HMAC-SHA256 over the whole file, keyed from the same secret. Rollback
+deletes rows and restores fields with `overrideAccess`, so an edited
+manifest must not be able to steer it. `rollback`, and any resumed
+`--apply` or `adopt-prelink`, refuses a manifest that fails the check,
+before writing anything. A version-1/2 manifest from an older kit has
+no signature. If you are mid-migration with one, and sure nobody has
+edited it, pass `--allow-unsigned-manifest` once: the next write signs
+it. `finalized` sits outside the signature, because `finalize` loads
+no Payload instance and has no secret.
+
 Keep it until you have run `finalize` AND your soak window has passed
 (rollback needs it); then delete it.
 

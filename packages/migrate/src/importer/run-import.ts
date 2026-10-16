@@ -59,6 +59,8 @@ export type ImportCommandOptions = {
   readonly json?: boolean
   readonly log?: (message: string) => void
   readonly loadPayload?: (configPath: string) => Promise<import('payload').Payload>
+  /** Accept a pre-0.6.0 manifest without a MAC (`--allow-unsigned-manifest`). */
+  readonly allowUnsignedManifest?: boolean | undefined
 }
 
 const log_ = (options: Pick<ImportCommandOptions, 'log'>): ((message: string) => void) =>
@@ -405,6 +407,7 @@ export async function runFromPayloadAuth(options: ImportCommandOptions): Promise
       slugs,
       sourceTables,
       log,
+      allowUnsignedManifest: options.allowUnsignedManifest,
     })
   )
   const plan: ImportPlan = {
@@ -508,7 +511,14 @@ export async function runRollback(
   const requireTargets = manifest.kind !== 'adopt-prelink'
   return withTargetPayload(
     options,
-    (payload) => rollbackImport({ payload, manifest, log, manifestPath }),
+    (payload) =>
+      rollbackImport({
+        payload,
+        manifest,
+        log,
+        manifestPath,
+        allowUnsignedManifest: options.allowUnsignedManifest,
+      }),
     requireTargets
   )
 }
@@ -533,7 +543,7 @@ export function runFinalize(
 /** Options for `adopt-prelink` (issue #88). */
 export type PrelinkCommandOptions = Pick<
   ImportCommandOptions,
-  'configPath' | 'apply' | 'manifestPath' | 'json' | 'log' | 'loadPayload'
+  'configPath' | 'apply' | 'manifestPath' | 'json' | 'log' | 'loadPayload' | 'allowUnsignedManifest'
 > & {
   readonly usersSlug?: string | undefined
   readonly verifiedField?: string | undefined
@@ -575,6 +585,7 @@ export async function runAdoptPrelink(options: PrelinkCommandOptions): Promise<P
         usersSlug: options.usersSlug,
         verifiedField: options.verifiedField,
         log,
+        allowUnsignedManifest: options.allowUnsignedManifest,
       }),
     false
   )

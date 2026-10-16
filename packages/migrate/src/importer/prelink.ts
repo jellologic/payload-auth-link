@@ -1,5 +1,6 @@
 import type { Payload } from 'payload'
 import { capturedKeys, captureBefore } from './host-writes.js'
+import { authenticateManifest, signManifest } from './manifest-mac.js'
 import type { FieldWrite, ImportManifest, Unmappable } from './types.js'
 
 /**
@@ -40,6 +41,8 @@ export type PrelinkOptions = {
   readonly emailField?: string | undefined
   readonly now?: () => Date
   readonly log?: (message: string) => void
+  /** Resume from a pre-0.6.0 manifest that has no MAC (`--allow-unsigned-manifest`). */
+  readonly allowUnsignedManifest?: boolean | undefined
 }
 
 export type PrelinkResult = {
@@ -76,6 +79,12 @@ export async function prelinkUsers(options: PrelinkOptions): Promise<PrelinkResu
   const usersSlug = options.usersSlug ?? 'users'
   const verifiedField = options.verifiedField ?? 'emailVerified'
   const emailField = options.emailField ?? 'email'
+  if (options.manifest !== null) {
+    // Resuming re-signs the old entries: verify them first.
+    authenticateManifest(payload.secret, options.manifest, {
+      allowUnsigned: options.allowUnsignedManifest,
+    })
+  }
   const fieldWrites: FieldWrite[] = [...(options.manifest?.fieldWrites ?? [])]
   const captured = capturedKeys(fieldWrites)
 
@@ -201,8 +210,8 @@ export async function prelinkUsers(options: PrelinkOptions): Promise<PrelinkResu
       }
       await payload.update({ collection: usersSlug, id: row.id, data, overrideAccess: true })
     }
-    const manifest: ImportManifest = {
-      version: 2,
+    const manifest: ImportManifest = signManifest(payload.secret, {
+      version: 3,
       kind: 'adopt-prelink',
       createdAt: options.manifest?.createdAt ?? now().toISOString(),
       sourceDatabase: '(adopt mode: the target app database)',
@@ -212,7 +221,7 @@ export async function prelinkUsers(options: PrelinkOptions): Promise<PrelinkResu
       finalized: options.manifest?.finalized ?? false,
       sourceCounts: {},
       totals: { user: users, linked, proofGranted },
-    }
+    })
     const { writeManifest } = await import('./lifecycle.js')
     writeManifest(manifest, options.manifestPath)
   }

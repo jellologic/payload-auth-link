@@ -1554,7 +1554,7 @@ same fail-fast.
 
 | Dependency                               | Validated (floor / installed) | Range (peer unless noted)           | Notes                                                                               |
 | ---------------------------------------- | ----------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------- |
-| `payload`                                | 3.83.0 / 3.90.2               | `^3.83.0 \|\| 4.0.0-beta.0`         | v3 for Next; 3.83 is the named-plugin/global-hook floor; v4 pin is exact            |
+| `payload`                                | 3.83.0 / 3.91.0               | `^3.83.0 \|\| 4.0.0-beta.0`         | v3 for Next; 3.83 is the named-plugin/global-hook floor; v4 pin is exact            |
 | `payload` (Start)                        | 4.0.0-beta.0                  | exact beta pin (example)            | `@payloadcms/tanstack-start` exists only on the v4 line                             |
 | `better-auth`                            | 1.7.6 / 1.7.7                 | `>=1.7.6 <1.8.0`                    | Type-level floor 1.7.6 (`modelKey` types); validated 1.7 line only — lockstep above |
 | `@auth/core`                             | 0.41.0 / 0.41.3               | `>=0.41.0 <0.42.0`                  | Raw core, not the `next-auth` wrapper; 0.x minors add Adapter methods               |
@@ -1978,6 +1978,34 @@ mid-request. When it fires: pin the upstream back inside the band
 and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
+
+## plugin 0.12.0 / migrate 0.6.0 (one minor across every package)
+
+**Upgrade impact:** no schema change; nothing to run on any adapter.
+No option was added or removed.
+
+- **migrate: signed manifests.** `--apply` and `adopt-prelink` now
+  write a version-3 manifest carrying an HMAC keyed from the app's
+  `PAYLOAD_SECRET`. `rollback`, and a resumed `--apply` /
+  `adopt-prelink`, refuse a manifest that fails the check (an edited
+  file could otherwise delete arbitrary rows or set allowlisted fields
+  such as `roles`). **If you are mid-migration** with a manifest
+  written by migrate ≤ 0.5.x, the first `rollback` or resumed run needs
+  `--allow-unsigned-manifest`; the next write signs it. A version-2
+  manifest holding a plaintext value is refused even then.
+- **plugin: `readVersions` default on the users collection.** When the
+  host leaves it unset, user versions are readable by role managers
+  only (Payload's default let any signed-in user list every user's
+  versions, emails included, on a users collection with `versions`).
+  Declare `access.readVersions` to keep a different policy.
+- **plugin: `roleValues` on local sessions.** The role-manager check
+  and the `requireMfaForRoles` strip now compare canonical roles for
+  every session. A local session holding a mapped policy role (say
+  stored `AUDITOR` for `auditor`) now loses it without MFA, as an
+  unmapped one always did. A local admin whose manager role is stored
+  under another value is now a role manager.
+- Payload 3.91.0 is the tested `latest` on v3 (the peer range is
+  unchanged).
 
 ## plugin 0.11.x patches (after the hardening release)
 
@@ -5725,6 +5753,21 @@ trusted publishing with provenance. Verify a version with
 --expect-provenance` from a checkout. A version without provenance
 was published through the documented emergency path and is called out
 in its release notes.
+
+## Dependency audit
+
+The published packages' runtime dependencies are only `neverthrow`,
+`zod`, `@standard-schema/spec`, `pg` and `typescript` (plus sibling
+`@payload-auth-link/*` packages); Payload, the providers and the
+frameworks are peers that the host app resolves. `bun audit` on this
+repository also scans the dev and example tree. Its open findings are
+triaged here, and none of them reaches a published package:
+
+| Finding                                                       | Reached through                                               | Status                                                     |
+| ------------------------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------- |
+| `braces` 3.0.3, GHSA-vfj7-8cjw-p6xm                           | `sass` → `chokidar` (Next / `@payloadcms/next` build tooling) | No patched `braces` 3.x; dev-time only                     |
+| `dompurify` 3.4.15, GHSA-p98j-92pf-mc4p / GHSA-6688-9rhm-gjv2 | `@payloadcms/ui` → `monaco-editor` (pins 3.4.15)              | Upstream pin; the `IN_PLACE` mode they need is unused here |
+| `esbuild` ≤ 0.24.2, GHSA-67mh-4wv8-2f99                       | `drizzle-kit` → `@esbuild-kit/*` (`~0.18.20`)                 | Affects `esbuild serve` only, which nothing here runs      |
 
 ## Scope Notes
 

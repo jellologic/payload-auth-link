@@ -49,6 +49,7 @@ export function isSilentLogger(logger: LoggerPort): boolean {
  * call sites pass: never tokens or secrets.
  */
 export function consoleLogger(): LoggerPort {
+  /* eslint-disable no-console -- the LoggerPort's console sink: the one place logs reach the console */
   const format = (message: string, fields?: LogFields): string =>
     fields === undefined || Object.keys(fields).length === 0
       ? message
@@ -66,6 +67,7 @@ export function consoleLogger(): LoggerPort {
     },
     child: () => logger,
   }
+  /* eslint-enable no-console */
   return logger
 }
 

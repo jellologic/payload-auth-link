@@ -455,6 +455,45 @@ describe.skipIf(!canReachPostgres)(
       expect(result.ok).toBe(true)
     })
 
+    test('rollback refuses an edited manifest before touching anything (GHSA-p76j-5qwx-rpwx)', async () => {
+      const manifest = readManifest(manifestPath)
+      if (manifest === null) {
+        throw new Error('unreachable')
+      }
+      expect(manifest.version).toBe(3)
+      const host = await payload.find({ collection: 'users', depth: 0, overrideAccess: true })
+      const victim = host.docs[0]
+      if (victim === undefined) {
+        throw new Error('fixture has no users')
+      }
+      const baBefore = await payload.count({ collection: 'ba-users', overrideAccess: true })
+      // An extra delete target, and a plaintext roles entry.
+      const edited = {
+        ...manifest,
+        created: [{ collection: 'users', id: victim.id, sourceKey: 'edited' }, ...manifest.created],
+        fieldWrites: [
+          ...manifest.fieldWrites,
+          { collection: 'users', id: victim.id, field: 'roles', before: '["admin"]' },
+        ],
+      }
+      await expect(rollbackImport({ payload, manifest: edited })).rejects.toThrow(/integrity check/)
+      // A stripped MAC is no way around it either.
+      const unsigned = { ...edited, mac: undefined, version: 2 as const }
+      await expect(rollbackImport({ payload, manifest: unsigned })).rejects.toThrow(
+        /allow-unsigned-manifest/
+      )
+      const still = await payload.findByID({
+        collection: 'users',
+        id: victim.id,
+        depth: 0,
+        overrideAccess: true,
+      })
+      expect(still.id).toBe(victim.id)
+      expect(
+        (await payload.count({ collection: 'ba-users', overrideAccess: true })).totalDocs
+      ).toBe(baBefore.totalDocs)
+    })
+
     test('rollback undoes exactly the manifest; the source is unchanged', async () => {
       const before = await sourceCounts()
       const manifest = readManifest(manifestPath)

@@ -62,6 +62,21 @@ export default tseslint.config(
     files: ['**/*.mjs', '**/*.js'],
     ...tseslint.configs.disableTypeChecked,
   },
+  // Invariant 8: library code logs through LoggerPort, never straight to
+  // the console or the process streams (GHSA-hxgq-9pww-59j4 shipped debug
+  // writes that way). Only the migrate CLI entry owns stdout/stderr.
+  {
+    files: ['packages/*/src/**/*.ts', 'packages/*/src/**/*.tsx'],
+    ignores: ['packages/*/src/**/__tests__/**', 'packages/migrate/src/cli.ts'],
+    rules: {
+      'no-console': 'error',
+      'no-restricted-properties': [
+        'error',
+        { object: 'process', property: 'stdout', message: 'log through LoggerPort.' },
+        { object: 'process', property: 'stderr', message: 'log through LoggerPort.' },
+      ],
+    },
+  },
   // core imports no framework and no workspace siblings.
   {
     files: ['packages/core/src/**/*'],

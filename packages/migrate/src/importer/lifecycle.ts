@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { writePrivateFile } from '../private-file.js'
 import type { Payload } from 'payload'
 import { restoreCaptured } from './host-writes.js'
+import { authenticateManifest, signManifest } from './manifest-mac.js'
 import {
   defaultTargetSlugs,
   resolveSourceTables,
@@ -38,8 +39,8 @@ export function readManifest(path: string): ImportManifest | null {
     typeof parsed === 'object' && parsed !== null
       ? (parsed as { version?: unknown }).version
       : undefined
-  if (version !== 1 && version !== 2) {
-    throw new Error(`manifest at ${path} is not a version-1/2 import manifest`)
+  if (version !== 1 && version !== 2 && version !== 3) {
+    throw new Error(`manifest at ${path} is not a version-1/2/3 import manifest`)
   }
   return parsed as ImportManifest
 }
@@ -503,6 +504,8 @@ export async function rollbackImport(options: {
    */
   readonly manifestPath?: string | undefined
   readonly now?: (() => Date) | undefined
+  /** Accept a pre-0.6.0 manifest that has no MAC (`--allow-unsigned-manifest`). */
+  readonly allowUnsignedManifest?: boolean | undefined
 }): Promise<{ deleted: number; restored: number }> {
   const { payload, manifest, log = () => {} } = options
   if (manifest.finalized) {
@@ -510,6 +513,9 @@ export async function rollbackImport(options: {
     // the migration's history, not a TODO to undo.
     throw new Error('the migration is finalized; rollback is no longer possible')
   }
+  // Every row below is deleted, and every field restored, with
+  // overrideAccess: only a manifest this app signed may drive that.
+  authenticateManifest(payload.secret, manifest, { allowUnsigned: options.allowUnsignedManifest })
   let deleted = 0
   for (const row of [...manifest.created].reverse()) {
     try {
@@ -525,14 +531,13 @@ export async function rollbackImport(options: {
   // document, `updatedAt` included — see host-writes.ts for why.
   const restored = await restoreCaptured(payload, manifest)
   if (options.manifestPath !== undefined) {
-    const reset: ImportManifest = {
+    const reset: ImportManifest = signManifest(payload.secret, {
       ...manifest,
-      version: 2,
       created: [],
       fieldWrites: [],
       totals: {},
       rolledBackAt: (options.now ?? (() => new Date()))().toISOString(),
-    }
+    })
     writeManifest(reset, options.manifestPath)
   }
   log(`rollback: ${deleted} row(s) deleted, ${restored} field value(s) restored`)
