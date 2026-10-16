@@ -10,25 +10,63 @@
  *   better-auth            better-auth + @better-auth/*
  *   @auth/core             @auth/core
  *   @tanstack/react-start  @tanstack/react-start
+ *   @tanstack/react-router @tanstack/react-router
  *   next                   next
+ *
+ * `<version>` is an exact version, or `latest:<semver range>`: the
+ * newest stable (non-prerelease) publish of the axis package inside
+ * that range. Latest cells pass the supported band as the range, so
+ * "latest" means latest-in-band — never a dist-tag that has already
+ * moved past the band (payload 4 GA, better-auth 1.8, next 17).
  *
  * Only exact versions are rewritten (never ranges, never
  * `workspace:*`), so peers keep their declared bands — the point of
  * a floor cell is to install the floor while the ranges stay honest.
  */
+import { execFileSync } from 'node:child_process'
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const [axis, version] = process.argv.slice(2)
+const [axis, requested] = process.argv.slice(2)
 
 const axes = {
   payload: [/^payload$/, /^@payloadcms\//],
   'better-auth': [/^better-auth$/, /^@better-auth\//],
   '@auth/core': [/^@auth\/core$/],
   '@tanstack/react-start': [/^@tanstack\/react-start$/],
+  '@tanstack/react-router': [/^@tanstack\/react-router$/],
   next: [/^next$/],
+}
+
+/** Order two stable `x.y.z` versions numerically. */
+function compareStable(a, b) {
+  const left = a.split('.').map(Number)
+  const right = b.split('.').map(Number)
+  for (let index = 0; index < 3; index += 1) {
+    const delta = (left[index] ?? 0) - (right[index] ?? 0)
+    if (delta !== 0) {
+      return delta
+    }
+  }
+  return 0
+}
+
+/** Newest stable publish of `name` inside `range` (npm resolves the range). */
+function resolveLatestInRange(name, range) {
+  const raw = execFileSync('npm', ['view', `${name}@${range}`, 'version', '--json'], {
+    encoding: 'utf8',
+  }).trim()
+  if (raw === '') {
+    return undefined
+  }
+  const parsed = JSON.parse(raw)
+  const versions = (Array.isArray(parsed) ? parsed : [parsed]).filter(
+    (candidate) => typeof candidate === 'string' && !candidate.includes('-')
+  )
+  versions.sort(compareStable)
+  return versions.at(-1)
 }
 
 /** Upstreams with no publish at some floor versions (e.g. the v4-line
@@ -39,9 +77,23 @@ const axisExclusions = {
 }
 
 const patterns = axes[axis]
-if (patterns === undefined || version === undefined) {
-  console.error(`usage: compat-install.mjs <${Object.keys(axes).join('|')}> <exact-version>`)
+if (patterns === undefined || requested === undefined) {
+  console.error(
+    `usage: compat-install.mjs <${Object.keys(axes).join('|')}> <exact-version|latest:<range>>`
+  )
   process.exit(2)
+}
+
+let version = requested
+if (requested.startsWith('latest:')) {
+  const range = requested.slice('latest:'.length)
+  const resolved = resolveLatestInRange(axis, range)
+  if (resolved === undefined) {
+    console.error(`compat-install: no stable ${axis} publish satisfies ${range}`)
+    process.exit(1)
+  }
+  console.log(`compat-install: ${axis} latest in ${range} is ${resolved}`)
+  version = resolved
 }
 
 const manifestPaths = [join(root, 'package.json')]
