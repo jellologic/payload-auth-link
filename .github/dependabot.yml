@@ -40,6 +40,10 @@ updates:
         versions: ['>=4.0.0-0']
       - dependency-name: '@payloadcms/*'
         versions: ['>=4.0.0-0']
+      # Payload's GraphQL package (@payloadcms/graphql) pins graphql 16;
+      # graphql 17 moves together with Payload, not on its own.
+      - dependency-name: graphql
+        versions: ['>=17.0.0-0']
     groups:
       payload:
         patterns:
@@ -71,6 +75,13 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # changesets/action v2 renames the inputs release.yml uses
+      # (version/publish -> version-script/publish-script) and takes the
+      # token only via `github-token`: a deliberate migration of the
+      # release path, not a routine bump.
+      - dependency-name: changesets/action
+        versions: ['>=2.0.0-0']
     groups:
       actions:
         patterns:
