@@ -16,7 +16,16 @@ export { classifyPlugins, pluginsFromSourceTree } from './doctor/plugins.js'
 export { scanSource, projectedUserFields, listSourceFiles } from './doctor/source-scan.js'
 export { analyzeUsersCollection, findUsersCollection, localStrategyOn } from './doctor/users.js'
 export { introspectDatabase } from './doctor/database.js'
-export { runFromPayloadAuth, runVerify, runRollback, runFinalize } from './importer/run-import.js'
+export {
+  runFromPayloadAuth,
+  runVerify,
+  runRollback,
+  runFinalize,
+  runAdoptPrelink,
+  type ImportCommandOptions,
+  type PrelinkCommandOptions,
+} from './importer/run-import.js'
+export { prelinkUsers, type PrelinkOptions, type PrelinkResult } from './importer/prelink.js'
 export { applyImport, summarizePlanRows } from './importer/apply.js'
 export {
   countTables,
@@ -39,6 +48,7 @@ export {
   rollbackImport,
   finalizeManifest,
   defaultManifestPath,
+  defaultPrelinkManifestPath,
   type VerifyIssue,
   type VerifyResult,
 } from './importer/lifecycle.js'
@@ -57,6 +67,7 @@ export {
   type TargetSlugMap,
   type FieldWrite,
   type ImportManifest,
+  type ManifestKind,
   type ImportPlan,
   type ImportResult,
   type PlanRow,

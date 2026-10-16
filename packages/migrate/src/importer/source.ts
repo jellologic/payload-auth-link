@@ -31,10 +31,22 @@ export type SourceUser = {
   /** Stored role values from the `users_role` child table. */
   readonly roles: readonly string[]
   readonly accounts: readonly SourceAccount[]
+  /**
+   * Better Auth admin-plugin ban state (issue #88), `null` when the
+   * source layout has no such column (the plugin was never installed).
+   */
+  readonly banned: boolean | null
+  readonly banReason: string | null
+  readonly banExpires: Date | null
+  /** Better Auth anonymous-plugin marker; `null` when no column exists. */
+  readonly isAnonymous: boolean | null
 }
 
 export type SourceAccount = {
   readonly id: string
+  /** Source row timestamps, carried onto the target row (issue #88). */
+  readonly createdAt: Date | null
+  readonly updatedAt: Date | null
   readonly accountId: string
   readonly providerId: string
   readonly password: string | null
@@ -179,8 +191,14 @@ export async function readSourceUsers(
   if (usersTable === null) {
     return []
   }
+  // Plugin columns (admin bans, anonymous marker) exist only when the
+  // payload-auth app installed those plugins — read them when present.
+  const userColumns = await columnsOf(client, usersTable)
+  const optionalUserColumns = ['banned', 'ban_reason', 'ban_expires', 'is_anonymous'].filter(
+    (column) => userColumns.has(column)
+  )
   const users = await client.query(
-    `SELECT id, email, name, email_verified, image, created_at, updated_at FROM ${usersTable} ORDER BY id`
+    `SELECT ${['id', 'email', 'name', 'email_verified', 'image', 'created_at', 'updated_at', ...optionalUserColumns].join(', ')} FROM ${usersTable} ORDER BY id`
   )
   const rolesTable = tables['users_role']
   const roleRows =
@@ -193,19 +211,37 @@ export async function readSourceUsers(
     list.push(row.value)
     rolesByUser.set(String(row.parent_id), list)
   }
+  const accountColumns =
+    accountsTable === null ? new Set<string>() : await columnsOf(client, accountsTable)
+  const accountTimestamps = ['created_at', 'updated_at'].filter((column) =>
+    accountColumns.has(column)
+  )
   const accounts =
     accountsTable === null
       ? { rows: [] as unknown[] }
       : await client.query(
-          `SELECT id, account_id, provider_id, password, access_token, refresh_token, id_token,
-            scope, access_token_expires_at, refresh_token_expires_at, user_id
-     FROM ${accountsTable} ORDER BY id`
+          `SELECT ${[
+            'id',
+            'account_id',
+            'provider_id',
+            'password',
+            'access_token',
+            'refresh_token',
+            'id_token',
+            'scope',
+            'access_token_expires_at',
+            'refresh_token_expires_at',
+            'user_id',
+            ...accountTimestamps,
+          ].join(', ')} FROM ${accountsTable} ORDER BY id`
         )
   const accountsByUser = new Map<string, SourceAccount[]>()
   for (const row of accounts.rows as Record<string, unknown>[]) {
     const userId = String(row.user_id)
     const account: SourceAccount = {
       id: String(row.id),
+      createdAt: iso(row.created_at),
+      updatedAt: iso(row.updated_at),
       accountId: String(row.account_id),
       providerId: String(row.provider_id),
       password: text(row.password),
@@ -233,6 +269,10 @@ export async function readSourceUsers(
       updatedAt: iso(row.updated_at) ?? new Date(),
       roles: rolesByUser.get(id) ?? [],
       accounts: accountsByUser.get(id) ?? [],
+      banned: userColumns.has('banned') ? row.banned === true : null,
+      banReason: userColumns.has('ban_reason') ? text(row.ban_reason) : null,
+      banExpires: userColumns.has('ban_expires') ? iso(row.ban_expires) : null,
+      isAnonymous: userColumns.has('is_anonymous') ? row.is_anonymous === true : null,
     })
   }
   return out
@@ -246,12 +286,20 @@ export async function readSourceUsers(
 export async function readFlatRows(
   client: Client,
   table: string,
-  columns: readonly string[]
+  columns: readonly string[],
+  /**
+   * Columns read only when the layout has them (issue #88: row
+   * timestamps) — an absent optional column is simply not selected,
+   * and the row carries no key for it.
+   */
+  optionalColumns: readonly string[] = []
 ): Promise<SourceRow[]> {
   if (!(await tableExists(client, table))) {
     throw new Error(`source table '${table}' is missing — run probeSourceLayout first`)
   }
-  const result = await client.query(`SELECT ${columns.join(', ')} FROM ${table} ORDER BY id`)
+  const existing = optionalColumns.length > 0 ? await columnsOf(client, table) : new Set<string>()
+  const selected = [...columns, ...optionalColumns.filter((column) => existing.has(column))]
+  const result = await client.query(`SELECT ${selected.join(', ')} FROM ${table} ORDER BY id`)
   return result.rows as SourceRow[]
 }
 

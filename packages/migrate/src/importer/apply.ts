@@ -1,4 +1,5 @@
 import type { Payload } from 'payload'
+import { capturedKeys, captureBefore } from './host-writes.js'
 import {
   readFlatRows,
   openSource,
@@ -17,6 +18,7 @@ import {
   type ImportPlan,
   type ImportResult,
   type PlanRow,
+  type Unmappable,
 } from './types.js'
 
 /**
@@ -25,16 +27,26 @@ import {
  *
  * - Password hashes, OAuth tokens, API-key hashes, and jwks carry over
  *   VERBATIM (payload-auth used Better Auth's own hashing).
- * - `linkable` + `linkableEmail` are granted from VERIFIED emails only;
- *   unverified users are reported by the plan, never linked.
+ * - Row timestamps (`createdAt`/`updatedAt`) carry from the source rows
+ *   for every model whose source table has them (issue #88).
+ * - Better Auth plugin user state carries (issue #88): admin-plugin
+ *   `banned`/`banReason`/`banExpires`/`role` and the anonymous plugin's
+ *   `isAnonymous`, whenever the source has the column AND the target
+ *   `ba-users` collection declares the field. A banned or anonymous
+ *   source user whose state the target cannot hold is UNMAPPABLE — the
+ *   run aborts before writing; a banned user never imports unbanned.
+ * - `linkable` + `linkableEmail` are granted from VERIFIED emails only
+ *   (grant-only: an existing proof is never revoked); unverified users
+ *   are reported by the plan, never linked.
  * - Sessions default to `carry` so nobody is logged out: the carried
  *   rows keep their tokens, and with the same `advanced.cookiePrefix`
  *   the existing cookies keep working.
  * - Idempotent and resumable: every target row carries a deterministic
  *   `baId` derived from the source id (`acct-<source id>`), so a
  *   re-run after a crash finds its own earlier rows and skips them.
- * - Every created row and every field write lands in the manifest, so
- *   `rollback` is exact and the source tables stay untouched.
+ * - Every created row and every host field write lands in the
+ *   manifest — the FIRST captured prior value per field wins, sealed —
+ *   so `rollback` is exact and the source tables stay untouched.
  */
 
 export type ApplyOptions = {
@@ -76,18 +88,96 @@ function numberOrNull(value: unknown): number | undefined {
   return Number.isFinite(numeric) ? numeric : undefined
 }
 
+/** The source row's timestamps, when its layout has them (issue #88). */
+function stamps(row: SourceRow): { createdAt?: string; updatedAt?: string } {
+  return {
+    ...(row.created_at instanceof Date ? { createdAt: row.created_at.toISOString() } : {}),
+    ...(row.updated_at instanceof Date ? { updatedAt: row.updated_at.toISOString() } : {}),
+  }
+}
+
+const timestampColumns = ['created_at', 'updated_at'] as const
+
 /**
  * Rows for one mapped model. A `null` mapping records the model as
  * not installed (issue #68) — no read, no rows; anything else goes
  * through the strict `readFlatRows` (a missing mapped table throws;
- * the probe aborts the run first).
+ * the probe aborts the run first). Row timestamps are read when the
+ * layout has them.
  */
 async function readMapped(
   client: Awaited<ReturnType<typeof openSource>>,
   table: string | null,
   columns: readonly string[]
 ): Promise<SourceRow[]> {
-  return table === null ? [] : readFlatRows(client, table, columns)
+  return table === null ? [] : readFlatRows(client, table, columns, timestampColumns)
+}
+
+/** Field names a target collection declares (top level, flattened). */
+function targetFieldNames(payload: Payload, slug: string): ReadonlySet<string> {
+  const collection = payload.collections[slug]
+  const names = new Set<string>()
+  for (const field of collection?.config.flattenedFields ?? []) {
+    names.add(field.name)
+  }
+  return names
+}
+
+/**
+ * Plugin user state the target must be able to hold (issue #88),
+ * checked BEFORE any write: a banned user whose target has no `banned`
+ * field would import unbanned; an anonymous user without `isAnonymous`
+ * would import as a full account.
+ */
+export function pluginStateUnmappable(
+  users: readonly SourceUser[],
+  targetFields: ReadonlySet<string>,
+  targetSlug: string
+): Unmappable[] {
+  const found: Unmappable[] = []
+  for (const user of users) {
+    if (user.banned === true && !targetFields.has('banned')) {
+      found.push({
+        model: 'user',
+        key: user.id,
+        reason: `user #${user.id} is banned on the source, but '${targetSlug}' declares no 'banned' field — add Better Auth's admin() plugin to the engine (autoDeclare derives banned/banReason/banExpires) so the ban carries`,
+      })
+    }
+    if (user.isAnonymous === true && !targetFields.has('isAnonymous')) {
+      found.push({
+        model: 'user',
+        key: user.id,
+        reason: `user #${user.id} is anonymous on the source, but '${targetSlug}' declares no 'isAnonymous' field — add Better Auth's anonymous() plugin to the engine, or remove anonymous users before importing`,
+      })
+    }
+  }
+  return found
+}
+
+/** Plugin user state carried onto the ba-users row (issue #88). */
+function pluginUserState(
+  user: SourceUser,
+  targetFields: ReadonlySet<string>
+): Record<string, unknown> {
+  const state: Record<string, unknown> = {}
+  if (user.banned !== null && targetFields.has('banned')) {
+    state.banned = user.banned
+  }
+  if (user.banReason !== null && targetFields.has('banReason')) {
+    state.banReason = user.banReason
+  }
+  if (user.banExpires !== null && targetFields.has('banExpires')) {
+    state.banExpires = user.banExpires.toISOString()
+  }
+  if (user.isAnonymous !== null && targetFields.has('isAnonymous')) {
+    state.isAnonymous = user.isAnonymous
+  }
+  // Better Auth's admin plugin stores roles as one comma-separated
+  // string; payload-auth kept them in the users_role child table.
+  if (user.roles.length > 0 && targetFields.has('role')) {
+    state.role = user.roles.join(',')
+  }
+  return state
 }
 
 /** Find an existing target row by `baId` — the resumable dedupe key. */
@@ -127,24 +217,6 @@ async function createDeduped(
     }
   }
   return true
-}
-
-/** Capture a host field's current value for the rollback manifest. */
-async function captureBefore(
-  payload: Payload,
-  hostId: number,
-  field: string
-): Promise<string | null> {
-  const doc: unknown = await payload.findByID({
-    collection: 'users',
-    id: hostId,
-    depth: 0,
-    overrideAccess: true,
-  })
-  if (typeof doc !== 'object' || doc === null || !(field in doc)) {
-    return null
-  }
-  return JSON.stringify((doc as Record<string, unknown>)[field] ?? null)
 }
 
 /**
@@ -192,9 +264,14 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
   const sourceTables: ResolvedSourceTables = resolveSourceTables(options.sourceTables)
   const created: CreatedRow[] = [...(options.manifest?.created ?? [])]
   const fieldWrites: FieldWrite[] = [...(options.manifest?.fieldWrites ?? [])]
-  const totals: Record<string, number> = { ...(options.manifest?.totals ?? {}) }
+  // First capture wins (issue #88): fields captured by an earlier pass
+  // keep their pre-import value.
+  const captured = capturedKeys(fieldWrites)
+  // Per-PASS totals (issue #88): a re-apply reports what this pass
+  // planned, never the sum of every pass.
+  const totals: Record<string, number> = {}
   const planRows: PlanRow[] = []
-  const unmappable: { model: string; key: string; reason: string }[] = []
+  const unmappable: Unmappable[] = []
   let createdCount = 0
   let skippedCount = 0
   let fieldWriteCount = 0
@@ -206,6 +283,24 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
   const client = await openSource(sourceConnectionString)
   try {
     const users = await readSourceUsers(client, sourceTables)
+    const baUserFields = targetFieldNames(payload, slugs.user)
+
+    // --- 0. target-capability gate (issue #88) ---------------------------
+    // Runs before ANY write: plugin state the target cannot hold aborts
+    // the run instead of importing a banned user unbanned.
+    const blocked = pluginStateUnmappable(users, baUserFields, slugs.user)
+    if (blocked.length > 0) {
+      log(
+        `ABORT: ${blocked.length} user(s) carry state the target cannot hold; nothing was written`
+      )
+      return {
+        created: 0,
+        skipped: 0,
+        fieldWrites: 0,
+        plan: { rows: [], unmappable: blocked, sessions, warnings: [] },
+      }
+    }
+
     const seenUsers = new Set<string>()
 
     // --- 1. ba-users + host field writes ---------------------------------
@@ -227,6 +322,7 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
               name: user.name ?? '',
               emailVerified: user.emailVerified,
               ...(user.image === null ? {} : { image: user.image }),
+              ...pluginUserState(user, baUserFields),
               createdAt: user.createdAt.toISOString(),
               updatedAt: user.updatedAt.toISOString(),
             },
@@ -242,30 +338,32 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
         }
         // Host-side writes on the EXISTING Payload user (the source
         // layout's user id IS the host id): identities, roles, and the
-        // verified-email linking proof. Captured `before` values make
-        // rollback exact.
+        // verified-email linking proof. The prior values (and the
+        // doc's updatedAt) are captured first — once — so rollback
+        // restores the pre-import document exactly.
         const hostId = Number(baId)
         if (Number.isSafeInteger(hostId)) {
+          const { present, newlyCaptured } = await captureBefore({
+            payload,
+            collection: 'users',
+            id: hostId,
+            fields: ['identities', 'roles', 'linkable', 'linkableEmail'],
+            captured,
+            into: fieldWrites,
+          })
+          fieldWriteCount += newlyCaptured
           const writes: Record<string, unknown> = {
             identities: identityRows(user, now),
-            linkable: user.emailVerified,
           }
-          const fields: readonly string[] = ['identities', 'roles', 'linkable', 'linkableEmail']
-          for (const field of fields) {
-            fieldWrites.push({
-              collection: 'users',
-              id: hostId,
-              field,
-              before: await captureBefore(payload, hostId, field),
-            })
-          }
-          fieldWriteCount += fields.length
-          if (user.roles.length > 0) {
+          if (user.roles.length > 0 && present.has('roles')) {
             // Stored role values pass through unchanged (issue #56: the
             // storage edge owns translation; the map is the app's).
             writes.roles = user.roles
           }
           if (user.emailVerified) {
+            // Grant-only: the proof is bound to the address (both
+            // fields), and an existing proof is never revoked here.
+            writes.linkable = true
             writes.linkableEmail = user.email
           }
           await payload.update({
@@ -280,6 +378,24 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
         model: 'user',
         sourceTable: sourceTables['users'] ?? 'users',
         targetCollection: slugs.user,
+        rows: 1,
+        skipped: isNew ? 0 : apply ? 1 : 0,
+        unmappable: [],
+      })
+    }
+
+    const tally = (model: string, sourceTable: string, target: string, isNew: boolean): void => {
+      if (apply) {
+        if (isNew) {
+          createdCount += 1
+        } else {
+          skippedCount += 1
+        }
+      }
+      record({
+        model,
+        sourceTable,
+        targetCollection: target,
         rows: 1,
         skipped: isNew ? 0 : apply ? 1 : 0,
         unmappable: [],
@@ -312,26 +428,18 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
                 ...(account.refreshTokenExpiresAt === null
                   ? {}
                   : { refreshTokenExpiresAt: account.refreshTokenExpiresAt.toISOString() }),
+                ...(account.createdAt === null
+                  ? {}
+                  : { createdAt: account.createdAt.toISOString() }),
+                ...(account.updatedAt === null
+                  ? {}
+                  : { updatedAt: account.updatedAt.toISOString() }),
               },
               created,
               `account:${account.id}`
             )
           : false
-        if (apply) {
-          if (isNew) {
-            createdCount += 1
-          } else {
-            skippedCount += 1
-          }
-        }
-        record({
-          model: 'account',
-          sourceTable: accountsTable ?? 'accounts',
-          targetCollection: slugs.account,
-          rows: 1,
-          skipped: isNew ? 0 : apply ? 1 : 0,
-          unmappable: [],
-        })
+        tally('account', accountsTable ?? 'accounts', slugs.account, isNew)
       }
     }
 
@@ -345,8 +453,6 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
         'expires_at',
         'ip_address',
         'user_agent',
-        'created_at',
-        'updated_at',
       ])
       for (const row of rows) {
         totals.session = (totals.session ?? 0) + 1
@@ -369,32 +475,13 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
                 ...(textOrNull(row.user_agent) === undefined
                   ? {}
                   : { userAgent: textOrNull(row.user_agent) }),
-                ...(row.created_at instanceof Date
-                  ? { createdAt: row.created_at.toISOString() }
-                  : {}),
-                ...(row.updated_at instanceof Date
-                  ? { updatedAt: row.updated_at.toISOString() }
-                  : {}),
+                ...stamps(row),
               },
               created,
               `session:${String(row.id)}`
             )
           : false
-        if (apply) {
-          if (isNew) {
-            createdCount += 1
-          } else {
-            skippedCount += 1
-          }
-        }
-        record({
-          model: 'session',
-          sourceTable: sessionsTable ?? 'sessions',
-          targetCollection: slugs.session,
-          rows: 1,
-          skipped: isNew ? 0 : apply ? 1 : 0,
-          unmappable: [],
-        })
+        tally('session', sessionsTable ?? 'sessions', slugs.session, isNew)
       }
     }
 
@@ -419,26 +506,13 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
               value: String(row.value),
               expiresAt:
                 row.expires_at instanceof Date ? row.expires_at.toISOString() : now().toISOString(),
+              ...stamps(row),
             },
             created,
             `verification:${String(row.id)}`
           )
         : false
-      if (apply) {
-        if (isNew) {
-          createdCount += 1
-        } else {
-          skippedCount += 1
-        }
-      }
-      record({
-        model: 'verification',
-        sourceTable: verificationsTable ?? 'verifications',
-        targetCollection: slugs.verification,
-        rows: 1,
-        skipped: isNew ? 0 : apply ? 1 : 0,
-        unmappable: [],
-      })
+      tally('verification', verificationsTable ?? 'verifications', slugs.verification, isNew)
     }
 
     // --- 5. api keys (hash, prefix, metadata, rate-limit state) --------------
@@ -450,8 +524,8 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
       'start',
       'prefix',
       'key',
-      // payload-auth stores the satellite's userId as referenceId
-      // (the #49 field map's source side).
+      // payload-auth stores the satellite's owner as reference_id — the
+      // same name @better-auth/api-key 1.7 uses (`referenceId`).
       'reference_id',
       'refill_interval',
       'refill_amount',
@@ -481,9 +555,9 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
               ...(textOrNull(row.start) === undefined ? {} : { start: textOrNull(row.start) }),
               ...(textOrNull(row.prefix) === undefined ? {} : { prefix: textOrNull(row.prefix) }),
               key: String(row.key),
-              // The satellite's user reference arrives as referenceId in
-              // payload-auth layouts; BA 1.7's own schema names it the
-              // same, so the target field is offered both names.
+              // @better-auth/api-key 1.7 names the owner `referenceId`;
+              // `userId` is offered for 1.6-era target schemas (Payload
+              // drops it where the collection has no such field).
               userId: String(row.reference_id),
               referenceId: String(row.reference_id),
               ...(numberOrNull(row.refill_interval) === undefined
@@ -523,26 +597,13 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
               ...(textOrNull(row.metadata) === undefined
                 ? {}
                 : { metadata: textOrNull(row.metadata) }),
+              ...stamps(row),
             },
             created,
             `apikey:${String(row.id)}`
           )
         : false
-      if (apply) {
-        if (isNew) {
-          createdCount += 1
-        } else {
-          skippedCount += 1
-        }
-      }
-      record({
-        model: 'apikey',
-        sourceTable: apiKeysTable ?? 'api_keys',
-        targetCollection: slugs.apikey,
-        rows: 1,
-        skipped: isNew ? 0 : apply ? 1 : 0,
-        unmappable: [],
-      })
+      tally('apikey', apiKeysTable ?? 'api_keys', slugs.apikey, isNew)
     }
 
     // --- 6. jwks --------------------------------------------------------------
@@ -559,26 +620,13 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
             {
               publicKey: String(row.public_key),
               privateKey: String(row.private_key),
+              ...stamps(row),
             },
             created,
             `jwks:${String(row.id)}`
           )
         : false
-      if (apply) {
-        if (isNew) {
-          createdCount += 1
-        } else {
-          skippedCount += 1
-        }
-      }
-      record({
-        model: 'jwks',
-        sourceTable: jwksTable ?? 'jwks',
-        targetCollection: slugs.jwks,
-        rows: 1,
-        skipped: isNew ? 0 : apply ? 1 : 0,
-        unmappable: [],
-      })
+      tally('jwks', jwksTable ?? 'jwks', slugs.jwks, isNew)
     }
 
     // --- 7. organization plugin rows ---------------------------------------
@@ -605,26 +653,13 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
               ...(textOrNull(row.metadata) === undefined
                 ? {}
                 : { metadata: textOrNull(row.metadata) }),
+              ...stamps(row),
             },
             created,
             `organization:${String(row.id)}`
           )
         : false
-      if (apply) {
-        if (isNew) {
-          createdCount += 1
-        } else {
-          skippedCount += 1
-        }
-      }
-      record({
-        model: 'organization',
-        sourceTable: organizationsTable ?? 'organizations',
-        targetCollection: slugs.organization,
-        rows: 1,
-        skipped: isNew ? 0 : apply ? 1 : 0,
-        unmappable: [],
-      })
+      tally('organization', organizationsTable ?? 'organizations', slugs.organization, isNew)
     }
 
     const membersTable = sourceTables['members']
@@ -646,26 +681,13 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
               organizationId: `org-${String(row.organization_id)}`,
               userId: String(row.user_id),
               ...(textOrNull(row.role) === undefined ? {} : { role: textOrNull(row.role) }),
+              ...stamps(row),
             },
             created,
             `member:${String(row.id)}`
           )
         : false
-      if (apply) {
-        if (isNew) {
-          createdCount += 1
-        } else {
-          skippedCount += 1
-        }
-      }
-      record({
-        model: 'member',
-        sourceTable: membersTable ?? 'members',
-        targetCollection: slugs.member,
-        rows: 1,
-        skipped: isNew ? 0 : apply ? 1 : 0,
-        unmappable: [],
-      })
+      tally('member', membersTable ?? 'members', slugs.member, isNew)
     }
 
     const invitationsTable = sourceTables['invitations']
@@ -695,36 +717,24 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
                 ? { expiresAt: row.expires_at.toISOString() }
                 : {}),
               ...(typeof row.inviter_id === 'number' ? { inviterId: String(row.inviter_id) } : {}),
+              ...stamps(row),
             },
             created,
             `invitation:${String(row.id)}`
           )
         : false
-      if (apply) {
-        if (isNew) {
-          createdCount += 1
-        } else {
-          skippedCount += 1
-        }
-      }
-      record({
-        model: 'invitation',
-        sourceTable: invitationsTable ?? 'invitations',
-        targetCollection: slugs.invitation,
-        rows: 1,
-        skipped: isNew ? 0 : apply ? 1 : 0,
-        unmappable: [],
-      })
+      tally('invitation', invitationsTable ?? 'invitations', slugs.invitation, isNew)
     }
 
     log(
-      `plan: ${planRows.length} row group(s), ${createdCount} created, ${skippedCount} skipped, ${fieldWriteCount} field writes`
+      `plan: ${planRows.length} row group(s), ${createdCount} created, ${skippedCount} skipped, ${fieldWriteCount} field value(s) captured`
     )
     if (apply) {
       // The manifest is the run's contract: merge this pass onto any
       // resumed run's rows and write it back (issue #50).
       const manifest: ImportManifest = {
-        version: 1,
+        version: 2,
+        kind: 'import',
         createdAt: options.manifest?.createdAt ?? now().toISOString(),
         sourceDatabase: options.sourceDatabase,
         options: { sessions },
@@ -732,11 +742,7 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
         fieldWrites,
         finalized: options.manifest?.finalized ?? false,
         sourceCounts: options.sourceCounts,
-        totals: {
-          ...options.sourceCounts,
-          ...(options.manifest?.totals ?? {}),
-          ...totals,
-        },
+        totals,
       }
       const { writeManifest } = await import('./lifecycle.js')
       writeManifest(manifest, options.manifestPath)

@@ -17,6 +17,7 @@ export default defineConfig({
       'packages/migrate/src/__tests__/adopt-boot.test.ts',
       'packages/migrate/src/__tests__/importer.test.ts',
       'packages/migrate/src/__tests__/exporters.test.ts',
+      'packages/migrate/src/__tests__/cli-lifecycle.test.ts',
     ],
     include: [
       'packages/*/src/**/*.test.ts',

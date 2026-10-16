@@ -98,6 +98,15 @@ export function localStrategyOn(collection: Record<string, unknown>): boolean {
   return isRecord(auth) ? auth.disableLocalStrategy !== true : false
 }
 
+/**
+ * The payload-auth-link plugin's own auth strategy name
+ * (`packages/plugin/src/strategy.ts`). A users collection carrying it
+ * has ALREADY been through `authLink` — its identities/linkable/…
+ * fields are the plugin's own injections, not host collisions
+ * (issue #88: the doctor run against the TARGET config).
+ */
+const pluginStrategyName = 'auth-link'
+
 export function analyzeUsersCollection(
   collection: Record<string, unknown> | null,
   rolesFieldName: string
@@ -114,10 +123,20 @@ export function analyzeUsersCollection(
   const issues: DoctorIssue[] = []
   const notes: string[] = []
 
-  const collisions = fields
-    .map(fieldName)
-    .filter((name): name is string => name !== null)
-    .filter((name) => injectedFieldNames.has(name))
+  // On the target config the plugin already injected these fields:
+  // they are its own, never a collision (issue #88).
+  const pluginInstalled = strategiesOf(collection).includes(pluginStrategyName)
+  const collisions = pluginInstalled
+    ? []
+    : fields
+        .map(fieldName)
+        .filter((name): name is string => name !== null)
+        .filter((name) => injectedFieldNames.has(name))
+  if (pluginInstalled) {
+    notes.push(
+      'payload-auth-link is already installed on this collection (its auth-link strategy is present): the injected fields are the plugin’s own'
+    )
+  }
 
   let roleField: UsersFinding['roleField'] = null
   const roleCandidates = fields.filter((field) => {
