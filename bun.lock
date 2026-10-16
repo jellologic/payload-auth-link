@@ -197,7 +197,7 @@
     },
     "packages/provider-better-auth": {
       "name": "@payload-auth-link/provider-better-auth",
-      "version": "0.7.2",
+      "version": "0.7.3",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
         "neverthrow": "^8.2.0",
