@@ -5,6 +5,7 @@ import { sqliteAdapter } from '@payloadcms/db-sqlite'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { buildConfig } from 'payload'
+import { legacySessionWindow } from './lib/auth-base-url'
 import { betterAuthCollections, betterAuthProvider } from './lib/auth'
 import { authJsCollections, authJsProvider } from './lib/authjs'
 
@@ -75,6 +76,13 @@ export default buildConfig({
       // Next example.
       admin: { loginView: 'provider' },
       providers: [betterAuthProvider, authJsProvider],
+      // CAP-11: Payload-owned organizations + memberships, with the
+      // list/create/invite/accept endpoints under
+      // /api/auth-link/organizations* (mirrors the Next example).
+      organizations: { enabled: true },
+      // Asserts the engine's coexistence window (issue #51/#72): wiring
+      // throws if the two ever disagree.
+      legacySessions: legacySessionWindow,
     }),
   ],
   onInit: async (payload) => {

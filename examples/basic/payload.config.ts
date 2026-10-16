@@ -6,6 +6,7 @@ import { postgresAdapter } from '@payloadcms/db-postgres'
 import { sqliteAdapter } from '@payloadcms/db-sqlite'
 import { buildConfig } from 'payload'
 import { betterAuthCollections, betterAuthProvider } from './lib/auth'
+import { legacySessionWindow } from './lib/auth-cookie-names'
 import { authJsCollections, authJsProvider } from './lib/authjs'
 
 const filename = fileURLToPath(import.meta.url)
@@ -80,6 +81,13 @@ export default buildConfig({
       // Both providers live side by side: Better Auth at /api/auth,
       // Auth.js at /api/authjs. The session service asks each in turn.
       providers: [betterAuthProvider, authJsProvider],
+      // CAP-11: Payload-owned organizations + memberships, with the
+      // list/create/invite/accept endpoints under
+      // /api/auth-link/organizations*.
+      organizations: { enabled: true },
+      // Asserts the engine's coexistence window (issue #51/#72): wiring
+      // throws if the two ever disagree.
+      legacySessions: legacySessionWindow,
     }),
   ],
   onInit: async (payload) => {

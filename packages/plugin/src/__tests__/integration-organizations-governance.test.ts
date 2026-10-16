@@ -20,7 +20,6 @@ import { postgresAdapter } from '@payloadcms/db-postgres'
 import { sqliteAdapter } from '@payloadcms/db-sqlite'
 import {
   buildConfig,
-  createLocalReq,
   getPayload,
   handleEndpoints,
   type Payload,
@@ -30,6 +29,7 @@ import {
 import { beforeAll, describe, expect, it } from 'vitest'
 import { authLink } from '../index.js'
 import type { AuditEvent } from '../options.js'
+import { createLocalRequest } from './payload-request.js'
 import { createStubProvider } from './stub-provider.js'
 
 /**
@@ -1190,20 +1190,15 @@ describe('organization endpoints called without a Payload-populated req.user', (
   }
 
   async function bareRequest(person: Person, extra: Partial<PayloadRequest> = {}) {
-    return createLocalReq(
-      {
-        req: {
-          method: 'POST',
-          headers: new Headers({
-            cookie: cookieFor(person),
-            origin: ORIGIN,
-            'x-auth-link-csrf': '1',
-          }),
-          ...extra,
-        },
-      },
-      payload
-    )
+    return createLocalRequest(payload, {
+      method: 'POST',
+      headers: new Headers({
+        cookie: cookieFor(person),
+        origin: ORIGIN,
+        'x-auth-link-csrf': '1',
+      }),
+      ...extra,
+    })
   }
 
   it('create still seeds the verified caller as owner', async () => {

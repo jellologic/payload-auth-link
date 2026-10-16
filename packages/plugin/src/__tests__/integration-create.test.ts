@@ -45,16 +45,22 @@ beforeAll(async () => {
 describe('created users collection', () => {
   it('creates users without a password and applies the default role', async () => {
     const created = await payload.create({
+      overrideAccess: true,
       collection: 'users',
       data: { email: 'sso@test.dev' },
     })
     expect(created.email).toBe('sso@test.dev')
-    const found = await payload.findByID({ collection: 'users', id: created.id })
+    const found = await payload.findByID({
+      overrideAccess: true,
+      collection: 'users',
+      id: created.id,
+    })
     expect(found.roles).toEqual(['user'])
   })
 
   it('authenticates sessions end to end', async () => {
     await payload.create({
+      overrideAccess: true,
       collection: 'users',
       data: {
         email: 'created@test.dev',

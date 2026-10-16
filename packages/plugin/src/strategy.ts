@@ -67,6 +67,13 @@ export function createAuthLinkStrategy(wired: WiredOptions): AuthStrategy {
         wired.projectRolesAs === 'stored'
           ? payloadUser.roles.map((role) => wired.roleValues[role] ?? role)
           : payloadUser.roles
+      // `req.user.id` carries the database's own id type: Payload v4
+      // writes it into `createdBy`/`updatedBy` relationships, which
+      // reject a string id on number-id adapters (SQLite, Postgres).
+      const nativeId: string | number =
+        payload.db.defaultIDType === 'number' && /^\d+$/.test(payloadUser.id)
+          ? Number(payloadUser.id)
+          : payloadUser.id
       // Issue #57: `reqUser: 'document'` loads the full user document
       // (once per request, through the same `req.context` memo the
       // endpoint handlers share) so access functions reading other
@@ -95,13 +102,13 @@ export function createAuthLinkStrategy(wired: WiredOptions): AuthStrategy {
           // the security-relevant projected fields are written on top
           // and typed exactly.
           const user: Record<string, unknown> & {
-            id: typeof payloadUser.id
+            id: string | number
             email: string
             collection: string
             _strategy: string
           } = {
             ...document,
-            id: payloadUser.id,
+            id: nativeId,
             email: payloadUser.email,
             roles,
             collection: wired.config.map.usersCollection,
@@ -125,6 +132,7 @@ export function createAuthLinkStrategy(wired: WiredOptions): AuthStrategy {
       return {
         user: {
           ...payloadUser,
+          id: nativeId,
           roles,
           _strategy: strategyName,
         },

@@ -140,3 +140,14 @@ describe('emailVerifiedField validation', () => {
     expect(collection?.slug).toBe('users')
   })
 })
+
+describe('admin access wrapper', () => {
+  it("forwards every argument to the host's own admin access", async () => {
+    const own = vi.fn(() => true)
+    const admin = users([{ slug: 'users', auth: true, fields: [], access: { admin: own } }]).access
+      ?.admin
+    const args = { req: request(plain), slug: 'users' }
+    expect(await admin?.(args as never)).toBe(true)
+    expect(own).toHaveBeenCalledWith(expect.objectContaining({ slug: 'users' }))
+  })
+})

@@ -66,6 +66,10 @@ methods beyond passwords in the
 [Troubleshooting](docs/troubleshooting.md), and
 [Upgrading](docs/upgrading.md).
 
+Operations: [Audit trail for production](docs/audit.md),
+[Rate limiting](docs/rate-limiting.md), and the
+[Stability and upgrade policy](docs/stability.md) (takes effect at 1.0).
+
 Project docs: [Mission](docs/MISSION.md),
 [DNA](docs/DNA.md) (binding), [Plan](docs/PLAN.md). Agent
 consumers: [llms.txt](llms.txt), [llms-full.txt](llms-full.txt),

@@ -93,6 +93,7 @@ beforeAll(async () => {
   })
   payload = await getPayload({ config })
   await payload.create({
+    overrideAccess: true,
     collection: 'users',
     data: {
       email: 'linked@test.dev',
@@ -169,6 +170,7 @@ describe('session endpoint', () => {
     expect(body.user.email).toBe('jit@test.dev')
     expect(body.user.roles).toEqual(['user'])
     const stored = await payload.find({
+      overrideAccess: true,
       collection: 'users',
       where: { email: { equals: 'jit@test.dev' } },
       limit: 1,
@@ -186,6 +188,7 @@ describe('session endpoint', () => {
     })
     expect((await call('GET', '/auth-link/session', { cookie })).status).toBe(401)
     const stored = await payload.find({
+      overrideAccess: true,
       collection: 'users',
       where: { email: { equals: 'jit-unverified@test.dev' } },
       limit: 1,
@@ -206,6 +209,7 @@ describe('session endpoint', () => {
 
   it('syncs the email when the provider reports a new verified address', async () => {
     await payload.create({
+      overrideAccess: true,
       collection: 'users',
       data: {
         email: 'sync@test.dev',
@@ -352,6 +356,7 @@ describe('failed logout', () => {
 describe('email hook', () => {
   it('stores emails lowercased', async () => {
     const created = await payload.create({
+      overrideAccess: true,
       collection: 'users',
       data: { email: 'MixedCase@test.dev', password: 'correct-horse-battery' },
     })

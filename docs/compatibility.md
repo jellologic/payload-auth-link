@@ -1,9 +1,12 @@
 # Compatibility
 
 The **supported bands are exactly the CI-tested matrix**: the
-`compat` workflow proves `{floor, latest}` per upstream (build +
-unit + schema-probe), the e2e suites run every release against
-SQLite, Postgres, and mongo, and the golden-DB tests keep the
+`compat` workflow proves `{floor, latest-in-band}` for every band
+below (each Payload line, Better Auth, Auth.js, both Next majors,
+TanStack Start and Router) on Node 20, 22, and 24 wherever the
+upstream's own `engines` allow (build + unit + schema-probe), the e2e
+suites run every release against SQLite (Chromium, Firefox, and
+WebKit), Postgres, and mongo (Chromium), and the golden-DB tests keep the
 previous minor's database booting. A range below is a promise only
 as wide as those cells; the runtime version assertions
 (`UnsupportedVersionError` at wiring time) enforce the same bands
@@ -55,6 +58,20 @@ Module resolution: shipped code builds under `nodenext`, except
 `@payload-auth-link/next`, which uses `esnext`/`bundler` because
 Next.js ships no `exports` map for `next/*` subpaths. Tests run
 under bundler resolution for the same reason.
+
+Payload v4 (4.0.0-beta.0): the plugin's whole test suite runs on it in
+the compat matrix (`payload-4-beta`). Two v4 changes matter to host
+code next to the plugin: the Local API now defaults to
+`overrideAccess: false` (every plugin call sets it explicitly; your own
+setup scripts may need `overrideAccess: true`), and `createdBy` /
+`updatedBy` are filled from `req.user`, whose `id` the plugin keeps in
+the database's own type (a number on SQLite/Postgres).
+
+Payload 3.83.0 and 3.84.0 (the band floor) do not pass `req` to auth
+strategies, so the strategy cannot share its session resolution with
+the plugin's endpoint through `req.context`: a refused request logs
+"no provider session resolved" twice there. From 3.84.1 it is logged
+once. Behaviour and security are otherwise identical.
 
 ## Databases
 

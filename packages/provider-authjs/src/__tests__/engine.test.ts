@@ -508,4 +508,14 @@ describe('engine revocation', () => {
       overrideAccess: true,
     })
   })
+
+  it('refuses to report an unknown handle as revoked', async () => {
+    const find = vi.fn(() => Promise.resolve({ docs: [], totalDocs: 0 }))
+    const remove = vi.fn()
+    const payload = { find, delete: remove } as unknown as Payload
+    const engine = createAuthJsEngine(baseInput({ getPayload: () => Promise.resolve(payload) }))
+    const result = await engine.provider.revokeSession('no-such-token')
+    expect(result.isErr()).toBe(true)
+    expect(remove).not.toHaveBeenCalled()
+  })
 })

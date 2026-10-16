@@ -75,7 +75,10 @@ describe('denyWithoutMfa', () => {
   it('leaves undenied operations open, including admin', () => {
     const access = denyWithoutMfa(['update'])
     const req = { user: { id: 'u1' } } as unknown as PayloadRequest
-    expect(access.admin?.({ req })).toBe(true)
+    // v4 types access fns with the collection `slug`; a non-literal
+    // keeps v3's narrower arg type satisfied too.
+    const args = { req, slug: 'users' }
+    expect(access.admin?.(args)).toBe(true)
     expect(access.read?.({ req } as never)).toBe(true)
     expect(access.update?.({ req } as never)).toBe(false)
   })

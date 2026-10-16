@@ -1,4 +1,4 @@
-import { expect, type Locator, type Page } from '@playwright/test'
+import { expect, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 
 /**
  * Navigate to one of our own pages and wait for first hydration (the
@@ -87,4 +87,87 @@ export async function toggleToSignUp(page: Page): Promise<void> {
     }
     await expect(create).toBeVisible()
   }).toPass()
+}
+
+/** Password every self-registered e2e user signs up with. */
+export const E2E_PASSWORD = 'e2e-test-password-1'
+
+/**
+ * Sign a fresh user up through Better Auth's email+password route,
+ * stamp them verified (the example's dev-only route — the plugin
+ * provisions verified identities only), and return the Payload user id
+ * plus the Better Auth user id (what BA's admin endpoints take).
+ */
+export async function signUpVerified(
+  request: APIRequestContext,
+  email: string
+): Promise<{ userId: string; providerUserId: string }> {
+  const signup = await request.post('/api/auth/sign-up/email', {
+    data: { name: email, email, password: E2E_PASSWORD },
+  })
+  expect(signup.ok(), `sign-up ${email}: ${String(signup.status())}`).toBe(true)
+  const created = (await signup.json()) as { user?: { id?: unknown } }
+  const providerUserId = created.user?.id
+  if (typeof providerUserId !== 'string') {
+    throw new Error(`sign-up for ${email} returned no provider user id`)
+  }
+  const stamped = await request.post('/api/dev-auto-verify', { data: { email } })
+  expect(stamped.ok()).toBe(true)
+  const session = await request.get('/api/auth-link/session')
+  expect(session.ok()).toBe(true)
+  const body = (await session.json()) as { user: { id: string | number; email: string } }
+  expect(body.user.email).toBe(email)
+  return { userId: String(body.user.id), providerUserId }
+}
+
+export type FetchResult = { status: number; body: unknown }
+
+/**
+ * `fetch` from inside the page: the browser attaches its own cookies,
+ * stamps a same-origin `Origin`, and applies every `Set-Cookie` the
+ * response sends (deletions included — WebKit's `page.request` can
+ * keep a cookie a response expires). The page must already be on the
+ * app's origin.
+ */
+export async function pageFetch(
+  page: Page,
+  method: string,
+  path: string,
+  body?: unknown
+): Promise<FetchResult> {
+  return page.evaluate(
+    async ({ method, path, body }) => {
+      const response = await fetch(path, {
+        method,
+        credentials: 'same-origin',
+        headers: {
+          'x-auth-link-csrf': '1',
+          ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      })
+      let parsed: unknown
+      try {
+        parsed = await response.json()
+      } catch {
+        parsed = null
+      }
+      return { status: response.status, body: parsed }
+    },
+    { method, path, body }
+  )
+}
+
+/**
+ * Set a user's Payload roles as the seeded admin (role manager), from
+ * the shared run-level admin session (`admin-session.ts`) — never a
+ * fresh admin login, which would race other specs' sessions.
+ */
+export async function setRolesAsAdmin(
+  adminPage: Page,
+  userId: string,
+  roles: readonly string[]
+): Promise<void> {
+  const patched = await pageFetch(adminPage, 'PATCH', `/api/users/${userId}`, { roles })
+  expect(patched.status, `set roles ${roles.join(',')}: ${JSON.stringify(patched.body)}`).toBe(200)
 }

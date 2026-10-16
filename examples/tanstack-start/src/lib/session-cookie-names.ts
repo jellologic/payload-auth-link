@@ -1,6 +1,6 @@
 import { getAuthJsSessionCookieNames } from '@payload-auth-link/provider-authjs/cookies'
 import { getBetterAuthSessionCookieNames } from '@payload-auth-link/provider-better-auth/cookies'
-import { exampleBaseURL } from './auth-base-url'
+import { exampleBaseURL, legacySessionWindow } from './auth-base-url'
 
 /**
  * Session cookie names for the request middleware. Computed from the
@@ -10,5 +10,8 @@ import { exampleBaseURL } from './auth-base-url'
  */
 export const sessionCookieNames: readonly string[] = [
   ...getBetterAuthSessionCookieNames({ baseURL: exampleBaseURL }),
+  // Legacy names count as "signed in" for routing inside the window;
+  // the session lookup decides whether they still verify.
+  ...legacySessionWindow.cookieNames,
   ...getAuthJsSessionCookieNames({ baseURL: exampleBaseURL }),
 ]

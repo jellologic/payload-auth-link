@@ -255,7 +255,12 @@ describe('deleteUser cascade', () => {
     await expect(adapter.listAuthenticatorsByUserId?.(user.id)).resolves.toEqual([])
 
     for (const slug of Object.values(defaultAuthJsSlugs)) {
-      const remaining = await payload.find({ collection: slug, where: {}, limit: 100 })
+      const remaining = await payload.find({
+        overrideAccess: true,
+        collection: slug,
+        where: {},
+        limit: 100,
+      })
       const leaked = remaining.docs.filter((doc: unknown) => {
         if (typeof doc !== 'object' || doc === null) {
           return false

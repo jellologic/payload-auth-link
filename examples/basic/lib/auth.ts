@@ -2,9 +2,9 @@ import { createBetterAuthEngine } from '@payload-auth-link/provider-better-auth'
 import { apiKey } from '@better-auth/api-key'
 import { passkey } from '@better-auth/passkey'
 import { nextCookies } from 'better-auth/next-js'
-import { anonymous, emailOTP, magicLink, twoFactor } from 'better-auth/plugins'
+import { admin, anonymous, emailOTP, magicLink, twoFactor } from 'better-auth/plugins'
 import { getPayload, type Payload } from 'payload'
-import { exampleBaseURL } from './auth-cookie-names'
+import { exampleBaseURL, legacySessionWindow } from './auth-cookie-names'
 import { recordDevMail } from './dev-mailbox'
 
 const baseURL = exampleBaseURL
@@ -25,13 +25,25 @@ export function loadPayload(): Promise<Payload> {
 export const engine = createBetterAuthEngine({
   getPayload: loadPayload,
   // Plugin-owned user fields the adapter must serve (CAP-10's
-  // anonymous marker). Declared here, generated into ba-users.
+  // anonymous marker, CAP-8's admin plugin). Declared here, generated
+  // into ba-users / ba-sessions.
   customFields: {
     user: [
       { name: 'isAnonymous', type: 'boolean' },
       { name: 'twoFactorEnabled', type: 'boolean' },
+      // Better Auth `admin()` (impersonation, CAP-8): the provider-side
+      // operator role and ban state. Provider-native — Payload roles
+      // stay the authority for Payload access.
+      { name: 'role', type: 'text' },
+      { name: 'banned', type: 'boolean' },
+      { name: 'banReason', type: 'text' },
+      { name: 'banExpires', type: 'date' },
     ],
+    // `admin()` marks impersonated sessions with the operator's id.
+    session: [{ name: 'impersonatedBy', type: 'text' }],
   },
+  // Coexistence with legacy payload-auth session cookies (issue #51).
+  legacySessions: legacySessionWindow,
   // Derived declarations (issue #17): the plugin models (twoFactor,
   // passkey, ...) and their fields come from Better Auth's own
   // getAuthTables output, so a BA schema bump cannot drift from the
@@ -67,6 +79,11 @@ export const engine = createBetterAuthEngine({
         origin: baseURL,
       }),
       apiKey({ defaultPrefix: 'bock_', enableMetadata: true, enableSessionForAPIKeys: true }),
+      // Impersonation (CAP-8): Better Auth operators (BA `role:
+      // 'admin'`) can impersonate users. The plugin sees the actor and
+      // denies the admin panel, role writes, and organization writes
+      // while impersonating.
+      admin(),
       // Cookie integration goes LAST so plugin-set cookies forward.
       nextCookies(),
     ],
@@ -87,10 +104,10 @@ export const engine = createBetterAuthEngine({
     rateLimit: {
       enabled: true,
       window: 60,
-      max: 1000,
+      max: 5000,
       customRules: {
-        '/sign-up/email': { window: 60, max: 100 },
-        '/sign-in/email': { window: 60, max: 100 },
+        '/sign-up/email': { window: 60, max: 1000 },
+        '/sign-in/email': { window: 60, max: 1000 },
         // Verify/send routes are attempt-capped per IP (CAP-18): OTP
         // guesses and link requests are the brute-force surface.
         // Generous here (shared-IP dev); production tunes these down

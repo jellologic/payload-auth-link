@@ -45,6 +45,15 @@ const guides = [
   ['docs/compatibility.md', 'Validated versions, databases, runtimes, ESM-only policy.'],
   ['docs/troubleshooting.md', 'Observed failure modes and fixes.'],
   ['docs/upgrading.md', 'Versioning policy and migration notes.'],
+  [
+    'docs/stability.md',
+    'Post-1.0 public contract, semver per surface, deprecation and security-fix policy.',
+  ],
+  ['docs/audit.md', 'Audit events, onAudit delivery semantics, durable audit-log sink recipe.'],
+  [
+    'docs/rate-limiting.md',
+    'Every auth endpoint family with limits, Better Auth limiter, middleware examples.',
+  ],
   ['docs/MISSION.md', 'Why the project exists; provider roadmap; non-goals.'],
   ['docs/DNA.md', 'Engineering constitution: architecture, guardrails, testing, security.'],
   ['docs/PLAN.md', 'Implementation plan with phase evidence.'],

@@ -78,6 +78,7 @@ describe('role-config change between boots (B11)', () => {
     const bootA = await boot('roles-config-a', rawOptions(['admin', 'editor'], bootALogger))
     await bootA.create({
       collection: 'users',
+      overrideAccess: true,
       data: {
         email: 'editor-only@test.dev',
         password: 'correct-horse-battery',
@@ -88,6 +89,7 @@ describe('role-config change between boots (B11)', () => {
     })
     await bootA.create({
       collection: 'users',
+      overrideAccess: true,
       data: {
         email: 'admin-editor@test.dev',
         password: 'correct-horse-battery',

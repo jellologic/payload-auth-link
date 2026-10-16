@@ -22,37 +22,94 @@ permissions:
   contents: read
 
 jobs:
+  # Every band x {floor, latest} x every Node `engines` allows (20, 22,
+  # 24), minus the cells whose upstream's own engines exclude that Node.
+  # "latest" is latest-IN-BAND (`latest:<range>`, resolved by
+  # compat-install.mjs), never a dist-tag: a dist-tag that has moved past
+  # the band is the canary's job, not a matrix cell. The ranges below
+  # mirror the runtime `supported*Band` constants and manifest ranges —
+  # change all three together. An exact pin (payload 4.0.0-beta.0) is
+  # its own floor and latest: one cell.
+  #
+  # Browsers are not a compat axis: the SQLite e2e suites run Chromium,
+  # Firefox, and WebKit on every PR (ci.yml `e2e`, `e2e-tanstack`).
   matrix:
-    name: ${{ matrix.name }}
+    name: ${{ matrix.cell }} / node ${{ matrix.node }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
+        node: [20, 22, 24]
+        cell:
+          - payload-3-floor
+          - payload-3-latest
+          - payload-4-beta
+          - better-auth-floor
+          - better-auth-latest
+          - authjs-floor
+          - authjs-latest
+          - next-15-floor
+          - next-15-latest
+          - next-16-floor
+          - next-16-latest
+          - tanstack-start-floor
+          - tanstack-start-latest
+          - tanstack-router-floor
+          - tanstack-router-latest
         include:
-          - { name: payload-floor, axis: payload, version: '3.83.0' }
-          - { name: payload-latest, axis: payload, version: latest }
-          - { name: ba-floor, axis: better-auth, version: '1.7.6' }
-          - { name: ba-latest, axis: better-auth, version: latest }
-          - { name: authjs-floor, axis: '@auth/core', version: '0.41.0' }
-          - { name: authjs-latest, axis: '@auth/core', version: latest }
-          - { name: tanstack-floor, axis: '@tanstack/react-start', version: '1.140.2' }
-          - { name: next-floor, axis: next, version: '15.0.0' }
+          # payload: supportedPayloadBand = [3.83.0, 4.0.0) + exact 4.0.0-beta.0
+          - { cell: payload-3-floor, axis: payload, version: '3.83.0' }
+          - { cell: payload-3-latest, axis: payload, version: 'latest:>=3.83.0 <4.0.0' }
+          - { cell: payload-4-beta, axis: payload, version: '4.0.0-beta.0' }
+          # better-auth: supportedBetterAuthBand = [1.7.6, 1.8.0)
+          - { cell: better-auth-floor, axis: better-auth, version: '1.7.6' }
+          - { cell: better-auth-latest, axis: better-auth, version: 'latest:>=1.7.6 <1.8.0' }
+          # @auth/core: supportedAuthJsBand = [0.41.0, 0.42.0)
+          - { cell: authjs-floor, axis: '@auth/core', version: '0.41.0' }
+          - { cell: authjs-latest, axis: '@auth/core', version: 'latest:>=0.41.0 <0.42.0' }
+          # next: ^15.0.0 || ^16.0.0 (packages/next peer) — both majors
+          - { cell: next-15-floor, axis: next, version: '15.0.0' }
+          - { cell: next-15-latest, axis: next, version: 'latest:>=15.0.0 <16.0.0' }
+          - { cell: next-16-floor, axis: next, version: '16.0.0' }
+          - { cell: next-16-latest, axis: next, version: 'latest:>=16.0.0 <17.0.0' }
+          # @tanstack/react-start ^1.140.2, @tanstack/react-router ^1.170.0
+          # (packages/tanstack-start peers)
+          - { cell: tanstack-start-floor, axis: '@tanstack/react-start', version: '1.140.2' }
+          - {
+              cell: tanstack-start-latest,
+              axis: '@tanstack/react-start',
+              version: 'latest:>=1.140.2 <2.0.0',
+            }
+          - { cell: tanstack-router-floor, axis: '@tanstack/react-router', version: '1.170.0' }
+          - {
+              cell: tanstack-router-latest,
+              axis: '@tanstack/react-router',
+              version: 'latest:>=1.170.0 <2.0.0',
+            }
+        exclude:
+          # payload 4.0.0-beta.0 declares engines node >=24.15.0.
+          - { cell: payload-4-beta, node: 20 }
+          - { cell: payload-4-beta, node: 22 }
+          # @tanstack/react-start (1.140.2 onward) declares node >=22.12.0.
+          - { cell: tanstack-start-floor, node: 20 }
+          - { cell: tanstack-start-latest, node: 20 }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.2
-      - name: Resolve latest upstream version
-        if: matrix.version == 'latest'
-        run: echo "RESOLVED=$(npm view '${{ matrix.axis }}' version)" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node }}
       - name: Pin ${{ matrix.axis }} @ ${{ matrix.version }}
-        run: bun scripts/compat-install.mjs '${{ matrix.axis }}' '${{ matrix.version == 'latest' && env.RESOLVED || matrix.version }}'
+        run: bun scripts/compat-install.mjs '${{ matrix.axis }}' '${{ matrix.version }}'
       - name: Install (ranges untouched, pins moved)
         run: bun install
       - name: Build (typecheck = tsc -b)
         run: bun run build
+      # Under the matrix Node, not Bun's runtime (see ci.yml test-node).
       - name: Unit + schema-probe suites
-        run: bun run test
+        run: node node_modules/vitest/vitest.mjs run
 
   # Golden-DB upgrade tests (Phase 0/2) against every SQL/no-SQL
   # adapter, so the seeded-0.1.1 upgrade path can never rot silently

@@ -27,8 +27,10 @@ function capturingLogger(): {
 function stubPayload(overrides: {
   find?: (args: unknown) => Promise<unknown>
   findByID?: (args: unknown) => Promise<unknown>
+  defaultIDType?: 'number' | 'text'
 }): Payload {
   return {
+    db: { defaultIDType: overrides.defaultIDType ?? 'text' },
     find: overrides.find ?? (() => Promise.resolve({ docs: [] })),
     findByID: overrides.findByID ?? (() => Promise.resolve(null)),
   } as unknown as Payload
@@ -333,19 +335,16 @@ describe('reqUser: document (issue #57)', () => {
       providers: [stub.provider],
       logger: nullLogger(),
     })
-    const req = { context: {} } as unknown as Parameters<
-      ReturnType<typeof createAuthLinkStrategy>['authenticate']
-    >[0]['req']
+    // Payload 3.83's strategy args do not declare `req` (later 3.x and
+    // v4 do): build the args as a variable, typed by PayloadRequest.
+    const req = { context: {} } as unknown as import('payload').PayloadRequest
     await authenticateWired(wired, new Headers({ cookie }), payload)
     const strategy = createAuthLinkStrategy(wired)
-    await strategy.authenticate({
-      headers: new Headers({ cookie }),
-      payload,
-      req: req as NonNullable<typeof req>,
-    })
+    const args = { headers: new Headers({ cookie }), payload, req }
+    await strategy.authenticate(args)
     // The document is memoized on the request context, so the endpoint
     // handlers share the exact object the strategy resolved.
-    const memo = (req?.context ?? {}) as Record<string, unknown>
+    const memo = req.context as Record<string, unknown>
     expect(memo['payloadAuthLink:reqUserDocument']).toBeDefined()
   })
 })
@@ -484,4 +483,34 @@ it('keeps the MFA marker on the document when roles were withheld', async () => 
   expect(user?.roles).toEqual([])
   expect(user?.mfaRequired).toBe(true)
   expect(user?.activeOrganization).toBe('org-6')
+})
+
+describe('req.user id type', () => {
+  it.each([
+    ['number', 7],
+    ['text', '7'],
+  ] as const)('carries the %s id type of the database', async (defaultIDType, expected) => {
+    const stub = createStubProvider()
+    const cookie = stub.issue({
+      sessionId: `id-${defaultIDType}`,
+      providerUserId: 'stub-1',
+      email: 'linked@test.dev',
+      expiresAt: new Date(Date.now() + 3_600_000),
+    })
+    const doc = { ...linkedDoc, id: 7 }
+    const payload = stubPayload({
+      defaultIDType,
+      find: () => Promise.resolve({ docs: [doc], totalDocs: 1 }),
+      findByID: () => Promise.resolve(doc),
+    })
+    const wired = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['admin', 'user'],
+      defaultRole: 'user',
+      providers: [stub.provider],
+      logger: nullLogger(),
+    })
+    const result = await authenticateWired(wired, new Headers({ cookie }), payload)
+    expect((result.user as { id?: unknown } | null)?.id).toBe(expected)
+  })
 })

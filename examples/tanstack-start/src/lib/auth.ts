@@ -1,10 +1,10 @@
 import { createBetterAuthEngine } from '@payload-auth-link/provider-better-auth'
 import { apiKey } from '@better-auth/api-key'
 import { passkey } from '@better-auth/passkey'
-import { anonymous, emailOTP, magicLink, twoFactor } from 'better-auth/plugins'
+import { admin, anonymous, emailOTP, magicLink, twoFactor } from 'better-auth/plugins'
 import { tanstackStartCookies } from 'better-auth/tanstack-start'
 import { getPayload, type Payload } from 'payload'
-import { exampleBaseURL } from './auth-base-url'
+import { exampleBaseURL, legacySessionWindow } from './auth-base-url'
 import { recordDevMail } from './dev-mailbox.js'
 
 const baseURL = exampleBaseURL
@@ -28,8 +28,19 @@ export const engine = createBetterAuthEngine({
     user: [
       { name: 'isAnonymous', type: 'boolean' },
       { name: 'twoFactorEnabled', type: 'boolean' },
+      // Better Auth `admin()` (impersonation, CAP-8): the provider-side
+      // operator role and ban state. Provider-native — Payload roles
+      // stay the authority for Payload access.
+      { name: 'role', type: 'text' },
+      { name: 'banned', type: 'boolean' },
+      { name: 'banReason', type: 'text' },
+      { name: 'banExpires', type: 'date' },
     ],
+    // `admin()` marks impersonated sessions with the operator's id.
+    session: [{ name: 'impersonatedBy', type: 'text' }],
   },
+  // Coexistence with legacy payload-auth session cookies (issue #51).
+  legacySessions: legacySessionWindow,
   // Plugin-owned models (CAP-5/6); see the Next example's notes.
   customModels: [
     {
@@ -117,6 +128,11 @@ export const engine = createBetterAuthEngine({
         rpName: 'payload-auth-link example',
         origin: baseURL,
       }),
+      // Impersonation (CAP-8): Better Auth operators (BA `role:
+      // 'admin'`) can impersonate users. The plugin sees the actor and
+      // denies the admin panel, role writes, and organization writes
+      // while impersonating.
+      admin(),
       tanstackStartCookies(),
     ],
     emailAndPassword: {
@@ -136,10 +152,10 @@ export const engine = createBetterAuthEngine({
     rateLimit: {
       enabled: true,
       window: 60,
-      max: 1000,
+      max: 5000,
       customRules: {
-        '/sign-up/email': { window: 60, max: 100 },
-        '/sign-in/email': { window: 60, max: 100 },
+        '/sign-up/email': { window: 60, max: 1000 },
+        '/sign-in/email': { window: 60, max: 1000 },
         // Attempt caps on the passwordless routes (CAP-18).
         '/sign-in/magic-link': { window: 60, max: 30 },
         '/email-otp/send-verification-otp': { window: 60, max: 30 },

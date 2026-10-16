@@ -131,10 +131,12 @@ beforeAll(async () => {
   })
   payload = await getPayload({ config })
   await payload.create({
+    overrideAccess: true,
     collection: 'users',
     data: { email: 'admin@test.dev', password: 'correct-horse-battery', roles: ['admin'] },
   })
   await payload.create({
+    overrideAccess: true,
     collection: 'users',
     data: {
       email: 'plain@test.dev',
@@ -163,6 +165,7 @@ beforeAll(async () => {
   // provider-owned default refuses local credentials only for
   // provider-linked documents).
   await payload.create({
+    overrideAccess: true,
     collection: 'users',
     data: {
       email: 'operator@test.dev',
@@ -175,6 +178,7 @@ beforeAll(async () => {
   // Simulates a document created outside the plugin (pre-upgrade row,
   // or an attacker before the fix): no linkable marker.
   await payload.create({
+    overrideAccess: true,
     collection: 'users',
     data: {
       email: 'unproven@test.dev',
