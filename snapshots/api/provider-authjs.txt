@@ -83,6 +83,14 @@ export type AuthLinkTrustOptions = {
  * the port contract. A builder jwt callback returning `null` (forced
  * logout) is respected as-is.
  *
+ * The session response is built from an allowlist, never by spreading
+ * what Auth.js passes in: without a builder `session` callback it is
+ * `{ user: { name, email, image, id, emailVerified }, expires }` (the
+ * Auth.js default shape plus the port's two claims); with one, the
+ * builder's result is kept except for the adapter session row fields
+ * `sessionToken`, `userId` and `id`, which are always removed. Either
+ * way `user.id` and `user.emailVerified` come from the claims layer.
+ *
  * Spike findings encoded here: the jwt callback re-runs on every session
  * read WITHOUT `user` (the token re-encodes), so claims are stuffed only
  * when `user` is present — otherwise the re-encoded token loses them.
