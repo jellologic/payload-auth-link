@@ -9,6 +9,7 @@ import {
 import { getPayload, type Payload } from 'payload'
 import { exampleBaseURL } from './auth-cookie-names'
 import { recordDevMail } from './dev-mailbox'
+import { idpAuthJsProviders, mockIdpOrigin, mockSsoProviderId } from './e2e-idp'
 
 let cachedPayload: Promise<Payload> | undefined
 
@@ -26,6 +27,9 @@ const credentials = createAuthJsCredentials({ getPayload: loadPayload })
 export const authJsEngine = createAuthJsEngine({
   getPayload: loadPayload,
   baseURL: exampleBaseURL,
+  // E2E variant only (`E2E_MOCK_IDP`): the mock SSO connection asserts
+  // `email_verified`, so its claim may stamp (D6).
+  trustProviderEmailVerification: mockIdpOrigin === null ? [] : [mockSsoProviderId],
   options: {
     secret: process.env.PAYLOAD_SECRET ?? 'local-dev-only-secret-32-chars-min!',
     // Credentials REQUIRES the jwt strategy: Auth.js rejects
@@ -57,6 +61,9 @@ export const authJsEngine = createAuthJsEngine({
         },
         authorize: (candidate) => credentials.authorize(candidate),
       }),
+      // E2E variant only (`E2E_MOCK_IDP`, see lib/e2e-idp.ts): OIDC
+      // SSO and the One Tap recipe. Empty otherwise.
+      ...idpAuthJsProviders(loadPayload),
     ],
   },
 })

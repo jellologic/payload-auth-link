@@ -8,6 +8,7 @@ import { buildConfig } from 'payload'
 import { betterAuthCollections, betterAuthProvider } from './lib/auth'
 import { legacySessionWindow } from './lib/auth-cookie-names'
 import { authJsCollections, authJsProvider } from './lib/authjs'
+import { mappedRoleValues, memosCollection, mockIdpOrigin } from './lib/e2e-idp'
 
 const filename = fileURLToPath(import.meta.url)
 const dirname = path.dirname(filename)
@@ -22,6 +23,23 @@ const baseUrl = process.env.EXAMPLE_BASE_URL ?? 'http://localhost:3100'
 // the very role that grants roles. It runs on its own SQLite file so
 // the extra role never reaches the default example database.
 const mfaPolicy = process.env.E2E_MFA_POLICY === '1'
+
+// External-IdP variant (`E2E_MOCK_IDP=<mock origin>`,
+// e2e/playwright.idp.config.ts; see lib/e2e-idp.ts): social OAuth, One
+// Tap, phone, and multi-session against a local mock IdP, plus the
+// options that change stored data — `roleValues` (`editor` stored as
+// `contentEditor`), `reqUser: 'document'` with a host `department`
+// field read by the `memos` collection's access, and Auth.js as the
+// enterprise-SSO provider (`organizations.ssoProviders`). Own SQLite
+// file, so none of it reaches the default example database.
+const idpVariant = mockIdpOrigin !== null
+
+function sqliteFile(): string {
+  if (mfaPolicy) {
+    return 'payload-mfa.db'
+  }
+  return idpVariant ? 'payload-idp.db' : 'payload.db'
+}
 
 // Parity runs point PAYLOAD_DB elsewhere; default local dev stays on
 // the SQLite file. Postgres uses `push` (no migration files in the
@@ -53,7 +71,7 @@ function exampleDb() {
   }
   return sqliteAdapter({
     client: {
-      url: `file:${path.resolve(dirname, mfaPolicy ? 'payload-mfa.db' : 'payload.db')}`,
+      url: `file:${path.resolve(dirname, sqliteFile())}`,
     },
   })
 }
@@ -68,19 +86,26 @@ export default buildConfig({
     {
       slug: 'users',
       auth: true,
-      fields: [],
+      // Host field the plugin's session projection never carries.
+      fields: idpVariant ? [{ name: 'department', type: 'text' }] : [],
     },
     {
       slug: 'pages',
       fields: [{ name: 'title', type: 'text', required: true }],
     },
+    ...(idpVariant ? [memosCollection] : []),
     ...betterAuthCollections,
     ...authJsCollections,
   ],
   plugins: [
     authLink({
       baseUrl,
-      roles: mfaPolicy ? ['admin', 'user', 'auditor'] : ['admin', 'user'],
+      roles: mfaPolicy
+        ? ['admin', 'user', 'auditor']
+        : idpVariant
+          ? ['admin', 'user', 'editor']
+          : ['admin', 'user'],
+      ...(idpVariant ? { roleValues: mappedRoleValues, reqUser: 'document' as const } : {}),
       defaultRole: 'user',
       // #55/#72: /admin/login through the provider (plus the
       // break-glass local form for unlinked operators).
@@ -95,7 +120,10 @@ export default buildConfig({
       // CAP-11: Payload-owned organizations + memberships, with the
       // list/create/invite/accept endpoints under
       // /api/auth-link/organizations*.
-      organizations: { enabled: true },
+      // The external-IdP variant makes Auth.js the enterprise-SSO
+      // provider (CAP-15): its sessions link only on an email domain an
+      // organization has verified.
+      organizations: idpVariant ? { enabled: true, ssoProviders: ['authjs'] } : { enabled: true },
       // Asserts the engine's coexistence window (issue #51/#72): wiring
       // throws if the two ever disagree.
       legacySessions: legacySessionWindow,

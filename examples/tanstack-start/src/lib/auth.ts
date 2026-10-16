@@ -6,6 +6,7 @@ import { tanstackStartCookies } from 'better-auth/tanstack-start'
 import { getPayload, type Payload } from 'payload'
 import { exampleBaseURL, legacySessionWindow } from './auth-base-url'
 import { recordDevMail } from './dev-mailbox.js'
+import { idpBetterAuthPlugins, idpBetterAuthUserFields } from './e2e-idp.js'
 
 const baseURL = exampleBaseURL
 
@@ -35,6 +36,9 @@ export const engine = createBetterAuthEngine({
       { name: 'banned', type: 'boolean' },
       { name: 'banReason', type: 'text' },
       { name: 'banExpires', type: 'date' },
+      // E2E variant only (`E2E_MOCK_IDP`): the phoneNumber plugin's
+      // fields. Empty otherwise.
+      ...idpBetterAuthUserFields,
     ],
     // `admin()` marks impersonated sessions with the operator's id.
     session: [{ name: 'impersonatedBy', type: 'text' }],
@@ -133,6 +137,9 @@ export const engine = createBetterAuthEngine({
       // denies the admin panel, role writes, and organization writes
       // while impersonating.
       admin(),
+      // E2E variant only (`E2E_MOCK_IDP`, see lib/e2e-idp.ts): generic
+      // OIDC, One Tap, phone, multi-session. Empty otherwise.
+      ...idpBetterAuthPlugins(),
       tanstackStartCookies(),
     ],
     emailAndPassword: {
