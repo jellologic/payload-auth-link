@@ -53,9 +53,9 @@
     "@better-auth/passkey": "^1.7.7",
     "@payload-auth-link/plugin": "workspace:*",
     "@payload-auth-link/web": "workspace:*",
-    "@payloadcms/db-sqlite": "3.90.2",
+    "@payloadcms/db-sqlite": "4.0.0-internal.9726517",
     "better-auth": "1.7.7",
-    "payload": "3.90.2"
+    "payload": "4.0.0-internal.9726517"
   },
   "publishConfig": {
     "access": "public",

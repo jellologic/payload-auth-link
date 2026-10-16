@@ -51,12 +51,12 @@
   "devDependencies": {
     "@payload-auth-link/plugin": "workspace:*",
     "@payload-auth-link/web": "workspace:*",
-    "@payloadcms/db-mongodb": "3.90.2",
-    "@payloadcms/db-postgres": "3.90.2",
-    "@payloadcms/db-sqlite": "3.90.2",
+    "@payloadcms/db-mongodb": "4.0.0-internal.9726517",
+    "@payloadcms/db-postgres": "4.0.0-internal.9726517",
+    "@payloadcms/db-sqlite": "4.0.0-internal.9726517",
     "mongodb": "^6.0.0",
     "mongodb-memory-server": "^11.3.0",
-    "payload": "3.90.2"
+    "payload": "4.0.0-internal.9726517"
   },
   "publishConfig": {
     "access": "public",

@@ -55,12 +55,12 @@
     }
   },
   "devDependencies": {
-    "@payloadcms/db-postgres": "3.90.2",
-    "@payloadcms/db-sqlite": "3.90.2",
+    "@payloadcms/db-postgres": "4.0.0-internal.9726517",
+    "@payloadcms/db-sqlite": "4.0.0-internal.9726517",
     "@payloadcms/graphql": "3.90.2",
-    "@payloadcms/ui": "3.90.2",
+    "@payloadcms/ui": "4.0.0-internal.9726517",
     "graphql": "16.14.2",
-    "payload": "3.90.2",
+    "payload": "4.0.0-internal.9726517",
     "react": "19.3.0"
   },
   "publishConfig": {
