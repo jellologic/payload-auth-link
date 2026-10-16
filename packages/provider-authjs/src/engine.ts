@@ -439,6 +439,20 @@ export function createAuthJsEngine(input: AuthJsEngineInput): AuthJsEngine {
     },
     revokeSession: async (sessionId) => {
       if (strategy === 'database') {
+        // The adapter's deleteSession is a silent no-op for an unknown
+        // token; revoking nothing must not read as revoked (and must not
+        // end the server API's walk over the registered providers).
+        const payload = await input.getPayload()
+        const found = await payload.count({
+          collection: slugs.session,
+          where: { sessionToken: { equals: sessionId } },
+          overrideAccess: true,
+        })
+        if (found.totalDocs === 0) {
+          throw new AdapterOperationError('revokeSession', {
+            cause: new Error('no session matches the handle'),
+          })
+        }
         await adapter.deleteSession?.(sessionId)
       }
       // JWT sessions are stateless: nothing server-side to revoke. The
