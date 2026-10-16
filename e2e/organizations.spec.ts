@@ -5,10 +5,8 @@ import {
   type APIResponse,
   type Browser,
   type BrowserContext,
-  type Page,
 } from '@playwright/test'
-import { adminContext } from './admin-session.js'
-import { gotoSettled, pageFetch, signUpVerified } from './helpers.js'
+import { signUpVerified } from './helpers.js'
 
 /**
  * Payload-owned organizations (CAP-11), wired in both examples with
@@ -22,20 +20,7 @@ import { gotoSettled, pageFetch, signUpVerified } from './helpers.js'
  * HTTP-visible on every example and adapter. Plugin endpoints carry
  * the CSRF header; collection writes carry a same-origin `Origin`
  * (what the admin UI and any browser fetch send).
- *
- * Known product gap on Payload v4 (the TanStack Start example): v4 adds
- * `createdBy`/`updatedBy` relationships to every collection, filled
- * from `req.user`, and the plugin strategy projects `req.user.id` as a
- * string — so on numeric-id adapters (SQLite, Postgres) any create by
- * a provider-session user, the plugin's organization endpoint
- * included, fails validation (400). The endpoint test is `fixme` on
- * v4; the lifecycle test seeds its organizations as the seeded admin
- * there (a local Payload user, numeric id) and covers everything
- * after creation on both lines. Re-enable once the projection keeps
- * the adapter's id type.
  */
-
-const payloadV4 = (): boolean => test.info().config.metadata['payloadMajor'] === 4
 
 type Member = {
   readonly context: BrowserContext
@@ -102,44 +87,6 @@ async function createOrg(member: Member, name: string): Promise<string> {
   return body.organization.id
 }
 
-/** Relationship ids keep the adapter's type: numbers on SQL, strings on Mongo. */
-function relationId(id: string): string | number {
-  return /^\d+$/.test(id) ? Number(id) : id
-}
-
-/**
- * Payload v4 path (see the header): the seeded admin creates the
- * organization over REST (becoming its owner), hands ownership to
- * `member`, then leaves — the same end state as {@link createOrg}.
- */
-async function seedOrg(adminPage: Page, member: Member, name: string): Promise<string> {
-  const created = await pageFetch(adminPage, 'POST', '/api/organizations', {
-    name,
-    slug: slugFor(name),
-  })
-  expect(created.status, JSON.stringify(created.body)).toBe(201)
-  const orgId = String((created.body as { doc: { id: string | number } }).doc.id)
-  const owner = await pageFetch(adminPage, 'POST', '/api/memberships', {
-    organization: relationId(orgId),
-    user: relationId(member.userId),
-    role: 'owner',
-    status: 'active',
-  })
-  expect(owner.status, JSON.stringify(owner.body)).toBe(201)
-  const rows = await pageFetch(
-    adminPage,
-    'GET',
-    `/api/memberships?depth=0&where[organization][equals]=${orgId}`
-  )
-  for (const row of (rows.body as MembershipDocs).docs) {
-    if (String(row.user) !== member.userId) {
-      const left = await pageFetch(adminPage, 'DELETE', `/api/memberships/${String(row.id)}`)
-      expect(left.status, JSON.stringify(left.body)).toBe(200)
-    }
-  }
-  return orgId
-}
-
 async function ownMembershipId(member: Member, organizationId: string): Promise<string> {
   const list = await member.api.get(
     `/api/memberships?depth=0&where[user][equals]=${member.userId}&where[organization][equals]=${organizationId}`
@@ -155,10 +102,6 @@ async function ownMembershipId(member: Member, organizationId: string): Promise<
 test('the plugin endpoint creates an organization owned by its creator (CSRF-guarded)', async ({
   browser,
 }) => {
-  test.fixme(
-    payloadV4(),
-    'Payload v4: provider-session creates fail createdBy validation (string req.user.id)'
-  )
   const creator = await newMember(browser, uniqueEmail('creator'))
   try {
     const orgId = await createOrg(creator, 'Acme')
@@ -183,13 +126,9 @@ test('organization lifecycle: invite, accept, scoped reads, governance, delete',
 }) => {
   const owner = await newMember(browser, uniqueEmail('owner'))
   const outsider = await newMember(browser, uniqueEmail('outsider'))
-  const admin = await adminContext(browser, origin())
-  const contexts: BrowserContext[] = [owner.context, outsider.context, admin]
+  const contexts: BrowserContext[] = [owner.context, outsider.context]
   try {
-    const adminPage = await admin.newPage()
-    await gotoSettled(adminPage, '/admin')
-    const newOrg = (member: Member, name: string): Promise<string> =>
-      payloadV4() ? seedOrg(adminPage, member, name) : createOrg(member, name)
+    const newOrg = (member: Member, name: string): Promise<string> => createOrg(member, name)
 
     const orgId = await newOrg(owner, 'Acme')
     const mine = await json<OrgList>(await owner.api.get('/api/auth-link/organizations'))
