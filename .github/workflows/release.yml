@@ -40,8 +40,9 @@ jobs:
       current: ${{ steps.head.outputs.current }}
       pending: ${{ steps.changesets.outputs.pending }}
     steps:
-      # changesets/action resets to GITHUB_SHA (main's head when this
-      # run was queued). Proceed only when that, the CI-tested SHA, and
+      # changesets/action (v2) switches to the release branch and resets
+      # it to GITHUB_SHA (main's head when this run was queued), and in
+      # its default GitHub-API push mode creates release tags at that SHA. Proceed only when that, the CI-tested SHA, and
       # main's head right now are one commit; otherwise main moved and
       # the newer commit's own CI run will release it.
       - id: head
@@ -88,11 +89,12 @@ jobs:
           bun-version: 1.4.2
       # Versioning needs only the changesets CLI: no install scripts.
       - run: bun install --frozen-lockfile --ignore-scripts
-      - uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+      # v2 pushes the release commit through the GitHub API (signed by
+      # GitHub) and reads the token only from `github-token`.
+      - uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
-          version: bun run version-packages
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          version-script: bun run version-packages
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
   publish:
     needs: gate
@@ -126,8 +128,9 @@ jobs:
       # dependency lifecycle script is needed, so none may run here.
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run build
-      - uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+      # Tags and releases come from the git-tag events scripts/publish.mjs
+      # appends to $CHANGESETS_OUTPUT (the action sets the variable).
+      - uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
-          publish: bun run release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          publish-script: bun run release
+          github-token: ${{ secrets.GITHUB_TOKEN }}

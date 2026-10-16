@@ -47,6 +47,21 @@ trusted publishing with provenance. Verify a version with
 was published through the documented emergency path and is called out
 in its release notes.
 
+## Dependency audit
+
+The published packages' runtime dependencies are only `neverthrow`,
+`zod`, `@standard-schema/spec`, `pg` and `typescript` (plus sibling
+`@payload-auth-link/*` packages); Payload, the providers and the
+frameworks are peers that the host app resolves. `bun audit` on this
+repository also scans the dev and example tree. Its open findings are
+triaged here, and none of them reaches a published package:
+
+| Finding                                                       | Reached through                                               | Status                                                     |
+| ------------------------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------- |
+| `braces` 3.0.3, GHSA-vfj7-8cjw-p6xm                           | `sass` → `chokidar` (Next / `@payloadcms/next` build tooling) | No patched `braces` 3.x; dev-time only                     |
+| `dompurify` 3.4.15, GHSA-p98j-92pf-mc4p / GHSA-6688-9rhm-gjv2 | `@payloadcms/ui` → `monaco-editor` (pins 3.4.15)              | Upstream pin; the `IN_PLACE` mode they need is unused here |
+| `esbuild` ≤ 0.24.2, GHSA-67mh-4wv8-2f99                       | `drizzle-kit` → `@esbuild-kit/*` (`~0.18.20`)                 | Affects `esbuild serve` only, which nothing here runs      |
+
 ## Scope Notes
 
 This project handles authentication sessions, cookies, and identity

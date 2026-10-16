@@ -1554,7 +1554,7 @@ same fail-fast.
 
 | Dependency                               | Validated (floor / installed) | Range (peer unless noted)           | Notes                                                                               |
 | ---------------------------------------- | ----------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------- |
-| `payload`                                | 3.83.0 / 3.90.2               | `^3.83.0 \|\| 4.0.0-beta.0`         | v3 for Next; 3.83 is the named-plugin/global-hook floor; v4 pin is exact            |
+| `payload`                                | 3.83.0 / 3.91.0               | `^3.83.0 \|\| 4.0.0-beta.0`         | v3 for Next; 3.83 is the named-plugin/global-hook floor; v4 pin is exact            |
 | `payload` (Start)                        | 4.0.0-beta.0                  | exact beta pin (example)            | `@payloadcms/tanstack-start` exists only on the v4 line                             |
 | `better-auth`                            | 1.7.6 / 1.7.7                 | `>=1.7.6 <1.8.0`                    | Type-level floor 1.7.6 (`modelKey` types); validated 1.7 line only — lockstep above |
 | `@auth/core`                             | 0.41.0 / 0.41.3               | `>=0.41.0 <0.42.0`                  | Raw core, not the `next-auth` wrapper; 0.x minors add Adapter methods               |
@@ -5725,6 +5725,21 @@ trusted publishing with provenance. Verify a version with
 --expect-provenance` from a checkout. A version without provenance
 was published through the documented emergency path and is called out
 in its release notes.
+
+## Dependency audit
+
+The published packages' runtime dependencies are only `neverthrow`,
+`zod`, `@standard-schema/spec`, `pg` and `typescript` (plus sibling
+`@payload-auth-link/*` packages); Payload, the providers and the
+frameworks are peers that the host app resolves. `bun audit` on this
+repository also scans the dev and example tree. Its open findings are
+triaged here, and none of them reaches a published package:
+
+| Finding                                                       | Reached through                                               | Status                                                     |
+| ------------------------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------- |
+| `braces` 3.0.3, GHSA-vfj7-8cjw-p6xm                           | `sass` → `chokidar` (Next / `@payloadcms/next` build tooling) | No patched `braces` 3.x; dev-time only                     |
+| `dompurify` 3.4.15, GHSA-p98j-92pf-mc4p / GHSA-6688-9rhm-gjv2 | `@payloadcms/ui` → `monaco-editor` (pins 3.4.15)              | Upstream pin; the `IN_PLACE` mode they need is unused here |
+| `esbuild` ≤ 0.24.2, GHSA-67mh-4wv8-2f99                       | `drizzle-kit` → `@esbuild-kit/*` (`~0.18.20`)                 | Affects `esbuild serve` only, which nothing here runs      |
 
 ## Scope Notes
 
