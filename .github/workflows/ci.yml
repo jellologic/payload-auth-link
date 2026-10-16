@@ -73,6 +73,15 @@ jobs:
       - run: bun run build
       - run: bunx tsc --noEmit -p examples/basic
       - run: bunx tsc --noEmit -p examples/tanstack-start
+      # A dev run writes `payload-types.ts` (ignored), which narrows the
+      # Local API's slugs to the generated union: the examples must
+      # type-check (and build) with it too, not only on a clean checkout.
+      - run: bunx payload generate:types
+        working-directory: examples/basic
+      - run: bunx payload generate:types
+        working-directory: examples/tanstack-start
+      - run: bunx tsc --noEmit -p examples/basic
+      - run: bunx tsc --noEmit -p examples/tanstack-start
       - run: bun run --cwd examples/basic build
 
   # Every user-facing PR carries a changeset (see CONTRIBUTING.md);
