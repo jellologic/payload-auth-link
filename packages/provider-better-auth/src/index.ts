@@ -46,6 +46,7 @@ export type { BetterAuthEngine, BetterAuthEngineInput } from './engine.js'
 export {
   AdapterOperationError,
   UnknownModelError,
+  UnsupportedApiKeyOwnerError,
   UnsupportedOperatorError,
   UnsupportedSchemaError,
 } from './errors.js'

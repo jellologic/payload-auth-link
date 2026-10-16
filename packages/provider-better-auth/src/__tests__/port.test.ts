@@ -7,6 +7,7 @@ import {
   isPlaceholderEmail,
   type BetterAuthServerApi,
 } from '../port.js'
+import { UnsupportedApiKeyOwnerError } from '../errors.js'
 
 const cookieNames = ['better-auth.session_token']
 
@@ -574,6 +575,49 @@ describe('createBetterAuthProviderFromUnknown', () => {
       'better-auth.account_data.2',
     ])
     expect(provider.presentedLogoutCookieNames?.(new Headers())).toEqual([])
+  })
+
+  it('gates verifyApiKey on the owner being a BA user (#110)', async () => {
+    const valid = { valid: true, key: { referenceId: 'owner-1', name: 'k' } }
+    const withLookup = (findUserById: ((id: string) => Promise<unknown>) | undefined) =>
+      createBetterAuthProvider({
+        auth: {
+          api: { getSession: () => Promise.resolve(null) },
+          $context: Promise.resolve({
+            internalAdapter: {
+              deleteSession: () => Promise.resolve(),
+              ...(findUserById === undefined ? {} : { findUserById }),
+            },
+          }),
+          verifyApiKey: () => Promise.resolve(valid),
+        },
+        sessionCookieNames: cookieNames,
+      })
+    const user = await withLookup((id) => Promise.resolve({ id })).verifyApiKey?.('k')
+    expect(user?._unsafeUnwrap()?.userId).toBe('owner-1')
+    // An organization id (or a deleted user) resolves no user: refused, typed.
+    const org = await withLookup(() => Promise.resolve(null)).verifyApiKey?.('k')
+    expect(org?._unsafeUnwrapErr()).toBeInstanceOf(UnsupportedApiKeyOwnerError)
+    // No lookup to prove the owner with: refused (fail closed).
+    const blind = await withLookup(undefined).verifyApiKey?.('k')
+    expect(blind?.isErr()).toBe(true)
+    // A failing lookup refuses too.
+    const broken = await withLookup(() => Promise.reject(new Error('db down'))).verifyApiKey?.('k')
+    expect(broken?.isErr()).toBe(true)
+    // An invalid key never reaches the owner lookup.
+    const lookup = vi.fn(() => Promise.resolve({ id: 'x' }))
+    const invalid = createBetterAuthProvider({
+      auth: {
+        api: { getSession: () => Promise.resolve(null) },
+        $context: Promise.resolve({
+          internalAdapter: { deleteSession: () => Promise.resolve(), findUserById: lookup },
+        }),
+        verifyApiKey: () => Promise.resolve({ valid: false, key: null }),
+      },
+      sessionCookieNames: cookieNames,
+    })
+    expect((await invalid.verifyApiKey?.('k'))?._unsafeUnwrap()).toBeNull()
+    expect(lookup).not.toHaveBeenCalled()
   })
 
   it('derives capabilities from installed plugin ids (PORT-2)', () => {

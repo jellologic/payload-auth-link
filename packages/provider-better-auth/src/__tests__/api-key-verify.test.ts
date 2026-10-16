@@ -13,10 +13,12 @@
  */
 import { sqliteAdapter } from '@payloadcms/db-sqlite'
 import { apiKey } from '@better-auth/api-key'
+import { organization } from 'better-auth/plugins/organization'
 import { authLink, authLinkServer } from '@payload-auth-link/plugin'
 import { buildConfig, getPayload, type Payload } from 'payload'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { createBetterAuthEngine } from '../engine.js'
+import { UnsupportedApiKeyOwnerError } from '../errors.js'
 
 const ORIGIN = 'http://api-key-verify.test'
 const SECRET = 'api-key-verify-integration-secret!!'
@@ -38,7 +40,14 @@ const engine = createBetterAuthEngine({
     secret: SECRET,
     emailAndPassword: { enabled: true, requireEmailVerification: false },
     rateLimit: { enabled: false },
-    plugins: [apiKey({ defaultPrefix: 'pal_', enableMetadata: true })],
+    plugins: [
+      organization(),
+      apiKey([
+        { configId: 'default', defaultPrefix: 'pal_', enableMetadata: true },
+        // Organization-owned keys: `referenceId` is an ORGANIZATION id.
+        { configId: 'org', defaultPrefix: 'org_', references: 'organization' },
+      ]),
+    ],
   },
 })
 
@@ -107,6 +116,60 @@ describe('verifyApiKey on @better-auth/api-key 1.7.x (#88)', () => {
     expect(verified?.name).toBe('ci key')
     expect(verified?.prefix).toBe('pal_')
     expect(verified?.metadata).toEqual({ purpose: 'ci' })
+  })
+
+  it('refuses an organization-owned key instead of returning the org id as userId (#110)', async () => {
+    const userId = await signUp('org-key-owner@test.dev')
+    const org = (await engine.auth.api.createOrganization({
+      body: { name: 'Key Org', slug: 'key-org', userId },
+    })) as { id?: unknown } | null
+    const organizationId = typeof org?.id === 'string' ? org.id : ''
+    expect(organizationId).not.toBe('')
+    const created = (await engine.auth.api.createApiKey({
+      body: { configId: 'org', organizationId, userId, name: 'org key' },
+    })) as { key?: unknown; referenceId?: unknown }
+    const key = typeof created.key === 'string' ? created.key : ''
+    expect(key.startsWith('org_')).toBe(true)
+    // The satellite itself accepts the key and names the ORG as owner.
+    expect(created.referenceId).toBe(organizationId)
+
+    const verify = engine.provider.verifyApiKey
+    if (verify === undefined) {
+      throw new Error('the better-auth provider cannot verify API keys')
+    }
+    const verified = await verify(key)
+    expect(verified.isErr()).toBe(true)
+    const error = verified.isErr() ? verified.error : null
+    expect(error).toBeInstanceOf(UnsupportedApiKeyOwnerError)
+    expect((error as UnsupportedApiKeyOwnerError | null)?.referenceId).toBe(organizationId)
+    const thrown = await authLinkServer(payload)
+      .verifyApiKey(key)
+      .then(
+        () => null,
+        (rejection: unknown) => rejection
+      )
+    expect(thrown).toBeInstanceOf(Error)
+    expect((thrown as Error).message).toMatch(/organization-owned/)
+    // The typed refusal survives the server surface as the cause.
+    expect((thrown as Error).cause).toBeInstanceOf(UnsupportedApiKeyOwnerError)
+  })
+
+  it('refuses a key whose owner user no longer exists (#110)', async () => {
+    const userId = await signUp('gone-key-owner@test.dev')
+    const created = (await engine.auth.api.createApiKey({
+      body: { userId, name: 'orphan' },
+    })) as { key?: unknown }
+    const key = typeof created.key === 'string' ? created.key : ''
+    const ctx = await engine.auth.$context
+    await ctx.internalAdapter.deleteUser(userId)
+    const verify = engine.provider.verifyApiKey
+    if (verify === undefined) {
+      throw new Error('the better-auth provider cannot verify API keys')
+    }
+    const verified = await verify(key)
+    // BA keeps verifying the orphaned key; the owner gate refuses it —
+    // never a verification naming a missing user.
+    expect(verified.isErr() ? verified.error : null).toBeInstanceOf(UnsupportedApiKeyOwnerError)
   })
 
   it('narrows an unknown key to null instead of throwing', async () => {

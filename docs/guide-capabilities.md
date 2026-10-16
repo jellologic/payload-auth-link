@@ -350,6 +350,15 @@ stays withheld from API keys — fail-closed by design. Without
 `enableSessionForAPIKeys` and the admitted channel, a key
 authenticates nothing (D8).
 
+**Organization-owned keys are not supported.** With a
+`references: 'organization'` configuration the key's owner
+(`referenceId`) is an organization id, not a user.
+`authLinkServer(payload).verifyApiKey` resolves USER-owned keys only:
+an org-owned key (or a key whose user was deleted) is refused with
+`UnsupportedApiKeyOwnerError` (the thrown error's `cause`) instead of
+handing the org id out as `userId`. Better Auth itself refuses such
+keys on the `x-api-key` session channel.
+
 ## Deriving declarations from Better Auth's schema (issue #17)
 
 Hand-declaring `customFields`/`customModels` for every plugin is

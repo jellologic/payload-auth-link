@@ -513,17 +513,17 @@ function rethrowAsOperation(
  * - **String range operators** (`lt`/`lte`/`gt`/`gte` on text) compare
  *   in the same database collation as sorting; the memory adapter
  *   compares JS strings. Same-case ASCII strings agree everywhere.
- *
- * Agreeing by construction (pinned by the same suite, #110): `ne` and
- * `not_in` keep `NULL` rows (the `not_in` translation adds an
- * `IS NULL` branch), and case-insensitive `eq` decides in JS, so it is
- * Unicode-aware on SQLite, whose `LIKE` folds ASCII only.
  * - **Unordered reads** (no `sortBy`) return rows in Payload's default
  *   order, not insertion order; callers must not rely on either.
  * - **Pattern operators** (`contains`, `starts_with`, `ends_with`),
  *   case-insensitive `ne`/`in`/`not_in`, and a case-insensitive `eq`
  *   combined with an `OR` connector throw `UnsupportedOperatorError`
  *   rather than risk a silently wrong translation.
+ *
+ * Agreeing by construction (pinned by the same suite, #110): `ne` and
+ * `not_in` keep `NULL` rows (the `not_in` translation adds an
+ * `IS NULL` branch), and case-insensitive `eq` decides in JS, so it is
+ * Unicode-aware on SQLite, whose `LIKE` folds ASCII only.
  */
 export function createPayloadDatabaseAdapter(
   deps: PayloadDatabaseAdapterDeps

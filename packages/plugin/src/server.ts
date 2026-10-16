@@ -412,7 +412,7 @@ function buildAuthLinkServer(wired: WiredOptions, payload: Payload): AuthLinkSer
       }
       const result = await provider.verifyApiKey(key)
       if (result.isErr()) {
-        throw new Error(`verifyApiKey: ${result.error.message}`)
+        throw new Error(`verifyApiKey: ${result.error.message}`, { cause: result.error })
       }
       return result.value
     },

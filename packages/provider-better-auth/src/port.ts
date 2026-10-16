@@ -20,6 +20,7 @@ import {
   type AuthMethod,
 } from '@payload-auth-link/core'
 import { presentedBetterAuthCookieChunks } from './cookies.js'
+import { UnsupportedApiKeyOwnerError } from './errors.js'
 import type { IdentityEventBus } from './events.js'
 import { MFA_METHODS, MINT_METHOD, STEP_UP_METHOD } from './session-provenance.js'
 
@@ -82,7 +83,7 @@ export function betterAuthCapabilities(input: {
   }
   return capabilities
 }
-import type { ResultAsync } from 'neverthrow'
+import { errAsync, okAsync, ResultAsync } from 'neverthrow'
 
 /** Session read input: live headers, cache and refresh disabled. */
 export type BetterAuthSessionQuery = {
@@ -125,6 +126,13 @@ export type BetterAuthServerApi = {
        * `listProviderSessions` (#54).
        */
       readonly listSessions?: ((userId: string) => Promise<unknown>) | undefined
+      /**
+       * BA core user lookup; present on every real instance. Gates
+       * `verifyApiKey`: a key whose owner is not a user (an
+       * organization-owned key) is refused (#110). Absent → every key
+       * is refused (fail closed).
+       */
+      readonly findUserById?: ((userId: string) => Promise<unknown>) | undefined
     }
   }>
   /**
@@ -205,6 +213,8 @@ type PortFunctions = {
   ) => Promise<unknown>
   readonly listProviderSessions: (userId: string) => Promise<unknown>
   readonly verifyApiKey?: ((key: string) => Promise<unknown>) | undefined
+  /** Whether an id names a live BA user (the API-key owner gate, #110). */
+  readonly isProviderUser?: ((userId: string) => Promise<boolean>) | undefined
   readonly buildSessionCookie?: ((token: string) => Promise<string>) | undefined
   readonly listDeviceSessions?: ((input: { headers: Headers }) => Promise<unknown>) | undefined
   readonly sessionCookieNames: readonly string[]
@@ -567,7 +577,7 @@ function createPortFromFunctions(deps: PortFunctions): IdentityProviderPort {
                 return verify === undefined ? Promise.resolve(null) : verify(key)
               },
               (result) => narrowApiKeyVerification(result)
-            ),
+            ).andThen((verified) => refuseNonUserApiKeyOwner(verified, deps.isProviderUser)),
         }),
     ...(buildSessionCookie === undefined
       ? {}
@@ -832,6 +842,38 @@ function narrowProviderSessions(result: unknown): { sessionId: string; expiresAt
  * block carrying neither fails closed (issue #88 — reading only
  * `userId` threw for every valid 1.7 key).
  */
+/**
+ * The API-key owner gate (#110): `@better-auth/api-key` names the
+ * owner `referenceId`, which is an ORGANIZATION id for keys of a
+ * `references: 'organization'` configuration. The verify response
+ * does not say which, so the owner must resolve to a live BA user —
+ * otherwise the key is refused with {@link UnsupportedApiKeyOwnerError}
+ * instead of handing an organization id out as `userId`. A missing
+ * lookup refuses too (fail closed).
+ */
+function refuseNonUserApiKeyOwner(
+  verified: ApiKeyVerification | null,
+  isProviderUser: ((userId: string) => Promise<boolean>) | undefined
+): ResultAsync<ApiKeyVerification | null, ProviderError> {
+  if (verified === null) {
+    return okAsync(null)
+  }
+  if (isProviderUser === undefined) {
+    return errAsync(
+      new ProviderError(
+        wellKnownProviderIds.betterAuth,
+        'verifyApiKey: internalAdapter.findUserById is unavailable'
+      )
+    )
+  }
+  return ResultAsync.fromPromise(
+    isProviderUser(verified.userId),
+    (cause) => new ProviderError(wellKnownProviderIds.betterAuth, 'verifyApiKey', { cause })
+  ).andThen((isUser) =>
+    isUser ? okAsync(verified) : errAsync(new UnsupportedApiKeyOwnerError(verified.userId))
+  )
+}
+
 function narrowApiKeyVerification(result: unknown): ApiKeyVerification | null {
   if (result === null || result === undefined) {
     return null
@@ -1097,6 +1139,17 @@ export function createBetterAuthProvider(deps: BetterAuthProviderDeps): Identity
             (deps.auth.verifyApiKey as (i: { body: { key: string } }) => Promise<unknown>)({
               body: { key },
             }),
+          isProviderUser: (userId: string) =>
+            deps.auth.$context.then(async (ctx) => {
+              const find = ctx.internalAdapter.findUserById
+              if (find === undefined) {
+                throw new ProviderError(
+                  wellKnownProviderIds.betterAuth,
+                  'verifyApiKey: internalAdapter.findUserById is unavailable'
+                )
+              }
+              return isRecord(await find(userId))
+            }),
         }),
     ...(deps.legacySessions === undefined ? {} : { legacySessions: deps.legacySessions }),
     // #54/#72: the signed session cookie, built from the instance's
@@ -1176,7 +1229,7 @@ export function createBetterAuthProviderFromUnknown(
       })
     )
   const internalAdapterCall = (
-    method: 'createSession' | 'listSessions' | 'findSessions',
+    method: 'createSession' | 'listSessions' | 'findSessions' | 'findUserById',
     run: (candidate: (...args: never[]) => unknown) => unknown
   ) =>
     Promise.resolve(
@@ -1301,7 +1354,15 @@ export function createBetterAuthProviderFromUnknown(
       internalAdapterCall('listSessions', (listSessions) =>
         (listSessions as (userId: string) => Promise<unknown>)(userId)
       ),
-    ...(verifyApiKey === undefined ? {} : { verifyApiKey }),
+    ...(verifyApiKey === undefined
+      ? {}
+      : {
+          verifyApiKey,
+          isProviderUser: (userId: string) =>
+            internalAdapterCall('findUserById', (findUserById) =>
+              (findUserById as (id: string) => Promise<unknown>)(userId)
+            ).then((user) => isRecord(user)),
+        }),
     // #54/#72: the signed session cookie, built from the instance's
     // own resolved context (secret + cookie attributes).
     buildSessionCookie: buildSessionCookieFromContext(context),
