@@ -92,8 +92,15 @@ own that exact address: the plugin stores WHAT was proven
 role-manager creates, and updated by the provider-email resync) and
 the `linkable` toggle. The proof holds only while the document's
 email still equals `linkableEmail` — a self-service email change
-invalidates it automatically, and the stranger's placeholder from a
-pre-created document never matches. Email changes over REST on
+invalidates it automatically (the change itself clears `linkable`,
+`linkableEmail` and, on `auth.verify` hosts, Payload's `_verified`),
+and the stranger's placeholder from a pre-created document never
+matches. Payload's own `_verified` flag is never proof on its own:
+Payload keeps it across email changes, so a verified document that
+moved onto someone else's address would otherwise inherit their
+identity. When a provider identity does link, Payload's local
+sessions for that document are cleared — a local JWT issued before
+the link dies on its next request. Email changes over REST on
 documents with linked identities are role-manager-only (the
 provider's own resync is unaffected), and self-service local
 passwords on plugin-managed documents are stripped: one document

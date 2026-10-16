@@ -28,6 +28,11 @@ import { auditImpersonatedEndpoint, composeAuditLogger } from './audit.js'
 import type { WiredOptions, WiredOrganizations } from './options.js'
 import { createServices } from './services.js'
 
+/** `req.context` key the accept handler sets: binds `user` on a pending invitation. */
+const acceptInvitationMarker = 'payload-auth-link:accept-invitation'
+/** `req.context` key holding the organization ids being deleted (cascade). */
+const deletingOrganizationsKey = 'payload-auth-link:deleting-organizations'
+
 /**
  * Payload-owned organizations (CAP-11, decision D1): `organizations`
  * and `memberships` collections (one role per user per org) that work
@@ -65,11 +70,6 @@ import { createServices } from './services.js'
  *   refused while an operator impersonates the caller, and the
  *   attempt is audited (CAP-8b).
  */
-
-/** `req.context` key the accept handler sets: binds `user` on a pending invitation. */
-const acceptInvitationMarker = 'payload-auth-link:accept-invitation'
-/** `req.context` key holding the organization ids being deleted (cascade). */
-const deletingOrganizationsKey = 'payload-auth-link:deleting-organizations'
 
 type MembershipRow = {
   readonly id: string

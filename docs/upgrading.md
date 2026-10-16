@@ -34,6 +34,81 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
+## plugin 0.10.x → 0.11.0 (organization governance; `_verified` is not linking proof)
+
+**Upgrade impact:** no schema change. No column is added, removed,
+or retyped (the users snapshot is unchanged; the memberships
+collection only gains field access and hooks), so push and
+migrations both have nothing to do on SQLite, Postgres, and MongoDB.
+The changes are behavioural; read each before you bump.
+
+1. **Payload's `_verified` no longer admits a document to JIT email
+   linking on its own.** Only the plugin's `linkable` proof bound to
+   the current address (`linkableEmail`) does — what
+   [security-model.md](security-model.md) row 8 always documented.
+   Payload keeps `_verified` across email changes (and its default
+   field access lets any signed-in user write it), so a verified
+   document re-pointed at someone else's address used to inherit
+   their provider identity. **Operator step:** if you relied on
+   `_verified` alone for pre-existing host accounts, grant the proof
+   to the ones you trust. Audit first: before this release a
+   self-service email change kept `_verified`, so only grant it where
+   the address was verified AFTER its last change.
+
+   ```ts
+   const { docs } = await payload.find({
+     collection: 'users',
+     where: { and: [{ _verified: { equals: true } }, { linkable: { not_equals: true } }] },
+     pagination: false,
+     overrideAccess: true,
+   })
+   for (const doc of docs /* filtered by your audit */) {
+     await payload.update({
+       collection: 'users',
+       id: doc.id,
+       data: { linkable: true, linkableEmail: doc.email },
+       overrideAccess: true,
+     })
+   }
+   ```
+
+   The migration importer (`@payload-auth-link/migrate`) already
+   grants `linkable` + `linkableEmail` from verified emails and is
+   unaffected. A refused link whose provisioning then collides with
+   the existing document now logs
+   `provisioning refused: the email is held by an existing document
+that is not proven to own it` and answers a typed 401 (it used to
+   surface as a storage error).
+
+2. **A self-service email change resets the proof.** Changing a
+   document's email in any write that is neither the plugin's
+   provider-email resync nor a role manager's clears `linkable` and
+   `linkableEmail`, and — on `auth.verify` hosts — `_verified`. Users
+   who change their own email on a verify host must re-verify before
+   local sign-in works again (Payload does not resend the
+   verification mail by itself; trigger it from your app).
+
+3. **Linking revokes earlier local sessions.** When a provider
+   identity links to a document, Payload's `sessions` array for it is
+   cleared (`auth.useSessions`, Payload's default), so a local JWT
+   issued before the link is refused on its next request. Hosts with
+   `useSessions: false` get the same outcome from the account-control
+   gate, which now refuses `local-jwt` requests on provider-linked
+   documents (401) unless `allowLocalCredentialsForLinkedDocs` is set.
+
+4. **Organization governance.** With `organizations.enabled`:
+   memberships can no longer change `organization` or `user` after
+   create (REST writes to them are dropped; Local-API writes throw);
+   role writes never exceed the caller's own org role (an `admin`
+   cannot create, promote to, or edit an owner); the last active
+   owner of an organization cannot be demoted or removed (`409`);
+   `DELETE /api/organizations/:id` cascades the organization's
+   memberships and invitations instead of failing; and every
+   organization write, membership write, invite, and acceptance is
+   refused (`403`) and audited while impersonating. Seed scripts that
+   re-pointed memberships through the Local API must delete and
+   re-create the row instead.
+
 ## 0.10.x → 0.11.0 (recorded sign-in methods; opaque session handles)
 
 Two changes to the server-session surface, both driven by the

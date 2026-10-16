@@ -145,6 +145,9 @@ in your build:
   `payload`/`payload/shared` symbol shipped source imports is
   pinned; a new import (which sets the real Payload floor) fails CI
   until it is verified against the band and noted here.
+  `CollectionBeforeDeleteHook` (organization delete cascade and the
+  last-owner guard) is a type-only import present across the whole
+  Payload 3 band and v4.
 
 ## Schema interoperability (Zod, Effect, Standard Schema)
 

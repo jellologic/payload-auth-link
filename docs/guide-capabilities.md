@@ -217,6 +217,30 @@ Authorization reads live membership data via
 — pass the same slugs/roles you gave `authLink`. There is
 deliberately **no** active-organization session state: your app
 carries the org selection and asks per request.
+
+Membership governance holds on every channel (REST, GraphQL, admin,
+the plugin's endpoints, and trusted Local-API writes where noted):
+
+- A membership's `organization` and `user` are **immutable** after
+  create — field access drops REST writes, and a `beforeChange`
+  guard throws for any other writer (Local API with
+  `overrideAccess` included). The only sanctioned `user` write is
+  the plugin's own invite acceptance.
+- Role writes (membership create/update/delete, invites) require a
+  manager of that organization and **never exceed the caller's own
+  role**: `orgRoles` order is the rank, so an `admin` cannot mint or
+  promote an owner, nor edit or remove an owner's membership.
+- An organization **always keeps an active owner**: demoting or
+  removing the last one is refused with `409` (Local API included).
+  Promote a second owner first.
+- `DELETE /api/organizations/:id` **cascades**: the organization's
+  memberships and pending invitations are deleted in the same
+  request.
+- While an operator **impersonates** a user, every organization
+  write, membership write, invite, and acceptance is refused (`403`)
+  and the attempt is audited (`onAudit` / logger, with `denied: true`
+  and the endpoint path for plugin endpoints).
+
 Provider-native org stores (e.g. BA `organization`) remain provider
 features; they are never Payload authorization.
 
