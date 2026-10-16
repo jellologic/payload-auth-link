@@ -116,7 +116,7 @@
       },
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
-        "pg": "^8.16.3",
+        "pg": "^8.23.1",
         "typescript": "^6.0.3",
       },
       "devDependencies": {
@@ -126,7 +126,7 @@
         "@payload-auth-link/provider-better-auth": "workspace:*",
         "@payloadcms/db-postgres": "3.90.2",
         "@types/node": "^22",
-        "@types/pg": "^8.15.4",
+        "@types/pg": "^8.23.1",
         "better-auth": "1.7.7",
         "payload": "3.90.2",
       },
@@ -871,7 +871,7 @@
 
     "@types/parse-json": ["@types/parse-json@4.0.2", "", {}, "sha512-dISoDXWWQwUquiKsyZ4Ng+HX2KsPL7LyHKHQwgGFEA3IaKac4Obd+h2a/a6waisAoepJlBcx9paWqjA8/HVjCw=="],
 
-    "@types/pg": ["@types/pg@8.20.0", "", { "dependencies": { "@types/node": "*", "pg-protocol": "*", "pg-types": "^2.2.0" } }, "sha512-bEPFOaMAHTEP1EzpvHTbmwR8UsFyHSKsRisLIHVMXnpNefSbGA1bD6CVy+qKjGSqmZqNqBDV2azOBo8TgkcVow=="],
+    "@types/pg": ["@types/pg@8.23.1", "", { "dependencies": { "@types/node": "*", "pg-protocol": "*", "pg-types": "^2.2.0" } }, "sha512-fKVHpikPdg4GKks3JuLEhvwSyvwzF23hnabPy6DD8ljVbC7+6J5dQzdv4arV6jqq57djnMgs1HKBxX4P8aBI3A=="],
 
     "@types/react": ["@types/react@19.3.0", "", { "dependencies": { "csstype": "^3.2.2" } }, "sha512-N0rFCuH9YoxG9/m61l9MfpJKfmLOVU0em7ipIz6TRgSSkvReLB9vL85GB+yr8Bs5leqpvg96JSwF4ZS1s4viQg=="],
 
@@ -1725,7 +1725,7 @@
 
     "pend": ["pend@1.2.0", "", {}, "sha512-F3asv42UuXchdzt+xXqfW1OGlVBe+mxa2mqI0pg5yAHZPvFmY3Y6drSf/GQ1A86WgWEN9Kzh/WrgKa6iGcHXLg=="],
 
-    "pg": ["pg@8.20.0", "", { "dependencies": { "pg-connection-string": "^2.12.0", "pg-pool": "^3.13.0", "pg-protocol": "^1.13.0", "pg-types": "2.2.0", "pgpass": "1.0.5" }, "optionalDependencies": { "pg-cloudflare": "^1.3.0" }, "peerDependencies": { "pg-native": ">=3.0.1" }, "optionalPeers": ["pg-native"] }, "sha512-ldhMxz2r8fl/6QkXnBD3CR9/xg694oT6DZQ2s6c/RI28OjtSOpxnPrUCGOBJ46RCUxcWdx3p6kw/xnDHjKvaRA=="],
+    "pg": ["pg@8.23.1", "", { "dependencies": { "pg-connection-string": "^2.14.1", "pg-pool": "^3.14.0", "pg-protocol": "^1.16.1", "pg-types": "2.2.0", "pgpass": "1.0.5" }, "optionalDependencies": { "pg-cloudflare": "^1.4.1" }, "peerDependencies": { "pg-native": ">=3.0.1" }, "optionalPeers": ["pg-native"] }, "sha512-aL96AHANtWjPLDOLqnhx+ngp9+UK7ETEU8VJrDCGvsSSi/mGLcWYsS6Herg7lmaBJe4uwrfqsa7gTEFaSizDoQ=="],
 
     "pg-cloudflare": ["pg-cloudflare@1.4.1", "", {}, "sha512-6PQbsFWZcp9EmJEwy5cGQ2La+AMWpP46lgbb8X+U/XsHIUweYDNCpeuKck5RxL2MdVFi7krbbEi5nX4Zh7JhrQ=="],
 
@@ -2169,6 +2169,10 @@
 
     "@payload-auth-link/example-tanstack-start/payload": ["payload@4.0.0-beta.0", "", { "dependencies": { "@next/env": "16.4.0", "@payloadcms/translations": "4.0.0-beta.0", "@standard-schema/spec": "1.1.0", "@types/busboy": "1.5.4", "bson-objectid": "2.0.4", "busboy": "^1.6.0", "ci-info": "4.4.0", "commander": "15.0.0", "console-table-printer": "2.15.0", "croner": "10.0.1", "dataloader": "2.2.3", "deepmerge": "4.3.1", "dotenv": "16.4.5", "dotenv-expand": "11.0.6", "file-type": "22.0.1", "get-tsconfig": "4.14.0", "image-dimensions": "2.5.1", "ipaddr.js": "2.3.0", "jose": "6.2.12", "json-schema-to-typescript": "15.0.3", "path-to-regexp": "6.3.0", "pino": "10.3.1", "pino-pretty": "13.1.3", "pluralize": "8.0.0", "qs-esm": "8.0.1", "range-parser": "1.2.1", "sanitize-filename": "1.6.4", "sax": "1.6.1", "ts-essentials": "10.0.3", "tsx": "4.23.15", "undici": "7.29.1", "uuid": "14.0.0", "ws": "^8.16.0", "zod": "^4.6.0" }, "peerDependencies": { "graphql": "^16.8.1" }, "bin": { "payload": "bin.js" } }, "sha512-eOFGdWPyGMlghjJ3sys4JqRJBEP1NNElOenUvXddkHU39LwqSrnJYrvERI3cuD4duxz7VYPePo52giGcctsMbA=="],
 
+    "@payloadcms/db-postgres/@types/pg": ["@types/pg@8.20.0", "", { "dependencies": { "@types/node": "*", "pg-protocol": "*", "pg-types": "^2.2.0" } }, "sha512-bEPFOaMAHTEP1EzpvHTbmwR8UsFyHSKsRisLIHVMXnpNefSbGA1bD6CVy+qKjGSqmZqNqBDV2azOBo8TgkcVow=="],
+
+    "@payloadcms/db-postgres/pg": ["pg@8.20.0", "", { "dependencies": { "pg-connection-string": "^2.12.0", "pg-pool": "^3.13.0", "pg-protocol": "^1.13.0", "pg-types": "2.2.0", "pgpass": "1.0.5" }, "optionalDependencies": { "pg-cloudflare": "^1.3.0" }, "peerDependencies": { "pg-native": ">=3.0.1" }, "optionalPeers": ["pg-native"] }, "sha512-ldhMxz2r8fl/6QkXnBD3CR9/xg694oT6DZQ2s6c/RI28OjtSOpxnPrUCGOBJ46RCUxcWdx3p6kw/xnDHjKvaRA=="],
+
     "@payloadcms/tanstack-start/@payloadcms/graphql": ["@payloadcms/graphql@4.0.0-beta.0", "", { "dependencies": { "graphql-scalars": "1.22.2", "pluralize": "8.0.0", "ts-essentials": "10.0.3", "tsx": "4.23.15" }, "peerDependencies": { "graphql": "^16.8.1", "payload": "4.0.0-beta.0" }, "bin": { "payload-graphql": "bin.js" } }, "sha512-w+eavvxipQjhjXbsmiR25aiggmp/o/CJ3kDQ/wyvLSrW8HwIxbX0s8rUcGo2RtezGJ1F2LQdZdhNeQBLhGlWpA=="],
 
     "@payloadcms/tanstack-start/@payloadcms/translations": ["@payloadcms/translations@4.0.0-beta.0", "", { "dependencies": { "date-fns": "4.4.0" } }, "sha512-/7xz7eBWYvQFiUu9v8CJM2RZpISYvu7xPtBiQ7PYx1xwHOb409W6SB1toEZHLeIpUvEsQaF+J4G4M1P5/D+P9Q=="],
@@ -2345,7 +2349,11 @@
 
     "@payload-auth-link/example-tanstack-start/@payloadcms/db-postgres/@payloadcms/drizzle": ["@payloadcms/drizzle@4.0.0-beta.0", "", { "dependencies": { "console-table-printer": "2.15.0", "dequal": "2.0.3", "drizzle-orm": "0.45.2", "prompts": "2.4.2", "to-snake-case": "1.0.0", "uuid": "14.0.0" }, "peerDependencies": { "payload": "4.0.0-beta.0" } }, "sha512-UuOLOENnJSt5AcHxtDap0XUiJwJ7sOdTSVQMA+jmasf7IsBoiPXohfO+bUj05hm9eU6QWzvK8Psp5PDsqSA/dQ=="],
 
+    "@payload-auth-link/example-tanstack-start/@payloadcms/db-postgres/@types/pg": ["@types/pg@8.20.0", "", { "dependencies": { "@types/node": "*", "pg-protocol": "*", "pg-types": "^2.2.0" } }, "sha512-bEPFOaMAHTEP1EzpvHTbmwR8UsFyHSKsRisLIHVMXnpNefSbGA1bD6CVy+qKjGSqmZqNqBDV2azOBo8TgkcVow=="],
+
     "@payload-auth-link/example-tanstack-start/@payloadcms/db-postgres/console-table-printer": ["console-table-printer@2.15.0", "", { "dependencies": { "simple-wcswidth": "^1.1.2" } }, "sha512-SrhBq4hYVjLCkBVOWaTzceJalvn5K1Zq5aQA6wXC/cYjI3frKWNPEMK3sZsJfNNQApvCQmgBcc13ZKmFj8qExw=="],
+
+    "@payload-auth-link/example-tanstack-start/@payloadcms/db-postgres/pg": ["pg@8.20.0", "", { "dependencies": { "pg-connection-string": "^2.12.0", "pg-pool": "^3.13.0", "pg-protocol": "^1.13.0", "pg-types": "2.2.0", "pgpass": "1.0.5" }, "optionalDependencies": { "pg-cloudflare": "^1.3.0" }, "peerDependencies": { "pg-native": ">=3.0.1" }, "optionalPeers": ["pg-native"] }, "sha512-ldhMxz2r8fl/6QkXnBD3CR9/xg694oT6DZQ2s6c/RI28OjtSOpxnPrUCGOBJ46RCUxcWdx3p6kw/xnDHjKvaRA=="],
 
     "@payload-auth-link/example-tanstack-start/@payloadcms/db-postgres/uuid": ["uuid@14.0.0", "", { "bin": { "uuid": "dist-node/bin/uuid" } }, "sha512-Qo+uWgilfSmAhXCMav1uYFynlQO7fMFiMVZsQqZRMIXp0O7rR7qjkj+cPvBHLgBqi960QCoo/PH2/6ZtVqKvrg=="],
 
@@ -2388,6 +2396,8 @@
     "@payload-auth-link/example-tanstack-start/payload/undici": ["undici@7.29.1", "", {}, "sha512-RYONW2MeafgYlkVOKYKkA/Ag7BmXqgIWCa8t1m0JcxrQg9pI9lEqRhAOruOBCbAohOa/gkCF+iPi9hrgvTzu6Q=="],
 
     "@payload-auth-link/example-tanstack-start/payload/uuid": ["uuid@14.0.0", "", { "bin": { "uuid": "dist-node/bin/uuid" } }, "sha512-Qo+uWgilfSmAhXCMav1uYFynlQO7fMFiMVZsQqZRMIXp0O7rR7qjkj+cPvBHLgBqi960QCoo/PH2/6ZtVqKvrg=="],
+
+    "@payloadcms/db-postgres/@types/pg/@types/node": ["@types/node@26.6.5", "", { "dependencies": { "undici-types": "~8.9.0" } }, "sha512-uMzsv9stDdofIZBx4UGh4Z9ZgXnGC9seRDscilBcTHAeOFk67MZg/k9bWVfO+bk4qZmG+l52hRnLwUiH2LnJTg=="],
 
     "@payloadcms/tanstack-start/@payloadcms/graphql/tsx": ["tsx@4.23.15", "", { "dependencies": { "esbuild": "~0.28.0" }, "optionalDependencies": { "fsevents": "~2.3.3" }, "bin": { "tsx": "dist/cli.mjs" } }, "sha512-Yiex1Ovn8z2xPpOWckIiysV1SSyRMY9BkLF++q0yKiDxCqRhosKfMg3janKkiLBwZ5c/YryloKwGZcrEmtwxKw=="],
 
@@ -2523,6 +2533,8 @@
 
     "@payload-auth-link/example-tanstack-start/@payloadcms/db-mongodb/mongoose/mquery": ["mquery@6.0.0", "", {}, "sha512-b2KQNsmgtkscfeDgkYMcWGn9vZI9YoXh802VDEwE6qc50zxBFQ0Oo8ROkawbPAsXCY1/Z1yp0MagqsZStPWJjw=="],
 
+    "@payload-auth-link/example-tanstack-start/@payloadcms/db-postgres/@types/pg/@types/node": ["@types/node@26.6.5", "", { "dependencies": { "undici-types": "~8.9.0" } }, "sha512-uMzsv9stDdofIZBx4UGh4Z9ZgXnGC9seRDscilBcTHAeOFk67MZg/k9bWVfO+bk4qZmG+l52hRnLwUiH2LnJTg=="],
+
     "@payload-auth-link/example-tanstack-start/payload/@payloadcms/translations/date-fns": ["date-fns@4.4.0", "", {}, "sha512-+1UMbeh68lH1SegH83CGWwpb6OHHbpSgr3+s5Eww5M4CAgswBpoWS0AjTOfEJ33HiYKz1hdj/KTFprzXHmq/6w=="],
 
     "@payload-auth-link/example-tanstack-start/payload/pino/pino-abstract-transport": ["pino-abstract-transport@3.0.0", "", { "dependencies": { "split2": "^4.0.0" } }, "sha512-wlfUczU+n7Hy/Ha5j9a/gZNy7We5+cXp8YL+X+PG8S0KXxw7n/JXA3c46Y0zQznIJ83URJiwy7Lh56WLokNuxg=="],
@@ -2534,6 +2546,8 @@
     "@payload-auth-link/example-tanstack-start/payload/pino-pretty/pino-abstract-transport": ["pino-abstract-transport@3.0.0", "", { "dependencies": { "split2": "^4.0.0" } }, "sha512-wlfUczU+n7Hy/Ha5j9a/gZNy7We5+cXp8YL+X+PG8S0KXxw7n/JXA3c46Y0zQznIJ83URJiwy7Lh56WLokNuxg=="],
 
     "@payload-auth-link/example-tanstack-start/payload/tsx/esbuild": ["esbuild@0.28.2", "", { "optionalDependencies": { "@esbuild/aix-ppc64": "0.28.2", "@esbuild/android-arm": "0.28.2", "@esbuild/android-arm64": "0.28.2", "@esbuild/android-x64": "0.28.2", "@esbuild/darwin-arm64": "0.28.2", "@esbuild/darwin-x64": "0.28.2", "@esbuild/freebsd-arm64": "0.28.2", "@esbuild/freebsd-x64": "0.28.2", "@esbuild/linux-arm": "0.28.2", "@esbuild/linux-arm64": "0.28.2", "@esbuild/linux-ia32": "0.28.2", "@esbuild/linux-loong64": "0.28.2", "@esbuild/linux-mips64el": "0.28.2", "@esbuild/linux-ppc64": "0.28.2", "@esbuild/linux-riscv64": "0.28.2", "@esbuild/linux-s390x": "0.28.2", "@esbuild/linux-x64": "0.28.2", "@esbuild/netbsd-arm64": "0.28.2", "@esbuild/netbsd-x64": "0.28.2", "@esbuild/openbsd-arm64": "0.28.2", "@esbuild/openbsd-x64": "0.28.2", "@esbuild/openharmony-arm64": "0.28.2", "@esbuild/sunos-x64": "0.28.2", "@esbuild/win32-arm64": "0.28.2", "@esbuild/win32-ia32": "0.28.2", "@esbuild/win32-x64": "0.28.2" }, "bin": { "esbuild": "bin/esbuild" } }, "sha512-HKVLS8dvII+xoKW9kmqxbRKrnWEXfJJr/FZhhJmiqIB0e053QNYFqOBouTMO/k5sID4MvCiUCvv8b9M4h32wIA=="],
+
+    "@payloadcms/db-postgres/@types/pg/@types/node/undici-types": ["undici-types@8.9.0", "", {}, "sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg=="],
 
     "@payloadcms/tanstack-start/@payloadcms/graphql/tsx/esbuild": ["esbuild@0.28.2", "", { "optionalDependencies": { "@esbuild/aix-ppc64": "0.28.2", "@esbuild/android-arm": "0.28.2", "@esbuild/android-arm64": "0.28.2", "@esbuild/android-x64": "0.28.2", "@esbuild/darwin-arm64": "0.28.2", "@esbuild/darwin-x64": "0.28.2", "@esbuild/freebsd-arm64": "0.28.2", "@esbuild/freebsd-x64": "0.28.2", "@esbuild/linux-arm": "0.28.2", "@esbuild/linux-arm64": "0.28.2", "@esbuild/linux-ia32": "0.28.2", "@esbuild/linux-loong64": "0.28.2", "@esbuild/linux-mips64el": "0.28.2", "@esbuild/linux-ppc64": "0.28.2", "@esbuild/linux-riscv64": "0.28.2", "@esbuild/linux-s390x": "0.28.2", "@esbuild/linux-x64": "0.28.2", "@esbuild/netbsd-arm64": "0.28.2", "@esbuild/netbsd-x64": "0.28.2", "@esbuild/openbsd-arm64": "0.28.2", "@esbuild/openbsd-x64": "0.28.2", "@esbuild/openharmony-arm64": "0.28.2", "@esbuild/sunos-x64": "0.28.2", "@esbuild/win32-arm64": "0.28.2", "@esbuild/win32-ia32": "0.28.2", "@esbuild/win32-x64": "0.28.2" }, "bin": { "esbuild": "bin/esbuild" } }, "sha512-HKVLS8dvII+xoKW9kmqxbRKrnWEXfJJr/FZhhJmiqIB0e053QNYFqOBouTMO/k5sID4MvCiUCvv8b9M4h32wIA=="],
 
@@ -2558,6 +2572,8 @@
     "@payload-auth-link/example-tanstack-start/@payloadcms/db-mongodb/mongoose/mongodb/bson": ["bson@7.3.3", "", {}, "sha512-oz3LwE3qGEhTCSyhzQRLY3Bj1NLOsjFMf6tcmY5J8M+3R7EVcmoBfSHWvjUK3yXCLDUsGpIuB3aQL4nDZ1EV/g=="],
 
     "@payload-auth-link/example-tanstack-start/@payloadcms/db-mongodb/mongoose/mongodb/mongodb-connection-string-url": ["mongodb-connection-string-url@7.0.2", "", { "dependencies": { "@types/whatwg-url": "^13.0.0", "whatwg-url": "^14.1.0" } }, "sha512-ZoS07RoFqpKYQwAk59qmrx8+jJHNHU30UjlU96QktiGn1ltvDr+vCznLX5DiUBLEpMAHatHNWV1nM/74ul66kA=="],
+
+    "@payload-auth-link/example-tanstack-start/@payloadcms/db-postgres/@types/pg/@types/node/undici-types": ["undici-types@8.9.0", "", {}, "sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg=="],
 
     "@payload-auth-link/example-tanstack-start/payload/pino/thread-stream/real-require": ["real-require@1.0.0", "", {}, "sha512-P4nbQYQfePJxRSmY+v/KINxVucm4NF3p3s7pJveMTtom52FR4YGltUQLB8idDXwDDWW+eYrWDFbuzUnjoWHF7g=="],
 
