@@ -234,6 +234,112 @@ describe('AuthLinkProvider', () => {
   })
 })
 
+/** A fetch whose GETs resolve only when the test says so. */
+function deferredFetch() {
+  const pending: Array<{
+    resolve: (response: Response) => void
+    signal: AbortSignal | undefined
+  }> = []
+  const fetchImpl = vi.fn((_input: string, init?: RequestInit): Promise<Response> => {
+    if (init?.method === 'DELETE') {
+      return Promise.resolve(jsonResponse({ ok: true }))
+    }
+    return new Promise<Response>((resolve, reject) => {
+      const signal = init?.signal ?? undefined
+      signal?.addEventListener('abort', () => {
+        reject(new DOMException('aborted', 'AbortError'))
+      })
+      pending.push({ resolve, signal })
+    })
+  })
+  return { fetchImpl, pending }
+}
+
+function ActionsProbe(): ReactNode {
+  const { refresh, signOut } = useAuthLink()
+  return (
+    <div>
+      <button type="button" onClick={() => void refresh()}>
+        refresh
+      </button>
+      <button type="button" onClick={() => void signOut()}>
+        sign out
+      </button>
+    </div>
+  )
+}
+
+describe('AuthLinkProvider request sequencing', () => {
+  it('signOut during the in-flight mount load leaves the UI anonymous', async () => {
+    const { fetchImpl, pending } = deferredFetch()
+    render(
+      <AuthLinkProvider fetchImpl={fetchImpl}>
+        <StatusProbe />
+        <ActionsProbe />
+      </AuthLinkProvider>
+    )
+    expect(screen.getByTestId('status').textContent).toBe('loading')
+    expect(pending).toHaveLength(1)
+    fireEvent.click(screen.getByText('sign out'))
+    await waitFor(() => {
+      expect(screen.getByTestId('status').textContent).toBe('anonymous')
+    })
+    // The mount read was aborted; even if the server answers late with
+    // the old session, it must not resurrect it.
+    expect(pending[0]?.signal?.aborted).toBe(true)
+    pending[0]?.resolve(jsonResponse({ user }))
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(screen.getByTestId('status').textContent).toBe('anonymous')
+    expect(screen.getByTestId('email').textContent).toBe('none')
+  })
+
+  it('drops out-of-order refresh results (newest read wins)', async () => {
+    const { fetchImpl, pending } = deferredFetch()
+    render(
+      <AuthLinkProvider fetchImpl={fetchImpl} initialUser={null}>
+        <StatusProbe />
+        <ActionsProbe />
+      </AuthLinkProvider>
+    )
+    fireEvent.click(screen.getByText('refresh'))
+    fireEvent.click(screen.getByText('refresh'))
+    expect(pending).toHaveLength(2)
+    // The newer read resolves first: signed out.
+    pending[1]?.resolve(jsonResponse({}, 401))
+    await waitFor(() => {
+      expect(fetchImpl).toHaveBeenCalledTimes(2)
+    })
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(screen.getByTestId('status').textContent).toBe('anonymous')
+    // The older read resolves late with a stale user: dropped.
+    pending[0]?.resolve(jsonResponse({ user }))
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(screen.getByTestId('status').textContent).toBe('anonymous')
+    expect(screen.getByTestId('email').textContent).toBe('none')
+  })
+
+  it('a failed signOut re-reads when it cancelled the mount load', async () => {
+    const fetchImpl = vi.fn((_input: string, init?: RequestInit): Promise<Response> => {
+      if (init?.method === 'DELETE') {
+        return Promise.resolve(jsonResponse({}, 500))
+      }
+      return Promise.resolve(jsonResponse({ user }))
+    })
+    render(
+      <AuthLinkProvider fetchImpl={fetchImpl}>
+        <StatusProbe />
+        <ActionsProbe />
+      </AuthLinkProvider>
+    )
+    fireEvent.click(screen.getByText('sign out'))
+    await waitFor(() => {
+      expect(screen.getByTestId('status').textContent).toBe('authenticated')
+    })
+    const reads = fetchImpl.mock.calls.filter(([, init]) => init?.method === 'GET')
+    expect(reads).toHaveLength(2)
+  })
+})
+
 describe('useAuthLink', () => {
   it('throws outside the provider', () => {
     const silenced = vi.spyOn(console, 'error').mockImplementation(() => {})

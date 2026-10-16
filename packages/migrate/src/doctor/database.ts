@@ -100,17 +100,40 @@ export async function introspectDatabase(
     }
 
     let unverifiedUsers: number | null = null
+    let bannedUsers: number | null = null
+    let anonymousUsers: number | null = null
     const usersTable = tables['users']
     if (usersTable !== null && (await tableExists(client, usersTable))) {
       const columns = await columnsOf(client, usersTable)
-      if (columns.has('email_verified')) {
+      const countWhere = async (predicate: string): Promise<number | null> => {
         const result = await client.query(
-          `SELECT count(*)::int AS n FROM ${usersTable} WHERE email_verified = false`
+          `SELECT count(*)::int AS n FROM ${usersTable} WHERE ${predicate}`
         )
         const first = result.rows[0] as { n?: number } | undefined
-        unverifiedUsers = first?.n ?? null
+        return first?.n ?? null
+      }
+      if (columns.has('email_verified')) {
+        unverifiedUsers = await countWhere('email_verified = false')
+      }
+      // Better Auth plugin state the import must carry (issue #88).
+      if (columns.has('banned')) {
+        bannedUsers = await countWhere('banned = true')
+      }
+      if (columns.has('is_anonymous')) {
+        anonymousUsers = await countWhere('is_anonymous = true')
       }
     }
+
+    // OAuth-provider plugin tables (oauthProvider / oidcProvider /
+    // mcp): the importer does not carry them (issue #88).
+    const oauthResult = await client.query(
+      `SELECT table_name FROM information_schema.tables
+       WHERE table_schema = 'public' AND table_name LIKE 'oauth\\_%'
+       ORDER BY table_name`
+    )
+    const oauthTables = oauthResult.rows.map((row) =>
+      String((row as { table_name: unknown }).table_name)
+    )
 
     const orphans: { kind: string; count: number }[] = []
     const skippedChecks: string[] = []
@@ -206,7 +229,16 @@ export async function introspectDatabase(
       }
     }
 
-    return { tables: counted, unverifiedUsers, orphans, missingTables: missing, skippedChecks }
+    return {
+      tables: counted,
+      unverifiedUsers,
+      orphans,
+      missingTables: missing,
+      skippedChecks,
+      bannedUsers,
+      anonymousUsers,
+      oauthTables,
+    }
   } finally {
     await client.end()
   }

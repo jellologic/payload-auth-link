@@ -24,12 +24,30 @@ import { Button } from '@payloadcms/ui'
 export type ProviderLoginViewProps = {
   /**
    * The app-relative auth base for provider sign-in requests
-   * (e.g. `/api/auth`). Set by the plugin from its own wiring.
+   * (e.g. `/api/auth`). Set by the plugin from its own wiring
+   * (`admin.authBase`).
    */
   readonly authBase: string
+  /**
+   * Payload's local login endpoint for the break-glass form —
+   * `${routes.api}/${usersSlug}/login`. Set by the plugin from the
+   * Payload config; defaults to `/api/users/login`.
+   */
+  readonly loginEndpoint?: string | undefined
+  /**
+   * Where a successful sign-in lands — Payload's `routes.admin`. Set
+   * by the plugin; defaults to `/admin`.
+   */
+  readonly adminRoute?: string | undefined
+  /**
+   * The app's own sign-in page, for social-only accounts. Set by the
+   * plugin (`admin.signInPath`); defaults to `/sign-in`.
+   */
+  readonly signInPath?: string | undefined
 }
 
 type SignInFormProps = {
+  readonly adminRoute: string
   readonly heading: string
   readonly note: string
   readonly endpoint: string
@@ -46,7 +64,14 @@ function isTwoFactorRedirect(value: unknown): boolean {
   )
 }
 
-const SignInForm: React.FC<SignInFormProps> = ({ heading, note, endpoint, label, failure }) => {
+const SignInForm: React.FC<SignInFormProps> = ({
+  adminRoute,
+  heading,
+  note,
+  endpoint,
+  label,
+  failure,
+}) => {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -64,7 +89,7 @@ const SignInForm: React.FC<SignInFormProps> = ({ heading, note, endpoint, label,
       })
       if (response.ok) {
         // A 200 with `twoFactorRedirect` sets NO cookie — redirecting
-        // here would just bounce back to /admin/login.
+        // here would just bounce back to the admin login.
         const body: unknown = await response.json().catch(() => null)
         if (isTwoFactorRedirect(body)) {
           setError(
@@ -72,7 +97,7 @@ const SignInForm: React.FC<SignInFormProps> = ({ heading, note, endpoint, label,
           )
           return
         }
-        window.location.href = '/admin'
+        window.location.href = adminRoute
         return
       }
       setError(failure(response.status))
@@ -115,9 +140,15 @@ const SignInForm: React.FC<SignInFormProps> = ({ heading, note, endpoint, label,
   )
 }
 
-const ProviderLoginView: React.FC<ProviderLoginViewProps> = ({ authBase }) => (
+const ProviderLoginView: React.FC<ProviderLoginViewProps> = ({
+  authBase,
+  loginEndpoint = '/api/users/login',
+  adminRoute = '/admin',
+  signInPath = '/sign-in',
+}) => (
   <div className="provider-login">
     <SignInForm
+      adminRoute={adminRoute}
       endpoint={`${authBase}/sign-in/email`}
       failure={(status) =>
         status === 401
@@ -130,10 +161,11 @@ const ProviderLoginView: React.FC<ProviderLoginViewProps> = ({ authBase }) => (
     />
     <p>
       Social-only accounts (no provider password) sign in through the{' '}
-      <a href="/sign-in">app sign-in page</a> and return here — the session cookie carries over.
+      <a href={signInPath}>app sign-in page</a> and return here — the session cookie carries over.
     </p>
     <SignInForm
-      endpoint="/api/users/login"
+      adminRoute={adminRoute}
+      endpoint={loginEndpoint}
       failure={(status) =>
         status === 401 || status === 403
           ? 'Sign-in failed: check the credentials, or use your identity provider.'

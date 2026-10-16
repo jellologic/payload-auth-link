@@ -17,6 +17,7 @@ export default defineConfig({
       'packages/migrate/src/__tests__/adopt-boot.test.ts',
       'packages/migrate/src/__tests__/importer.test.ts',
       'packages/migrate/src/__tests__/exporters.test.ts',
+      'packages/migrate/src/__tests__/cli-lifecycle.test.ts',
     ],
     include: [
       'packages/*/src/**/*.test.ts',
@@ -50,20 +51,39 @@ export default defineConfig({
         functions: 80,
         branches: 80,
         statements: 80,
-        // Per-file floors for the auth core: the global 80% would let
-        // session verification, the Payload strategy, and the user
-        // store regress unnoticed behind well-covered files. Set just
-        // under the measured values; raise them as coverage improves.
-        'packages/plugin/src/session.ts': {
-          lines: 90,
-          functions: 90,
-          branches: 85,
-          statements: 90,
-        },
-        'packages/plugin/src/strategy.ts': {
+        // Per-file floors for every auth-critical file (issue #86): the
+        // global 80% would let session verification, the strategy, the
+        // account gates, the server API, and the provider adapters
+        // regress unnoticed behind well-covered files. Target 95%
+        // everywhere; a floor below 95 is the measured value rounded
+        // down, and docs/coverage-exceptions.md lists the uncovered
+        // branches and why. Raise floors as coverage improves — never
+        // lower one without updating that doc.
+        'packages/core/src/cookies.ts': { lines: 95, functions: 95, branches: 95, statements: 95 },
+        'packages/plugin/src/access.ts': { lines: 95, functions: 95, branches: 95, statements: 95 },
+        'packages/plugin/src/audit.ts': { lines: 95, functions: 91, branches: 88, statements: 95 },
+        'packages/plugin/src/collections.ts': {
           lines: 95,
           functions: 95,
-          branches: 85,
+          branches: 86,
+          statements: 95,
+        },
+        'packages/plugin/src/compat-shim.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 95,
+          statements: 95,
+        },
+        'packages/plugin/src/endpoints.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 91,
+          statements: 95,
+        },
+        'packages/plugin/src/organizations.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 95,
           statements: 95,
         },
         'packages/plugin/src/repository.ts': {
@@ -72,12 +92,57 @@ export default defineConfig({
           branches: 95,
           statements: 95,
         },
-        'packages/plugin/src/endpoints.ts': {
-          lines: 90,
-          functions: 90,
-          branches: 85,
-          statements: 90,
+        'packages/plugin/src/server.ts': { lines: 95, functions: 95, branches: 94, statements: 95 },
+        'packages/plugin/src/session.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 94,
+          statements: 95,
         },
+        'packages/plugin/src/strategy.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 86,
+          statements: 95,
+        },
+        'packages/provider-authjs/src/port.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 95,
+          statements: 95,
+        },
+        'packages/provider-better-auth/src/adapter.ts': {
+          lines: 80,
+          functions: 91,
+          branches: 73,
+          statements: 81,
+        },
+        'packages/provider-better-auth/src/cookies.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 89,
+          statements: 95,
+        },
+        'packages/provider-better-auth/src/port.ts': {
+          lines: 86,
+          functions: 86,
+          branches: 77,
+          statements: 86,
+        },
+        'packages/provider-better-auth/src/session-provenance.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 95,
+          statements: 95,
+        },
+        'packages/provider-better-auth/src/where.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 95,
+          statements: 95,
+        },
+        'packages/web/src/authz.ts': { lines: 95, functions: 95, branches: 95, statements: 95 },
+        'packages/web/src/verify.ts': { lines: 95, functions: 95, branches: 95, statements: 95 },
       },
     },
   },

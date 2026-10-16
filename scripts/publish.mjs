@@ -5,9 +5,11 @@
  * which ships `workspace:*` dependency ranges verbatim (uninstallable).
  * `bun pm pack` rewrites them to the real versions, so each package is
  * packed with Bun and the tarball is published with npm. npm keeps
- * trusted publishing (OIDC) and provenance in CI. Locally — only the
- * very first publish, before a trusted publisher can be attached —
- * provenance is off (it requires a CI identity).
+ * trusted publishing (OIDC) and provenance in CI. Outside GitHub
+ * Actions a real publish is refused (issue #85); only `--dry-run` runs
+ * locally, unless the documented emergency override
+ * `PAL_ALLOW_LOCAL_PUBLISH=i-understand-no-provenance` is set — then it
+ * publishes without provenance (which requires a CI identity).
  *
  * Tags: for every published version whose `<name>@<version>` tag is
  * missing on origin (just published, or published by an earlier run that
@@ -29,6 +31,27 @@ import { gitTagEvent } from './changesets-output.mjs'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const dryRun = process.argv.includes('--dry-run')
 const inCi = process.env.GITHUB_ACTIONS === 'true'
+// Emergency-only escape hatch (docs/releasing.md): a local publish
+// ships WITHOUT provenance, so consumers cannot tie the tarball to a
+// CI build. Never set it in CI or in a shell profile.
+const allowLocal = process.env.PAL_ALLOW_LOCAL_PUBLISH === 'i-understand-no-provenance'
+
+// Publishing happens in the release workflow (gated on green CI, OIDC
+// trusted publishing, provenance). A real local publish is refused.
+if (!dryRun && !inCi) {
+  if (!allowLocal) {
+    process.stderr.write(
+      'publish refused: real publishes run only in GitHub Actions (provenance + trusted publishing).\n' +
+        'Use --dry-run locally. Emergency override (no provenance): see docs/releasing.md\n' +
+        '  PAL_ALLOW_LOCAL_PUBLISH=i-understand-no-provenance bun run release\n'
+    )
+    process.exit(1)
+  }
+  process.stderr.write(
+    '\n!!! PAL_ALLOW_LOCAL_PUBLISH set: publishing from a LOCAL machine WITHOUT provenance.\n' +
+      '!!! Record why in the release notes and re-publish the next version from CI.\n\n'
+  )
+}
 
 // Dependencies first, so a partial failure never leaves a published
 // package pointing at an unpublished sibling version.

@@ -11,3 +11,4 @@ test-results/
 docs/api/
 **/routeTree.gen.ts
 snapshots/
+.claude/

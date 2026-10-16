@@ -45,8 +45,19 @@ criteria — releases must never break a user's database or install.
    trigger no CI** — close and reopen the Version PR once so the
    full gates run on its head before merging.
 8. The release workflow publishes with OIDC trusted publishing +
-   provenance, then tags. Staged publishing makes new versions 404
-   for a few minutes after upload.
+   provenance, then tags. It is gated on CI: it starts only when the
+   `ci` workflow succeeds for the merge commit on `main` (and that
+   commit is still `main`'s head), and the publish job runs in the
+   `npm-publish` environment — approve it there if the environment
+   requires reviewers. Staged publishing makes new versions 404 for a
+   few minutes after upload.
+
+   **Never publish locally.** `scripts/publish.mjs` refuses outside
+   GitHub Actions. The emergency-only override (Actions down, a
+   security fix must ship) publishes WITHOUT provenance:
+   `PAL_ALLOW_LOCAL_PUBLISH=i-understand-no-provenance bun run release`.
+   Record why in the release notes and ship the next version from CI.
+
 9. **Verify the release:**
 
    ```sh

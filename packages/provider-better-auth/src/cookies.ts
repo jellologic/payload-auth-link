@@ -1,4 +1,5 @@
 import {
+  hostCookiePrefix,
   resolveSecureCookies,
   secureCookiePrefix,
   type CookieOptions,
@@ -28,6 +29,14 @@ type SessionCookieKey = 'session_token' | 'session_data'
  * logout-clearing concern only (see {@link getBetterAuthLogoutCookieNames}).
  */
 const adminSessionCookieKey = 'admin_session'
+
+/**
+ * Non-session cookies BA sets that a logout must still expire:
+ * `admin_session` (above) and `dont_remember` (set on a sign-in
+ * without "remember me"; BA's own sign-out deletes it).
+ */
+const auxiliaryCookieKeys = [adminSessionCookieKey, 'dont_remember'] as const
+type AuxiliaryCookieKey = (typeof auxiliaryCookieKeys)[number]
 
 function readDynamicProtocol(baseURL: BetterAuthOptions['baseURL']): string | undefined {
   if (typeof baseURL !== 'object' || baseURL === null || !('protocol' in baseURL)) {
@@ -75,49 +84,92 @@ function sessionCookieEntries(
   options: BetterAuthCookieOptions,
   environment?: SecureCookieEnvironment
 ): Array<{ readonly key: SessionCookieKey; readonly name: string }> {
-  const prefix = options.advanced?.cookiePrefix || defaultCookiePrefix
-  const secure = secureCookiesEnabled(options, environment) ? secureCookiePrefix : ''
-  const nameOf = (cookie: SessionCookieKey): string =>
-    `${secure}${options.advanced?.cookies?.[cookie]?.name || `${prefix}.${cookie}`}`
   const entries: Array<{ readonly key: SessionCookieKey; readonly name: string }> = [
-    { key: 'session_token', name: nameOf('session_token') },
+    { key: 'session_token', name: sessionCookieName('session_token', options, environment) },
   ]
   if (options.session?.cookieCache?.enabled === true) {
-    entries.push({ key: 'session_data', name: nameOf('session_data') })
+    entries.push({
+      key: 'session_data',
+      name: sessionCookieName('session_data', options, environment),
+    })
   }
   return entries
 }
 
-/**
- * The `admin_session` cookie's resolved name, mirroring BA's
- * `createCookieGetter` for the `admin_session` key exactly: the
- * `advanced.cookies.admin_session.name` override wins, otherwise
- * `{cookiePrefix}.admin_session`, prefixed with `__Secure-` when secure
- * cookies apply. The drift test asserts this against BA's real getter.
- */
-function adminSessionCookieName(
+/** One session cookie key's resolved name (see `sessionCookieEntries`). */
+function sessionCookieName(
+  key: SessionCookieKey,
   options: BetterAuthCookieOptions,
   environment?: SecureCookieEnvironment
 ): string {
   const prefix = options.advanced?.cookiePrefix || defaultCookiePrefix
   const secure = secureCookiesEnabled(options, environment) ? secureCookiePrefix : ''
-  const override: unknown = options.advanced?.cookies?.[adminSessionCookieKey]?.name
-  return `${secure}${typeof override === 'string' && override !== '' ? override : `${prefix}.${adminSessionCookieKey}`}`
+  return `${secure}${options.advanced?.cookies?.[key]?.name || `${prefix}.${key}`}`
+}
+
+/**
+ * A non-session cookie's resolved name, mirroring BA's
+ * `createCookieGetter` for that key exactly: the
+ * `advanced.cookies.<key>.name` override wins, otherwise
+ * `{cookiePrefix}.<key>`, prefixed with `__Secure-` when secure cookies
+ * apply. The drift test asserts these against BA's real getter.
+ */
+function auxiliaryCookieName(
+  key: AuxiliaryCookieKey,
+  options: BetterAuthCookieOptions,
+  environment?: SecureCookieEnvironment
+): string {
+  const prefix = options.advanced?.cookiePrefix || defaultCookiePrefix
+  const secure = secureCookiesEnabled(options, environment) ? secureCookiePrefix : ''
+  const override: unknown = options.advanced?.cookies?.[key]?.name
+  return `${secure}${typeof override === 'string' && override !== '' ? override : `${prefix}.${key}`}`
+}
+
+/** The same cookie name under the other `__Secure-` setting. */
+function toggledSecureVariant(name: string): string | undefined {
+  if (name.startsWith(hostCookiePrefix)) {
+    return undefined
+  }
+  return name.startsWith(secureCookiePrefix)
+    ? name.slice(secureCookiePrefix.length)
+    : `${secureCookiePrefix}${name}`
 }
 
 /**
  * Cookies to expire on logout that do not indicate a live session (the
- * port's `logoutCookieNames`): today only the admin plugin's
- * `admin_session`. Expired unconditionally — when the admin plugin is
- * absent the cookie simply never exists and expiring it is a no-op,
- * while leaving a present one behind would keep the impersonating
- * operator's resumable session token in the browser after logout.
+ * port's `logoutCookieNames`):
+ *
+ * - the admin plugin's `admin_session` (the impersonating operator's
+ *   resumable session token);
+ * - `dont_remember` (sign-in without "remember me");
+ * - the cookie-cache `session_data`, even when the cache is disabled
+ *   now — it may have been enabled when the cookie was set;
+ * - the `__Secure-` / plain counterpart of every session and logout
+ *   name, so a deployment that switched between http and https (or
+ *   toggled `useSecureCookies`) leaves no residue under the other
+ *   name.
+ *
+ * Expired unconditionally — a cookie that was never set makes its
+ * clearing write a no-op.
  */
 export function getBetterAuthLogoutCookieNames(
   options: BetterAuthCookieOptions,
   environment?: SecureCookieEnvironment
 ): readonly string[] {
-  return [adminSessionCookieName(options, environment)]
+  const sessionNames = getBetterAuthSessionCookieNames(options, environment)
+  const sessionDataName = sessionCookieName('session_data', options, environment)
+  const base = [
+    ...auxiliaryCookieKeys.map((key) => auxiliaryCookieName(key, options, environment)),
+    ...(sessionNames.includes(sessionDataName) ? [] : [sessionDataName]),
+  ]
+  const names = new Set(base)
+  for (const name of [...sessionNames, ...base]) {
+    const toggled = toggledSecureVariant(name)
+    if (toggled !== undefined && !sessionNames.includes(toggled)) {
+      names.add(toggled)
+    }
+  }
+  return [...names]
 }
 
 /**
@@ -167,6 +219,21 @@ export function getBetterAuthSessionCookieClearOptions(
       ]
     })
   )
+  const clearFor = (key: SessionCookieKey | 'dont_remember'): CookieOptions => {
+    const specific = options.advanced?.cookies?.[key]?.attributes
+    return {
+      secure: (specific?.secure ?? defaults?.secure ?? secureDefault) ? true : undefined,
+      domain: specific?.domain ?? defaults?.domain,
+      path: specific?.path ?? defaults?.path,
+      partitioned: (specific?.partitioned ?? defaults?.partitioned) === true ? true : undefined,
+    }
+  }
+  // Logout-only cookies BA writes with their own attributes.
+  const sessionDataName = sessionCookieName('session_data', options, environment)
+  if (!lookup.has(sessionDataName)) {
+    lookup.set(sessionDataName, clearFor('session_data'))
+  }
+  lookup.set(auxiliaryCookieName('dont_remember', options, environment), clearFor('dont_remember'))
   // BA sets `admin_session` with the session token's live attributes
   // (`authCookies.sessionToken.attributes`), not its own per-cookie
   // attributes, so its clearing write must reuse the session token's.
@@ -174,7 +241,7 @@ export function getBetterAuthSessionCookieClearOptions(
   const sessionTokenClear =
     sessionTokenEntry === undefined ? undefined : lookup.get(sessionTokenEntry.name)
   if (sessionTokenClear !== undefined) {
-    lookup.set(adminSessionCookieName(options, environment), sessionTokenClear)
+    lookup.set(auxiliaryCookieName(adminSessionCookieKey, options, environment), sessionTokenClear)
   }
   return (name: string): CookieOptions | undefined => {
     const found = lookup.get(name)

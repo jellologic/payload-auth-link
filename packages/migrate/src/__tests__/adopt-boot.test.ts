@@ -13,16 +13,19 @@
  * rewritten.
  */
 import { apiKey as apiKeyPlugin } from '@better-auth/api-key'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { postgresAdapter } from '@payloadcms/db-postgres'
 import { nextCookies } from 'better-auth/next-js'
 import { jwt, magicLink, organization } from 'better-auth/plugins'
-import { authLink } from '@payload-auth-link/plugin'
+import { authLink, authLinkServer } from '@payload-auth-link/plugin'
 import { createBetterAuthEngine } from '@payload-auth-link/provider-better-auth'
 import { Client } from 'pg'
 import { buildConfig, getPayload, type CollectionConfig, type Payload } from 'payload'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 import { fileURLToPath } from 'node:url'
+import { runAdoptPrelink, runRollback } from '../importer/run-import.js'
 
 // Runtime-computed specifier: the typecheck project never reaches into
 // fixtures/ (the fixture app owns its dependency tree).
@@ -247,7 +250,10 @@ describe.skipIf(!canReachPostgres)(
           slug: 'invitations',
           fields: { organizationId: 'organization', inviterId: 'inviter' },
         },
-        apikey: { slug: 'apiKeys', fields: { userId: 'referenceId' } },
+        // @better-auth/api-key 1.7 names the owner `referenceId` — the
+        // payload-auth column's own name — so the model maps by slug only
+        // (a `userId` rename would target a field 1.7 no longer has).
+        apikey: { slug: 'apiKeys' },
         jwks: { slug: 'jwks' },
         // No rate-limit table exists in the dump, and adopting it keeps
         // the engine from creating a new collection (whose lock-relation
@@ -258,7 +264,13 @@ describe.skipIf(!canReachPostgres)(
       autoDeclare: true,
       options: {
         baseURL: ORIGIN,
-        secret: 'boot-secret-boot-secret-boot-secret',
+        // The payload-auth app's OWN Better Auth secret (issue #88): the
+        // jwt plugin's jwks private keys are encrypted with it, so a
+        // different secret fails every session read that signs a JWT.
+        // payload-auth passes no `secret` to Better Auth, so the fixture
+        // was seeded with Better Auth's built-in development default
+        // (production apps: BETTER_AUTH_SECRET / AUTH_SECRET).
+        secret: 'better-auth-secret-12345678901234567890',
         emailAndPassword: { enabled: true, requireEmailVerification: false },
         advanced: { cookiePrefix: 'bl' },
         plugins: [
@@ -443,6 +455,134 @@ describe.skipIf(!canReachPostgres)(
         /^[0-9a-f]{32}:[0-9a-f]{128}$/
       )
       await client.end()
+    })
+
+    // --- adopt-prelink (issue #88) -----------------------------------------
+    const prelinkManifest = join(tmpdir(), `pal-prelink-${Date.now()}.json`)
+    let usersBefore: unknown[] = []
+    let identitiesBefore: unknown[] = []
+
+    async function rawUsers(): Promise<{ users: unknown[]; identities: unknown[] }> {
+      const client = harness.fixtureClient(database)
+      await client.connect()
+      try {
+        return {
+          users: (await client.query('SELECT * FROM users ORDER BY id')).rows,
+          identities: (
+            await client.query('SELECT * FROM users_identities ORDER BY _parent_id, _order')
+          ).rows,
+        }
+      } finally {
+        await client.end()
+      }
+    }
+
+    function cookieOf(response: Response): string {
+      const name = engine.sessionCookieNames[0] ?? ''
+      const entry = response.headers.getSetCookie().find((value) => value.startsWith(`${name}=`))
+      return entry?.split(';', 1)[0] ?? ''
+    }
+
+    test('adopt-prelink dry run plans one identity per user and writes nothing', async () => {
+      const snapshot = await rawUsers()
+      usersBefore = snapshot.users
+      identitiesBefore = snapshot.identities
+      const lines: string[] = []
+      const result = await runAdoptPrelink({
+        configPath: 'unused',
+        apply: false,
+        manifestPath: prelinkManifest,
+        log: (line) => lines.push(line),
+        loadPayload: () => Promise.resolve(payload),
+      })
+      expect(result.users).toBe(4)
+      expect(result.linked).toBe(4)
+      // alice + carol are verified; bob + dave get the identity only.
+      expect(result.proofGranted).toBe(2)
+      expect(result.unverified).toBe(2)
+      expect(lines.join('\n')).toContain('dry run: nothing was written')
+      expect(existsSync(prelinkManifest)).toBe(false)
+      expect((await rawUsers()).identities).toEqual(identitiesBefore)
+    })
+
+    test('adopt-prelink --apply links every user; a Payload session resolves the ORIGINAL document', async () => {
+      const result = await runAdoptPrelink({
+        configPath: 'unused',
+        apply: true,
+        manifestPath: prelinkManifest,
+        loadPayload: () => Promise.resolve(payload),
+      })
+      expect(result.linked).toBe(4)
+      expect(statSync(prelinkManifest).mode & 0o777).toBe(0o600)
+      expect(readFileSync(prelinkManifest, 'utf8')).not.toMatch(/@example\.com/)
+      const carol = (
+        await payload.find({
+          collection: 'users',
+          where: { email: { equals: 'carol@example.com' } },
+          depth: 0,
+          overrideAccess: true,
+        })
+      ).docs[0] as unknown as Record<string, unknown>
+      expect(carol['linkable']).toBe(true)
+      expect(carol['linkableEmail']).toBe('carol@example.com')
+      expect(carol['identities']).toMatchObject([
+        { providerId: 'better-auth', providerUserId: String(carol['id']) },
+      ])
+      // A second pass finds everything linked and writes nothing new.
+      const again = await runAdoptPrelink({
+        configPath: 'unused',
+        apply: true,
+        manifestPath: prelinkManifest,
+        loadPayload: () => Promise.resolve(payload),
+      })
+      expect(again.linked).toBe(0)
+      expect(again.alreadyLinked).toBe(4)
+
+      // The Payload side: a Better Auth sign-in, then the plugin's own
+      // session resolution — verified (carol) and unverified (bob) alike
+      // land on their ORIGINAL documents, never a JIT-provisioned one.
+      for (const email of ['carol@example.com', 'bob@example.com']) {
+        const signIn = await engine.auth.handler(
+          new Request(`${ORIGIN}/api/auth/sign-in/email`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', origin: ORIGIN },
+            body: JSON.stringify({ email, password: PASSWORD }),
+          })
+        )
+        expect(signIn.status, email).toBe(200)
+        const session = await authLinkServer(payload).getSession(
+          new Headers({ cookie: cookieOf(signIn) })
+        )
+        const original = (
+          await payload.find({
+            collection: 'users',
+            where: { email: { equals: email } },
+            depth: 0,
+            overrideAccess: true,
+          })
+        ).docs
+        expect(original, email).toHaveLength(1)
+        expect(String(session?.['id']), email).toBe(String(original[0]?.id))
+      }
+      const users = await payload.count({ collection: 'users', overrideAccess: true })
+      expect(users.totalDocs).toBe(4)
+    })
+
+    test('rollback --manifest undoes the pre-link exactly (updated_at included)', async () => {
+      const undone = await runRollback({
+        configPath: 'unused',
+        databaseUrl: '',
+        apply: false,
+        sessions: 'carry',
+        manifestPath: prelinkManifest,
+        loadPayload: () => Promise.resolve(payload),
+      })
+      expect(undone.deleted).toBe(0)
+      expect(undone.restored).toBeGreaterThan(0)
+      const after = await rawUsers()
+      expect(after.users).toEqual(usersBefore)
+      expect(after.identities).toEqual(identitiesBefore)
+      rmSync(prelinkManifest, { force: true })
     })
   }
 )

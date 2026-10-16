@@ -243,6 +243,23 @@ import { exampleBaseURL } from './auth-cookie-names'
 export const verifySession = createSessionVerifier({ baseUrl: exampleBaseURL })
 ```
 
+`createSessionVerifier` options worth knowing:
+
+- `baseUrl` — required unless `NODE_ENV` is exactly `'development'`
+  (unset, `test`, `staging`, `preview`, and `production` all throw
+  `InvalidConfigError` at construction). An absolute http(s)
+  `sessionEndpoint` also satisfies it.
+- `trustProxy` (default `false`) — development host fallback only:
+  honor `X-Forwarded-Host`/`X-Forwarded-Proto`. Without it only the
+  direct `Host` header is read, over `http`.
+- `allowedDevelopmentHosts` (default: `localhost`, `127.0.0.1`,
+  `[::1]`) — development host fallback only: any other host fails
+  closed (`null`, reported via `onError`).
+- `timeoutMs` (default `5000`) — the session fetch aborts after this;
+  a timeout fails closed and is reported via `onError`.
+- `sessionEndpoint` — a path starting with a single `/` or an
+  absolute http(s) URL; protocol-relative values (`//host/x`) throw.
+
 ```tsx
 // app/(frontend)/layout.tsx
 import type { ReactNode } from 'react'
@@ -598,8 +615,15 @@ own that exact address: the plugin stores WHAT was proven
 role-manager creates, and updated by the provider-email resync) and
 the `linkable` toggle. The proof holds only while the document's
 email still equals `linkableEmail` — a self-service email change
-invalidates it automatically, and the stranger's placeholder from a
-pre-created document never matches. Email changes over REST on
+invalidates it automatically (the change itself clears `linkable`,
+`linkableEmail` and, on `auth.verify` hosts, Payload's `_verified`),
+and the stranger's placeholder from a pre-created document never
+matches. Payload's own `_verified` flag is never proof on its own:
+Payload keeps it across email changes, so a verified document that
+moved onto someone else's address would otherwise inherit their
+identity. When a provider identity does link, Payload's local
+sessions for that document are cleared — a local JWT issued before
+the link dies on its next request. Email changes over REST on
 documents with linked identities are role-manager-only (the
 provider's own resync is unaffected), and self-service local
 passwords on plugin-managed documents are stripped: one document
@@ -925,6 +949,30 @@ hand-rolled anything) and revokes via the internal adapter's
 revokes server-side _and_ expires cookies; direct
 `/api/auth/sign-out` calls revoke provider-side only (the plugin
 never sees them — prefer the plugin endpoint).
+
+## Query semantics and sort collation
+
+The Payload adapter answers Better Auth's queries with the same
+results as Better Auth's reference `memoryAdapter` — every operator,
+`null` handling, case-insensitive `eq`, numeric/date sorting, and
+`limit`/`offset` pagination are pinned against it by a differential
+test suite. The documented differences:
+
+- **String sort collation belongs to your database.** `findMany`
+  with `sortBy` on a text field orders by the database's collation:
+  binary on SQLite and MongoDB (`A, B, a, b`), the column collation on
+  Postgres. The memory adapter uses `localeCompare` (`a, A, b, B`).
+  Payload exposes no portable collation option, and re-sorting in
+  memory would break paginated windows, so the adapter does not
+  normalise. Better Auth core never pages through string-sorted
+  results; plugins or app code that do should sort on a normalised
+  (e.g. lower-cased) column.
+- **`null` placement** in sorted results follows the database
+  (first in ascending order on SQLite/MongoDB, last on Postgres).
+- **Unsupported operators fail loud:** `contains`, `starts_with`,
+  `ends_with`, case-insensitive `ne`/`in`/`not_in`, and a
+  case-insensitive `eq` combined with `OR` throw
+  `UnsupportedOperatorError` instead of returning wrong rows.
 
 ## Rate limiting (builder-owned)
 
@@ -1613,6 +1661,13 @@ in your build:
   `payload`/`payload/shared` symbol shipped source imports is
   pinned; a new import (which sets the real Payload floor) fails CI
   until it is verified against the band and noted here.
+  `CollectionBeforeDeleteHook` (organization delete cascade and the
+  last-owner guard) and `CollectionAfterDeleteHook` (the last-owner
+  guard's post-write re-check) are type-only imports present across
+  the whole Payload 3 band and v4. The guard also calls
+  `payload.db.updateOne` and `payload.db.create` (the database
+  adapter contract, present on every adapter in the band) to lock
+  the organization row and to restore a refused removal.
 
 ## Schema interoperability (Zod, Effect, Standard Schema)
 
@@ -1821,6 +1876,13 @@ split them, as the example does.
   it — and spoofed host headers would redirect the forwarded
   session cookie, so set the canonical origin in production
   instead of relying on the fallback.
+- **Verifier returns `null` in development.** `createSessionVerifier`
+  without `baseUrl` reads only the direct `Host` header (set
+  `trustProxy: true` behind a local proxy) and only accepts
+  `localhost`, `127.0.0.1`, `[::1]` (extend with
+  `allowedDevelopmentHosts`). Rejections and timeouts are reported
+  through `onError`. Outside `NODE_ENV=development` it throws at
+  construction without `baseUrl`.
 - **Clock skew.** Expiry checks run against the injected clock;
   wild skew reads as expired.
 
@@ -1895,6 +1957,172 @@ mid-request. When it fires: pin the upstream back inside the band
 and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
+
+## plugin 0.11.0 / provider-better-auth 0.8.0 / web 0.3.0 / migrate 0.5.0 (hardening release)
+
+One minor release across every package (core 0.7.0, next 0.4.0,
+react 0.3.0, tanstack-start 0.3.0, provider-authjs 0.4.0 too). No
+schema change. Read each section before you bump.
+
+### Users-collection write defaults
+
+**Upgrade impact:** no schema change; access defaults only.
+
+1. **Users `update` and `delete` are no longer open to every signed-in
+   user.** When your users collection declares no `access.update`, the
+   plugin now allows a user to update only their own document (role
+   managers: every document); with no `access.delete`, only role
+   managers delete users. Neither is allowed while impersonating.
+   Payload's own default (`Boolean(req.user)`) let any signed-in user
+   (with JIT sign-up, anyone) rewrite or delete any user, including
+   re-pointing a local admin's email and resetting its password. If
+   you relied on the open default, declare the access you want
+   explicitly.
+2. **A non-manager only ever changes their own email**, even when your
+   collection-level `update` is broader.
+3. **`unlock` is role managers only** by default (it was any signed-in
+   user).
+4. **`migrate export --out` and the import manifest are written
+   owner-only (0600)**, tightened before content lands. Manifest
+   values are bound to their entry, and rollback restores only the
+   fields the kit writes (`identities`, `roles`, `linkable`,
+   `linkableEmail`, `updatedAt`).
+5. **`sessionEndpoint` values with whitespace or control characters
+   throw** `InvalidConfigError` (URL parsing would strip them and could
+   resolve the path protocol-relative).
+
+### Organization governance; `_verified` is not linking proof
+
+**Upgrade impact:** no schema change. No column is added, removed,
+or retyped (the users snapshot is unchanged; the memberships
+collection only gains field access and hooks), so push and
+migrations both have nothing to do on SQLite, Postgres, and MongoDB.
+The changes are behavioural; read each before you bump.
+
+1. **Payload's `_verified` no longer admits a document to JIT email
+   linking on its own.** Only the plugin's `linkable` proof bound to
+   the current address (`linkableEmail`) does — what
+   [security-model.md](security-model.md) row 8 always documented.
+   Payload keeps `_verified` across email changes (and its default
+   field access lets any signed-in user write it), so a verified
+   document re-pointed at someone else's address used to inherit
+   their provider identity. **Operator step:** if you relied on
+   `_verified` alone for pre-existing host accounts, grant the proof
+   to the ones you trust. Audit first: before this release a
+   self-service email change kept `_verified`, so only grant it where
+   the address was verified AFTER its last change.
+
+   ```ts
+   const { docs } = await payload.find({
+     collection: 'users',
+     where: { and: [{ _verified: { equals: true } }, { linkable: { not_equals: true } }] },
+     pagination: false,
+     overrideAccess: true,
+   })
+   for (const doc of docs /* filtered by your audit */) {
+     await payload.update({
+       collection: 'users',
+       id: doc.id,
+       data: { linkable: true, linkableEmail: doc.email },
+       overrideAccess: true,
+     })
+   }
+   ```
+
+   The migration importer (`@payload-auth-link/migrate`) already
+   grants `linkable` + `linkableEmail` from verified emails and is
+   unaffected. A refused link whose provisioning then collides with
+   the existing document now logs
+   `provisioning refused: the email is held by an existing document
+that is not proven to own it` and answers a typed 401 (it used to
+   surface as a storage error).
+
+2. **A self-service email change resets the proof.** Changing a
+   document's email in any write that is neither the plugin's
+   provider-email resync nor a role manager's clears `linkable` and
+   `linkableEmail`, and — on `auth.verify` hosts — `_verified`. Users
+   who change their own email on a verify host must re-verify before
+   local sign-in works again (Payload does not resend the
+   verification mail by itself; trigger it from your app).
+
+3. **Linking revokes earlier local sessions.** When a provider
+   identity links to a document, Payload's `sessions` array for it is
+   cleared (`auth.useSessions`, Payload's default), so a local JWT
+   issued before the link is refused on its next request. Hosts with
+   `useSessions: false` get the same outcome from the account-control
+   gate, which now refuses `local-jwt` requests on provider-linked
+   documents (401) unless `allowLocalCredentialsForLinkedDocs` is set.
+
+4. **Organization governance.** With `organizations.enabled`:
+   memberships can no longer change `organization` or `user` after
+   create (REST writes to them are dropped; Local-API writes throw);
+   role writes never exceed the caller's own org role (an `admin`
+   cannot create, promote to, or edit an owner); the last active
+   owner of an organization cannot be demoted or removed (`409`);
+   `DELETE /api/organizations/:id` cascades the organization's
+   memberships and invitations instead of failing; and every
+   organization write, membership write, invite, and acceptance is
+   refused (`403`) and audited while impersonating. Seed scripts that
+   re-pointed memberships through the Local API must delete and
+   re-create the row instead.
+
+5. **Organization write scoping.** Also with `organizations.enabled`:
+   - Bulk `PATCH`/`DELETE /api/organizations?where=…` only reaches
+     organizations the caller manages (owns, for delete). A request
+     body field no longer decides which organization authorizes the
+     write.
+   - Deleting an organization is owner-only. An org `admin` now gets
+     `403`.
+   - `verifiedDomains` can be written only by Payload role managers
+     (`roleManagerRoles`), and not while impersonating. Org owners and
+     admins who set domains through REST or the admin panel will see
+     the field ignored. Review existing `verifiedDomains` entries once
+     after upgrading, because before this release any organization
+     creator could list any domain.
+   - Removing or demoting an owner now writes the organization row
+     first (it bumps `updatedAt`). This serializes concurrent owner
+     removals.
+   - Accepting an invitation after already joining the organization
+     answers `409` instead of a storage validation error.
+
+### Session verifier, logout, and redirect hardening
+
+No schema change. Behavior changes that may need attention:
+
+1. **`createSessionVerifier` requires `baseUrl` unless
+   `NODE_ENV === 'development'`.** It used to fall back to the
+   request's host headers on every runtime that was not `production`
+   (test, staging, preview, unset). Those now throw
+   `InvalidConfigError` at construction — pass `baseUrl` (or an
+   absolute `sessionEndpoint`). In development the fallback ignores
+   `X-Forwarded-Host`/`-Proto` unless you set `trustProxy: true`,
+   only accepts `localhost`, `127.0.0.1`, and `[::1]` (extend with
+   `allowedDevelopmentHosts`), and protocol-relative `sessionEndpoint`
+   values throw. The verifier's fetch now times out after
+   `timeoutMs` (default 5000) and no longer follows redirects; both
+   fail closed. `resolveSessionUrl`'s host fallback now defaults to
+   off, and `resolveOrigin` (core) honors forwarded headers only with
+   `trustProxy`.
+2. **`safeRedirectPath` returns the normalised path.** Dot segments
+   resolve before the API-prefix and sign-in checks, so
+   `/x/../api/...` and `/./sign-in` fall back, and a benign
+   `/x/../account` comes back as `/account`.
+3. **Logout expires more cookies.** `DELETE /api/auth-link/session`
+   also expires Better Auth's `dont_remember` and cookie-cache
+   `session_data` cookies, the `__Secure-`/plain counterpart of every
+   name, and the configured `legacySessions` names. A logout that
+   presents no session cookie (and no `Authorization`/`x-api-key`
+   header) answers without querying any provider — still the
+   idempotent `401` with the clearing cookies.
+4. **Provider login view paths follow your config.** The break-glass
+   form posts to `${routes.api}/${usersCollection}/login` and lands on
+   `routes.admin`; set `admin.signInPath`/`admin.authBase` when your
+   sign-in page or Better Auth mount differs from `/sign-in` and
+   `/api/auth`. The import map needs no regeneration (same
+   component, new props).
+5. **React provider sequencing.** Only the newest session read writes
+   state; `signOut` aborts in-flight reads. `fetchSession` accepts an
+   optional `AbortSignal`.
 
 ## 0.10.x → 0.11.0 (recorded sign-in methods; opaque session handles)
 
@@ -4363,17 +4591,22 @@ anything — DNA invariants are binding.
 
 ## Release
 
-Releases ride changesets on `main` (`.github/workflows/release.yml`):
+Releases ride changesets on `main` (`.github/workflows/release.yml`).
+The release workflow is gated on CI: it runs only when the `ci`
+workflow completes **successfully** for a push to `main`, and only
+while that tested commit is still `main`'s head (if `main` moved, the
+newer commit's CI run releases instead). Publishing runs in the
+`npm-publish` GitHub environment.
 
-1. Land PRs with changesets. The release workflow then opens (or
-   updates) a "Version Packages" PR.
+1. Land PRs with changesets. Once CI is green on `main`, the release
+   workflow opens (or updates) a "Version Packages" PR.
 2. **Run CI on the Version Packages PR before merging.** GitHub does
    not trigger workflows for PRs opened by the workflow's own
    `GITHUB_TOKEN`, so the PR arrives with no checks. Close and
    reopen it (`gh pr close <n> && gh pr reopen <n>`) to start CI, and
    merge only when every check is green.
-3. Merging it makes CI publish every unpublished version through
-   `scripts/publish.mjs`. Tarballs are packed by Bun (real dependency
+3. Merging it (once CI passes on `main`) publishes every unpublished
+   version through `scripts/publish.mjs`. Tarballs are packed by Bun (real dependency
    versions, never `workspace:`) and published by npm through trusted
    publishing with provenance, so no npm token exists anywhere. All 8
    packages trust `jellologic/payload-auth-link` → `release.yml`.
@@ -4391,8 +4624,34 @@ use an empty changeset to ride metadata into an unpublished version:
 delete it once nothing else is pending.
 
 `bun run release:check` gates every PR on the packed tarballs: `publint`
-and `attw`, no undeclared imports, no shipped test files, no
-`workspace:` ranges, and a README per package.
+and `attw`, no undeclared imports, no `.d.ts` imports of untyped
+dependencies, no shipped test files, no `workspace:` ranges, a README
+per package, and a `LICENSE` in every tarball (each package commits a
+copy of the root `LICENSE`; update all of them together).
+
+### Publishing never happens locally
+
+`scripts/publish.mjs` refuses a real publish outside GitHub Actions
+(`GITHUB_ACTIONS=true`); locally only `bun run release -- --dry-run`
+works. A local publish ships **without provenance**, so it is an
+emergency-only path (e.g. GitHub Actions is down and a security fix
+must ship):
+
+```sh
+PAL_ALLOW_LOCAL_PUBLISH=i-understand-no-provenance bun run release
+```
+
+Record why in the release notes, and publish the next version from CI
+so the line regains provenance. Never set that variable in CI or a
+shell profile.
+
+### Workflow hygiene
+
+`bun run ci:lint` (part of `bun run check`) parses every workflow and
+`.github/dependabot.yml` strictly, requires top-level `permissions`,
+and requires every action pinned by full commit SHA with a version
+comment (`uses: actions/checkout@<sha> # v4.4.0`). Dependabot's
+`github-actions` updates keep the pins current.
 
 ---
 
@@ -4406,14 +4665,46 @@ Pre-1.0: only the latest `0.x` release receives security fixes.
 
 ## Reporting a Vulnerability
 
-Report security issues privately: open a private security advisory on
-the repository host (or email the maintainers) instead of filing a
-public issue. Include the affected package and version, reproduction
-steps, and impact.
+**Do not file a public issue, pull request, or discussion.**
 
-We aim to acknowledge within 72 hours and to ship a fix or mitigation
-before any public disclosure. Please do not disclose until a fix is
-released.
+Report privately through GitHub's private vulnerability reporting:
+
+**<https://github.com/jellologic/payload-auth-link/security/advisories/new>**
+
+(Repository → **Security** tab → **Report a vulnerability**.) The
+report stays visible only to you and the maintainers, and the fix is
+coordinated in a private advisory with a CVE requested where
+applicable.
+
+Include the affected package(s) and version(s), reproduction steps or a
+proof of concept, and the impact you see (what an attacker gains).
+
+If you cannot use GitHub's form, contact the maintainer through the
+[@jellologic GitHub profile](https://github.com/jellologic) to arrange
+another private channel. There is no dedicated security email address.
+
+### Response times
+
+| Step                            | Target                                 |
+| ------------------------------- | -------------------------------------- |
+| Acknowledge the report          | within 3 business days                 |
+| Triage + severity assessment    | within 7 days                          |
+| Fix or mitigation for High/Crit | within 30 days (sooner when exploited) |
+| Public advisory (credits you)   | when the fixed release is out          |
+
+Please do not disclose publicly until a fixed release is available.
+We will keep you updated at each step; if a deadline slips, we will
+tell you why and the new date.
+
+## Release integrity
+
+Every published `@payload-auth-link/*` version is built and published
+by this repository's `release` workflow after CI passes, through npm
+trusted publishing with provenance. Verify a version with
+`npm audit signatures`, or `bun run verify:published <version>
+--expect-provenance` from a checkout. A version without provenance
+was published through the documented emergency path and is called out
+in its release notes.
 
 ## Scope Notes
 

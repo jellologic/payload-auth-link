@@ -1,8 +1,10 @@
 import { isRecord } from '@payload-auth-link/core'
 import { pathToFileURL } from 'node:url'
 import { applyImport, summarizePlanRows } from './apply.js'
+import { prelinkUsers, type PrelinkResult } from './prelink.js'
 import {
   defaultManifestPath,
+  defaultPrelinkManifestPath,
   finalizeManifest,
   readManifest,
   rollbackImport,
@@ -122,10 +124,17 @@ function assertTargetCollections(config: unknown, slugs: TargetSlugMap): void {
  * Boot the loaded config with a watchdog (#75): a boot that never
  * settles must fail loudly after a bounded wait, not park the CLI
  * forever.
+ *
+ * A FRESH, uncached instance (issue #88): `getPayload`'s module cache
+ * would hand a later command in the same process the instance an
+ * earlier command already destroyed. The caller owns the instance and
+ * destroys it (pool, crons) when the command ends.
  */
 async function bootPayload(config: unknown): Promise<import('payload').Payload> {
-  const { getPayload } = await import('payload')
-  const boot = getPayload({ config: config as Parameters<typeof getPayload>[0]['config'] })
+  const { BasePayload } = await import('payload')
+  const boot = new BasePayload().init({
+    config: config as Parameters<InstanceType<typeof BasePayload>['init']>[0]['config'],
+  })
   let timer: NodeJS.Timeout | undefined
   const watchdog = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
@@ -163,14 +172,91 @@ function slugsOf(options: ImportCommandOptions): TargetSlugMap {
  * be a placeholder the loader never reads.
  */
 async function bootTargetPayload(
-  options: ImportCommandOptions
+  options: ImportCommandOptions,
+  requireTargets = true
 ): Promise<import('payload').Payload> {
   if (options.loadPayload !== undefined) {
     return options.loadPayload(options.configPath)
   }
   const { config } = await loadConfigModule(options.configPath)
-  assertTargetCollections(config, slugsOf(options))
+  if (requireTargets) {
+    assertTargetCollections(config, slugsOf(options))
+  }
   return bootPayload(config)
+}
+
+/**
+ * Run `work` against the target Payload and ALWAYS release it
+ * (issue #88): an instance this command booted is destroyed —
+ * database pool closed, crons stopped — whether `work` succeeds or
+ * throws, so the CLI exits after a successful run instead of idling
+ * on open handles. An injected `loadPayload` instance belongs to the
+ * caller and is left running.
+ */
+async function withTargetPayload<T>(
+  options: ImportCommandOptions,
+  work: (payload: import('payload').Payload) => Promise<T>,
+  requireTargets = true
+): Promise<T> {
+  const payload = await bootTargetPayload(options, requireTargets)
+  try {
+    return await work(payload)
+  } finally {
+    if (options.loadPayload === undefined) {
+      await releasePayload(payload)
+    }
+  }
+}
+
+/**
+ * Destroy a booted Payload AND close its connection pool (issue #88).
+ * `payload.destroy()` stops crons and resets the adapter, but the SQL
+ * adapters' `destroy` leaves the driver pool open — and
+ * `@payloadcms/db-postgres` checks one client out of the pool at
+ * connect time and never releases it, so even `pool.end()` would wait
+ * forever. Those are exactly the handles that kept a finished CLI
+ * alive. The pool is reached structurally: every checked-out client
+ * is released-and-destroyed, then `pool.end()` (bounded); SQLite/libsql
+ * closes its `client`.
+ */
+async function releasePayload(payload: import('payload').Payload): Promise<void> {
+  const db: unknown = payload.db
+  await payload.destroy()
+  if (!isRecord(db)) {
+    return
+  }
+  const pool = db['pool']
+  if (isRecord(pool) && typeof pool['end'] === 'function') {
+    const clients: unknown = pool['_clients']
+    if (Array.isArray(clients)) {
+      for (const client of (clients as unknown[]).slice()) {
+        if (isRecord(client) && typeof client['release'] === 'function') {
+          try {
+            // `true` destroys the connection instead of returning it.
+            ;(client['release'] as (destroy: boolean) => void).call(client, true)
+          } catch {
+            // Already released (an idle client) — `end()` closes it.
+          }
+        }
+      }
+    }
+    let timer: NodeJS.Timeout | undefined
+    await Promise.race([
+      (pool['end'] as () => Promise<void>).call(pool),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, 5_000)
+        timer.unref()
+      }),
+    ])
+    if (timer !== undefined) {
+      clearTimeout(timer)
+    }
+    return
+  }
+  const client = db['client']
+  if (isRecord(client) && typeof client['close'] === 'function') {
+    ;(client['close'] as () => void).call(client)
+  }
 }
 
 /**
@@ -306,20 +392,21 @@ export async function runFromPayloadAuth(options: ImportCommandOptions): Promise
   const manifestPath = options.manifestPath ?? defaultManifestPath
   const existingManifest = readManifest(manifestPath)
 
-  const payload = await bootTargetPayload(options)
-  const result = await applyImport({
-    payload,
-    sourceConnectionString: options.databaseUrl,
-    apply: options.apply,
-    sessions: options.sessions,
-    manifest: existingManifest,
-    manifestPath,
-    sourceCounts,
-    sourceDatabase: options.databaseUrl.replace(/\/\/[^@]*@/, '//***@'),
-    slugs,
-    sourceTables,
-    log,
-  })
+  const result = await withTargetPayload(options, (payload) =>
+    applyImport({
+      payload,
+      sourceConnectionString: options.databaseUrl,
+      apply: options.apply,
+      sessions: options.sessions,
+      manifest: existingManifest,
+      manifestPath,
+      sourceCounts,
+      sourceDatabase: options.databaseUrl.replace(/\/\/[^@]*@/, '//***@'),
+      slugs,
+      sourceTables,
+      log,
+    })
+  )
   const plan: ImportPlan = {
     ...result.plan,
     warnings: [
@@ -339,6 +426,13 @@ export async function runFromPayloadAuth(options: ImportCommandOptions): Promise
     }
     for (const row of plan.unmappable) {
       log(`  X ${row.model} #${row.key}: ${row.reason}`)
+    }
+    if (options.apply && plan.unmappable.length === 0) {
+      log(
+        `applied: manifest at ${manifestPath} (mode 0600; ids and sealed values only). Next: verify, then finalize after your soak window.`
+      )
+    } else if (!options.apply) {
+      log('dry run: nothing was written. Re-run with --apply to copy.')
     }
   }
   return {
@@ -375,14 +469,15 @@ export async function runVerify(options: ImportCommandOptions): Promise<VerifyRe
     return result
   }
 
-  const payload = await bootTargetPayload(options)
-  const result = await verifyImport({
-    payload,
-    sourceConnectionString: options.databaseUrl,
-    slugs: slugsOf(options),
-    sourceTables: sourceTablesOf(options),
-    sessions: options.sessions,
-  })
+  const result = await withTargetPayload(options, (payload) =>
+    verifyImport({
+      payload,
+      sourceConnectionString: options.databaseUrl,
+      slugs: slugsOf(options),
+      sourceTables: sourceTablesOf(options),
+      sessions: options.sessions,
+    })
+  )
   if (!options.json) {
     for (const check of result.checks) {
       log(`  ${check.passed ? 'ok ' : 'FAIL'} ${check.name}`)
@@ -390,6 +485,7 @@ export async function runVerify(options: ImportCommandOptions): Promise<VerifyRe
     for (const issue of result.issues) {
       log(`  [${issue.code}] ${issue.detail}`)
     }
+    log(result.ok ? 'verify: ok' : `verify: ${result.issues.length} mismatch(es)`)
   }
   return result
 }
@@ -407,9 +503,14 @@ export async function runRollback(
   if (manifest.finalized) {
     throw new Error('the migration is finalized; rollback is no longer possible')
   }
-  const payload = await bootTargetPayload(options)
-  const result = await rollbackImport({ payload, manifest, log })
-  return result
+  // A prelink manifest touches only host fields; its rollback needs no
+  // ba-* target collections in the config.
+  const requireTargets = manifest.kind !== 'adopt-prelink'
+  return withTargetPayload(
+    options,
+    (payload) => rollbackImport({ payload, manifest, log, manifestPath }),
+    requireTargets
+  )
 }
 
 /** The `finalize` command — manifest-only; no Payload instance is loaded. */
@@ -427,4 +528,70 @@ export function runFinalize(
     `finalized: the manifest at ${manifestPath} is now read-only. Legacy tables may be dropped in a separate, later migration — nothing is dropped for you.`
   )
   return Promise.resolve(finalized)
+}
+
+/** Options for `adopt-prelink` (issue #88). */
+export type PrelinkCommandOptions = Pick<
+  ImportCommandOptions,
+  'configPath' | 'apply' | 'manifestPath' | 'json' | 'log' | 'loadPayload'
+> & {
+  readonly usersSlug?: string | undefined
+  readonly verifiedField?: string | undefined
+}
+
+/**
+ * The `adopt-prelink` command (issues #49, #88): pre-link every adopted
+ * user (one better-auth identity; the linking proof for verified
+ * emails). Dry run by default; `--apply` writes and records the
+ * manifest that `rollback --manifest` undoes exactly.
+ */
+export async function runAdoptPrelink(options: PrelinkCommandOptions): Promise<PrelinkResult> {
+  const log = log_(options)
+  const manifestPath = options.manifestPath ?? defaultPrelinkManifestPath
+  const existing = readManifest(manifestPath)
+  if (existing !== null && existing.kind !== 'adopt-prelink') {
+    throw new Error(
+      `the manifest at ${manifestPath} belongs to an import run, not adopt-prelink — pass a different --manifest`
+    )
+  }
+  if (existing?.finalized === true) {
+    throw new Error(`the manifest at ${manifestPath} is finalized; nothing to pre-link`)
+  }
+  const importOptions: ImportCommandOptions = {
+    configPath: options.configPath,
+    databaseUrl: '',
+    apply: options.apply,
+    sessions: 'carry',
+    ...(options.loadPayload === undefined ? {} : { loadPayload: options.loadPayload }),
+  }
+  const result = await withTargetPayload(
+    importOptions,
+    (payload) =>
+      prelinkUsers({
+        payload,
+        apply: options.apply,
+        manifest: existing,
+        manifestPath,
+        usersSlug: options.usersSlug,
+        verifiedField: options.verifiedField,
+        log,
+      }),
+    false
+  )
+  if (options.json !== true) {
+    log(
+      `  users ${result.users}: ${result.linked} to link, ${result.alreadyLinked} already linked, ${result.proofGranted} verified-email proof grant(s), ${result.unverified} unverified (identity only)`
+    )
+    for (const row of result.unmappable) {
+      log(`  X ${row.model} #${row.key}: ${row.reason}`)
+    }
+    if (result.unmappable.length === 0) {
+      log(
+        options.apply
+          ? `applied: manifest at ${manifestPath} (mode 0600). Undo with: rollback --config <config> --manifest ${manifestPath}`
+          : 'dry run: nothing was written. Re-run with --apply to pre-link.'
+      )
+    }
+  }
+  return result
 }

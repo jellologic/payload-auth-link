@@ -1,0 +1,38 @@
+# Code owners (issue #85). With "Require review from Code Owners" on
+# the main branch ruleset, changes here need an owner's approval.
+# Later matching patterns take precedence over earlier ones.
+
+# Default owner for everything.
+*                                         @jellologic
+
+# Auth-critical runtime: sessions, access control, CSRF, strategy,
+# verification, redirects, provider bridges.
+/packages/core/                           @jellologic
+/packages/plugin/src/access.ts            @jellologic
+/packages/plugin/src/endpoints.ts         @jellologic
+/packages/plugin/src/hooks.ts             @jellologic
+/packages/plugin/src/strategy.ts          @jellologic
+/packages/plugin/src/session.ts           @jellologic
+/packages/plugin/src/collections.ts       @jellologic
+/packages/plugin/src/compat-shim.ts       @jellologic
+/packages/web/                            @jellologic
+/packages/next/                           @jellologic
+/packages/tanstack-start/                 @jellologic
+/packages/provider-better-auth/           @jellologic
+/packages/provider-authjs/                @jellologic
+/packages/migrate/src/importer/           @jellologic
+/snapshots/schema/                        @jellologic
+
+# Supply chain: CI, release, publishing, dependencies, policy.
+/.github/                                 @jellologic
+/.changeset/config.json                   @jellologic
+/scripts/publish.mjs                      @jellologic
+/scripts/release-check.mjs                @jellologic
+/scripts/changesets-output.mjs            @jellologic
+/scripts/check-ci-config.mjs              @jellologic
+/package.json                             @jellologic
+/packages/*/package.json                  @jellologic
+/bun.lock                                 @jellologic
+/SECURITY.md                              @jellologic
+/LICENSE                                  @jellologic
+/packages/*/LICENSE                       @jellologic

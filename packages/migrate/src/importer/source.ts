@@ -31,10 +31,22 @@ export type SourceUser = {
   /** Stored role values from the `users_role` child table. */
   readonly roles: readonly string[]
   readonly accounts: readonly SourceAccount[]
+  /**
+   * Better Auth admin-plugin ban state (issue #88), `null` when the
+   * source layout has no such column (the plugin was never installed).
+   */
+  readonly banned: boolean | null
+  readonly banReason: string | null
+  readonly banExpires: Date | null
+  /** Better Auth anonymous-plugin marker; `null` when no column exists. */
+  readonly isAnonymous: boolean | null
 }
 
 export type SourceAccount = {
   readonly id: string
+  /** Source row timestamps, carried onto the target row (issue #88). */
+  readonly createdAt: Date | null
+  readonly updatedAt: Date | null
   readonly accountId: string
   readonly providerId: string
   readonly password: string | null
@@ -76,14 +88,24 @@ const requiredColumns: Readonly<Record<SourceModel, readonly string[]>> = {
   users_role: ['parent_id', 'value'],
 }
 
-export async function openSource(connectionString: string): Promise<Client> {
+/**
+ * The slice of a `pg` client the read side uses. Public signatures take
+ * this structural type (a `pg.Client` satisfies it) so the published
+ * `.d.ts` never references `pg` — consumers need no `@types/pg`.
+ */
+export interface SourceClient {
+  query(text: string, values?: unknown[]): Promise<{ rows: unknown[] }>
+  end(): Promise<void>
+}
+
+export async function openSource(connectionString: string): Promise<SourceClient> {
   const client = new Client({ connectionString })
   await client.connect()
   return client
 }
 
 /** The columns one table actually has (customized layouts drop columns). */
-async function columnsOf(client: Client, table: string): Promise<Set<string>> {
+async function columnsOf(client: SourceClient, table: string): Promise<Set<string>> {
   const result = await client.query(
     `SELECT column_name FROM information_schema.columns
      WHERE table_schema = 'public' AND table_name = $1`,
@@ -92,7 +114,7 @@ async function columnsOf(client: Client, table: string): Promise<Set<string>> {
   return new Set(result.rows.map((row) => String((row as { column_name: unknown }).column_name)))
 }
 
-async function tableExists(client: Client, table: string): Promise<boolean> {
+async function tableExists(client: SourceClient, table: string): Promise<boolean> {
   const result = await client.query(
     `SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1`,
     [table]
@@ -108,7 +130,7 @@ async function tableExists(client: Client, table: string): Promise<boolean> {
  * read, planned, or written past a failed probe.
  */
 export async function probeSourceLayout(
-  client: Client,
+  client: SourceClient,
   tables: ResolvedSourceTables
 ): Promise<readonly SourceLayoutIssue[]> {
   const issues: SourceLayoutIssue[] = []
@@ -146,7 +168,7 @@ export async function probeSourceLayout(
  * throw here means the probe was skipped.
  */
 export async function countTables(
-  client: Client,
+  client: SourceClient,
   tables: readonly string[]
 ): Promise<Record<string, number>> {
   const counts: Record<string, number> = {}
@@ -170,7 +192,7 @@ function text(value: unknown): string | null {
 
 /** Every source user, with role rows and accounts attached. */
 export async function readSourceUsers(
-  client: Client,
+  client: SourceClient,
   tables: ResolvedSourceTables = defaultSourceTables
 ): Promise<SourceUser[]> {
   const usersTable = tables['users']
@@ -179,8 +201,14 @@ export async function readSourceUsers(
   if (usersTable === null) {
     return []
   }
+  // Plugin columns (admin bans, anonymous marker) exist only when the
+  // payload-auth app installed those plugins — read them when present.
+  const userColumns = await columnsOf(client, usersTable)
+  const optionalUserColumns = ['banned', 'ban_reason', 'ban_expires', 'is_anonymous'].filter(
+    (column) => userColumns.has(column)
+  )
   const users = await client.query(
-    `SELECT id, email, name, email_verified, image, created_at, updated_at FROM ${usersTable} ORDER BY id`
+    `SELECT ${['id', 'email', 'name', 'email_verified', 'image', 'created_at', 'updated_at', ...optionalUserColumns].join(', ')} FROM ${usersTable} ORDER BY id`
   )
   const rolesTable = tables['users_role']
   const roleRows =
@@ -193,19 +221,37 @@ export async function readSourceUsers(
     list.push(row.value)
     rolesByUser.set(String(row.parent_id), list)
   }
+  const accountColumns =
+    accountsTable === null ? new Set<string>() : await columnsOf(client, accountsTable)
+  const accountTimestamps = ['created_at', 'updated_at'].filter((column) =>
+    accountColumns.has(column)
+  )
   const accounts =
     accountsTable === null
       ? { rows: [] as unknown[] }
       : await client.query(
-          `SELECT id, account_id, provider_id, password, access_token, refresh_token, id_token,
-            scope, access_token_expires_at, refresh_token_expires_at, user_id
-     FROM ${accountsTable} ORDER BY id`
+          `SELECT ${[
+            'id',
+            'account_id',
+            'provider_id',
+            'password',
+            'access_token',
+            'refresh_token',
+            'id_token',
+            'scope',
+            'access_token_expires_at',
+            'refresh_token_expires_at',
+            'user_id',
+            ...accountTimestamps,
+          ].join(', ')} FROM ${accountsTable} ORDER BY id`
         )
   const accountsByUser = new Map<string, SourceAccount[]>()
   for (const row of accounts.rows as Record<string, unknown>[]) {
     const userId = String(row.user_id)
     const account: SourceAccount = {
       id: String(row.id),
+      createdAt: iso(row.created_at),
+      updatedAt: iso(row.updated_at),
       accountId: String(row.account_id),
       providerId: String(row.provider_id),
       password: text(row.password),
@@ -233,6 +279,10 @@ export async function readSourceUsers(
       updatedAt: iso(row.updated_at) ?? new Date(),
       roles: rolesByUser.get(id) ?? [],
       accounts: accountsByUser.get(id) ?? [],
+      banned: userColumns.has('banned') ? row.banned === true : null,
+      banReason: userColumns.has('ban_reason') ? text(row.ban_reason) : null,
+      banExpires: userColumns.has('ban_expires') ? iso(row.ban_expires) : null,
+      isAnonymous: userColumns.has('is_anonymous') ? row.is_anonymous === true : null,
     })
   }
   return out
@@ -244,14 +294,22 @@ export async function readSourceUsers(
  * asking for it, and an unmapped missing table aborts at the probe.
  */
 export async function readFlatRows(
-  client: Client,
+  client: SourceClient,
   table: string,
-  columns: readonly string[]
+  columns: readonly string[],
+  /**
+   * Columns read only when the layout has them (issue #88: row
+   * timestamps) — an absent optional column is simply not selected,
+   * and the row carries no key for it.
+   */
+  optionalColumns: readonly string[] = []
 ): Promise<SourceRow[]> {
   if (!(await tableExists(client, table))) {
     throw new Error(`source table '${table}' is missing — run probeSourceLayout first`)
   }
-  const result = await client.query(`SELECT ${columns.join(', ')} FROM ${table} ORDER BY id`)
+  const existing = optionalColumns.length > 0 ? await columnsOf(client, table) : new Set<string>()
+  const selected = [...columns, ...optionalColumns.filter((column) => existing.has(column))]
+  const result = await client.query(`SELECT ${selected.join(', ')} FROM ${table} ORDER BY id`)
   return result.rows as SourceRow[]
 }
 
@@ -274,7 +332,7 @@ export type OrphanScan = {
  * of passing silently.
  */
 export async function findOrphans(
-  client: Client,
+  client: SourceClient,
   tables: ResolvedSourceTables = defaultSourceTables
 ): Promise<OrphanScan> {
   const orphans: Unmappable[] = []

@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
@@ -90,6 +91,10 @@ function statusFor(user: SessionUser | null): AuthLinkStatus {
  * synced into context when its value changes; re-renders passing the
  * same user as a fresh object change nothing, so a client-side sign-out
  * is never undone by a stale snapshot. Refresh stays explicit.
+ *
+ * Loads are sequenced: only the newest read writes state (late,
+ * out-of-order results are dropped), and `signOut` cancels in-flight
+ * reads so none can flip the UI back to authenticated afterwards.
  */
 export function AuthLinkProvider({
   children,
@@ -114,47 +119,80 @@ export function AuthLinkProvider({
     }
   }
 
-  const loadSession = useCallback(
-    () => fetchSession(sessionEndpoint, fetchImpl),
+  // Request sequencing. Every load (mount, refresh) takes a ticket;
+  // only the newest ticket may write state, so an older read that
+  // resolves late (out-of-order refreshes) is dropped. Sign-out bumps
+  // the generation and aborts in-flight loads, so a read that started
+  // before sign-out can never resurrect the signed-out session.
+  const generation = useRef(0)
+  const inFlight = useRef(new Set<AbortController>())
+
+  const abortInFlight = useCallback((): boolean => {
+    const aborted = inFlight.current.size > 0
+    for (const controller of inFlight.current) {
+      controller.abort()
+    }
+    inFlight.current.clear()
+    return aborted
+  }, [])
+
+  const load = useCallback(
+    async (controller: AbortController = new AbortController()): Promise<void> => {
+      generation.current += 1
+      const ticket = generation.current
+      inFlight.current.add(controller)
+      try {
+        const current = await fetchSession(sessionEndpoint, fetchImpl, controller.signal)
+        if (ticket !== generation.current || controller.signal.aborted) {
+          return
+        }
+        setUser(current.user)
+        setGuest(current.guest)
+        setStatus(statusFor(current.user))
+      } finally {
+        inFlight.current.delete(controller)
+      }
+    },
     [sessionEndpoint, fetchImpl]
   )
 
-  const refresh = useCallback(async () => {
-    const current = await loadSession()
-    setUser(current.user)
-    setGuest(current.guest)
-    setStatus(current.user === null ? 'anonymous' : 'authenticated')
-  }, [loadSession])
+  const refresh = useCallback(() => load(), [load])
 
   const signOut = useCallback(async () => {
+    // Cancel reads that started before sign-out.
+    generation.current += 1
+    const cancelledLoad = abortInFlight()
     const revoked = await revokeSession(sessionEndpoint, fetchImpl)
     if (revoked) {
+      // Also cancel reads started while the revocation was in flight.
+      generation.current += 1
+      abortInFlight()
       setUser(null)
       setGuest(null)
       setStatus('anonymous')
+    } else if (cancelledLoad) {
+      // Revocation failed but a cancelled read left the state unknown:
+      // re-read so the UI reflects the (still live) session honestly.
+      await load()
     }
     return revoked
-  }, [sessionEndpoint, fetchImpl])
+  }, [sessionEndpoint, fetchImpl, abortInFlight, load])
 
   useEffect(() => {
     if (initialUser !== undefined) {
       return
     }
-    let cancelled = false
     // Mount-only initial load (the async boundary keeps this out of the
     // sync-setState-in-effect rule); `refresh` stays the public re-read.
-    void (async () => {
-      const current = await loadSession()
-      if (!cancelled) {
-        setUser(current.user)
-        setGuest(current.guest)
-        setStatus(current.user === null ? 'anonymous' : 'authenticated')
-      }
-    })()
+    const mount = new AbortController()
+    void load(mount)
+    // Cancel only this mount read: the effect re-runs whenever the
+    // `initialUser` prop changes, and an explicit `refresh()` (the
+    // post-sign-in read) in flight at that moment must still land.
     return () => {
-      cancelled = true
+      mount.abort()
     }
-  }, [initialUser, loadSession])
+  }, [initialUser, load])
 
   const value = useMemo<AuthLinkContextValue>(
     () => ({ user, guest, status, refresh, signOut }),

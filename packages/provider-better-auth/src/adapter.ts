@@ -494,6 +494,28 @@ function rethrowAsOperation(
  * factory validates the Better Auth schema against the Payload mapping
  * when the instance is created, failing fast on renames and unmapped
  * fields. Transactions run sequentially (Payload commits per operation).
+ *
+ * Query semantics match Better Auth's reference `memoryAdapter` (pinned
+ * by `adapter-differential.test.ts`) with these documented differences:
+ *
+ * - **String sort collation is the database's, not `localeCompare`.**
+ *   `findMany({ sortBy })` delegates ordering to Payload, which exposes
+ *   no portable collation option: SQLite and MongoDB order by binary
+ *   (code point: `'A' < 'B' < 'a' < 'b'`), Postgres by the column's
+ *   collation (often locale-aware). The memory adapter orders with
+ *   `String.prototype.localeCompare` (`'a' < 'A' < 'b' < 'B'`).
+ *   Normalising in memory would break `limit`/`offset` pagination (the
+ *   window is cut by the database), so the difference is documented
+ *   rather than papered over. Better Auth core issues no string-sorted
+ *   paged reads; numbers, dates, and same-case strings agree.
+ * - **`null` ordering** follows the database (SQLite/MongoDB: first in
+ *   ascending order, like the memory adapter; Postgres: last).
+ * - **Unordered reads** (no `sortBy`) return rows in Payload's default
+ *   order, not insertion order; callers must not rely on either.
+ * - **Pattern operators** (`contains`, `starts_with`, `ends_with`),
+ *   case-insensitive `ne`/`in`/`not_in`, and a case-insensitive `eq`
+ *   combined with an `OR` connector throw `UnsupportedOperatorError`
+ *   rather than risk a silently wrong translation.
  */
 export function createPayloadDatabaseAdapter(
   deps: PayloadDatabaseAdapterDeps

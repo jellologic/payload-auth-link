@@ -178,18 +178,6 @@ test('GHSA-8524 chain: self email change is neutered and the victim is never lin
   const moved = await admin.call('PATCH', `/api/users/${attacker.id}`, {
     email: victimAddress,
   })
-  void moved
-  const movedBody = moved.body as { doc?: { email?: string; linkableEmail?: string; id?: string } }
-  console.log(
-    'DBG moved:',
-    moved.status,
-    JSON.stringify({
-      reqId: attacker.id,
-      docId: movedBody.doc?.id,
-      email: movedBody.doc?.email,
-      linkableEmail: movedBody.doc?.linkableEmail,
-    })
-  )
   expect(moved.status).toBe(200)
   const victimSignup = await api.post('/api/auth/sign-up/email', {
     headers: { origin: baseURL() ?? '' },
@@ -198,9 +186,6 @@ test('GHSA-8524 chain: self email change is neutered and the victim is never lin
   expect(victimSignup.ok()).toBe(true)
   await api.post('/api/dev-auto-verify', { data: { email: victimAddress } })
   const session = await api.get('/api/auth-link/session')
-  if (session.status() !== 401) {
-    console.log('DBG session:', session.status(), await session.text())
-  }
   expect(session.status()).toBe(401)
 })
 

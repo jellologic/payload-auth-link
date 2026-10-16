@@ -18,6 +18,9 @@ concurrency:
   group: compat-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   matrix:
     name: ${{ matrix.name }}
@@ -35,8 +38,8 @@ jobs:
           - { name: tanstack-floor, axis: '@tanstack/react-start', version: '1.140.2' }
           - { name: next-floor, axis: next, version: '15.0.0' }
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.2
       - name: Resolve latest upstream version
@@ -73,8 +76,8 @@ jobs:
       GOLDEN_PG_URL: postgres://postgres:payload@localhost:5432/golden
       GOLDEN_MONGO: '1'
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.2
       - run: bun install
@@ -88,8 +91,8 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.2
       - name: Pin unpinned canary versions

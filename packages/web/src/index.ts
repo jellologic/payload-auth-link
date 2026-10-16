@@ -12,5 +12,11 @@ export { createRouteHandlers } from './handlers.js'
 export type { RouteHandler, RouteHandlersOptions } from './handlers.js'
 export { decideAuthRedirect, safeRedirectPath } from './redirect.js'
 export type { AuthRedirectOptions, SafeRedirectOptions } from './redirect.js'
-export { createSessionVerifier, resolveSessionUrl } from './verify.js'
-export type { SessionVerifier, SessionVerifierOptions } from './verify.js'
+export {
+  createSessionVerifier,
+  defaultDevelopmentHosts,
+  defaultSessionVerifierTimeoutMs,
+  resolveSessionUrl,
+  validateSessionEndpoint,
+} from './verify.js'
+export type { SessionUrlHostPolicy, SessionVerifier, SessionVerifierOptions } from './verify.js'

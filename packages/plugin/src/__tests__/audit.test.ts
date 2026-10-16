@@ -2,6 +2,7 @@ import { nullLogger, type LoggerPort } from '@payload-auth-link/core'
 import type { CollectionConfig, GlobalConfig, PayloadRequest } from 'payload'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  auditImpersonatedEndpoint,
   composeAuditLogger,
   impersonatedCollectionAuditHook,
   impersonatedGlobalAuditHook,
@@ -148,5 +149,43 @@ describe('durable audit sink (onAudit)', () => {
     composed.error('also not')
     composed.debug('nothing here either')
     expect(events).toHaveLength(0)
+  })
+})
+
+describe('impersonated endpoint audit', () => {
+  it('attributes the verified session actor when req.user carries none', () => {
+    const { logger, info } = capturingLogger()
+    auditImpersonatedEndpoint(logger, requestWith({ id: 7, collection: 'users' }), {
+      operation: 'invite',
+      endpoint: '/auth-link/organizations/invite',
+      sessionActor: { kind: 'payload-user', providerUserId: 'op-2', userId: 3 as never },
+    })
+    expect(info).toHaveBeenCalledWith('impersonated operation', {
+      actorProviderUserId: 'op-2',
+      actorKind: 'payload-user',
+      actorUserId: '3',
+      targetUserId: '7',
+      operation: 'invite',
+      endpoint: '/auth-link/organizations/invite',
+      denied: true,
+    })
+  })
+
+  it('prefers the actor on req.user and stays silent without either', () => {
+    const { logger, info } = capturingLogger()
+    auditImpersonatedEndpoint(logger, requestWith(impersonatedUser), {
+      operation: 'accept',
+      endpoint: '/auth-link/organizations/accept',
+    })
+    expect(info).toHaveBeenCalledWith(
+      'impersonated operation',
+      expect.objectContaining({ actorProviderUserId: 'op-1', denied: true })
+    )
+    info.mockClear()
+    auditImpersonatedEndpoint(logger, requestWith(null), {
+      operation: 'accept',
+      endpoint: '/auth-link/organizations/accept',
+    })
+    expect(info).not.toHaveBeenCalled()
   })
 })

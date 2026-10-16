@@ -145,6 +145,13 @@ in your build:
   `payload`/`payload/shared` symbol shipped source imports is
   pinned; a new import (which sets the real Payload floor) fails CI
   until it is verified against the band and noted here.
+  `CollectionBeforeDeleteHook` (organization delete cascade and the
+  last-owner guard) and `CollectionAfterDeleteHook` (the last-owner
+  guard's post-write re-check) are type-only imports present across
+  the whole Payload 3 band and v4. The guard also calls
+  `payload.db.updateOne` and `payload.db.create` (the database
+  adapter contract, present on every adapter in the band) to lock
+  the organization row and to restore a refused removal.
 
 ## Schema interoperability (Zod, Effect, Standard Schema)
 

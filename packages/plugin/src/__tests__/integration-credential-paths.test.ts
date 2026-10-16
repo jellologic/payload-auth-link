@@ -327,11 +327,10 @@ describe('credential paths for a suspended account are refused (every channel)',
     expect(replant.status).not.toBe(200)
   })
 
-  // GraphQL is not mounted in this in-process harness; the GraphQL
-  // mutations (`loginUsers`, `forgotPasswordUsers`, `resetPasswordUsers`,
-  // `createPages`, …) resolve through the SAME operation layer, so the
-  // beforeOperation gates above are the GraphQL gates (see the matrix
-  // in docs/security-model.md).
+  // The GraphQL mutations (`loginUser`, `forgotPasswordUser`,
+  // `resetPasswordUser`, `createPage`, …) resolve through the SAME
+  // operation layer; integration-credential-paths-graphql.test.ts walks
+  // them against Payload's real GraphQL schema (matrix row 11).
 })
 
 describe('provider-owned local credentials (GHSA-f4hj default)', () => {
@@ -463,5 +462,42 @@ describe('role governance and the linkable proof (unchanged controls)', () => {
       overrideAccess: true,
     })
     expect(updated.roles).toEqual(['user'])
+  })
+})
+
+describe('unlock (row 9)', () => {
+  it('anonymous unlock is refused; a suspended JWT is refused by the row-4 gate', async () => {
+    const anonymous = await raw('POST', '/users/unlock', { body: { email: 'unproven@test.dev' } })
+    expect(anonymous.status).toBe(403)
+    const suspended = await raw('POST', '/users/unlock', {
+      jar: String(ids.suspendedJwtCookie),
+      body: { email: 'unproven@test.dev' },
+    })
+    expect(suspended.status).toBe(401)
+  })
+
+  it('a plain signed-in user may not unlock (not even their own account)', async () => {
+    const opened = await login('unproven@test.dev', 'AttackerKnows-1')
+    expect(opened.status).toBe(200)
+    const refused = await raw('POST', '/users/unlock', {
+      jar: setCookieOf(opened.headers),
+      body: { email: 'mfa@test.dev' },
+    })
+    expect(refused.status).toBe(403)
+  })
+
+  it('a role manager may unlock', async () => {
+    await payload.create({
+      collection: 'users',
+      data: { email: 'unlocker@test.dev', password: PASSWORD, roles: ['admin'] },
+      overrideAccess: true,
+    })
+    const opened = await login('unlocker@test.dev', PASSWORD)
+    expect(opened.status).toBe(200)
+    const unlocked = await raw('POST', '/users/unlock', {
+      jar: setCookieOf(opened.headers),
+      body: { email: 'unproven@test.dev' },
+    })
+    expect(unlocked.status).toBe(200)
   })
 })

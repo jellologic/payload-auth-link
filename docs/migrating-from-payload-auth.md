@@ -14,14 +14,14 @@ shipped command, not a sketch. The field report behind it is
 ## The runbook at a glance
 
 1. **Doctor** (read-only): `bunx @payload-auth-link/migrate doctor --config … --src …` — the exact blocker list.
-2. **Choose the path**: **adopt** (#49, zero row moves — `schemaMap` serves BA models from your existing tables) or **import** (#50, reversible copy into `ba-*`). Same credentials both ways; hashes are portable.
+2. **Choose the path**: **adopt** (#49, zero row moves — `schemaMap` serves BA models from your existing tables, then `adopt-prelink` links each user to their document) or **import** (#50, reversible copy into `ba-*`). Same credentials both ways; hashes are portable.
 3. **Migrate roles**: `roleValues` keeps stored values like `frontPlugin` untouched (#56); `projectRolesAs: 'stored'` keeps access checks comparing stored literals working.
 4. **`req.user`**: opt into `reqUser: 'document'` if access functions read full-document fields (#57).
 5. **Coexistence**: `legacySessions` keeps legacy payload-auth session cookies working inside a dated window (#51) — nobody is logged out.
 6. **Cut over**: `from-payload-auth --apply` (importer; sessions carry by default), `verify`, watch the window, `finalize`.
 7. **Codemods**: `codemod --src ./src [--write]` rewrites the named call sites (AST-matched, alias- and `import type`-aware); the opt-in `payload.betterAuth` shim covers the rest incrementally (#53).
 8. **Server API**: `authLinkServer(payload)` replaces every `$context` internal bridge (#54).
-9. **Admin**: `admin: { loginView: 'provider' }` restores /admin login through the provider, with the break-glass local form (#55). It registers a Payload admin component, so REGENERATE your import map after enabling it (`payload generate:importmap`) — a stale map renders an empty login page.
+9. **Admin**: `admin: { loginView: 'provider' }` restores /admin login through the provider, with the break-glass local form (#55). It registers a Payload admin component, so REGENERATE your import map after enabling it (`payload generate:importmap`) — a stale map renders an empty login page. The view's break-glass endpoint (`${routes.api}/${usersCollection}/login`) and post-login destination (`routes.admin`) follow your Payload config; set `admin.signInPath` (default `/sign-in`) and `admin.authBase` (default `/api/auth`, where the app serves Better Auth) when yours differ.
 10. **Off-ramp**: `export --database-url … --out …` — lossless JSONL of every auth table (narrow it with `--tables`); uninstall is a tested operation (#58).
 
 ## Step 0: run the doctor (read-only preflight)
@@ -46,6 +46,32 @@ better-auth 1.7). `--json` gives tools the same findings with stable
 machine codes; exit codes are `0` clean, `1` blockers, `2` warnings
 only. Fix the blockers it names before writing anything — every later
 step in this guide assumes the doctor's blocker list is clear.
+
+**Run it with a production-shaped environment.** The doctor IMPORTS
+your config module, so it needs every variable the config reads at
+import time — `PAYLOAD_SECRET`, `DATABASE_URL`, your provider client
+ids/secrets, any `NEXT_PUBLIC_*` value the config dereferences. A
+missing variable usually throws during the import, and the report
+degrades to a `config-unloadable` blocker plus static scans only. Load
+the env file the app boots with first (`set -a; . ./.env.production;
+set +a`, or your secret manager's equivalent); a read replica's URL is
+fine for `--database-url`.
+
+Run it twice: against the payload-auth app's config (the source — what
+breaks), and against the TARGET config once payload-auth-link is wired
+in. On the target, the plugin's own injected users fields
+(`identities`, `linkable`, …) are recognized as the plugin's and never
+reported as collisions, and the database checks below become blockers
+when the target cannot hold source state.
+
+What the database section flags for the importer (issue #88):
+
+| Code                                               | Meaning                                                                                                                                                                                                      |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `banned-users` / `target-cannot-hold-bans`         | Better Auth admin-plugin bans exist. They carry onto `ba-users` only when the target engine declares `admin()`; on a target without it the doctor blocks and the importer refuses.                           |
+| `anonymous-users` / `target-cannot-hold-anonymous` | Anonymous-plugin users exist; they need `anonymous()` on the target (or delete them first). The plugin refuses anonymous sessions by design — they never JIT-link.                                           |
+| `oauth-tables-not-carried`                         | `oauth_*` tables (OAuth/OIDC-provider plugin) exist. The importer does **not** copy them: re-register clients on `@better-auth/oauth-provider` (its own schema migration) before dropping the legacy tables. |
+| `generic-oauth-providers`                          | `genericOAuth()` is declared. Its providers live in config, not the database: carry every entry into the new engine, or those users' sign-in strands (their `accounts` rows do carry).                       |
 
 **Custom table slugs.** If your layout renamed the payload-auth tables
 (the production field report: `user_accounts`, `user_sessions`), say so
@@ -153,6 +179,94 @@ run on canonical roles regardless; this option shapes the projection
 only. The doctor lists every non-canonical stored value so the map is
 complete before you boot.
 
+## Adopt mode (#49): serve Better Auth from your existing tables
+
+Adopt mode moves no rows: the engine's `schemaMap` points each Better
+Auth model at the payload-auth collection that already holds it, and
+`idStrategy: 'payload'` makes the Payload document id the Better Auth
+id.
+
+```ts
+createBetterAuthEngine({
+  getPayload,
+  idStrategy: 'payload',
+  autoDeclare: true,
+  schemaMap: {
+    user: { slug: 'users' },
+    session: {
+      slug: 'sessions',
+      fields: { userId: 'user', activeOrganizationId: 'activeOrganization' },
+    },
+    account: { slug: 'accounts', fields: { userId: 'user' } },
+    verification: { slug: 'verifications' },
+    organization: { slug: 'organizations' },
+    member: { slug: 'members', fields: { organizationId: 'organization', userId: 'user' } },
+    invitation: {
+      slug: 'invitations',
+      fields: { organizationId: 'organization', inviterId: 'inviter' },
+    },
+    // @better-auth/api-key 1.7.x names the key owner `referenceId` —
+    // the name payload-auth's column already has — so map the slug
+    // only. (`fields: { userId: 'referenceId' }` is a 1.6-era map and
+    // is wrong on 1.7.)
+    apikey: { slug: 'apiKeys' },
+    jwks: { slug: 'jwks' },
+  },
+  options: {/* your Better Auth options: same secret, same advanced.cookiePrefix */},
+})
+```
+
+**Keep the SAME Better Auth secret.** payload-auth passes no `secret`
+to Better Auth, so it ran on `BETTER_AUTH_SECRET` / `AUTH_SECRET` (or,
+outside production, Better Auth's development default). The `jwt`
+plugin encrypts the `jwks` private keys with that secret: an engine
+booted with a different one fails every session read that signs a JWT
+("Failed to decrypt private key"), and the session cookies stop
+verifying. Pass the old value as the engine's `options.secret`.
+
+Add the plugin's additive users columns before boot (identities,
+linkable, linkableEmail, phone, suspension — a migration or `push`).
+
+### Pre-link the users: `adopt-prelink`
+
+Adopt mode serves the Better Auth side, but the plugin side still has
+no link between a Better Auth user and its Payload document: without
+one, the first provider sign-in goes through JIT linking, which links
+an existing document only on the verified-email proof (`linkable` true
+with `linkableEmail` equal to the document email). `adopt-prelink`
+writes exactly what the importer writes on the host users:
+
+- ONE `better-auth` identity per user (`providerUserId` = the document
+  id — the Better Auth user id under `idStrategy: 'payload'`); other
+  providers' identity rows are kept;
+- `linkable: true` + `linkableEmail` for users whose `emailVerified`
+  is true (grant-only; `--verified-field` names another checkbox).
+
+```sh
+# Plan (dry run, nothing written)
+bunx @payload-auth-link/migrate adopt-prelink --config ./src/payload.config.ts
+# Write, recording the manifest (./payload-auth-link-prelink.json)
+bunx @payload-auth-link/migrate adopt-prelink --config ./src/payload.config.ts --apply
+# Undo exactly
+bunx @payload-auth-link/migrate rollback --config ./src/payload.config.ts \
+  --manifest ./payload-auth-link-prelink.json
+```
+
+Re-running is safe (already-linked users are skipped); a user already
+carrying a `better-auth` identity for a DIFFERENT id aborts the run
+with nothing written. The manifest follows the importer's rules
+(below). After `--apply`, verified and unverified users alike resolve
+to their ORIGINAL document on their next sign-in.
+
+### Adopt is live traffic on the old tables
+
+There is no copy to roll back to: from the first request, Better Auth
+reads and WRITES the payload-auth tables — new sessions, updated
+users — and it deletes an expired `sessions` row whenever a lookup
+meets one. Plan rollback as a database restore (snapshot before the
+deploy) plus `rollback --manifest` for the pre-link fields, never as
+"the old rows are untouched".
+
 ## The importer: `from-payload-auth` (#50)
 
 The sketch below became a runnable, reversible CLI. In the NEW app
@@ -169,8 +283,8 @@ bunx @payload-auth-link/migrate from-payload-auth \
 
 # 2. The copy. Writes the ba-* rows through Payload's Local API,
 #    records every created row and field change in the manifest
-#    (./payload-auth-link-migration.json), and never touches the
-#    source tables.
+#    (./payload-auth-link-migration.json — see "The manifest" below),
+#    and never touches the source tables.
 bunx @payload-auth-link/migrate from-payload-auth \
   --config ./src/payload.config.ts --database-url $DATABASE_URL --apply
 
@@ -206,6 +320,17 @@ plugin's rows (orgs, members, invitations) with references remapped.
 logged out — keep the same `advanced.cookiePrefix` and the existing
 cookies keep working; `--sessions=drop` starts everyone fresh instead.
 
+Better Auth plugin state carries too (issue #88): admin-plugin
+`banned` / `banReason` / `banExpires` and the stored roles (as Better
+Auth's comma-separated `role`) when the target engine declares
+`admin()`, and `isAnonymous` when it declares `anonymous()`. A banned
+or anonymous source user whose state the target cannot hold aborts
+the run before any write — a banned user never imports unbanned. Row
+`createdAt`/`updatedAt` carry for every model whose source table has
+them (accounts, sessions, verifications, API keys, jwks, orgs,
+members, invitations). OAuth-provider tables (`oauth_*`) are NOT
+carried — see the doctor table above.
+
 It is idempotent and resumable: every target row carries a
 deterministic `baId` derived from the source id, so a re-run after a
 crash finds its own earlier rows and skips them. It is also fail
@@ -214,6 +339,56 @@ columns first, and a missing one aborts before anything is read or
 written — pass `--source-map` (above) for renamed layouts or to record
 a model as not installed. Unmappable data (orphaned references) aborts
 the run — nothing is silently skipped.
+
+### The manifest: where it goes, what it holds, when to delete it
+
+`--apply` writes the manifest to `./payload-auth-link-migration.json`
+in the CURRENT DIRECTORY unless `--manifest` names another path —
+point it somewhere access-controlled. It records created row ids and
+the PRIOR value of every host field the run changed (`identities`,
+`linkable`, `linkableEmail`, `roles` where present, and the document's
+`updatedAt`). No value is stored in the clear: prior values are sealed
+with AES-256-GCM under a key derived from the app's `PAYLOAD_SECRET`,
+so `rollback` must run against the same app with the same secret. The
+file is written with mode `0600`.
+
+Keep it until you have run `finalize` AND your soak window has passed
+(rollback needs it); then delete it.
+
+### What rollback restores, exactly
+
+`rollback` deletes every row the manifest created and restores every
+captured host field to its value from BEFORE the first `--apply` (only
+the first capture per field is kept, so any number of `--apply` passes
+still roll back to the pre-import state) — `users.updated_at`
+included. It then RESETS the manifest (no rows, no field writes), so a
+later `--apply` starts fresh instead of building on stale entries.
+
+One thing it cannot restore: the forward Local API write re-creates
+hasMany child rows (the `users_role` table behind a `role` select)
+with new row ids. Their values and order are identical; only the
+surrogate `id` column differs. Nothing references those ids, but if
+you diff the table, diff `(parent_id, order, value)`.
+
+### `verify` after go-live
+
+`verify` is a cutover check. Its session check counts only the
+IMPORTED rows — every unexpired source session must be present — and
+reports sessions created since the import (and expired imported
+sessions Better Auth already cleaned up) as information, never as a
+failure. The other models keep EXACT counts, so new sign-ups after
+go-live make `verify` report more `ba-users` than the source: run it
+right after the copy, before you open traffic.
+
+### Email verification after the import
+
+An unverified user is imported pre-linked by identity but without the
+linking proof. When they verify later, the plugin receives Better
+Auth's update and grants the bound proof (`linkable` +
+`linkableEmail`) on their document. If your users collection keeps
+payload-auth's own `emailVerified` checkbox, set
+`authLink({ emailVerifiedField: 'emailVerified' })` and the plugin
+also sets it `true` on that verification (it never sets it `false`).
 
 The importer's target slugs default to `ba-users`, `ba-accounts`,
 `ba-sessions`, `ba-verifications`, `ba-apikey`, `ba-jwks`,
@@ -254,6 +429,8 @@ if your engine wiring overrides them.
 - an admin can still edit roles (the adopted field is governed —
   your admin role must be in `roleManagerRoles`, which defaults to
   `['admin']`);
-- suspended/banned users still bounce (copy `banned`/`banReason`/
-  `banExpires` onto the Payload user's governance fields or your own);
+- suspended/banned users still bounce (the importer carries
+  `banned`/`banReason`/`banExpires` onto `ba-users` when the engine
+  declares `admin()`, so Better Auth refuses them; mirror bans onto the
+  plugin's `suspendedUntil` too if Payload-local paths matter);
 - the admin users list shows roles + linked identities.

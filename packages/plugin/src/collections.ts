@@ -55,7 +55,7 @@ function userRoles(user: unknown): readonly string[] {
  * array, or no intersection with the configured manager roles means
  * no.
  */
-function isRoleManager(req: FieldAccessArgs['req'], wired: WiredOptions): boolean {
+export function isRoleManager(req: FieldAccessArgs['req'], wired: WiredOptions): boolean {
   const managers = new Set<string>(wired.roleManagerRoles)
   return userRoles(req.user).some((role) => managers.has(role))
 }
@@ -155,6 +155,32 @@ function withDefaultUserAccess(
       return false
     }
   }
+  if (filled.update === undefined) {
+    // Payload's default lets any signed-in user update ANY user —
+    // with JIT sign-up that is anyone. Managers update everyone;
+    // everyone else only their own document.
+    filled.update = ({ req }) => {
+      if (isImpersonating(req)) {
+        return false
+      }
+      if (isRoleManager(req, wired)) {
+        return true
+      }
+      const user = req.user
+      if (isRecord(user) && (typeof user.id === 'string' || typeof user.id === 'number')) {
+        return { id: { equals: user.id } }
+      }
+      return false
+    }
+  }
+  if (filled.delete === undefined) {
+    filled.delete = ({ req }) => !isImpersonating(req) && isRoleManager(req, wired)
+  }
+  if (filled.unlock === undefined) {
+    // Payload's default lets any signed-in user unlock any account,
+    // which undoes the brute-force lockout for whoever is guessing.
+    filled.unlock = ({ req }) => !isImpersonating(req) && isRoleManager(req, wired)
+  }
   filled.admin = denyAdminWhileImpersonating(filled.admin, wired)
   return filled
 }
@@ -170,7 +196,11 @@ function withDefaultUserAccess(
  * collection level, so the flag cannot be self-granted.
  */
 function linkableMarkerHook(wired: WiredOptions): CollectionBeforeChangeHook {
-  return ({ operation, data, req }) => {
+  return ({ collection, operation, data, originalDoc, req }) => {
+    if (operation === 'update') {
+      resetProofOnEmailChange(wired, { collection, data, originalDoc, req })
+      return
+    }
     if (operation !== 'create') {
       return
     }
@@ -189,6 +219,62 @@ function linkableMarkerHook(wired: WiredOptions): CollectionBeforeChangeHook {
       data.linkable = false
     }
   }
+}
+
+/**
+ * Email-ownership proof never survives an unproven email change: when
+ * a document's email changes in a write that is neither the plugin's
+ * provider-email resync (which re-grants the proof for the new,
+ * provider-verified address in the same write) nor a role manager's,
+ * the `linkable` proof and its `linkableEmail` are cleared — and, on
+ * hosts with `auth.verify`, Payload's `_verified` flag too, which
+ * Payload itself keeps across email changes. The document is then
+ * unproven until a role manager re-grants the proof.
+ *
+ * "Re-granted in the same write" is safe to honor: field access lets
+ * only role managers (and trusted `overrideAccess` Local-API callers,
+ * such as the resync) write `linkable`/`linkableEmail` at all, so a
+ * self-service write never carries them this far.
+ */
+function resetProofOnEmailChange(
+  wired: WiredOptions,
+  args: {
+    readonly collection: { readonly auth?: unknown }
+    readonly data: Record<string, unknown>
+    readonly originalDoc: unknown
+    readonly req: PayloadRequest
+  }
+): void {
+  const { data, originalDoc, req } = args
+  const emailField = wired.config.map.emailField
+  const next = data[emailField]
+  const previous = isRecord(originalDoc) ? originalDoc[emailField] : undefined
+  if (
+    typeof next !== 'string' ||
+    typeof previous !== 'string' ||
+    next.toLowerCase() === previous.toLowerCase()
+  ) {
+    return
+  }
+  const regranted =
+    data.linkable === true &&
+    typeof data.linkableEmail === 'string' &&
+    data.linkableEmail.toLowerCase() === next.toLowerCase()
+  if (regranted || isRoleManager(req, wired)) {
+    return
+  }
+  data.linkable = false
+  data.linkableEmail = null
+  const auth = args.collection.auth
+  if (isRecord(auth) && auth.verify !== undefined && auth.verify !== false) {
+    data._verified = false
+  }
+  const userId =
+    isRecord(originalDoc) &&
+    (typeof originalDoc.id === 'string' || typeof originalDoc.id === 'number')
+      ? String(originalDoc.id)
+      : ''
+  wired.logger.info('email changed outside the provider resync; linking proof reset', { userId })
 }
 
 function linkableField(wired: WiredOptions): CheckboxField {
@@ -237,12 +323,19 @@ function linkableEmailField(wired: WiredOptions): TextField {
  * unaffected.
  */
 function emailUpdateAccess(wired: WiredOptions): FieldAccess {
-  return ({ req, doc }) => {
+  return ({ req, doc, id }) => {
     if (isImpersonating(req)) {
       return false
     }
     if (isRoleManager(req, wired)) {
       return true
+    }
+    // A non-manager only ever changes their OWN email: a host whose
+    // collection-level update is broader must not let one user re-point
+    // another's address (and then reset that account's password).
+    const target = id ?? (isRecord(doc) ? (doc.id as FieldAccessArgs['id']) : undefined)
+    if (!isSelfDoc(req, target)) {
+      return false
     }
     const identities = isRecord(doc) ? doc[wired.config.map.identitiesField] : undefined
     const hasIdentities = Array.isArray(identities) && identities.length > 0
@@ -347,6 +440,14 @@ function accountControlsLoginHook(
  * for `resetPassword` — Payload matches the stored token directly)
  * and refuses documents holding linked identities. Hosts who want the
  * previous behaviour set `allowLocalCredentialsForLinkedDocs`.
+ *
+ * `resetPassword` additionally refuses SUSPENDED documents (401)
+ * here, whatever the opt-out: Payload's reset writes the new password
+ * and clears the sessions BEFORE it runs `beforeLogin`, and where that
+ * write is not rolled back (adapters without transactions) the
+ * `beforeLogin` refusal came too late — the "refused" reset had
+ * rotated the credential (issue #86). The lookup runs inside the
+ * operation's transaction (`req`).
  */
 function passwordIssueGuardHook(wired: WiredOptions): CollectionBeforeOperationHook {
   const usersCollection = wired.config.map.usersCollection
@@ -354,7 +455,8 @@ function passwordIssueGuardHook(wired: WiredOptions): CollectionBeforeOperationH
     if (operation !== 'forgotPassword' && operation !== 'resetPassword') {
       return args
     }
-    if (wired.allowLocalCredentialsForLinkedDocs) {
+    const optedOut = wired.allowLocalCredentialsForLinkedDocs
+    if (optedOut && operation === 'forgotPassword') {
       return args
     }
     const data: unknown = isRecord(args) ? args.data : undefined
@@ -377,11 +479,18 @@ function passwordIssueGuardHook(wired: WiredOptions): CollectionBeforeOperationH
       depth: 0,
       pagination: false,
       overrideAccess: true,
+      req,
     })
     const doc: unknown = (found as { docs?: unknown[] }).docs?.[0]
     if (!isRecord(doc)) {
       // Unknown target: an existing document is not being attacked —
       // Payload's own response (enumeration-neutral) stands.
+      return args
+    }
+    if (operation === 'resetPassword' && suspensionActive(doc, wired)) {
+      throw new APIError('Account suspended', 401)
+    }
+    if (optedOut) {
       return args
     }
     const identities: unknown = doc[wired.config.map.identitiesField]
@@ -416,7 +525,17 @@ const ACCOUNT_STATUS_KEY = 'payload-auth-link:account-status'
  */
 const ACCOUNT_STATUS_INFLIGHT = 'payload-auth-link:account-status-inflight'
 
-type AccountStatus = { readonly suspended: boolean; readonly failed?: boolean }
+type AccountStatus = {
+  readonly suspended: boolean
+  readonly failed?: boolean
+  /** The document holds linked provider identities (provider-owned). */
+  readonly linked?: boolean
+}
+
+/** Payload's local JWT strategy name (`_strategy` on `req.user`). */
+const localJwtStrategyName = 'local-jwt'
+
+type AccountDecision = 'ok' | 'suspended' | 'failed' | 'provider-owned'
 
 async function requestAccountStatus(
   req: PayloadRequest,
@@ -455,7 +574,11 @@ async function requestAccountStatus(
       depth: 0,
       overrideAccess: true,
     })
-    status = { suspended: suspensionActive(doc, wired) }
+    const identities: unknown = isRecord(doc) ? doc[wired.config.map.identitiesField] : undefined
+    status = {
+      suspended: suspensionActive(doc, wired),
+      linked: Array.isArray(identities) && identities.length > 0,
+    }
   } catch (cause) {
     // Fail closed: an unreadable account state must never wave a
     // request through. The same storage failure fails the operation
@@ -484,7 +607,7 @@ async function applyAccountControls(
   req: PayloadRequest,
   wired: WiredOptions,
   gated: ReadonlySet<string>
-): Promise<'ok' | 'suspended' | 'failed'> {
+): Promise<AccountDecision> {
   const user = req.user
   // Local API calls without a request user (the plugin's own engine
   // paths run `overrideAccess` with no `req.user`) are unaffected.
@@ -503,6 +626,20 @@ async function applyAccountControls(
   }
   if (status.suspended) {
     return 'suspended'
+  }
+  // Provider-owned documents hold no local session (GHSA-f4hj
+  // default): local sign-in is refused for them, so a local JWT on a
+  // linked document can only predate the link — issued to whoever
+  // held the document before the provider's verified owner arrived.
+  // Linking clears Payload's `sessions` array (repository
+  // `linkIdentity`); this gate covers hosts without `useSessions`,
+  // where a JWT is otherwise valid until it expires.
+  if (
+    !wired.allowLocalCredentialsForLinkedDocs &&
+    status.linked === true &&
+    user._strategy === localJwtStrategyName
+  ) {
+    return 'provider-owned'
   }
   if (user._strategy !== strategyName) {
     // Issue #57: `reqUser: 'document'` also shapes LOCAL sessions
@@ -551,7 +688,13 @@ async function applyAccountControls(
   return 'ok'
 }
 
-function throwOnAccountDecision(decision: 'ok' | 'suspended' | 'failed'): void {
+function throwOnAccountDecision(decision: AccountDecision): void {
+  if (decision === 'provider-owned') {
+    throw new APIError(
+      'Local sessions are unavailable for provider-linked accounts; sign in with your identity provider',
+      401
+    )
+  }
   if (decision === 'failed') {
     throw new APIError('Account status could not be verified', 503)
   }
@@ -623,7 +766,7 @@ function withAccountControlledAccess(
       if (decision === 'failed') {
         throw new APIError('Account status could not be verified', 503)
       }
-      if (decision === 'suspended') {
+      if (decision === 'suspended' || decision === 'provider-owned') {
         return false
       }
       return existing(args)
@@ -951,6 +1094,18 @@ export function applyUsersCollection(
 ): CollectionConfig[] {
   const slug = wired.config.map.usersCollection
   const existing = collections?.find((collection) => collection.slug === slug)
+  const mirror = wired.emailVerifiedField
+  if (mirror !== null) {
+    // The verified-email mirror (issue #88) is a HOST field the plugin
+    // writes; naming one the host does not declare is a config error,
+    // never a silent no-op.
+    const declared = existing?.fields.find((candidate) => fieldName(candidate) === mirror)
+    if (declared === undefined || declared.type !== 'checkbox') {
+      throw new InvalidConfigError(
+        `emailVerifiedField '${mirror}' must name a checkbox field declared on the '${slug}' collection`
+      )
+    }
+  }
   if (!existing) {
     return [...(collections ?? []), createUsersCollection(wired, strategy)]
   }

@@ -29,6 +29,7 @@ import {
   getAuthJsSessionCookieNames,
   type AuthJsCookieOptions,
 } from './cookies.js'
+import { AdapterOperationError } from './errors.js'
 import { createAuthJsProvider, type AuthJsSessionApi } from './port.js'
 
 /** Engine wiring: Payload access plus the builder's Auth.js config. */
@@ -220,14 +221,20 @@ function assertTrustIsNotDangerous(
  * it is set. The host fallback stays allowed here: unlike the web
  * verifier's real `fetch`, this URL feeds an in-process `Auth()`
  * call, so a spoofed host cannot exfiltrate the cookie — it only
- * affects Auth.js's internal host checks.
+ * affects Auth.js's internal host checks. Forwarded headers stay
+ * trusted (`trustProxy`) to match Auth.js's own `trustHost` reading.
  */
 function sessionRequestUrl(
   baseURL: string | undefined,
   basePath: string,
   headers: Headers
 ): string {
-  const origin = resolveOrigin({ baseUrl: baseURL, headers, allowHostFallback: true })
+  const origin = resolveOrigin({
+    baseUrl: baseURL,
+    headers,
+    allowHostFallback: true,
+    trustProxy: true,
+  })
   return new URL(`${basePath}/session`, origin).toString()
 }
 
@@ -445,11 +452,35 @@ export function createAuthJsEngine(input: AuthJsEngineInput): AuthJsEngine {
       ? {
           revokeUserSessions: async (providerUserId: string) => {
             const payload = await input.getPayload()
-            await payload.delete({
+            const where = { userId: { equals: providerUserId } }
+            // Payload's bulk delete RESOLVES with per-row `errors`
+            // instead of rejecting: a partial delete must fail the
+            // revoke-all loudly, never report success while sessions
+            // stay alive (issue #86).
+            const result: unknown = await payload.delete({
               collection: slugs.session,
-              where: { userId: { equals: providerUserId } },
+              where,
               overrideAccess: true,
             })
+            const errors: unknown =
+              typeof result === 'object' && result !== null && 'errors' in result
+                ? result.errors
+                : undefined
+            if (Array.isArray(errors) && errors.length > 0) {
+              throw new AdapterOperationError(
+                `revokeUserSessions (${String(errors.length)} session row(s) not deleted)`
+              )
+            }
+            const left = await payload.count({
+              collection: slugs.session,
+              where,
+              overrideAccess: true,
+            })
+            if (left.totalDocs > 0) {
+              throw new AdapterOperationError(
+                `revokeUserSessions (${String(left.totalDocs)} session row(s) remain)`
+              )
+            }
           },
         }
       : {}),

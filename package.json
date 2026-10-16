@@ -19,7 +19,7 @@
     "test:fixture": "bun install --cwd fixtures/payload-auth-app && vitest run -c vitest.migration.config.ts",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
-    "check": "bun run format:check && bun run build && bun run lint && bun run typecheck && bun run coverage && bun run size && bun run api:check && bun run schema:check && bun run consumer:check",
+    "check": "bun run format:check && bun run ci:lint && bun run build && bun run lint && bun run typecheck && bun run coverage && bun run size && bun run api:check && bun run schema:check && bun run consumer:check",
     "dev:example": "bun run build && cd examples/basic && bun run dev",
     "size": "size-limit",
     "e2e": "bun run build && playwright test -c e2e/playwright.config.ts",
@@ -42,7 +42,8 @@
     "api:check": "bun scripts/api-snapshot.mjs --check",
     "schema:snapshot": "bun scripts/schema-snapshot.mjs --write",
     "schema:check": "bun scripts/schema-snapshot.mjs --check",
-    "consumer:check": "tsc -p scripts/consumer-fixture/tsconfig.json"
+    "consumer:check": "tsc -p scripts/consumer-fixture/tsconfig.json",
+    "ci:lint": "bun scripts/check-ci-config.mjs"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
@@ -62,6 +63,7 @@
     "eslint": "^10.12.0",
     "eslint-plugin-jsx-a11y": "^6.10.2",
     "eslint-plugin-react-hooks": "^7.1.1",
+    "fast-check": "^4.10.2",
     "globals": "^17.13.0",
     "happy-dom": "^20.14.5",
     "mongodb-memory-server": "^11.3.0",
@@ -71,7 +73,8 @@
     "typedoc": "^0.28.20",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.71.1",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "yaml": "^2.9.1"
   },
   "engines": {
     "node": ">=20.9"

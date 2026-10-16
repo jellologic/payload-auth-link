@@ -383,7 +383,22 @@ export function createSessionService(deps: SessionServiceDeps): PluginSessionSer
               })
               return deps.users.findByProviderIdentity(ref).andThen((user) => {
                 if (!user) {
-                  return errAsync(new SessionInvalidError('session has no linked user'))
+                  // Not a race: a document already holds this email
+                  // but is not proven to own it (the proof gate
+                  // refused the link), so provisioning collided with
+                  // it. Refuse, typed and loud — an operator decides
+                  // whether that document is this person's (grant the
+                  // linkable proof) or not (rename/remove it).
+                  deps.logger.warn(
+                    'provisioning refused: the email is held by an existing document that is not proven to own it',
+                    {
+                      providerId: found.providerId,
+                      ...(emailClaim === null ? {} : { email: emailClaim.value }),
+                    }
+                  )
+                  return errAsync(
+                    new SessionInvalidError('email already held by a document not proven to own it')
+                  )
                 }
                 return okAsync(user)
               })

@@ -1,5 +1,7 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { writePrivateFile } from '../private-file.js'
 import type { Payload } from 'payload'
+import { restoreCaptured } from './host-writes.js'
 import {
   defaultTargetSlugs,
   resolveSourceTables,
@@ -15,25 +17,40 @@ import {
  * separate later step.
  */
 
+/**
+ * The importer's default manifest location: the CURRENT WORKING
+ * DIRECTORY. Pass `--manifest` to put it somewhere access-controlled;
+ * it holds ids and sealed values only (no emails in the clear) and is
+ * written with mode 0600. Keep it until `finalize` + your soak period
+ * ends, then delete it (docs/migrating-from-payload-auth.md).
+ */
 export const defaultManifestPath = 'payload-auth-link-migration.json'
+
+/** The `adopt-prelink` default manifest location (cwd; same rules). */
+export const defaultPrelinkManifestPath = 'payload-auth-link-prelink.json'
 
 export function readManifest(path: string): ImportManifest | null {
   if (!existsSync(path)) {
     return null
   }
   const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
-  if (
-    typeof parsed !== 'object' ||
-    parsed === null ||
-    (parsed as { version?: unknown }).version !== 1
-  ) {
-    throw new Error(`manifest at ${path} is not a version-1 import manifest`)
+  const version =
+    typeof parsed === 'object' && parsed !== null
+      ? (parsed as { version?: unknown }).version
+      : undefined
+  if (version !== 1 && version !== 2) {
+    throw new Error(`manifest at ${path} is not a version-1/2 import manifest`)
   }
   return parsed as ImportManifest
 }
 
+/**
+ * Write the manifest owner-read/write only (0600, issue #88) — on
+ * create AND on every rewrite, so a manifest created by an older kit
+ * is tightened too.
+ */
 export function writeManifest(manifest: ImportManifest, path: string): void {
-  writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`)
+  writePrivateFile(path, `${JSON.stringify(manifest, null, 2)}\n`)
 }
 
 export type VerifyIssue = {
@@ -67,6 +84,8 @@ export async function verifyImport(options: {
   readonly sourceTables?: Readonly<Record<string, string | null>> | undefined
   /** Whether the import carried sessions; `drop` skips the session count. */
   readonly sessions?: 'carry' | 'drop' | undefined
+  /** Injectable clock: what counts as an expired source session. */
+  readonly now?: (() => Date) | undefined
 }): Promise<VerifyResult> {
   const { payload, sourceConnectionString } = options
   const slugs: Record<string, string> = {
@@ -119,11 +138,6 @@ export async function verifyImport(options: {
       { label: 'users', table: sourceTables['users'], collection: String(slugs['user']) },
       { label: 'accounts', table: sourceTables['accounts'], collection: String(slugs['account']) },
       {
-        label: 'sessions',
-        table: sessions === 'carry' ? sourceTables['sessions'] : null,
-        collection: String(slugs['session']),
-      },
-      {
         label: 'verifications',
         table: sourceTables['verifications'],
         collection: String(slugs['verification']),
@@ -161,6 +175,58 @@ export async function verifyImport(options: {
     if (sessions === 'drop') {
       checks.push({
         name: 'count sessions (skipped: the import dropped them)',
+        passed: true,
+      })
+    } else if (sourceTables['sessions'] === null) {
+      checks.push({
+        name: 'count sessions (skipped: null-mapped — not installed on the source)',
+        passed: true,
+      })
+    } else {
+      // Sessions are LIVE data after go-live (issue #88): sign-ins add
+      // ba-sessions rows, and Better Auth deletes expired rows when a
+      // lookup meets them. So the check is scoped to the IMPORTED rows
+      // (deterministic `sess-<source id>` baIds): every unexpired source
+      // session must be present; sessions created after cutover and
+      // expired sessions already cleaned up are reported, never failed.
+      const nowMs = (options.now ?? (() => new Date()))().getTime()
+      const sourceSessions = await client.query(
+        `SELECT id, expires_at FROM ${sourceTables['sessions']}`
+      )
+      const target = await payload.find({
+        collection: String(slugs['session']),
+        depth: 0,
+        pagination: false,
+        overrideAccess: true,
+        select: { baId: true },
+      })
+      const targetBaIds = new Set(
+        target.docs.map((doc) => String((doc as Record<string, unknown>)['baId']))
+      )
+      let missingLive = 0
+      let cleanedExpired = 0
+      const imported = new Set<string>()
+      for (const row of sourceSessions.rows as { id: unknown; expires_at: unknown }[]) {
+        const baId = `sess-${String(row.id)}`
+        imported.add(baId)
+        if (targetBaIds.has(baId)) {
+          continue
+        }
+        const expires = row.expires_at instanceof Date ? row.expires_at.getTime() : Number.NaN
+        if (Number.isFinite(expires) && expires <= nowMs) {
+          cleanedExpired += 1
+        } else {
+          missingLive += 1
+        }
+      }
+      const created = [...targetBaIds].filter((baId) => !imported.has(baId)).length
+      check(
+        'imported sessions present (unexpired source sessions)',
+        missingLive === 0,
+        `${missingLive} unexpired source session(s) missing from ${String(slugs['session'])}`
+      )
+      checks.push({
+        name: `sessions after cutover (info): ${created} created since the import, ${cleanedExpired} expired imported session(s) already cleaned up`,
         passed: true,
       })
     }
@@ -307,6 +373,33 @@ export async function verifyImport(options: {
       'no credential account carries a password hash'
     )
 
+    // 3b. bans carried (issue #88): a banned source user stays banned.
+    // The importer refuses to run when banned users exist and the
+    // target declares no `banned` field, so here the field is present
+    // whenever it matters.
+    const bannedSource = users.filter((user) => user.banned === true)
+    if (bannedSource.length > 0) {
+      let notBanned = 0
+      for (const user of bannedSource) {
+        const found = await payload.find({
+          collection: String(slugs['user']),
+          where: { baId: { equals: user.id } },
+          limit: 1,
+          depth: 0,
+          overrideAccess: true,
+        })
+        const doc = found.docs[0] as Record<string, unknown> | undefined
+        if (doc?.['banned'] !== true) {
+          notBanned += 1
+        }
+      }
+      check(
+        'banned source users stay banned',
+        notBanned === 0,
+        `${notBanned} banned source user(s) are not banned on ${String(slugs['user'])}`
+      )
+    }
+
     // 4. API keys: hash present, owner resolves, rate-limit state kept.
     const keys = await payload.find({
       collection: String(slugs['apikey']),
@@ -402,6 +495,14 @@ export async function rollbackImport(options: {
   readonly payload: Payload
   readonly manifest: ImportManifest
   readonly log?: (message: string) => void
+  /**
+   * When given, the manifest at this path is RESET after a successful
+   * rollback (issue #88): no created rows, no field writes, no totals —
+   * so a later `--apply` starts from the restored state instead of
+   * building on stale entries.
+   */
+  readonly manifestPath?: string | undefined
+  readonly now?: (() => Date) | undefined
 }): Promise<{ deleted: number; restored: number }> {
   const { payload, manifest, log = () => {} } = options
   if (manifest.finalized) {
@@ -420,18 +521,19 @@ export async function rollbackImport(options: {
       log(`rollback: ${row.collection}#${row.id} already absent`)
     }
   }
-  let restored = 0
-  for (const write of manifest.fieldWrites) {
-    const data: Record<string, unknown> = {
-      [write.field]: write.before === null ? null : (JSON.parse(write.before) as unknown),
+  // Captured values go back through the adapter, one write per
+  // document, `updatedAt` included — see host-writes.ts for why.
+  const restored = await restoreCaptured(payload, manifest)
+  if (options.manifestPath !== undefined) {
+    const reset: ImportManifest = {
+      ...manifest,
+      version: 2,
+      created: [],
+      fieldWrites: [],
+      totals: {},
+      rolledBackAt: (options.now ?? (() => new Date()))().toISOString(),
     }
-    await payload.update({
-      collection: write.collection,
-      id: write.id,
-      data,
-      overrideAccess: true,
-    })
-    restored += 1
+    writeManifest(reset, options.manifestPath)
   }
   log(`rollback: ${deleted} row(s) deleted, ${restored} field value(s) restored`)
   return { deleted, restored }

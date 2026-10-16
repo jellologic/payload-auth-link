@@ -824,6 +824,12 @@ function narrowProviderSessions(result: unknown): { sessionId: string; expiresAt
  * Narrow `@better-auth/api-key`'s verifyApiKey response to the core
  * verification shape. A null/false response (unknown key) narrows to
  * null; a malformed `key` block fails closed.
+ *
+ * The owner: `@better-auth/api-key` 1.7.x names the key's owner
+ * `referenceId` (the user id for user-owned keys); 1.6-era builds named
+ * it `userId`. `referenceId` wins, `userId` is the fallback; a key
+ * block carrying neither fails closed (issue #88 — reading only
+ * `userId` threw for every valid 1.7 key).
  */
 function narrowApiKeyVerification(result: unknown): ApiKeyVerification | null {
   if (result === null || result === undefined) {
@@ -833,14 +839,20 @@ function narrowApiKeyVerification(result: unknown): ApiKeyVerification | null {
     return null
   }
   const key = result.key
-  if (typeof key.userId !== 'string' || key.userId === '') {
+  const owner =
+    typeof key.referenceId === 'string' && key.referenceId !== ''
+      ? key.referenceId
+      : typeof key.userId === 'string' && key.userId !== ''
+        ? key.userId
+        : null
+  if (owner === null) {
     throw new ProviderError(
       wellKnownProviderIds.betterAuth,
-      'verifyApiKey: key block is missing its user id'
+      'verifyApiKey: key block is missing its owner (referenceId / userId)'
     )
   }
   return {
-    userId: key.userId,
+    userId: owner,
     name: typeof key.name === 'string' ? key.name : null,
     start: typeof key.start === 'string' ? key.start : null,
     prefix: typeof key.prefix === 'string' ? key.prefix : null,

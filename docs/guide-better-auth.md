@@ -168,6 +168,30 @@ revokes server-side _and_ expires cookies; direct
 `/api/auth/sign-out` calls revoke provider-side only (the plugin
 never sees them — prefer the plugin endpoint).
 
+## Query semantics and sort collation
+
+The Payload adapter answers Better Auth's queries with the same
+results as Better Auth's reference `memoryAdapter` — every operator,
+`null` handling, case-insensitive `eq`, numeric/date sorting, and
+`limit`/`offset` pagination are pinned against it by a differential
+test suite. The documented differences:
+
+- **String sort collation belongs to your database.** `findMany`
+  with `sortBy` on a text field orders by the database's collation:
+  binary on SQLite and MongoDB (`A, B, a, b`), the column collation on
+  Postgres. The memory adapter uses `localeCompare` (`a, A, b, B`).
+  Payload exposes no portable collation option, and re-sorting in
+  memory would break paginated windows, so the adapter does not
+  normalise. Better Auth core never pages through string-sorted
+  results; plugins or app code that do should sort on a normalised
+  (e.g. lower-cased) column.
+- **`null` placement** in sorted results follows the database
+  (first in ascending order on SQLite/MongoDB, last on Postgres).
+- **Unsupported operators fail loud:** `contains`, `starts_with`,
+  `ends_with`, case-insensitive `ne`/`in`/`not_in`, and a
+  case-insensitive `eq` combined with `OR` throw
+  `UnsupportedOperatorError` instead of returning wrong rows.
+
 ## Rate limiting (builder-owned)
 
 Same rule as everywhere in this project: the library ships no

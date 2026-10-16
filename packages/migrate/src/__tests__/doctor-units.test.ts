@@ -70,6 +70,31 @@ describe('doctor units', () => {
     ])
   })
 
+  test('users analysis: the plugin’s own injected fields on the TARGET config are not collisions (#88)', () => {
+    // The target config, after authLink ran: its strategy rides the
+    // collection and every injected field is present.
+    const { finding, issues } = analyzeUsersCollection(
+      {
+        slug: 'users',
+        auth: { strategies: [{ name: 'auth-link' }] },
+        fields: [
+          { name: 'email', type: 'email' },
+          { name: 'roles', type: 'select', hasMany: true, options: ['user', 'admin'] },
+          { name: 'identities', type: 'array' },
+          { name: 'phone', type: 'text' },
+          { name: 'suspendedUntil', type: 'date' },
+          { name: 'suspendReason', type: 'text' },
+          { name: 'linkable', type: 'checkbox' },
+          { name: 'linkableEmail', type: 'text' },
+        ],
+      },
+      'roles'
+    )
+    expect(finding?.collisions).toEqual([])
+    expect(issues.map((issue) => issue.code)).not.toContain('injected-field-collision')
+    expect(finding?.notes.join(' ')).toContain('already installed')
+  })
+
   test('users analysis: a single-select role field is adoption-incompatible', () => {
     const single = analyzeUsersCollection(
       {
