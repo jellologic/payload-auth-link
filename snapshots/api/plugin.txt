@@ -617,6 +617,17 @@ export type AuthLinkPluginOptions = {
      * accounts, pre-link imports) are unaffected either way.
      */
     readonly allowLocalCredentialsForLinkedDocs?: boolean | undefined;
+    /**
+     * A HOST checkbox on the users collection that mirrors the
+     * provider's email verification (issue #88) — e.g. payload-auth's
+     * own `emailVerified` column, which import-mode apps keep. Unset
+     * (the default), nothing is mirrored. When set, a provider event
+     * reporting the linked user's CURRENT email as verified (a
+     * post-import verification) sets this field `true`; the field must
+     * exist on the users collection (wiring throws otherwise). The
+     * plugin never sets it `false` — un-verifying is the host's call.
+     */
+    readonly emailVerifiedField?: string | undefined;
 };
 /** Injected governance/identity field names on the users collection. */
 export type UserGovernanceFields = {
@@ -692,6 +703,11 @@ export type WiredOptions = {
      * identities. `false` (the default) enforces it.
      */
     readonly allowLocalCredentialsForLinkedDocs: boolean;
+    /**
+     * Host checkbox mirroring provider email verification (issue #88),
+     * or `null` when not configured.
+     */
+    readonly emailVerifiedField: string | null;
 };
 /**
  * Validate raw options and build the composition root. Throws
@@ -1048,3 +1064,26 @@ export declare const strategyName = "auth-link";
  * each call so role changes apply to the very next request.
  */
 export declare function createAuthLinkStrategy(wired: WiredOptions): AuthStrategy;
+
+// ===== verified-email.d.ts =====
+import { type Email, type UserId } from '@payload-auth-link/core';
+import type { Payload } from 'payload';
+import type { WiredOptions } from './options.js';
+/**
+ * Verified-email sync for an ALREADY-LINKED user (issue #88).
+ *
+ * `setEmail` grants the linking proof when a verified provider event
+ * MOVES the address — but a user who verifies the address they
+ * already carry (the post-import verification: imported unverified,
+ * pre-linked by identity, verified later) used to change nothing: the
+ * `linkable` proof stayed off and the host's own verified mirror (e.g.
+ * payload-auth's `emailVerified`) stayed `false`.
+ *
+ * The provider just verified this exact address for the identity that
+ * is linked to this document, which is the same proof `setEmail`
+ * grants on a change: the proof is bound to the address
+ * (`linkableEmail`), and the configured mirror is set `true`. Writes
+ * only what differs, so the per-update provider hook stays a no-op
+ * once in step. Never sets the mirror `false`.
+ */
+export declare function syncVerifiedEmail(wired: WiredOptions, payload: Payload, userId: UserId, email: Email): Promise<'updated' | 'unchanged'>;

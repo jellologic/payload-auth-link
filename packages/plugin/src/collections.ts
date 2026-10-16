@@ -951,6 +951,18 @@ export function applyUsersCollection(
 ): CollectionConfig[] {
   const slug = wired.config.map.usersCollection
   const existing = collections?.find((collection) => collection.slug === slug)
+  const mirror = wired.emailVerifiedField
+  if (mirror !== null) {
+    // The verified-email mirror (issue #88) is a HOST field the plugin
+    // writes; naming one the host does not declare is a config error,
+    // never a silent no-op.
+    const declared = existing?.fields.find((candidate) => fieldName(candidate) === mirror)
+    if (declared === undefined || declared.type !== 'checkbox') {
+      throw new InvalidConfigError(
+        `emailVerifiedField '${mirror}' must name a checkbox field declared on the '${slug}' collection`
+      )
+    }
+  }
   if (!existing) {
     return [...(collections ?? []), createUsersCollection(wired, strategy)]
   }

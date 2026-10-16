@@ -2,6 +2,7 @@ import { applyIdentityEvent, type IdentityEvent } from '@payload-auth-link/core'
 import type { Payload } from 'payload'
 import type { WiredOptions } from './options.js'
 import { createServices } from './services.js'
+import { syncVerifiedEmail } from './verified-email.js'
 
 /**
  * CAP-14 lifecycle subscription, wired once at Payload `onInit` (the
@@ -23,6 +24,38 @@ export function subscribeIdentityEvents(wired: WiredOptions, payload: Payload): 
         providerId: event.providerId,
         providerUserId: event.providerUserId,
         error: applied.error.message,
+      })
+      return
+    }
+    // Issue #88: a verified event for the address the linked document
+    // ALREADY carries (setEmail no-ops on it) still proves ownership —
+    // grant the bound linking proof and set the host's verified mirror.
+    const verifiedEmail =
+      event.type === 'email-verified' || (event.type === 'email-changed' && event.verified)
+        ? event.email
+        : null
+    if (verifiedEmail === null) {
+      return
+    }
+    const linked = await users.findByProviderIdentity({
+      providerId: event.providerId,
+      providerUserId: event.providerUserId,
+    })
+    if (linked.isErr()) {
+      wired.logger.error('verified-email sync lookup failed', {
+        providerId: event.providerId,
+        error: linked.error.message,
+      })
+      return
+    }
+    if (linked.value === null) {
+      return
+    }
+    const outcome = await syncVerifiedEmail(wired, payload, linked.value.id, verifiedEmail)
+    if (outcome === 'updated') {
+      wired.logger.info('verified email synced onto the linked user', {
+        userId: linked.value.id,
+        providerId: event.providerId,
       })
     }
   }
