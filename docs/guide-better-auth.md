@@ -185,6 +185,22 @@ test suite. The documented differences:
   normalise. Better Auth core never pages through string-sorted
   results; plugins or app code that do should sort on a normalised
   (e.g. lower-cased) column.
+- **String range comparisons follow the same collation.** `lt`,
+  `lte`, `gt`, `gte` on a text field compare in the database's
+  collation too — binary on SQLite and MongoDB, the column collation
+  on Postgres (where e.g. `'B' < 'a'` can be false under a
+  locale-aware collation). The memory adapter compares JS strings
+  (code units). Same-case ASCII strings agree everywhere; avoid
+  string range filters over mixed-case or non-ASCII data, or compare
+  on a normalised column.
+- **`NULL` in negative filters keeps the row**, like the memory
+  adapter: `ne` and `not_in` on a nullable column include rows where
+  the column is `NULL` (SQL's `NOT IN` alone would drop them; the
+  adapter adds the `IS NULL` branch).
+- **Case-insensitive `eq` is Unicode-aware on every database.**
+  SQLite's `LIKE` folds ASCII only, so the adapter narrows on the
+  value's ASCII fragments and decides the match in JS
+  (`toLowerCase`) — `ÄRGER` finds `ärger` on SQLite too.
 - **`null` placement** in sorted results follows the database
   (first in ascending order on SQLite/MongoDB, last on Postgres).
 - **Unsupported operators fail loud:** `contains`, `starts_with`,
