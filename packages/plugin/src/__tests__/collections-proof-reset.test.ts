@@ -112,3 +112,31 @@ describe('unlock access default', () => {
     expect(own).toHaveBeenCalled()
   })
 })
+
+describe('emailVerifiedField validation', () => {
+  function apply(existing: CollectionConfig[]): CollectionConfig[] {
+    const options = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['admin', 'user'],
+      defaultRole: 'user',
+      providers: [createStubProvider().provider],
+      logger: nullLogger(),
+      emailVerifiedField: 'emailVerified',
+    })
+    return applyUsersCollection(existing, options, createAuthLinkStrategy(options))
+  }
+
+  it('refuses a mirror the users collection does not declare as a checkbox', () => {
+    expect(() => apply([])).toThrow(/emailVerifiedField 'emailVerified'/)
+    expect(() =>
+      apply([{ slug: 'users', auth: true, fields: [{ name: 'emailVerified', type: 'text' }] }])
+    ).toThrow(/must name a checkbox field/)
+  })
+
+  it('accepts a declared checkbox', () => {
+    const [collection] = apply([
+      { slug: 'users', auth: true, fields: [{ name: 'emailVerified', type: 'checkbox' }] },
+    ])
+    expect(collection?.slug).toBe('users')
+  })
+})
