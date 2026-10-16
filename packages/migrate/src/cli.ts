@@ -13,12 +13,14 @@ import type * as Codemods from './codemods.js'
 import { runDoctor } from './doctor/run-doctor.js'
 import type { DoctorReport } from './doctor/types.js'
 import {
+  runAdoptPrelink,
   runFinalize,
   runFromPayloadAuth,
   runRollback,
   runVerify,
   type ImportCommandOptions,
 } from './importer/run-import.js'
+import { summarizePlanRows } from './importer/apply.js'
 import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { extname, join, relative } from 'node:path'
 
@@ -73,6 +75,12 @@ Commands:
                     [--source-map '{"accounts":"user_accounts","sessions":"user_sessions"}']
   rollback          --config ./src/payload.config.ts [--manifest ...]
   finalize          [--manifest ...]
+  adopt-prelink     --config ./src/payload.config.ts [--apply] [--json]
+                    [--manifest ./payload-auth-link-prelink.json]
+                    [--users-slug users] [--verified-field emailVerified]
+                    (adopt mode: one better-auth identity per user, plus the
+                    linking proof for verified emails; undo with
+                    rollback --manifest ./payload-auth-link-prelink.json)
 
   --source-map renames source models to your layout's tables (custom
   slugs like user_accounts/user_sessions); a null value records a
@@ -92,6 +100,12 @@ Commands:
   and never modifies the source tables. verify checks both sides;
   rollback undoes exactly the manifest; finalize marks it read-only
   so the legacy tables may be dropped later, in their own migration.
+
+  The manifest lands in the CURRENT DIRECTORY unless --manifest says
+  otherwise. It holds ids and sealed values only (no emails in the
+  clear; sealed with the app's PAYLOAD_SECRET, so rollback must run
+  against the same app) and is written with mode 0600. Delete it once
+  the migration is finalized and your soak window has passed.
 
   codemod rewrites the three named payload-auth call-site patterns
   (getPayloadAuth, payload.betterAuth.api.getSession, toNextJsHandler)
@@ -169,6 +183,17 @@ function formatReport(report: DoctorReport): string {
     if (report.database.unverifiedUsers !== null) {
       lines.push(`  unverified users: ${report.database.unverifiedUsers}`)
     }
+    if (report.database.bannedUsers !== undefined && report.database.bannedUsers !== null) {
+      lines.push(`  banned users: ${report.database.bannedUsers}`)
+    }
+    if (report.database.anonymousUsers !== undefined && report.database.anonymousUsers !== null) {
+      lines.push(`  anonymous users: ${report.database.anonymousUsers}`)
+    }
+    if ((report.database.oauthTables ?? []).length > 0) {
+      lines.push(
+        `  oauth_* tables (NOT carried by the importer): ${(report.database.oauthTables ?? []).join(', ')}`
+      )
+    }
     for (const orphan of report.database.orphans) {
       lines.push(`  ORPHANS ${orphan.kind}: ${orphan.count}`)
     }
@@ -216,9 +241,18 @@ async function main(
     'verify',
     'rollback',
     'finalize',
+    'adopt-prelink',
     'codemod',
     'export',
   ]
+  const json = flags.get('json') === true
+  // Every command prints (issue #88): progress and the summary go to
+  // stdout; --json replaces the human lines with one JSON document.
+  const log = (message: string): void => {
+    if (!json) {
+      out.write(`${message}\n`)
+    }
+  }
   if (command !== 'doctor' && !importCommands.includes(command)) {
     err.write(`unknown command '${command}'\n\n${usage()}`)
     return 3
@@ -335,11 +369,15 @@ async function main(
     // finalize [--manifest ...]
     // (no --config: manifest-only; no Payload instance is loaded)
     if (command === 'finalize') {
-      await runFinalize(
-        typeof flags.get('manifest') === 'string'
+      const finalized = await runFinalize({
+        log,
+        ...(typeof flags.get('manifest') === 'string'
           ? { manifestPath: flags.get('manifest') as string }
-          : {}
-      )
+          : {}),
+      })
+      if (json) {
+        out.write(`${JSON.stringify({ finalized: finalized.finalized })}\n`)
+      }
       return 0
     }
     // The remaining commands (from-payload-auth, verify, rollback) all
@@ -348,6 +386,29 @@ async function main(
     if (typeof configFlag !== 'string' || configFlag === '') {
       err.write(`${command} requires --config <path to payload.config.ts>\n`)
       return 3
+    }
+    if (command === 'adopt-prelink') {
+      const usersSlug = flags.get('users-slug')
+      const verifiedField = flags.get('verified-field')
+      const result = await runAdoptPrelink({
+        configPath: new URL(configFlag, `file://${process.cwd()}/`).pathname,
+        apply: flags.get('apply') === true,
+        json,
+        log,
+        ...(typeof flags.get('manifest') === 'string'
+          ? { manifestPath: flags.get('manifest') as string }
+          : {}),
+        ...(typeof usersSlug === 'string' ? { usersSlug } : {}),
+        ...(typeof verifiedField === 'string' ? { verifiedField } : {}),
+      })
+      if (json) {
+        out.write(`${JSON.stringify(result, null, 2)}\n`)
+      }
+      if (result.unmappable.length > 0) {
+        err.write(`ABORT: ${result.unmappable.length} unmappable user(s); nothing was written\n`)
+        return 1
+      }
+      return 0
     }
     if ((command === 'from-payload-auth' || command === 'verify') && databaseUrl === '') {
       err.write(`${command} requires --database-url or DATABASE_URL\n`)
@@ -369,10 +430,29 @@ async function main(
       ...(typeof flags.get('source-map') === 'string'
         ? { sourceMapJson: flags.get('source-map') as string }
         : {}),
-      json: flags.get('json') === true,
+      json,
+      log,
     }
     if (command === 'from-payload-auth') {
       const outcome = await runFromPayloadAuth(importOptions)
+      if (json) {
+        out.write(
+          `${JSON.stringify(
+            {
+              exitCode: outcome.exitCode,
+              created: outcome.result?.created ?? 0,
+              skipped: outcome.result?.skipped ?? 0,
+              fieldWrites: outcome.result?.fieldWrites ?? 0,
+              rows: summarizePlanRows(outcome.plan.rows),
+              unmappable: outcome.plan.unmappable,
+              warnings: outcome.plan.warnings,
+              unverified: outcome.unverified.length,
+            },
+            null,
+            2
+          )}\n`
+        )
+      }
       if (outcome.plan.unmappable.length > 0) {
         err.write(
           `ABORT: ${outcome.plan.unmappable.length} unmappable row(s); nothing was silently skipped\n`
@@ -383,10 +463,16 @@ async function main(
     }
     if (command === 'verify') {
       const result = await runVerify(importOptions)
+      if (json) {
+        out.write(`${JSON.stringify(result, null, 2)}\n`)
+      }
       return result.ok ? 0 : 1
     }
     if (command === 'rollback') {
-      await runRollback(importOptions)
+      const undone = await runRollback(importOptions)
+      if (json) {
+        out.write(`${JSON.stringify(undone)}\n`)
+      }
       return 0
     }
   }
@@ -427,7 +513,16 @@ const invokedDirectly =
 if (invokedDirectly) {
   main(process.argv.slice(2))
     .then((code) => {
+      // Every resource the command opened is closed by now (issue #88:
+      // Payload destroyed, pg clients ended); exit explicitly anyway,
+      // after stdout/stderr drain, so a third-party handle in the app's
+      // config (a cron, a websocket) can never park a finished CLI.
       process.exitCode = code
+      process.stdout.write('', () => {
+        process.stderr.write('', () => {
+          process.exit(code)
+        })
+      })
     })
     .catch((error: unknown) => {
       // Name the command that failed (issue #71) — 'doctor failed:' was

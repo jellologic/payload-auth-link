@@ -80,6 +80,18 @@ export type DatabaseFinding = {
   readonly missingTables?: readonly { readonly model: string; readonly table: string }[]
   /** Orphan checks that could not run, with the reason (issue #68). */
   readonly skippedChecks?: readonly string[]
+  /**
+   * Users banned by Better Auth's admin plugin (`banned = true`), or
+   * `null` when the source has no `banned` column (issue #88).
+   */
+  readonly bannedUsers?: number | null
+  /** Anonymous-plugin users (`is_anonymous = true`), or `null` (issue #88). */
+  readonly anonymousUsers?: number | null
+  /**
+   * OAuth-provider plugin tables present (`oauth_*`, issue #88). The
+   * importer does NOT carry them; the doctor says so explicitly.
+   */
+  readonly oauthTables?: readonly string[]
 }
 
 /** Default-behaviour changes in payload-auth-link 0.7.0 that bite. */

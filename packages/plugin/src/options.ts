@@ -245,6 +245,17 @@ export type AuthLinkPluginOptions = {
    * accounts, pre-link imports) are unaffected either way.
    */
   readonly allowLocalCredentialsForLinkedDocs?: boolean | undefined
+  /**
+   * A HOST checkbox on the users collection that mirrors the
+   * provider's email verification (issue #88) — e.g. payload-auth's
+   * own `emailVerified` column, which import-mode apps keep. Unset
+   * (the default), nothing is mirrored. When set, a provider event
+   * reporting the linked user's CURRENT email as verified (a
+   * post-import verification) sets this field `true`; the field must
+   * exist on the users collection (wiring throws otherwise). The
+   * plugin never sets it `false` — un-verifying is the host's call.
+   */
+  readonly emailVerifiedField?: string | undefined
 }
 
 /** Injected governance/identity field names on the users collection. */
@@ -325,6 +336,11 @@ export type WiredOptions = {
    * identities. `false` (the default) enforces it.
    */
   readonly allowLocalCredentialsForLinkedDocs: boolean
+  /**
+   * Host checkbox mirroring provider email verification (issue #88),
+   * or `null` when not configured.
+   */
+  readonly emailVerifiedField: string | null
 }
 
 function fieldNameOption(value: string | undefined, fallback: string, label: string): string {
@@ -737,5 +753,23 @@ export function wireOptions(raw: AuthLinkPluginOptions): WiredOptions {
     onAudit: raw.onAudit ?? null,
     organizations,
     allowLocalCredentialsForLinkedDocs: raw.allowLocalCredentialsForLinkedDocs === true,
+    emailVerifiedField: emailVerifiedField(raw.emailVerifiedField, takenFieldNames),
   }
+}
+
+/**
+ * Validate `emailVerifiedField` (issue #88): a plain field name that
+ * must not be one of the fields the plugin itself manages.
+ */
+function emailVerifiedField(value: string | undefined, taken: ReadonlySet<string>): string | null {
+  if (value === undefined) {
+    return null
+  }
+  const name = fieldNameOption(value, '', 'emailVerifiedField')
+  if (taken.has(name) || name === 'linkable' || name === 'linkableEmail') {
+    throw new InvalidConfigError(
+      `emailVerifiedField '${name}' collides with a users-collection field managed by the plugin`
+    )
+  }
+  return name
 }

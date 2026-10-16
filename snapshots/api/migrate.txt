@@ -261,6 +261,18 @@ export type DatabaseFinding = {
     }[];
     /** Orphan checks that could not run, with the reason (issue #68). */
     readonly skippedChecks?: readonly string[];
+    /**
+     * Users banned by Better Auth's admin plugin (`banned = true`), or
+     * `null` when the source has no `banned` column (issue #88).
+     */
+    readonly bannedUsers?: number | null;
+    /** Anonymous-plugin users (`is_anonymous = true`), or `null` (issue #88). */
+    readonly anonymousUsers?: number | null;
+    /**
+     * OAuth-provider plugin tables present (`oauth_*`, issue #88). The
+     * importer does NOT carry them; the doctor says so explicitly.
+     */
+    readonly oauthTables?: readonly string[];
 };
 /** Default-behaviour changes in payload-auth-link 0.7.0 that bite. */
 export type BehaviourChange = {
@@ -350,23 +362,34 @@ export declare function verifyRoundTrip(options: {
 
 // ===== importer/apply.d.ts =====
 import type { Payload } from 'payload';
-import { type ImportManifest, type ImportResult, type PlanRow } from './types.js';
+import { type SourceUser } from './source.js';
+import { type ImportManifest, type ImportResult, type PlanRow, type Unmappable } from './types.js';
 /**
  * Apply side (issue #50): copy payload-auth rows into the
  * payload-auth-link collections through the Payload Local API.
  *
  * - Password hashes, OAuth tokens, API-key hashes, and jwks carry over
  *   VERBATIM (payload-auth used Better Auth's own hashing).
- * - `linkable` + `linkableEmail` are granted from VERIFIED emails only;
- *   unverified users are reported by the plan, never linked.
+ * - Row timestamps (`createdAt`/`updatedAt`) carry from the source rows
+ *   for every model whose source table has them (issue #88).
+ * - Better Auth plugin user state carries (issue #88): admin-plugin
+ *   `banned`/`banReason`/`banExpires`/`role` and the anonymous plugin's
+ *   `isAnonymous`, whenever the source has the column AND the target
+ *   `ba-users` collection declares the field. A banned or anonymous
+ *   source user whose state the target cannot hold is UNMAPPABLE — the
+ *   run aborts before writing; a banned user never imports unbanned.
+ * - `linkable` + `linkableEmail` are granted from VERIFIED emails only
+ *   (grant-only: an existing proof is never revoked); unverified users
+ *   are reported by the plan, never linked.
  * - Sessions default to `carry` so nobody is logged out: the carried
  *   rows keep their tokens, and with the same `advanced.cookiePrefix`
  *   the existing cookies keep working.
  * - Idempotent and resumable: every target row carries a deterministic
  *   `baId` derived from the source id (`acct-<source id>`), so a
  *   re-run after a crash finds its own earlier rows and skips them.
- * - Every created row and every field write lands in the manifest, so
- *   `rollback` is exact and the source tables stay untouched.
+ * - Every created row and every host field write lands in the
+ *   manifest — the FIRST captured prior value per field wins, sealed —
+ *   so `rollback` is exact and the source tables stay untouched.
  */
 export type ApplyOptions = {
     readonly payload: Payload;
@@ -389,9 +412,51 @@ export type ApplyOptions = {
     readonly now?: () => Date;
     readonly log?: (message: string) => void;
 };
+/**
+ * Plugin user state the target must be able to hold (issue #88),
+ * checked BEFORE any write: a banned user whose target has no `banned`
+ * field would import unbanned; an anonymous user without `isAnonymous`
+ * would import as a full account.
+ */
+export declare function pluginStateUnmappable(users: readonly SourceUser[], targetFields: ReadonlySet<string>, targetSlug: string): Unmappable[];
 export declare function applyImport(options: ApplyOptions): Promise<ImportResult>;
 /** Collapse per-row plan entries into one line per model (dry-run print). */
 export declare function summarizePlanRows(rows: readonly PlanRow[]): PlanRow[];
+
+// ===== importer/host-writes.d.ts =====
+import type { Payload } from 'payload';
+import type { FieldWrite, ImportManifest } from './types.js';
+/** Seal one JSON-serialized value under the app's Payload secret. */
+export declare function sealValue(secret: string, plaintext: string): string;
+/** Open a sealed value; throws when the secret is not the sealing one. */
+export declare function unsealValue(secret: string, sealed: string): string;
+/** The captured prior value of one manifest entry, JSON-parsed. */
+export declare function priorValue(secret: string, write: FieldWrite): unknown;
+/** Keys of the field writes a manifest already holds (first capture wins). */
+export declare function capturedKeys(writes: readonly FieldWrite[]): Set<string>;
+/**
+ * Capture `fields` (plus `updatedAt`) of one document before it is
+ * written. Fields the document does not carry are skipped — they are
+ * neither written nor restored. Returns the fields the document DOES
+ * carry, so the caller writes only those.
+ */
+export declare function captureBefore(options: {
+    readonly payload: Payload;
+    readonly collection: string;
+    readonly id: string | number;
+    readonly fields: readonly string[];
+    readonly captured: Set<string>;
+    readonly into: FieldWrite[];
+}): Promise<{
+    readonly present: ReadonlySet<string>;
+    readonly newlyCaptured: number;
+}>;
+/**
+ * Restore every captured field, one adapter write per document so
+ * `updatedAt` lands exactly as captured. Returns the number of field
+ * values restored.
+ */
+export declare function restoreCaptured(payload: Payload, manifest: Pick<ImportManifest, 'fieldWrites'>): Promise<number>;
 
 // ===== importer/lifecycle.d.ts =====
 import type { Payload } from 'payload';
@@ -402,8 +467,22 @@ import { type ImportManifest } from './types.js';
  * manifest so the source tables may be dropped — by the operator, as a
  * separate later step.
  */
+/**
+ * The importer's default manifest location: the CURRENT WORKING
+ * DIRECTORY. Pass `--manifest` to put it somewhere access-controlled;
+ * it holds ids and sealed values only (no emails in the clear) and is
+ * written with mode 0600. Keep it until `finalize` + your soak period
+ * ends, then delete it (docs/migrating-from-payload-auth.md).
+ */
 export declare const defaultManifestPath = "payload-auth-link-migration.json";
+/** The `adopt-prelink` default manifest location (cwd; same rules). */
+export declare const defaultPrelinkManifestPath = "payload-auth-link-prelink.json";
 export declare function readManifest(path: string): ImportManifest | null;
+/**
+ * Write the manifest owner-read/write only (0600, issue #88) — on
+ * create AND on every rewrite, so a manifest created by an older kit
+ * is tightened too.
+ */
 export declare function writeManifest(manifest: ImportManifest, path: string): void;
 export type VerifyIssue = {
     readonly code: string;
@@ -437,6 +516,8 @@ export declare function verifyImport(options: {
     readonly sourceTables?: Readonly<Record<string, string | null>> | undefined;
     /** Whether the import carried sessions; `drop` skips the session count. */
     readonly sessions?: 'carry' | 'drop' | undefined;
+    /** Injectable clock: what counts as an expired source session. */
+    readonly now?: (() => Date) | undefined;
 }): Promise<VerifyResult>;
 /**
  * Rollback (issue #50): delete the created rows in reverse order and
@@ -448,6 +529,14 @@ export declare function rollbackImport(options: {
     readonly payload: Payload;
     readonly manifest: ImportManifest;
     readonly log?: (message: string) => void;
+    /**
+     * When given, the manifest at this path is RESET after a successful
+     * rollback (issue #88): no created rows, no field writes, no totals —
+     * so a later `--apply` starts from the restored state instead of
+     * building on stale entries.
+     */
+    readonly manifestPath?: string | undefined;
+    readonly now?: (() => Date) | undefined;
 }): Promise<{
     deleted: number;
     restored: number;
@@ -455,7 +544,64 @@ export declare function rollbackImport(options: {
 /** Finalize (issue #50): the point of no return — mark the manifest. */
 export declare function finalizeManifest(manifest: ImportManifest, path: string): ImportManifest;
 
+// ===== importer/prelink.d.ts =====
+import type { Payload } from 'payload';
+import type { ImportManifest, Unmappable } from './types.js';
+/**
+ * The adopt-mode pre-link (issues #49, #88): `migrate adopt-prelink`.
+ *
+ * In adopt mode the users collection IS Better Auth's user table
+ * (`schemaMap.user`, `idStrategy: 'payload'`), so Better Auth's user id
+ * for a document is the document id. What adopt mode does NOT do by
+ * itself is link the plugin side: without an identity row, the first
+ * provider sign-in reaches JIT linking, which links an existing
+ * document only on the verified-email proof (`linkable === true` with
+ * `linkableEmail` equal to the document email).
+ *
+ * This command mirrors exactly what the importer writes on the host
+ * users (issue #69):
+ *
+ * - ONE `better-auth` identity per user, `providerUserId` = the
+ *   document id (other providers' identity rows are kept);
+ * - `linkable: true` + `linkableEmail: <email>` for users whose
+ *   verified-email field (`emailVerified` on payload-auth layouts) is
+ *   `true` — grant-only, never revoked.
+ *
+ * Dry run by default. `--apply` records every prior value in a manifest
+ * (first capture wins, sealed, mode 0600) so `rollback --manifest`
+ * restores the documents exactly, `updatedAt` included.
+ */
+export type PrelinkOptions = {
+    readonly payload: Payload;
+    readonly apply: boolean;
+    readonly manifest: ImportManifest | null;
+    readonly manifestPath: string;
+    /** Users collection slug. Defaults to `users`. */
+    readonly usersSlug?: string | undefined;
+    /** The users' verified-email checkbox. Defaults to `emailVerified`. */
+    readonly verifiedField?: string | undefined;
+    /** Email field. Defaults to `email`. */
+    readonly emailField?: string | undefined;
+    readonly now?: () => Date;
+    readonly log?: (message: string) => void;
+};
+export type PrelinkResult = {
+    readonly users: number;
+    /** Documents that received (or would receive) the better-auth identity. */
+    readonly linked: number;
+    /** Documents already carrying the exact identity. */
+    readonly alreadyLinked: number;
+    /** Verified documents granted (or to be granted) the linking proof. */
+    readonly proofGranted: number;
+    /** Users without a verified email: identity only, no linking proof. */
+    readonly unverified: number;
+    readonly unmappable: readonly Unmappable[];
+    readonly fieldWrites: number;
+};
+export declare function prelinkUsers(options: PrelinkOptions): Promise<PrelinkResult>;
+
 // ===== importer/run-import.d.ts =====
+import { type PrelinkResult } from './prelink.js';
 import { type VerifyResult } from './lifecycle.js';
 import { type ImportManifest, type ImportPlan, type ImportResult } from './types.js';
 /**
@@ -501,6 +647,18 @@ export declare function runRollback(options: ImportCommandOptions): Promise<{
 }>;
 /** The `finalize` command — manifest-only; no Payload instance is loaded. */
 export declare function runFinalize(options: Pick<ImportCommandOptions, 'manifestPath' | 'log'>): Promise<ImportManifest>;
+/** Options for `adopt-prelink` (issue #88). */
+export type PrelinkCommandOptions = Pick<ImportCommandOptions, 'configPath' | 'apply' | 'manifestPath' | 'json' | 'log' | 'loadPayload'> & {
+    readonly usersSlug?: string | undefined;
+    readonly verifiedField?: string | undefined;
+};
+/**
+ * The `adopt-prelink` command (issues #49, #88): pre-link every adopted
+ * user (one better-auth identity; the linking proof for verified
+ * emails). Dry run by default; `--apply` writes and records the
+ * manifest that `rollback --manifest` undoes exactly.
+ */
+export declare function runAdoptPrelink(options: PrelinkCommandOptions): Promise<PrelinkResult>;
 
 // ===== importer/source.d.ts =====
 import { type ResolvedSourceTables, type SourceModel, type Unmappable } from './types.js';
@@ -528,9 +686,21 @@ export type SourceUser = {
     /** Stored role values from the `users_role` child table. */
     readonly roles: readonly string[];
     readonly accounts: readonly SourceAccount[];
+    /**
+     * Better Auth admin-plugin ban state (issue #88), `null` when the
+     * source layout has no such column (the plugin was never installed).
+     */
+    readonly banned: boolean | null;
+    readonly banReason: string | null;
+    readonly banExpires: Date | null;
+    /** Better Auth anonymous-plugin marker; `null` when no column exists. */
+    readonly isAnonymous: boolean | null;
 };
 export type SourceAccount = {
     readonly id: string;
+    /** Source row timestamps, carried onto the target row (issue #88). */
+    readonly createdAt: Date | null;
+    readonly updatedAt: Date | null;
     readonly accountId: string;
     readonly providerId: string;
     readonly password: string | null;
@@ -583,7 +753,13 @@ export declare function readSourceUsers(client: SourceClient, tables?: ResolvedS
  * A missing table throws — a `null` mapping keeps the caller from ever
  * asking for it, and an unmapped missing table aborts at the probe.
  */
-export declare function readFlatRows(client: SourceClient, table: string, columns: readonly string[]): Promise<SourceRow[]>;
+export declare function readFlatRows(client: SourceClient, table: string, columns: readonly string[], 
+/**
+ * Columns read only when the layout has them (issue #88: row
+ * timestamps) — an absent optional column is simply not selected,
+ * and the row carries no key for it.
+ */
+optionalColumns?: readonly string[]): Promise<SourceRow[]>;
 /** What the orphan sweep found, and which checks could not run (and why). */
 export type OrphanScan = {
     readonly orphans: readonly Unmappable[];
@@ -610,6 +786,12 @@ export declare function unverifiedEmails(users: readonly SourceUser[]): readonly
  * Importer manifest (issue #50): every row created and every field
  * changed, so `rollback` is exact. The manifest is the run's contract —
  * `verify`, `rollback`, and `finalize` all read it.
+ *
+ * Privacy (issue #88): a version-2 manifest holds NO email address or
+ * other field value in the clear. Created rows are named by ids only,
+ * and every captured prior value is sealed (AES-256-GCM, keyed from the
+ * target app's Payload `secret`), so only the same app can restore it.
+ * The file is written with mode 0600.
  */
 export type CreatedRow = {
     /** Target collection slug. */
@@ -623,11 +805,25 @@ export type FieldWrite = {
     readonly collection: string;
     readonly id: string | number;
     readonly field: string;
-    /** The prior value, JSON-serialized, restored by rollback. */
-    readonly before: string | null;
+    /**
+     * The prior value, JSON-serialized — version-1 manifests only.
+     * Version 2 never stores values in the clear; see `sealedBefore`.
+     */
+    readonly before?: string | null | undefined;
+    /**
+     * The prior value, JSON-serialized and sealed with the target app's
+     * Payload secret (version 2, issue #88), restored by rollback. Only
+     * the FIRST capture per document field is kept, so a rollback after
+     * any number of `--apply` passes restores the pre-import state.
+     */
+    readonly sealedBefore?: string | undefined;
 };
+/** Which command produced the manifest (issue #88). */
+export type ManifestKind = 'import' | 'adopt-prelink';
 export type ImportManifest = {
-    readonly version: 1;
+    readonly version: 1 | 2;
+    /** The producing command; absent on version-1 manifests (imports). */
+    readonly kind?: ManifestKind | undefined;
     readonly createdAt: string;
     readonly sourceDatabase: string;
     readonly options: {
@@ -638,8 +834,10 @@ export type ImportManifest = {
     readonly finalized: boolean;
     /** Counts per source table at plan time (the rollback baseline). */
     readonly sourceCounts: Readonly<Record<string, number>>;
-    /** Cumulative plan totals (rows created + skipped across resumes). */
+    /** Rows the LATEST pass planned per model — never summed across passes (#88). */
     readonly totals: Readonly<Record<string, number>>;
+    /** When the last rollback reset this manifest (issue #88). */
+    readonly rolledBackAt?: string | undefined;
 };
 /** Per-model plan row for the dry run. */
 export type PlanRow = {
@@ -721,11 +919,12 @@ export { classifyPlugins, pluginsFromSourceTree } from './doctor/plugins.js';
 export { scanSource, projectedUserFields, listSourceFiles } from './doctor/source-scan.js';
 export { analyzeUsersCollection, findUsersCollection, localStrategyOn } from './doctor/users.js';
 export { introspectDatabase } from './doctor/database.js';
-export { runFromPayloadAuth, runVerify, runRollback, runFinalize } from './importer/run-import.js';
+export { runFromPayloadAuth, runVerify, runRollback, runFinalize, runAdoptPrelink, type ImportCommandOptions, type PrelinkCommandOptions, } from './importer/run-import.js';
+export { prelinkUsers, type PrelinkOptions, type PrelinkResult } from './importer/prelink.js';
 export { applyImport, summarizePlanRows } from './importer/apply.js';
 export { countTables, findOrphans, openSource, probeSourceLayout, readFlatRows, readSourceUsers, unverifiedEmails, type OrphanScan, type SourceClient, type SourceLayoutIssue, type SourceAccount, type SourceRow, type SourceUser, } from './importer/source.js';
-export { readManifest, writeManifest, verifyImport, rollbackImport, finalizeManifest, defaultManifestPath, type VerifyIssue, type VerifyResult, } from './importer/lifecycle.js';
-export { defaultSourceTables, defaultTargetSlugs, parseSourceMapJson, presentTables, resolveSourceTables, sourceModelNames, type CreatedRow, type ResolvedSourceTables, type SourceModel, type SourceTableMap, type TargetModel, type TargetSlugMap, type FieldWrite, type ImportManifest, type ImportPlan, type ImportResult, type PlanRow, type Unmappable, } from './importer/types.js';
+export { readManifest, writeManifest, verifyImport, rollbackImport, finalizeManifest, defaultManifestPath, defaultPrelinkManifestPath, type VerifyIssue, type VerifyResult, } from './importer/lifecycle.js';
+export { defaultSourceTables, defaultTargetSlugs, parseSourceMapJson, presentTables, resolveSourceTables, sourceModelNames, type CreatedRow, type ResolvedSourceTables, type SourceModel, type SourceTableMap, type TargetModel, type TargetSlugMap, type FieldWrite, type ImportManifest, type ManifestKind, type ImportPlan, type ImportResult, type PlanRow, type Unmappable, } from './importer/types.js';
 export { exportToJsonl, parseExportTables, exportTables } from './exporters.js';
 export { cliMain } from './cli.js';
 export type { BehaviourChange, DatabaseFinding, DoctorIssue, DoctorReport, PluginFinding, SourceFinding, UsersFinding, VersionFinding, } from './doctor/types.js';

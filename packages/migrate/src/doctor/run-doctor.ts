@@ -143,6 +143,29 @@ export function collectionSlugs(config: unknown): string[] {
     .filter((slug): slug is string => typeof slug === 'string')
 }
 
+/**
+ * Top-level field names of one collection in the loaded config, or
+ * `null` when the config declares no such collection.
+ */
+function collectionFieldNames(config: unknown, slug: string): Set<string> | null {
+  if (!isRecord(config) || !Array.isArray(config.collections)) {
+    return null
+  }
+  const collection = config.collections.find(
+    (entry): entry is Record<string, unknown> => isRecord(entry) && entry.slug === slug
+  )
+  if (collection === undefined || !Array.isArray(collection.fields)) {
+    return null
+  }
+  const names = new Set<string>()
+  for (const field of collection.fields) {
+    if (isRecord(field) && typeof field.name === 'string') {
+      names.add(field.name)
+    }
+  }
+  return names
+}
+
 /** Default config loader: a dynamic import of the TS/JS config module. */
 async function defaultLoadModule(path: string): Promise<unknown> {
   const mod: unknown = await import(pathToFileURL(path).href)
@@ -241,6 +264,13 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     const files = filesById.get(finding.id)
     return files === undefined ? finding : { ...finding, files }
   })
+  if (pluginIds.includes('generic-oauth')) {
+    warnings.push({
+      code: 'generic-oauth-providers',
+      detail:
+        "genericOAuth() is declared: its provider list lives in the engine options, not the database — carry every `config` entry (providerId, discovery URL, client id/secret, scopes) into the new engine's genericOAuth() call. The importer copies the accounts rows (provider_id stays), so a provider missing from the new config strands those users' sign-in",
+    })
+  }
   for (const finding of pluginFindings) {
     if (finding.status === 'removed-upstream') {
       blockers.push({
@@ -315,6 +345,45 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
       }
       for (const skip of found.skippedChecks ?? []) {
         warnings.push({ code: 'orphan-check-skipped', detail: skip })
+      }
+      // Better Auth plugin state and tables the migration must account
+      // for (issue #88). When the loaded config is the TARGET (it
+      // declares the engine's ba-users collection), a target that
+      // cannot hold the state is a blocker — the importer refuses it.
+      const baUsersFields = configLoaded ? collectionFieldNames(config, 'ba-users') : null
+      const banned = found.bannedUsers ?? 0
+      if (banned > 0) {
+        if (baUsersFields !== null && !baUsersFields.has('banned')) {
+          blockers.push({
+            code: 'target-cannot-hold-bans',
+            detail: `${banned} banned user(s) on the source, but this config's ba-users collection declares no 'banned' field — add Better Auth's admin() plugin to the engine (autoDeclare derives banned/banReason/banExpires); the importer refuses to import a banned user unbanned`,
+          })
+        } else {
+          warnings.push({
+            code: 'banned-users',
+            detail: `${banned} banned user(s) (Better Auth admin plugin): the importer carries banned/banReason/banExpires onto ba-users only when the target engine declares admin(), and refuses the run otherwise — a banned user never imports unbanned`,
+          })
+        }
+      }
+      const anonymous = found.anonymousUsers ?? 0
+      if (anonymous > 0) {
+        if (baUsersFields !== null && !baUsersFields.has('isAnonymous')) {
+          blockers.push({
+            code: 'target-cannot-hold-anonymous',
+            detail: `${anonymous} anonymous user(s) on the source, but this config's ba-users collection declares no 'isAnonymous' field — add Better Auth's anonymous() plugin to the engine, or delete the anonymous users before importing`,
+          })
+        } else {
+          warnings.push({
+            code: 'anonymous-users',
+            detail: `${anonymous} anonymous user(s) (Better Auth anonymous plugin): they import with isAnonymous only when the target engine declares anonymous(), and the plugin refuses anonymous sessions by design — they never JIT-link to a Payload document`,
+          })
+        }
+      }
+      if ((found.oauthTables ?? []).length > 0) {
+        warnings.push({
+          code: 'oauth-tables-not-carried',
+          detail: `OAuth-provider tables present (${(found.oauthTables ?? []).join(', ')}): the importer does NOT copy them — registered OAuth clients, consents, and issued tokens stay in the legacy tables. Re-register the clients on @better-auth/oauth-provider (a separate schema migration) before dropping the legacy tables`,
+        })
       }
     } catch (error) {
       warnings.push({
