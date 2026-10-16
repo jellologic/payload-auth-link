@@ -32,10 +32,12 @@ const adminSessionCookieKey = 'admin_session'
 
 /**
  * Non-session cookies BA sets that a logout must still expire:
- * `admin_session` (above) and `dont_remember` (set on a sign-in
- * without "remember me"; BA's own sign-out deletes it).
+ * `admin_session` (above), `dont_remember` (set on a sign-in
+ * without "remember me"; BA's own sign-out deletes it) and
+ * `account_data` (the account cookie cache, set when
+ * `account.storeAccountCookie` is on; BA's own sign-out deletes it).
  */
-const auxiliaryCookieKeys = [adminSessionCookieKey, 'dont_remember'] as const
+const auxiliaryCookieKeys = [adminSessionCookieKey, 'dont_remember', 'account_data'] as const
 type AuxiliaryCookieKey = (typeof auxiliaryCookieKeys)[number]
 
 function readDynamicProtocol(baseURL: BetterAuthOptions['baseURL']): string | undefined {
@@ -142,6 +144,8 @@ function toggledSecureVariant(name: string): string | undefined {
  * - the admin plugin's `admin_session` (the impersonating operator's
  *   resumable session token);
  * - `dont_remember` (sign-in without "remember me");
+ * - `account_data` (the account cookie cache, when
+ *   `account.storeAccountCookie` is on);
  * - the cookie-cache `session_data`, even when the cache is disabled
  *   now — it may have been enabled when the cookie was set;
  * - the `__Secure-` / plain counterpart of every session and logout
@@ -150,7 +154,9 @@ function toggledSecureVariant(name: string): string | undefined {
  *   name.
  *
  * Expired unconditionally — a cookie that was never set makes its
- * clearing write a no-op.
+ * clearing write a no-op. Chunks of these cookies (`<name>.0` …) are
+ * per-request and enumerated from the presented Cookie header by the
+ * port's `presentedLogoutCookieNames`.
  */
 export function getBetterAuthLogoutCookieNames(
   options: BetterAuthCookieOptions,
@@ -219,7 +225,7 @@ export function getBetterAuthSessionCookieClearOptions(
       ]
     })
   )
-  const clearFor = (key: SessionCookieKey | 'dont_remember'): CookieOptions => {
+  const clearFor = (key: SessionCookieKey | 'dont_remember' | 'account_data'): CookieOptions => {
     const specific = options.advanced?.cookies?.[key]?.attributes
     return {
       secure: (specific?.secure ?? defaults?.secure ?? secureDefault) ? true : undefined,
@@ -234,6 +240,7 @@ export function getBetterAuthSessionCookieClearOptions(
     lookup.set(sessionDataName, clearFor('session_data'))
   }
   lookup.set(auxiliaryCookieName('dont_remember', options, environment), clearFor('dont_remember'))
+  lookup.set(auxiliaryCookieName('account_data', options, environment), clearFor('account_data'))
   // BA sets `admin_session` with the session token's live attributes
   // (`authCookies.sessionToken.attributes`), not its own per-cookie
   // attributes, so its clearing write must reuse the session token's.
@@ -244,7 +251,52 @@ export function getBetterAuthSessionCookieClearOptions(
     lookup.set(auxiliaryCookieName(adminSessionCookieKey, options, environment), sessionTokenClear)
   }
   return (name: string): CookieOptions | undefined => {
-    const found = lookup.get(name)
+    // A chunk (`<name>.<n>`, see `betterAuthCookieChunkBase`) is
+    // written with its base cookie's attributes.
+    const found = lookup.get(name) ?? lookup.get(betterAuthCookieChunkBase(name) ?? '')
     return found === undefined ? undefined : { ...found }
   }
+}
+
+/**
+ * The base name of a Better Auth cookie chunk, or `undefined` when the
+ * name is not a chunk name. BA's chunking session/account stores split
+ * an oversized cookie (cookie-cache `session_data`, `account_data`)
+ * into `<name>.0` … `<name>.<n>`; the index must be a non-negative
+ * safe integer in canonical decimal form, mirroring BA's own
+ * `parseCookieChunkIndex`.
+ */
+export function betterAuthCookieChunkBase(name: string): string | undefined {
+  const dot = name.lastIndexOf('.')
+  if (dot <= 0) {
+    return undefined
+  }
+  const suffix = name.slice(dot + 1)
+  const index = Number(suffix)
+  if (!Number.isSafeInteger(index) || index < 0 || String(index) !== suffix) {
+    return undefined
+  }
+  return name.slice(0, dot)
+}
+
+/**
+ * The presented chunks (`<base>.<n>`) of the given cookie names on one
+ * request's Cookie header names. Chunk names exist only per request —
+ * their count follows the payload size — so no static logout list can
+ * hold them; the port enumerates them from the request at logout.
+ * Names only: values are never read.
+ */
+export function presentedBetterAuthCookieChunks(
+  presentedNames: Iterable<string>,
+  bases: readonly string[]
+): readonly string[] {
+  const chunked = new Set(bases)
+  const names: string[] = []
+  for (const name of presentedNames) {
+    const base = betterAuthCookieChunkBase(name)
+    if (base !== undefined && chunked.has(base)) {
+      names.push(name)
+    }
+  }
+  return names
 }

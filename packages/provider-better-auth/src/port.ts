@@ -19,6 +19,7 @@ import {
   authMethods,
   type AuthMethod,
 } from '@payload-auth-link/core'
+import { presentedBetterAuthCookieChunks } from './cookies.js'
 import type { IdentityEventBus } from './events.js'
 import { MFA_METHODS, MINT_METHOD, STEP_UP_METHOD } from './session-provenance.js'
 
@@ -586,9 +587,9 @@ function createPortFromFunctions(deps: PortFunctions): IdentityProviderPort {
               },
               (result) => narrowDeviceSessionIds(result)
             ),
-          presentedLogoutCookieNames: (headers: Headers) =>
-            presentedMultiSessionCookieNames(headers, deps.sessionCookieNames),
         }),
+    presentedLogoutCookieNames: (headers: Headers) =>
+      presentedLogoutCookies(headers, deps, deps.listDeviceSessions !== undefined),
   }
 }
 
@@ -915,26 +916,43 @@ function narrowDeviceSessionIds(result: unknown): readonly string[] {
 }
 
 /**
- * Names of presented multi-session cookies (CAP-13b): BA names them
- * `${sessionTokenName}_multi-${token.toLowerCase()}` (spike S6), so
- * they exist only per-request. Names only — values are never read
- * here; revocation goes through the verified enumeration above.
+ * Per-request logout cookie names, never parsed for values:
+ *
+ * - presented multi-session cookies (CAP-13b, only with the
+ *   multi-session plugin): BA names them
+ *   `${sessionTokenName}_multi-${token.toLowerCase()}` (spike S6);
+ *   revocation goes through the verified enumeration above;
+ * - presented chunks (`<name>.0` … `<name>.<n>`) of every session and
+ *   logout cookie (#110): BA's chunking stores split an oversized
+ *   cookie-cache `session_data` / `account_data` cookie, and the chunk
+ *   count follows the payload size, so only the request knows them.
+ *   BA never chunks the other names, so enumerating their chunks only
+ *   ever clears residue.
  */
-function presentedMultiSessionCookieNames(
+function presentedLogoutCookies(
   headers: Headers,
-  sessionCookieNames: readonly string[]
+  deps: Pick<PortFunctions, 'sessionCookieNames' | 'logoutCookieNames'>,
+  multiSession: boolean
 ): readonly string[] {
   const header = headers.get('cookie')
   if (header === null || header === '') {
     return []
   }
-  const presented = parseCookieHeader(header)
+  const presented = [...parseCookieHeader(header).keys()]
   const names: string[] = []
-  for (const name of presented.keys()) {
-    if (sessionCookieNames.some((base) => name.startsWith(`${base}_multi-`))) {
-      names.push(name)
+  if (multiSession) {
+    for (const name of presented) {
+      if (deps.sessionCookieNames.some((base) => name.startsWith(`${base}_multi-`))) {
+        names.push(name)
+      }
     }
   }
+  names.push(
+    ...presentedBetterAuthCookieChunks(presented, [
+      ...deps.sessionCookieNames,
+      ...(deps.logoutCookieNames ?? []),
+    ])
+  )
   return names
 }
 

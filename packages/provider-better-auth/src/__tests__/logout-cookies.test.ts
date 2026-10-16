@@ -31,6 +31,7 @@ const options = {
   secret: SECRET,
   emailAndPassword: { enabled: true, requireEmailVerification: false },
   session: { cookieCache: { enabled: true, maxAge: 300 } },
+  account: { storeAccountCookie: true },
 }
 const engine = createBetterAuthEngine({
   getPayload: () => {
@@ -138,6 +139,75 @@ describe('logout cookie coverage', () => {
     }
     for (const entry of logout.headers.getSetCookie()) {
       expect(entry).toMatch(/Max-Age=0/)
+    }
+  })
+
+  it('expires every presented cookie-cache and account cookie chunk (#110)', async () => {
+    const email = 'chunked@logout-cookies.test'
+    // A user payload far over BA's 4050-byte per-cookie ceiling forces
+    // the cookie cache to split `session_data` into numbered chunks.
+    const name = 'n'.repeat(9_000)
+    const signUp = await engine.auth.handler(
+      authRequest('/sign-up/email', { name, email, password: PASSWORD })
+    )
+    expect(signUp.status).toBe(200)
+    await payload.update({
+      collection: 'ba-users',
+      where: { email: { equals: email } },
+      data: { emailVerified: true },
+      overrideAccess: true,
+    })
+    const signIn = await engine.auth.handler(
+      authRequest('/sign-in/email', { email, password: PASSWORD })
+    )
+    expect(signIn.status).toBe(200)
+    const set = setCookieNames(signIn)
+    const chunks = set.filter((cookie) => /^better-auth\.session_data\.\d+$/.test(cookie))
+    // The residue this test exists for is really produced by BA.
+    expect(chunks).toEqual(
+      expect.arrayContaining(['better-auth.session_data.0', 'better-auth.session_data.1'])
+    )
+    expect(set).not.toContain('better-auth.session_data')
+
+    // Chunks a browser may also hold: the account cookie cache
+    // (`storeAccountCookie`) and leftovers under the other `__Secure-`
+    // setting from an http→https switch.
+    const residue = [
+      'better-auth.account_data.0',
+      'better-auth.account_data.1',
+      '__Secure-better-auth.session_data.0',
+      '__Secure-better-auth.session_data.1',
+      '__Secure-better-auth.account_data.0',
+    ]
+    const cookie = [cookieHeader(signIn), ...residue.map((n) => `${n}=stale`)].join('; ')
+    const logout = await handleEndpoints({
+      config,
+      request: new Request(`${ORIGIN}/api/auth-link/session`, {
+        method: 'DELETE',
+        headers: { cookie, 'x-auth-link-csrf': '1' },
+      }),
+    })
+    expect(logout.status, await logout.clone().text()).toBe(200)
+    const entries = logout.headers.getSetCookie()
+    const expired = setCookieNames(logout)
+    for (const chunk of [...chunks, ...residue]) {
+      expect(expired).toContain(chunk)
+    }
+    for (const unsuffixed of [
+      'better-auth.session_data',
+      'better-auth.account_data',
+      '__Secure-better-auth.session_data',
+      '__Secure-better-auth.account_data',
+    ]) {
+      expect(expired).toContain(unsuffixed)
+    }
+    for (const entry of entries) {
+      expect(entry).toMatch(/Max-Age=0/)
+    }
+    // `__Secure-` chunks must be cleared with `Secure`, or the browser
+    // ignores the overwrite.
+    for (const entry of entries.filter((e) => e.startsWith('__Secure-'))) {
+      expect(entry).toMatch(/;\s*Secure/i)
     }
   })
 })
