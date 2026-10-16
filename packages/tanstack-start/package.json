@@ -47,8 +47,8 @@
     "react": "^19.0.0"
   },
   "devDependencies": {
-    "@tanstack/react-router": "1.170.42",
-    "@tanstack/react-start": "1.168.61"
+    "@tanstack/react-router": "1.170.44",
+    "@tanstack/react-start": "1.169.1"
   },
   "publishConfig": {
     "access": "public",
