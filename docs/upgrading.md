@@ -15,6 +15,10 @@ paths, cookie semantics) is the stability anchor and changes only
 with a migration note here; option shapes and internal ports may
 evolve. Read the package CHANGELOGs on every bump.
 
+The post-1.0 contract (what is public, semver per surface,
+deprecation and security-fix policy) is in
+[stability.md](stability.md); it takes effect at 1.0.
+
 ## Supported bands and the version assertion
 
 The validated bands live in [compatibility.md](compatibility.md) and
