@@ -1,5 +1,5 @@
 /**
- * Credential-path matrix rows 2 (default channel policy), 3–7, 10, 16,
+ * Credential-path matrix rows 2 (default channel policy), 3–7, 10, 10a, 16,
  * 22–27 (docs/security-model.md) on a REAL Better Auth engine — real
  * BA 1.7 on real Payload storage (SQLite in memory) behind a real
  * authLink boot. Until issue #84 these rows were pinned on Better Auth
@@ -219,10 +219,10 @@ describe('rows 3–7 and 22: local credentials on a BA-linked document', () => {
   })
 })
 
-describe('row 10: useAPIKey on a BA-linked document', () => {
+describe('row 10: useAPIKey on an unlinked document', () => {
   it('an existing key works until the user is suspended, then 401 on the next request', async () => {
-    const { id } = await h.linkedUser('api-key@ba-rest.test')
-    const key = 'ba-linked-api-key-0123456789abcdef'
+    const id = await h.createDoc('api-key@ba-rest.test')
+    const key = 'ba-unlinked-api-key-0123456789abcdef'
     await h.live().update({
       collection: 'users',
       id,
@@ -251,23 +251,68 @@ describe('row 10: useAPIKey on a BA-linked document', () => {
         })
       ).status
     ).toBe(403)
-    const owner = await h.linkedUser('api-key-owner@ba-rest.test')
+    const ownerId = await h.createDoc('api-key-owner@ba-rest.test')
     const other = await h.linkedUser('api-key-other@ba-rest.test')
     const key = 'ba-owner-api-key-0123456789abcdef0'
     await h.live().update({
       collection: 'users',
-      id: owner.id,
+      id: ownerId,
       data: { enableAPIKey: true, apiKey: key },
       overrideAccess: true,
     })
     const authorization = `users API-Key ${key}`
-    expect(await h.meId({ authorization })).toBe(owner.id)
+    expect(await h.meId({ authorization })).toBe(ownerId)
     const hijack = await h.rest('PATCH', `/users/${other.id}`, {
       authorization,
       body: { email: 'hijacked@ba-rest.test' },
     })
     expect([403, 404]).toContain(hijack.status)
     expect((await h.hostDoc(other.id)).email).toBe('api-key-other@ba-rest.test')
+  })
+})
+
+describe('row 10a: a Payload API key enabled before the BA link', () => {
+  it('is cleared by the link and refused (403) afterwards, re-enabled or not', async () => {
+    const email = 'pre-link-key@ba-rest.test'
+    const id = await h.createDoc(email, { linkable: true, linkableEmail: email })
+    const key = 'ba-pre-link-api-key-0123456789abcdef'
+    await h.live().update({
+      collection: 'users',
+      id,
+      data: { enableAPIKey: true, apiKey: key },
+      overrideAccess: true,
+    })
+    const authorization = `users API-Key ${key}`
+    expect(await h.meId({ authorization })).toBe(id)
+    expect(await h.readsDoc({ authorization }, id)).toBe(true)
+    // The address owner signs in through Better Auth: the document links.
+    expect(await h.hostIdOf(await h.verifiedSession(email))).toBe(id)
+    expect((await h.hostDoc(id)).enableAPIKey).toBe(false)
+    expect(await h.meId({ authorization })).toBeNull()
+    expect((await h.rest('GET', `/users/${id}`, { authorization })).status).toBe(403)
+    const write = await h.rest('PATCH', `/users/${id}`, {
+      authorization,
+      body: { email: 'moved@ba-rest.test' },
+    })
+    expect(write.status).toBe(403)
+    expect((await h.rest('GET', '/users', { authorization })).status).toBe(403)
+    // A key put back on the linked document is refused by the gate.
+    const again = 'ba-re-enabled-api-key-0123456789abc'
+    await h.live().update({
+      collection: 'users',
+      id,
+      data: { enableAPIKey: true, apiKey: again },
+      overrideAccess: true,
+    })
+    const reEnabled = `users API-Key ${again}`
+    expect((await h.rest('GET', '/users/me', { authorization: reEnabled })).status).toBe(403)
+    expect((await h.rest('GET', `/users/${id}`, { authorization: reEnabled })).status).toBe(403)
+    expect(
+      (await h.rest('POST', '/pages', { authorization: reEnabled, body: { title: 'k' } })).status
+    ).toBe(403)
+    expect((await h.hostDoc(id)).email).toBe(email)
+    // The provider session is unaffected.
+    expect(await h.hostIdOf(await h.signIn(email))).toBe(id)
   })
 })
 

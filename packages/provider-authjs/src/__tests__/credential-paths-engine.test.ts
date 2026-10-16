@@ -606,10 +606,10 @@ describe("row 8: Payload's verify token is not linkable proof on its own (real A
   })
 })
 
-describe('row 10: useAPIKey on an Auth.js-linked document', () => {
-  it('an existing key works until the user is suspended, then 401 on the next request', async () => {
-    const { id } = await linkedUser('api-key@authjs-paths.test')
-    const key = 'authjs-linked-api-key-0123456789abcdef'
+describe('row 10: useAPIKey (real Auth.js)', () => {
+  it('an existing key on an unlinked document works until the user is suspended, then 401', async () => {
+    const id = await createDoc('api-key@authjs-paths.test')
+    const key = 'authjs-unlinked-api-key-0123456789abcdef'
     await live().update({
       collection: 'users',
       id,
@@ -623,6 +623,22 @@ describe('row 10: useAPIKey on an Auth.js-linked document', () => {
     expect((await rest('POST', '/pages', { authorization, body: { title: 'k' } })).status).toBe(401)
     expect((await rest('PATCH', `/users/${id}`, { authorization, body: {} })).status).toBe(401)
     expect(await meId({ authorization: 'users API-Key not-a-real-key' })).toBeNull()
+  })
+
+  it('row 10a: a key on an Auth.js-linked document is refused (403)', async () => {
+    const { id } = await linkedUser('api-key-linked@authjs-paths.test')
+    const key = 'authjs-linked-api-key-0123456789abcdef'
+    await live().update({
+      collection: 'users',
+      id,
+      data: { enableAPIKey: true, apiKey: key },
+      overrideAccess: true,
+    })
+    const authorization = `users API-Key ${key}`
+    expect(await meId({ authorization })).toBeNull()
+    expect((await rest('GET', `/users/${id}`, { authorization })).status).toBe(403)
+    expect((await rest('PATCH', `/users/${id}`, { authorization, body: {} })).status).toBe(403)
+    expect((await rest('POST', '/pages', { authorization, body: { title: 'k' } })).status).toBe(403)
   })
 })
 
