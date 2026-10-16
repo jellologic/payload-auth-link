@@ -5,6 +5,7 @@
  * never fails on its import line. Barrels load from source.
  */
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const root = new URL('../../../', import.meta.url)
@@ -19,15 +20,21 @@ const packages = [
   'provider-authjs',
 ] as const
 
-const barrels: Record<string, () => Promise<Record<string, unknown>>> = {
-  core: () => import('../../../packages/core/src/index.js'),
-  web: () => import('../../../packages/web/src/index.js'),
-  react: () => import('../../../packages/react/src/index.js'),
-  plugin: () => import('../../../packages/plugin/src/index.js'),
-  next: () => import('../../../packages/next/src/index.js'),
-  'tanstack-start': () => import('../../../packages/tanstack-start/src/index.js'),
-  'provider-better-auth': () => import('../../../packages/provider-better-auth/src/index.js'),
-  'provider-authjs': () => import('../../../packages/provider-authjs/src/index.js'),
+/**
+ * Load a package barrel from source. The specifier is computed on
+ * purpose: a literal `import('../../../packages/…/src/index.js')` pulls
+ * every package source into this app's type program, where a generated
+ * `payload-types.ts` (written by `next dev`) narrows Payload's slugs and
+ * fails sources written against the generic types. The sources are
+ * type-checked by the root `typecheck`; here they are only executed.
+ */
+function loadBarrel(name: string): Promise<Record<string, unknown>> {
+  const path = fileURLToPath(new URL(`packages/${name}/src/index.ts`, root))
+  return import(/* @vite-ignore */ path) as Promise<Record<string, unknown>>
+}
+
+function isPackage(name: string): name is (typeof packages)[number] {
+  return (packages as readonly string[]).includes(name)
 }
 
 function readme(name: string): string {
@@ -41,12 +48,11 @@ describe('package READMEs', () => {
     const pattern = /import\s*\{([^}]+)\}\s*from\s*'@payload-auth-link\/([a-z-]+)'/g
     for (const match of text.matchAll(pattern)) {
       const pkg = match[2] ?? ''
-      const load = barrels[pkg]
-      expect(load, `no barrel for @payload-auth-link/${pkg}`).toBeDefined()
-      if (load === undefined) {
+      expect(isPackage(pkg), `no barrel for @payload-auth-link/${pkg}`).toBe(true)
+      if (!isPackage(pkg)) {
         continue
       }
-      const barrel = await load()
+      const barrel = await loadBarrel(pkg)
       for (const imported of (match[1] ?? '').split(',').map((part) => part.trim())) {
         if (imported !== '') {
           expect(barrel[imported], `${imported} from @payload-auth-link/${pkg}`).toBeDefined()

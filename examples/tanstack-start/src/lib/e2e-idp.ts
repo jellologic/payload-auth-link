@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import Credentials from '@auth/core/providers/credentials'
 import type { Provider } from '@auth/core/providers'
-import { createGoogleOneTapAuthorize, defaultAuthJsSlugs } from '@payload-auth-link/provider-authjs'
+import { createGoogleOneTapAuthorize } from '@payload-auth-link/provider-authjs'
 import type { BetterAuthCustomField } from '@payload-auth-link/provider-better-auth'
 import { genericOAuth, multiSession, oneTap, phoneNumber } from 'better-auth/plugins'
-import type { CollectionConfig, Payload } from 'payload'
+import type { CollectionConfig, CollectionSlug, Payload } from 'payload'
 
 /**
  * LOCAL E2E VARIANT ONLY (`E2E_MOCK_IDP=<origin>`, see
@@ -123,7 +123,9 @@ export function idpAuthJsProviders(getPayload: () => Promise<Payload>): Provider
   if (mockIdpOrigin === null) {
     return []
   }
-  const ajUsers = defaultAuthJsSlugs.user
+  // `defaultAuthJsSlugs.user` as a literal, so the Local API calls
+  // type-check against the generated slug union (`payload generate:types`).
+  const ajUsers = 'aj-users' satisfies CollectionSlug
   return [
     {
       id: mockSsoProviderId,

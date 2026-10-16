@@ -1,6 +1,20 @@
+import { fileURLToPath } from 'node:url'
+
 import { defineConfig } from 'vitest/config'
 
+import { packageDependencyInline, workspaceSourceAliases } from './vitest.shared.js'
+
 export default defineConfig({
+  resolve: {
+    // Tests measure and run the workspace SOURCES, never `dist`: a
+    // spec in one package that imports a sibling by name (the
+    // real-engine suites boot the plugin through
+    // `@payload-auth-link/plugin`) would otherwise execute the built
+    // copy, leaving the source files it exercises at 0% coverage
+    // (issue #110). `bun run build` still type-checks and emits dist;
+    // the consumer/size/api checks cover the shipped artifacts.
+    alias: workspaceSourceAliases(fileURLToPath(new URL('.', import.meta.url))),
+  },
   test: {
     // payload-auth's dist uses directory imports (`export * from
     // "./better-auth"`), which Bun tolerates and Node's ESM loader does
@@ -11,7 +25,31 @@ export default defineConfig({
     // `@payloadcms/ui`) reach the raw runtime loader, which fails with
     // `Unknown file extension ".css"` on some Node versions — inlined,
     // Vite handles (and with `css: false`, stubs) them.
-    server: { deps: { inline: [/payload-auth/, /@payloadcms[+]ui/, /react-image-crop/] } },
+    //
+    // The patterns are anchored to the installed package directory
+    // (issue #110): a bare `/payload-auth/` also matched any clone
+    // whose PATH contains "payload-auth" (CI's checkout does), which
+    // inlined every dependency there and hid the GraphQL dual-package
+    // split below everywhere else.
+    //
+    // `@payloadcms/graphql` and the GraphQL helpers it builds the
+    // schema with are inlined so they share the ONE `graphql` instance
+    // the tests import: externalized, Node's loader resolves `graphql`
+    // to its CJS `index.js` (no `exports` map) while Vite resolves the
+    // spec's import to `index.mjs`, and graphql-js refuses a schema
+    // from "another module or realm".
+    server: {
+      deps: {
+        inline: [
+          packageDependencyInline('payload-auth'),
+          packageDependencyInline('@payloadcms/ui'),
+          packageDependencyInline('react-image-crop'),
+          packageDependencyInline('@payloadcms/graphql'),
+          packageDependencyInline('graphql-scalars'),
+          packageDependencyInline('graphql'),
+        ],
+      },
+    },
     css: false,
     exclude: [
       'packages/migrate/src/__tests__/adopt-boot.test.ts',
@@ -60,6 +98,12 @@ export default defineConfig({
         // branches and why. Raise floors as coverage improves — never
         // lower one without updating that doc.
         'packages/core/src/cookies.ts': { lines: 95, functions: 95, branches: 95, statements: 95 },
+        'packages/core/src/use-cases/ensure-linked-user.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 95,
+          statements: 95,
+        },
         'packages/plugin/src/access.ts': { lines: 95, functions: 95, branches: 95, statements: 95 },
         'packages/plugin/src/audit.ts': { lines: 95, functions: 91, branches: 88, statements: 95 },
         'packages/plugin/src/collections.ts': {
@@ -80,6 +124,13 @@ export default defineConfig({
           branches: 91,
           statements: 95,
         },
+        'packages/plugin/src/hooks.ts': { lines: 95, functions: 95, branches: 95, statements: 95 },
+        'packages/plugin/src/lifecycle.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 94,
+          statements: 95,
+        },
         'packages/plugin/src/organizations.ts': {
           lines: 95,
           functions: 95,
@@ -96,13 +147,40 @@ export default defineConfig({
         'packages/plugin/src/session.ts': {
           lines: 95,
           functions: 95,
-          branches: 94,
+          branches: 95,
           statements: 95,
         },
         'packages/plugin/src/strategy.ts': {
           lines: 95,
           functions: 95,
-          branches: 86,
+          branches: 90,
+          statements: 95,
+        },
+        'packages/plugin/src/verified-email.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 95,
+          statements: 95,
+        },
+        'packages/provider-authjs/src/adapter.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 95,
+          statements: 95,
+        },
+        // Another change is reshaping the session callback; the floor
+        // sits below the measured 98.6 / 100 / 95.7 / 98.6 so that
+        // change can land and re-measure.
+        'packages/provider-authjs/src/callbacks.ts': {
+          lines: 93,
+          functions: 95,
+          branches: 90,
+          statements: 93,
+        },
+        'packages/provider-authjs/src/engine.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 91,
           statements: 95,
         },
         'packages/provider-authjs/src/port.ts': {
@@ -123,11 +201,19 @@ export default defineConfig({
           branches: 89,
           statements: 95,
         },
+        'packages/provider-better-auth/src/engine.ts': {
+          lines: 95,
+          functions: 93,
+          branches: 93,
+          statements: 95,
+        },
+        // Measured 90.7 / 94.7 / 88.4 / 90.7; another change is editing
+        // this file, so the floor leaves it a little room.
         'packages/provider-better-auth/src/port.ts': {
-          lines: 86,
-          functions: 86,
-          branches: 77,
-          statements: 86,
+          lines: 88,
+          functions: 92,
+          branches: 85,
+          statements: 88,
         },
         'packages/provider-better-auth/src/session-provenance.ts': {
           lines: 95,

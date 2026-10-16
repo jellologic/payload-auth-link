@@ -195,7 +195,7 @@ describe('a verified, unlinked document cannot squat on another email', () => {
     const squatted = await rawDoc(attackerId)
     expect(squatted.identities).toEqual([])
     expect(
-      warnCalls.some((call) => call.message.includes('not marked linkable') && call.fields)
+      warnCalls.some((call) => call.message.includes('without an ownership proof') && call.fields)
     ).toBe(true)
     expect(warnCalls.some((call) => call.message.startsWith('provisioning refused'))).toBe(true)
     // A refusal, not a storage outage.

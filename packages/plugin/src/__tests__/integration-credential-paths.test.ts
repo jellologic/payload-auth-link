@@ -324,7 +324,7 @@ describe('credential paths for a suspended account are refused (every channel)',
     })
     expect(reset.status).toBe(401)
     const replant = await login('suspended@test.dev', 'RotationKnows-1')
-    expect(replant.status).not.toBe(200)
+    expect(replant.status).toBe(401)
   })
 
   // The GraphQL mutations (`loginUser`, `forgotPasswordUser`,
@@ -353,7 +353,7 @@ describe('provider-owned local credentials (GHSA-f4hj default)', () => {
     const replant = await login('linked@test.dev', 'RotationKnows-2')
     // The reset was refused, so the password never rotated: the login
     // fails on credentials before any account control runs.
-    expect(replant.status).not.toBe(200)
+    expect(replant.status).toBe(401)
   })
 
   it('an operator account (no identities) keeps local credentials', async () => {

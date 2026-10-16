@@ -49,22 +49,89 @@ function stripSignature(value: string): string {
   return dot > 0 ? value.slice(0, dot) : value
 }
 
-/** The raw session token inside one Set-Cookie entry, if it is the session cookie. */
-function rawTokenFromSetCookie(entry: string, name: string): string | null {
-  if (!entry.startsWith(`${name}=`)) {
-    return null
+/**
+ * What the response's own Set-Cookie says about the session cookie:
+ * `undefined` when it does not write the session cookie at all, `null`
+ * when it EXPIRES it (an empty value: the session is gone, e.g. a
+ * 2FA-pending sign-in), otherwise the raw token BA just issued.
+ */
+function tokenFromSetCookies(entries: readonly string[], name: string): string | null | undefined {
+  let found: string | null | undefined
+  for (const entry of entries) {
+    if (!entry.startsWith(`${name}=`)) {
+      continue
+    }
+    const pair = entry.slice(name.length + 1).split(';', 1)[0]
+    // The LAST write wins in the browser, so it wins here too.
+    found = pair === undefined || pair === '' ? null : stripSignature(pair)
   }
-  const pair = entry.slice(name.length + 1).split(';', 1)[0]
-  return pair === undefined || pair === '' ? null : stripSignature(pair)
+  return found
 }
 
-/** The raw session token from a request Cookie header (signed form). */
-function rawTokenFromRequestCookie(cookieHeader: string, name: string): string | null {
-  const match = new RegExp(
-    `(?:^|;\\s*)${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}=([^;]+)`
-  ).exec(cookieHeader)
-  const value = match?.[1]
-  return value === undefined || value === '' ? null : stripSignature(value)
+/** Whether the path proves a second factor ON the presented session. */
+function isSecondFactorPath(path: string | undefined): boolean {
+  return path !== undefined && path.startsWith('/two-factor/verify')
+}
+
+/** The Better Auth 1.7 after-hook context fields this plugin reads. */
+type ProvenanceHookContext = {
+  readonly path?: string | undefined
+  readonly getSignedCookie?:
+    ((key: string, secret: string) => Promise<string | null | false>) | undefined
+  readonly context: {
+    readonly returned?: unknown
+    readonly secret?: unknown
+    readonly session?: unknown
+    readonly authCookies?: { readonly sessionToken?: { readonly name?: unknown } }
+    readonly responseHeaders?: Headers | undefined
+    readonly internalAdapter?: {
+      readonly updateSession?:
+        ((token: string, data: Record<string, unknown>) => Promise<unknown>) | undefined
+    }
+  }
+}
+
+/** The token of the session BA resolved for this request (`ctx.context.session`). */
+function resolvedSessionToken(session: unknown): string | null {
+  if (typeof session !== 'object' || session === null || !('session' in session)) {
+    return null
+  }
+  const row: unknown = session.session
+  if (typeof row !== 'object' || row === null || !('token' in row)) {
+    return null
+  }
+  const token: unknown = row.token
+  return typeof token === 'string' && token !== '' ? token : null
+}
+
+/**
+ * The presented session a second-factor verification authenticated
+ * (step-up on an existing session), or `null`. Both sides must agree:
+ * the request's session cookie, signature-verified through Better
+ * Call's own `ctx.getSignedCookie` (the parser BA's `getSession` uses),
+ * AND the session BA itself resolved for the request
+ * (`ctx.context.session`, set by `getSessionFromCtx` inside the
+ * verification). A request carrying a different or second session
+ * cookie, a forged signature, or a session resolved from elsewhere
+ * relabels nothing (fail closed).
+ */
+async function verifiedPresentedToken(
+  ctx: ProvenanceHookContext,
+  name: string
+): Promise<string | null> {
+  const secret = ctx.context.secret
+  if (typeof ctx.getSignedCookie !== 'function' || typeof secret !== 'string' || secret === '') {
+    return null
+  }
+  const resolved = resolvedSessionToken(ctx.context.session)
+  if (resolved === null) {
+    return null
+  }
+  const presented = await ctx.getSignedCookie(name, secret)
+  if (typeof presented !== 'string' || presented === '' || presented !== resolved) {
+    return null
+  }
+  return resolved
 }
 
 /**
@@ -76,10 +143,19 @@ function rawTokenFromRequestCookie(cookieHeader: string, name: string): string |
  * 2. **Recording** — `hooks.after` on the endpoints whose success
  *    creates (or finally proves) a session: password sign-in records
  *    `password`, the two-factor verifications upgrade their session to
- *    `two-factor`, OAuth callbacks record `oauth`, and so on. A
- *    single-factor session is never relabelled — the second factor's
- *    own endpoint is the only path that writes `two-factor`, and
- *    server-side mints write `server-mint`/`server-step-up` (port.ts).
+ *    `two-factor`, OAuth callbacks record `oauth`, and so on. The
+ *    second factor's own endpoint is the only path that writes
+ *    `two-factor`, and server-side mints write
+ *    `server-mint`/`server-step-up` (port.ts).
+ *
+ *    **Step-up (#110):** a CORRECT second factor verified on an
+ *    EXISTING session (password, aged, or server-minted) relabels that
+ *    session `two-factor` — deterministically, whether or not BA
+ *    re-sets the cookie. Only the session the verification itself
+ *    authenticated is relabelled: the signature-verified request
+ *    cookie must name the session BA resolved for the request
+ *    (`ctx.context.session`). A failed verification (wrong code,
+ *    non-200, APIError, empty result) relabels nothing.
  *
  * The server session API reads this per-session fact for its
  * assurance projection; enrollment flags are never consulted. Paths
@@ -129,18 +205,9 @@ export const sessionProvenancePlugin: BetterAuthPlugin = {
                 if (isAPIError(returned)) {
                   return
                 }
-                const context = ctx.context as {
-                  authCookies?: { sessionToken?: { name?: string } }
-                  responseHeaders?: Headers | undefined
-                  request?: { headers?: Headers }
-                  internalAdapter?: {
-                    updateSession?:
-                      | ((token: string, data: Record<string, unknown>) => Promise<unknown>)
-                      | undefined
-                  }
-                }
-                const name = context.authCookies?.sessionToken?.name
-                const updateSession = context.internalAdapter?.updateSession
+                const hook = ctx as unknown as ProvenanceHookContext
+                const name = hook.context.authCookies?.sessionToken?.name
+                const updateSession = hook.context.internalAdapter?.updateSession
                 if (
                   typeof name !== 'string' ||
                   name === '' ||
@@ -150,23 +217,25 @@ export const sessionProvenancePlugin: BetterAuthPlugin = {
                   // than guess (fail closed).
                   return
                 }
-                // Prefer the response's own cookie (fresh sign-ins and
-                // rotations), then the request's cookie (verify endpoints run
-                // against the presented session).
-                let token: string | null = null
-                const setCookies = context.responseHeaders?.getSetCookie?.() ?? []
-                for (const entry of setCookies) {
-                  const found = rawTokenFromSetCookie(entry, name)
-                  if (found !== null) {
-                    token = found
-                    break
-                  }
-                }
-                if (token === null) {
-                  token = rawTokenFromRequestCookie(
-                    context.request?.headers?.get('cookie') ?? '',
-                    name
-                  )
+                // The response's own session cookie wins: fresh sign-ins,
+                // the 2FA sign-in's new session, enrollment's rotation.
+                // An EXPIRING write means the session is gone: record
+                // nothing.
+                const issued = tokenFromSetCookies(
+                  hook.context.responseHeaders?.getSetCookie?.() ?? [],
+                  name
+                )
+                let token: string | null
+                if (issued !== undefined) {
+                  token = issued
+                } else if (isSecondFactorPath(ctx.path)) {
+                  // A correct second factor on an EXISTING session is a
+                  // step-up of exactly the session it authenticated.
+                  token = await verifiedPresentedToken(hook, name)
+                } else {
+                  // Other methods only ever create a session; with no
+                  // issued cookie there is nothing to record.
+                  token = null
                 }
                 if (token === null) {
                   return

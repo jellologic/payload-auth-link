@@ -42,6 +42,25 @@ exercise of the doctor lives in the repo's payload-auth fixture
 (`fixtures/payload-auth-app`), where the CI job pins the exact
 blockers it must report — and none it must not.
 
+## Importer lifecycle
+
+`from-payload-auth` (dry run; `--apply` writes), `verify`, `rollback`,
+and `finalize` all take `--config` (the TARGET app) and share one
+signed manifest — see
+[docs/migrating-from-payload-auth.md](../../docs/migrating-from-payload-auth.md):
+
+- `rollback` deletes only rows in the import's own target collections
+  that still carry the importer's `baId`; a failed delete exits
+  non-zero with the rows named and the manifest kept.
+- `finalize --config …` records the finalize in the app's database
+  (Payload's `payload-kv` store) and re-signs the manifest; rollback
+  is refused afterwards, whatever the file says.
+- `--allow-unsigned-manifest` accepts a pre-0.6.0 manifest (or a
+  0.6.0 one for rollback) but never deletes; add
+  `--allow-unsigned-deletes` after reviewing its created rows.
+- `export --source-map …` exports a renamed layout; a mapped table
+  that is missing exits 1.
+
 Requires Bun (`bunx`): the doctor loads the app's config module with
 Bun's module loader, which tolerates the directory imports
 payload-auth's dist uses.

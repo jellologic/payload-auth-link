@@ -92,9 +92,18 @@ export const restorableFields: ReadonlySet<string> = new Set([
   'updatedAt',
 ])
 
+/** {@link restorableFields} plus the app's configured roles field. */
+export function restorableFieldsFor(rolesField: string): ReadonlySet<string> {
+  return new Set([...restorableFields, rolesField])
+}
+
 /** The captured prior value of one manifest entry, JSON-parsed. */
-export function priorValue(secret: string, write: FieldWrite): unknown {
-  if (!restorableFields.has(write.field)) {
+export function priorValue(
+  secret: string,
+  write: FieldWrite,
+  restorable: ReadonlySet<string> = restorableFields
+): unknown {
+  if (!restorable.has(write.field)) {
     throw new Error(
       `manifest entry for '${write.collection}.${write.field}' is not a field this kit writes; refusing to restore it (edited manifest?)`
     )
@@ -170,8 +179,10 @@ export async function captureBefore(options: {
  */
 export async function restoreCaptured(
   payload: Payload,
-  manifest: Pick<ImportManifest, 'fieldWrites'>
+  manifest: Pick<ImportManifest, 'fieldWrites'>,
+  options: { readonly rolesField?: string | undefined } = {}
 ): Promise<number> {
+  const restorable = restorableFieldsFor(options.rolesField ?? 'roles')
   const byDoc = new Map<
     string,
     { collection: string; id: string | number; data: Record<string, unknown> }
@@ -179,7 +190,7 @@ export async function restoreCaptured(
   for (const write of manifest.fieldWrites) {
     const key = `${write.collection}\u0000${String(write.id)}`
     const entry = byDoc.get(key) ?? { collection: write.collection, id: write.id, data: {} }
-    entry.data[write.field] = priorValue(payload.secret, write)
+    entry.data[write.field] = priorValue(payload.secret, write, restorable)
     byDoc.set(key, entry)
   }
   let restored = 0

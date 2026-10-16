@@ -124,6 +124,24 @@ export function betterAuthPluginIds(pluginOptions: Record<string, unknown>): str
   return ids
 }
 
+/**
+ * The options of the payload-auth-link plugin in a built (TARGET)
+ * config, or `null` when the plugin is not installed. Payload keeps each
+ * plugin's `slug` and `options` for cross-plugin discovery.
+ */
+function authLinkPluginOptions(config: unknown): Record<string, unknown> | null {
+  if (!isRecord(config) || !Array.isArray(config.plugins)) {
+    return null
+  }
+  for (const entry of config.plugins) {
+    if (typeof entry === 'function' && (entry as { slug?: unknown }).slug === 'payload-auth-link') {
+      const options: unknown = (entry as { options?: unknown }).options
+      return isRecord(options) ? options : {}
+    }
+  }
+  return null
+}
+
 /** The users collection slug the payload-auth app configured. */
 export function usersSlugOf(pluginOptions: Record<string, unknown>): string {
   const users: unknown = pluginOptions.users
@@ -285,16 +303,25 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   let users: DoctorReport['users'] = null
   if (configLoaded) {
     const usersSlug = usersSlugOf(plugin?.pluginOptions ?? {})
+    const usersCollection = findUsersCollection(config, usersSlug)
+    const authLinkOptions = authLinkPluginOptions(config)
+    // An adopt-mode TARGET (issue #110): payload-auth-link is installed
+    // on the users collection and no engine-owned ba-users collection
+    // exists, so Better Auth creates its users in the host collection.
+    const adoptTarget = authLinkOptions !== null && !collectionSlugs(config).includes('ba-users')
+    const rolesField = authLinkOptions?.['rolesField']
     const { finding, issues: userIssues } = analyzeUsersCollection(
-      findUsersCollection(config, usersSlug),
-      'roles'
+      usersCollection,
+      typeof rolesField === 'string' && rolesField !== '' ? rolesField : 'roles',
+      { adoptTarget }
     )
     users = finding
     for (const issue of userIssues) {
       if (
         issue.code === 'injected-field-collision' ||
         issue.code === 'roles-field-not-select' ||
-        issue.code === 'users-collection-missing'
+        issue.code === 'users-collection-missing' ||
+        issue.code === 'adopt-local-strategy-on'
       ) {
         blockers.push(issue)
       } else {

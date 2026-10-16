@@ -861,6 +861,32 @@ describe('SSO domain gate (CAP-15)', () => {
     })
     expect((await allowed.verify(new Headers())).isOk()).toBe(true)
   })
+
+  it('an email-less session reaches the guard as null, never as the deprecated alias (#110)', async () => {
+    const users = new CountingUserRepository()
+    // No email CLAIM; the deprecated alias still carries an address on
+    // a verified domain. The guard must judge the claim (null), so the
+    // alias can never satisfy the SSO domain check.
+    const provider = countingProvider(
+      'sso',
+      sessionFor('u-sso-noemail', {
+        email: email('alias@verified.test'),
+        identity: { email: null, phone: null, anonymous: false },
+      })
+    )
+    const seen: (string | null)[] = []
+    const service = createSessionService({
+      ...depsWithUsers(users, provider.provider),
+      ssoDomainAllowed: (_providerId, claim) => {
+        seen.push(claim)
+        return okAsync(claim === 'alias@verified.test')
+      },
+    })
+    const refused = await service.verify(new Headers())
+    expect(seen).toEqual([null])
+    expect(refused.isErr()).toBe(true)
+    expect(users.emailReads).toBe(0)
+  })
 })
 
 describe('throwing provider reads', () => {
@@ -920,5 +946,50 @@ describe('guest principal (CAP-10)', () => {
     const none = countingProvider('none', null)
     const empty = createSessionService(depsFor(none.provider))
     expect((await empty.guest?.(new Headers()))?._unsafeUnwrap()).toBeNull()
+  })
+})
+
+describe('presented actor (impersonation refusal without verification)', () => {
+  const impersonated = sessionFor('u-target', {
+    actor: { providerUserId: 'u-operator' },
+    identity: {
+      email: { value: email('u-target@test.dev'), verified: false },
+      phone: null,
+      anonymous: false,
+    },
+  })
+
+  it('names the operator of a live session whose target does not verify', async () => {
+    const users = new CountingUserRepository()
+    const provider = countingProvider('imp', impersonated)
+    const sessions = createSessionService(depsWithUsers(users, provider.provider))
+    expect((await sessions.verify(new Headers())).isErr()).toBe(true)
+    expect((await sessions.presentedActor(new Headers()))._unsafeUnwrap()).toEqual({
+      kind: 'provider-only',
+      providerUserId: 'u-operator',
+    })
+  })
+
+  it('names no actor for plain, absent, expired, or non-admitted sessions', async () => {
+    const cases = [
+      countingProvider('plain', sessionFor('u-plain')),
+      countingProvider('none', null),
+      countingProvider('expired', { ...impersonated, expiresAt: new Date(Date.now() - 1000) }),
+      countingProvider('bearer', { ...impersonated, channel: 'bearer' }),
+    ]
+    for (const provider of cases) {
+      const sessions = createSessionService(depsFor(provider.provider))
+      expect((await sessions.presentedActor(new Headers()))._unsafeUnwrap()).toBeNull()
+    }
+  })
+
+  it('maps a rejected provider read to a typed error', async () => {
+    const base = countingProvider('thrower', null)
+    const throwing: IdentityProviderPort = {
+      ...base.provider,
+      getSession: () => Promise.reject(new Error('provider exploded')) as never,
+    }
+    const sessions = createSessionService(depsFor(throwing))
+    expect((await sessions.presentedActor(new Headers())).isErr()).toBe(true)
   })
 })

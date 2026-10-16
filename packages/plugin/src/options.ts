@@ -240,7 +240,10 @@ export type AuthLinkPluginOptions = {
    * linked provider identities authenticates through its provider —
    * local sign-in and the forgot/reset-password flow are refused for
    * it, because a local password would bypass the provider's MFA,
-   * bans, rate limits, and revocation. Defaults to `false` (refuse).
+   * bans, rate limits, and revocation. The same holds for Payload API
+   * keys (`auth.useAPIKey`): linking clears a key enabled before the
+   * link, and a key on a linked document is refused (403). Defaults
+   * to `false` (refuse).
    * Set `true` only for a migration window where documents must keep
    * working with both credentials; remove it once the migration
    * completes. Documents without linked identities (operator

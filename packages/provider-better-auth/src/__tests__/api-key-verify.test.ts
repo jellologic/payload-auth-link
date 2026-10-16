@@ -13,10 +13,12 @@
  */
 import { sqliteAdapter } from '@payloadcms/db-sqlite'
 import { apiKey } from '@better-auth/api-key'
+import { organization } from 'better-auth/plugins/organization'
 import { authLink, authLinkServer } from '@payload-auth-link/plugin'
 import { buildConfig, getPayload, type Payload } from 'payload'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { createBetterAuthEngine } from '../engine.js'
+import { UnsupportedApiKeyOwnerError } from '../errors.js'
 
 const ORIGIN = 'http://api-key-verify.test'
 const SECRET = 'api-key-verify-integration-secret!!'
@@ -38,7 +40,14 @@ const engine = createBetterAuthEngine({
     secret: SECRET,
     emailAndPassword: { enabled: true, requireEmailVerification: false },
     rateLimit: { enabled: false },
-    plugins: [apiKey({ defaultPrefix: 'pal_', enableMetadata: true })],
+    plugins: [
+      organization(),
+      apiKey([
+        { configId: 'default', defaultPrefix: 'pal_', enableMetadata: true },
+        // Organization-owned keys: `referenceId` is an ORGANIZATION id.
+        { configId: 'org', defaultPrefix: 'org_', references: 'organization' },
+      ]),
+    ],
   },
 })
 
@@ -57,6 +66,37 @@ async function signUp(email: string): Promise<string> {
     throw new Error('sign-up returned no user id')
   }
   return id
+}
+
+/** A real key minted by the satellite for a BA user. */
+async function mintKey(userId: string): Promise<{ key: string; keyId: string }> {
+  const created = (await engine.auth.api.createApiKey({ body: { userId } })) as {
+    key?: unknown
+    id?: unknown
+  }
+  if (typeof created.key !== 'string' || typeof created.id !== 'string') {
+    throw new Error('createApiKey returned no key')
+  }
+  return { key: created.key, keyId: created.id }
+}
+
+/** The satellite's `apikey` model, served from a derived collection. */
+function apiKeySlug(): string {
+  const slug = engine.collections.map((c) => c.slug).find((s) => /api-?key/i.test(s))
+  if (slug === undefined) {
+    throw new Error('no api-key collection derived')
+  }
+  return slug
+}
+
+async function updateKeyRow(keyId: string, data: Record<string, unknown>): Promise<void> {
+  const updated = await payload.update({
+    collection: apiKeySlug(),
+    where: { baId: { equals: keyId } },
+    data,
+    overrideAccess: true,
+  })
+  expect(updated.docs).toHaveLength(1)
 }
 
 beforeAll(async () => {
@@ -109,8 +149,107 @@ describe('verifyApiKey on @better-auth/api-key 1.7.x (#88)', () => {
     expect(verified?.metadata).toEqual({ purpose: 'ci' })
   })
 
+  it('refuses an organization-owned key instead of returning the org id as userId (#110)', async () => {
+    const userId = await signUp('org-key-owner@test.dev')
+    const org = (await engine.auth.api.createOrganization({
+      body: { name: 'Key Org', slug: 'key-org', userId },
+    })) as { id?: unknown } | null
+    const organizationId = typeof org?.id === 'string' ? org.id : ''
+    expect(organizationId).not.toBe('')
+    const created = (await engine.auth.api.createApiKey({
+      body: { configId: 'org', organizationId, userId, name: 'org key' },
+    })) as { key?: unknown; referenceId?: unknown }
+    const key = typeof created.key === 'string' ? created.key : ''
+    expect(key.startsWith('org_')).toBe(true)
+    // The satellite itself accepts the key and names the ORG as owner.
+    expect(created.referenceId).toBe(organizationId)
+
+    const verify = engine.provider.verifyApiKey
+    if (verify === undefined) {
+      throw new Error('the better-auth provider cannot verify API keys')
+    }
+    const verified = await verify(key)
+    expect(verified.isErr()).toBe(true)
+    const error = verified.isErr() ? verified.error : null
+    expect(error).toBeInstanceOf(UnsupportedApiKeyOwnerError)
+    expect((error as UnsupportedApiKeyOwnerError | null)?.referenceId).toBe(organizationId)
+    const thrown = await authLinkServer(payload)
+      .verifyApiKey(key)
+      .then(
+        () => null,
+        (rejection: unknown) => rejection
+      )
+    expect(thrown).toBeInstanceOf(Error)
+    expect((thrown as Error).message).toMatch(/organization-owned/)
+    // The typed refusal survives the server surface as the cause.
+    expect((thrown as Error).cause).toBeInstanceOf(UnsupportedApiKeyOwnerError)
+  })
+
+  it('refuses a key whose owner user no longer exists (#110)', async () => {
+    const userId = await signUp('gone-key-owner@test.dev')
+    const created = (await engine.auth.api.createApiKey({
+      body: { userId, name: 'orphan' },
+    })) as { key?: unknown }
+    const key = typeof created.key === 'string' ? created.key : ''
+    const ctx = await engine.auth.$context
+    await ctx.internalAdapter.deleteUser(userId)
+    const verify = engine.provider.verifyApiKey
+    if (verify === undefined) {
+      throw new Error('the better-auth provider cannot verify API keys')
+    }
+    const verified = await verify(key)
+    // BA keeps verifying the orphaned key; the owner gate refuses it —
+    // never a verification naming a missing user.
+    expect(verified.isErr() ? verified.error : null).toBeInstanceOf(UnsupportedApiKeyOwnerError)
+  })
+
   it('narrows an unknown key to null instead of throwing', async () => {
     await expect(authLinkServer(payload).verifyApiKey('pal_not-a-real-key')).resolves.toBeNull()
+  })
+
+  // Matrix row 20 failure paths on the real satellite: the key's state
+  // lives in the provider's own store (the derived api-key collection),
+  // so each case flips that row and re-verifies the SAME key.
+  it('refuses a disabled key (null), after it verified while enabled', async () => {
+    const userId = await signUp('key-disabled@test.dev')
+    const { key, keyId } = await mintKey(userId)
+    expect((await authLinkServer(payload).verifyApiKey(key))?.userId).toBe(userId)
+    await updateKeyRow(keyId, { enabled: false })
+    await expect(authLinkServer(payload).verifyApiKey(key)).resolves.toBeNull()
+  })
+
+  it('refuses an expired key (null)', async () => {
+    const userId = await signUp('key-expired@test.dev')
+    const { key, keyId } = await mintKey(userId)
+    await updateKeyRow(keyId, { expiresAt: '2020-01-01T00:00:00.000Z' })
+    await expect(authLinkServer(payload).verifyApiKey(key)).resolves.toBeNull()
+  })
+
+  it('refuses a deleted key (null); a sibling key of the same owner still verifies', async () => {
+    const userId = await signUp('key-deleted@test.dev')
+    const first = await mintKey(userId)
+    const second = await mintKey(userId)
+    const removed = await payload.delete({
+      collection: apiKeySlug(),
+      where: { baId: { equals: first.keyId } },
+      overrideAccess: true,
+    })
+    expect(removed.docs).toHaveLength(1)
+    await expect(authLinkServer(payload).verifyApiKey(first.key)).resolves.toBeNull()
+    expect((await authLinkServer(payload).verifyApiKey(second.key))?.userId).toBe(userId)
+  })
+
+  it("resolves each key to its own owner, never another user's", async () => {
+    const alice = await signUp('key-alice@test.dev')
+    const bob = await signUp('key-bob@test.dev')
+    const aliceKey = await mintKey(alice)
+    const bobKey = await mintKey(bob)
+    const server = authLinkServer(payload)
+    expect((await server.verifyApiKey(aliceKey.key))?.userId).toBe(alice)
+    expect((await server.verifyApiKey(bobKey.key))?.userId).toBe(bob)
+    // A key one character off another user's key is unknown, not theirs.
+    const tampered = `${bobKey.key.slice(0, -1)}${bobKey.key.endsWith('a') ? 'b' : 'a'}`
+    await expect(server.verifyApiKey(tampered)).resolves.toBeNull()
   })
 })
 

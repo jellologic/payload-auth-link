@@ -11,5 +11,5 @@
     "moduleResolution": "bundler",
     "types": ["node"]
   },
-  "include": ["packages/*/src", "e2e/**/*.ts", "vitest.config.ts"]
+  "include": ["packages/*/src", "e2e/**/*.ts", "vitest.config.ts", "vitest.shared.ts"]
 }

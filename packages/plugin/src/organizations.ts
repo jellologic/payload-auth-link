@@ -887,8 +887,11 @@ export function createOrganizationEndpoints(wired: WiredOptions): Endpoint[] {
   /**
    * Organization management is refused while impersonating, on
    * either signal (fail-closed): the strategy-projected `req.user`
-   * actor or the explicitly verified session's actor. Every refusal
-   * is audited. Returns the 403 to send, or `null` to proceed.
+   * actor or the explicitly verified session's actor — or, when the
+   * target does not verify (unprovisioned, unproven email), the actor
+   * the live provider session names. It runs BEFORE the session gate,
+   * so every impersonated call gets the audited 403, never a bare
+   * 401. Returns the 403 to send, or `null` to proceed.
    */
   const refuseWhileImpersonating = async (
     req: PayloadRequest,
@@ -898,7 +901,11 @@ export function createOrganizationEndpoints(wired: WiredOptions): Endpoint[] {
   ): Promise<Response | null> => {
     const { sessions } = createServices(wired, req.payload)
     const session = await sessions.verify(req.headers)
-    const sessionActor = session.isOk() ? session.value.actor : undefined
+    let sessionActor = session.isOk() ? session.value.actor : undefined
+    if (session.isErr()) {
+      const presented = await sessions.presentedActor(req.headers)
+      sessionActor = presented.isOk() ? (presented.value ?? undefined) : undefined
+    }
     if (!isImpersonating(req) && sessionActor === undefined) {
       return null
     }
@@ -963,10 +970,6 @@ export function createOrganizationEndpoints(wired: WiredOptions): Endpoint[] {
         if (!csrf(req)) {
           return forbidden('csrf check failed')
         }
-        const user = await verifiedUser(req)
-        if (user === null) {
-          return unauthorized()
-        }
         const impersonated = await refuseWhileImpersonating(
           req,
           'create',
@@ -975,6 +978,10 @@ export function createOrganizationEndpoints(wired: WiredOptions): Endpoint[] {
         )
         if (impersonated !== null) {
           return impersonated
+        }
+        const user = await verifiedUser(req)
+        if (user === null) {
+          return unauthorized()
         }
         const body = await readJsonBody(req)
         const name = body === null ? null : stringField(body, 'name')
@@ -1025,10 +1032,6 @@ export function createOrganizationEndpoints(wired: WiredOptions): Endpoint[] {
         if (!csrf(req)) {
           return forbidden('csrf check failed')
         }
-        const user = await verifiedUser(req)
-        if (user === null) {
-          return unauthorized()
-        }
         const impersonated = await refuseWhileImpersonating(
           req,
           'invite',
@@ -1037,6 +1040,10 @@ export function createOrganizationEndpoints(wired: WiredOptions): Endpoint[] {
         )
         if (impersonated !== null) {
           return impersonated
+        }
+        const user = await verifiedUser(req)
+        if (user === null) {
+          return unauthorized()
         }
         const body = await readJsonBody(req)
         const organizationId = body === null ? null : stringField(body, 'organizationId')
@@ -1131,10 +1138,6 @@ export function createOrganizationEndpoints(wired: WiredOptions): Endpoint[] {
         if (!csrf(req)) {
           return forbidden('csrf check failed')
         }
-        const user = await verifiedUser(req)
-        if (user === null) {
-          return unauthorized()
-        }
         const impersonated = await refuseWhileImpersonating(
           req,
           'accept',
@@ -1143,6 +1146,10 @@ export function createOrganizationEndpoints(wired: WiredOptions): Endpoint[] {
         )
         if (impersonated !== null) {
           return impersonated
+        }
+        const user = await verifiedUser(req)
+        if (user === null) {
+          return unauthorized()
         }
         const body = await readJsonBody(req)
         const invitationId = body === null ? null : stringField(body, 'invitationId')

@@ -453,6 +453,12 @@ describe.skipIf(!canReachPostgres)(
       })
       expect(result.issues).toEqual([])
       expect(result.ok).toBe(true)
+      // The roles check reads the CONFIGURED roles field (`role` here),
+      // so it runs instead of being skipped (#110).
+      const roles = result.checks.find((check) =>
+        check.name.startsWith('source roles carried onto the host docs')
+      )
+      expect(roles).toEqual({ name: 'source roles carried onto the host docs', passed: true })
     })
 
     test('rollback refuses an edited manifest before touching anything (GHSA-p76j-5qwx-rpwx)', async () => {
@@ -492,6 +498,54 @@ describe.skipIf(!canReachPostgres)(
       expect(
         (await payload.count({ collection: 'ba-users', overrideAccess: true })).totalDocs
       ).toBe(baBefore.totalDocs)
+    })
+
+    test('an unsigned manifest cannot delete a host row, even with every opt-in', async () => {
+      const manifest = readManifest(manifestPath)
+      if (manifest === null) {
+        throw new Error('unreachable')
+      }
+      // The host app's own `jwks` collection (payload-auth's table) —
+      // NOT the engine's ba-jwks the importer writes.
+      const hostJwks = await payload.find({ collection: 'jwks', depth: 0, overrideAccess: true })
+      const victim = hostJwks.docs[0]
+      if (victim === undefined) {
+        throw new Error('fixture has no jwks row')
+      }
+      const baBefore = (await payload.count({ collection: 'ba-users', overrideAccess: true }))
+        .totalDocs
+      const downgraded = {
+        ...manifest,
+        version: 2 as const,
+        mac: undefined,
+        created: [...manifest.created, { collection: 'jwks', id: victim.id, sourceKey: 'jwks:1' }],
+      }
+      await expect(
+        rollbackImport({
+          payload,
+          manifest: downgraded,
+          allowUnsignedManifest: true,
+          allowUnsignedDeletes: true,
+        })
+      ).rejects.toThrow(/outside the import's target collections/)
+      // --allow-unsigned-manifest alone never deletes, even in-scope rows.
+      await expect(
+        rollbackImport({
+          payload,
+          manifest: { ...manifest, version: 2 as const, mac: undefined },
+          allowUnsignedManifest: true,
+        })
+      ).rejects.toThrow(/--allow-unsigned-deletes/)
+      const still = await payload.findByID({
+        collection: 'jwks',
+        id: victim.id,
+        depth: 0,
+        overrideAccess: true,
+      })
+      expect(still.id).toBe(victim.id)
+      expect(
+        (await payload.count({ collection: 'ba-users', overrideAccess: true })).totalDocs
+      ).toBe(baBefore)
     })
 
     test('rollback undoes exactly the manifest; the source is unchanged', async () => {
@@ -550,13 +604,50 @@ describe.skipIf(!canReachPostgres)(
       if (manifest === null) {
         throw new Error('unreachable')
       }
-      const finalized = finalizeManifest(manifest, manifestPath)
+      const finalized = await finalizeManifest({ payload, manifest, path: manifestPath })
       expect(finalized.finalized).toBe(true)
+      expect(finalized.mac).toMatch(/^v2\./)
       expect(readManifest(manifestPath)?.finalized).toBe(true)
       // Rollback is no longer possible after finalize.
       await expect(rollbackImport({ payload, manifest: finalized })).rejects.toThrow(
         /no longer possible/
       )
+    })
+
+    test('flipping finalized back does not reopen rollback: the MAC covers it, the database remembers', async () => {
+      const finalized = readManifest(manifestPath)
+      if (finalized === null) {
+        throw new Error('unreachable')
+      }
+      const baBefore = (await payload.count({ collection: 'ba-users', overrideAccess: true }))
+        .totalDocs
+      // The flag edited in place: the signature covers it now.
+      await expect(
+        rollbackImport({ payload, manifest: { ...finalized, finalized: false } })
+      ).rejects.toThrow(/integrity check/)
+      // An unfinalized copy the app DID sign (a backup from before
+      // finalize) still verifies — the database marker refuses it.
+      const { signManifest } = await import('../importer/manifest-mac.js')
+      const preFinalize = signManifest(payload.secret, {
+        ...finalized,
+        finalized: false,
+        finalizedAt: undefined,
+      })
+      await expect(rollbackImport({ payload, manifest: preFinalize })).rejects.toThrow(
+        /database records this migration as finalized/
+      )
+      // Downgraded to an unsigned version with every opt-in: still refused.
+      await expect(
+        rollbackImport({
+          payload,
+          manifest: { ...preFinalize, version: 2, mac: undefined, createdAt: 'forged' },
+          allowUnsignedManifest: true,
+          allowUnsignedDeletes: true,
+        })
+      ).rejects.toThrow(/finalized/)
+      expect(
+        (await payload.count({ collection: 'ba-users', overrideAccess: true })).totalDocs
+      ).toBe(baBefore)
     })
 
     test('an old password signs in on the new stack', async () => {

@@ -1,5 +1,6 @@
 import { Ok, ResultAsync } from 'neverthrow'
 import {
+  assertNever,
   InvalidConfigError,
   isRecord,
   isSuspendedAt,
@@ -604,8 +605,10 @@ type AccountStatus = {
 
 /** Payload's local JWT strategy name (`_strategy` on `req.user`). */
 const localJwtStrategyName = 'local-jwt'
+/** Payload's API-key strategy name (`_strategy` on `req.user`). */
+const apiKeyStrategyName = 'api-key'
 
-type AccountDecision = 'ok' | 'suspended' | 'failed' | 'provider-owned'
+type AccountDecision = 'ok' | 'suspended' | 'failed' | 'provider-owned' | 'provider-owned-api-key'
 
 async function requestAccountStatus(
   req: PayloadRequest,
@@ -711,6 +714,17 @@ async function applyAccountControls(
   ) {
     return 'provider-owned'
   }
+  // The same rule for Payload API keys: a key on a linked document is
+  // a local credential the provider never issued (one enabled before
+  // the link, or re-enabled after it). Linking clears the key
+  // (repository `linkIdentity`); this gate refuses any that remains.
+  if (
+    !wired.allowLocalCredentialsForLinkedDocs &&
+    status.linked === true &&
+    user._strategy === apiKeyStrategyName
+  ) {
+    return 'provider-owned-api-key'
+  }
   if (user._strategy !== strategyName) {
     // Issue #57: `reqUser: 'document'` also shapes LOCAL sessions
     // (Payload's local JWT and API keys carry the full document but not
@@ -773,17 +787,24 @@ function rolesOf(user: unknown): unknown {
 }
 
 function throwOnAccountDecision(decision: AccountDecision): void {
-  if (decision === 'provider-owned') {
-    throw new APIError(
-      'Local sessions are unavailable for provider-linked accounts; sign in with your identity provider',
-      401
-    )
-  }
-  if (decision === 'failed') {
-    throw new APIError('Account status could not be verified', 503)
-  }
-  if (decision === 'suspended') {
-    throw new APIError('Account suspended', 401)
+  switch (decision) {
+    case 'ok':
+      return
+    case 'provider-owned':
+      throw new APIError(
+        'Local sessions are unavailable for provider-linked accounts; sign in with your identity provider',
+        401
+      )
+    case 'provider-owned-api-key':
+      // The key itself is genuine; the document's credential policy
+      // refuses it (as local sign-in on a linked document is refused).
+      throw new APIError('API keys are unavailable for provider-linked accounts', 403)
+    case 'failed':
+      throw new APIError('Account status could not be verified', 503)
+    case 'suspended':
+      throw new APIError('Account suspended', 401)
+    default:
+      return assertNever(decision)
   }
 }
 
@@ -850,7 +871,11 @@ function withAccountControlledAccess(
       if (decision === 'failed') {
         throw new APIError('Account status could not be verified', 503)
       }
-      if (decision === 'suspended' || decision === 'provider-owned') {
+      if (
+        decision === 'suspended' ||
+        decision === 'provider-owned' ||
+        decision === 'provider-owned-api-key'
+      ) {
         return false
       }
       return existing(args)

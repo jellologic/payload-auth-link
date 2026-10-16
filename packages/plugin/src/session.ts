@@ -187,6 +187,17 @@ const REQUEST_WALK_FOUND_KEY = 'payload-auth-link:provider-walk-found'
 export type PluginSessionService = SessionPort & {
   verify(headers: Headers, req?: PayloadRequest): ResultAsync<Session, SessionVerifyError>
   guest(headers: Headers, req?: PayloadRequest): ResultAsync<GuestPrincipal | null, RepositoryError>
+  /**
+   * The impersonating operator a live provider session names, read
+   * WITHOUT verifying the target user (no linking, no provisioning).
+   * For refusing and auditing impersonated calls whose target does
+   * not verify; never an authentication result. The actor is in
+   * `provider-only` form (no Payload-user resolution).
+   */
+  presentedActor(
+    headers: Headers,
+    req?: PayloadRequest
+  ): ResultAsync<ResolvedSessionActor | null, RepositoryError>
 }
 
 /**
@@ -526,6 +537,29 @@ export function createSessionService(deps: SessionServiceDeps): PluginSessionSer
           providerId: found.providerId,
           expiresAt: found.providerSession.expiresAt,
         }
+      })
+    },
+
+    presentedActor(
+      headers: Headers,
+      req?: PayloadRequest
+    ): ResultAsync<ResolvedSessionActor | null, RepositoryError> {
+      // Same liveness gates as `verify` (expiry, admitted channel),
+      // minus every user touch.
+      return ResultAsync.fromPromise<FoundProviderSession | null, RepositoryError>(
+        findProviderSession(deps, headers, req),
+        (cause) => new RepositoryError('provider session read failed', { cause })
+      ).map((found): ResolvedSessionActor | null => {
+        if (!found || found.providerSession.actor === null) {
+          return null
+        }
+        if (found.providerSession.expiresAt.getTime() <= deps.clock.now().getTime()) {
+          return null
+        }
+        if (!admitChannels.includes(found.providerSession.channel)) {
+          return null
+        }
+        return { kind: 'provider-only', providerUserId: found.providerSession.actor.providerUserId }
       })
     },
 

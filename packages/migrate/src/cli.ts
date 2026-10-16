@@ -67,17 +67,29 @@ Commands:
                     [--source-map '{"accounts":"user_accounts","sessions":"user_sessions"}']
   export            --database-url URL [--out file.jsonl]
                     [--tables users,accounts | '["users","accounts"]']
-                    (lossless JSONL of every auth table — the off-ramp, #58)
+                    [--source-map '{"accounts":"user_accounts","sessions":"user_sessions"}']
+                    (lossless JSONL of every auth table — the off-ramp, #58:
+                    each mapped model's table, their child tables such as
+                    users_role / organizations_tags, and every ba_* and
+                    oauth_* table present; a mapped table that is missing
+                    exits 1)
   codemod           --src ./src [--write]
   from-payload-auth --config ./src/payload.config.ts [--apply] [--sessions=carry|drop]
                     [--manifest ./payload-auth-link-migration.json] [--database-url URL] [--json]
                     [--source-map '{"accounts":"user_accounts","sessions":"user_sessions"}']
   verify            --config ./src/payload.config.ts [--database-url URL] [--json]
                     [--source-map '{"accounts":"user_accounts","sessions":"user_sessions"}']
-  rollback          --config ./src/payload.config.ts [--manifest ...]
-                    [--allow-unsigned-manifest]  (a pre-0.6.0 manifest; also
-                    accepted by from-payload-auth / adopt-prelink when resuming)
-  finalize          [--manifest ...]
+  rollback          --config ./src/payload.config.ts [--manifest ...] [--slugs JSON]
+                    [--allow-unsigned-manifest]  (a manifest without a full
+                    signature: pre-0.6.0, or 0.6.0's which leaves 'finalized'
+                    unsigned; also accepted by from-payload-auth /
+                    adopt-prelink / finalize when resuming)
+                    [--allow-unsigned-deletes]  (with an UNSIGNED manifest,
+                    also delete its created rows and restore plaintext
+                    values; without it an unsigned rollback deletes nothing)
+  finalize          --config ./src/payload.config.ts [--manifest ...]
+                    (records the finalize in the app's database and
+                    re-signs the manifest; rollback is refused afterwards)
   adopt-prelink     --config ./src/payload.config.ts [--apply] [--json]
                     [--manifest ./payload-auth-link-prelink.json]
                     [--users-slug users] [--verified-field emailVerified]
@@ -101,15 +113,17 @@ Commands:
   writes the payload-auth-link collections through the Payload Local
   API, records every created row and field change in the manifest,
   and never modifies the source tables. verify checks both sides;
-  rollback undoes exactly the manifest; finalize marks it read-only
-  so the legacy tables may be dropped later, in their own migration.
+  rollback undoes exactly the manifest (and only ever deletes rows in
+  the import's own target collections); finalize records the point of
+  no return so the legacy tables may be dropped later, in their own
+  migration (adopt mode: those are the live tables — never drop them).
 
   The manifest lands in the CURRENT DIRECTORY unless --manifest says
   otherwise. It holds ids and sealed values only (no emails in the
   clear; sealed with the app's PAYLOAD_SECRET, so rollback must run
   against the same app) and is written with mode 0600. It is signed
-  with the same secret: rollback and a resumed --apply refuse an
-  edited manifest. Delete it once
+  with the same secret: rollback, finalize, and a resumed --apply
+  refuse an edited manifest. Delete it once
   the migration is finalized and your soak window has passed.
 
   codemod rewrites the three named payload-auth call-site patterns
@@ -285,20 +299,40 @@ async function main(
           return 3
         }
       }
+      // --source-map: the same layout semantics as every other command
+      // (issue #110) — renamed tables are exported, null-mapped models
+      // are skipped, and a mapped table that is missing exits 1.
+      let sourceTables: import('./importer/types.js').ResolvedSourceTables | undefined
+      const sourceMapFlag = flags.get('source-map')
+      if (typeof sourceMapFlag === 'string') {
+        try {
+          const { parseSourceMapJson, resolveSourceTables } = await import('./importer/types.js')
+          sourceTables = resolveSourceTables(parseSourceMapJson(sourceMapFlag))
+        } catch (error) {
+          err.write(`${error instanceof Error ? error.message : String(error)}\n`)
+          return 3
+        }
+      }
       const { exportToJsonl } = await import('./exporters.js')
       const result = await exportToJsonl({
         connectionString: databaseUrl,
         format: 'jsonl',
         ...(tables === undefined ? {} : { tables }),
-        log: (message) => out.write(`${message}\n`),
+        ...(sourceTables === undefined ? {} : { sourceTables }),
+        // Progress goes to stderr: stdout may BE the JSONL document.
+        log: (message) => err.write(`${message}\n`),
       })
-      // A requested table that doesn't exist is an error, not a gap
-      // (issue #68): nothing is silently omitted.
-      if (tables !== undefined && result.missing.length > 0) {
+      // A required table that doesn't exist is an error, not a gap
+      // (issues #68, #110): nothing is silently omitted.
+      if (result.missing.length > 0) {
         for (const table of result.missing) {
           err.write(`export: table '${table}' does not exist on the source\n`)
         }
-        err.write('nothing silently omitted; fix --tables or drop it\n')
+        err.write(
+          tables === undefined
+            ? "nothing silently omitted; pass --source-map to name your layout's tables (null for a model that is not installed)\n"
+            : 'nothing silently omitted; fix --tables or drop it\n'
+        )
         return 1
       }
       if (typeof flags.get('out') === 'string') {
@@ -373,26 +407,38 @@ async function main(
       )
       return 0
     }
-    // finalize [--manifest ...]
-    // (no --config: manifest-only; no Payload instance is loaded)
-    if (command === 'finalize') {
-      const finalized = await runFinalize({
-        log,
-        ...(typeof flags.get('manifest') === 'string'
-          ? { manifestPath: flags.get('manifest') as string }
-          : {}),
-      })
-      if (json) {
-        out.write(`${JSON.stringify({ finalized: finalized.finalized })}\n`)
-      }
-      return 0
-    }
-    // The remaining commands (from-payload-auth, verify, rollback) all
-    // load a Payload instance, so they need the config.
+    // The remaining commands (from-payload-auth, verify, rollback,
+    // finalize, adopt-prelink) all load a Payload instance, so they
+    // need the config.
     const configFlag = flags.get('config')
     if (typeof configFlag !== 'string' || configFlag === '') {
       err.write(`${command} requires --config <path to payload.config.ts>\n`)
       return 3
+    }
+    // finalize --config ... [--manifest ...]: boots the target app to
+    // sign the finalized manifest and record the database marker.
+    if (command === 'finalize') {
+      let finalized: Awaited<ReturnType<typeof runFinalize>>
+      try {
+        finalized = await runFinalize({
+          configPath: new URL(configFlag, `file://${process.cwd()}/`).pathname,
+          log,
+          ...(typeof flags.get('manifest') === 'string'
+            ? { manifestPath: flags.get('manifest') as string }
+            : {}),
+          ...(typeof flags.get('slugs') === 'string'
+            ? { slugsJson: flags.get('slugs') as string }
+            : {}),
+          allowUnsignedManifest: flags.get('allow-unsigned-manifest') === true,
+        })
+      } catch (error) {
+        err.write(`finalize failed: ${error instanceof Error ? error.message : String(error)}\n`)
+        return 1
+      }
+      if (json) {
+        out.write(`${JSON.stringify({ finalized: finalized.finalized })}\n`)
+      }
+      return 0
     }
     if (command === 'adopt-prelink') {
       const usersSlug = flags.get('users-slug')
@@ -441,6 +487,7 @@ async function main(
       json,
       log,
       allowUnsignedManifest: flags.get('allow-unsigned-manifest') === true,
+      allowUnsignedDeletes: flags.get('allow-unsigned-deletes') === true,
     }
     if (command === 'from-payload-auth') {
       const outcome = await runFromPayloadAuth(importOptions)
@@ -478,7 +525,14 @@ async function main(
       return result.ok ? 0 : 1
     }
     if (command === 'rollback') {
-      const undone = await runRollback(importOptions)
+      let undone: Awaited<ReturnType<typeof runRollback>>
+      try {
+        undone = await runRollback(importOptions)
+      } catch (error) {
+        // A refused or failed rollback is an error exit, never a quiet 0.
+        err.write(`rollback failed: ${error instanceof Error ? error.message : String(error)}\n`)
+        return 1
+      }
       if (json) {
         out.write(`${JSON.stringify(undone)}\n`)
       }

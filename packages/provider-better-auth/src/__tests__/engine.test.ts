@@ -256,6 +256,52 @@ describe('createBetterAuthEngine', () => {
     expect(warn).not.toHaveBeenCalled()
   })
 
+  it('a trusted email-password provider is safe only while email verification stays on (#110)', () => {
+    const trusted = { account: { accountLinking: { trustedProviders: ['email-password'] } } }
+    // emailAndPassword on with the engine's default requirement: safe.
+    expect(() =>
+      createBetterAuthEngine({
+        getPayload,
+        strictLinking: true,
+        options: { ...trusted, emailAndPassword: { enabled: true } },
+      })
+    ).not.toThrow()
+    // Explicitly switched off: the trusted provider links on its word alone.
+    expect(() =>
+      createBetterAuthEngine({
+        getPayload,
+        strictLinking: true,
+        options: {
+          ...trusted,
+          emailAndPassword: { enabled: true, requireEmailVerification: false },
+        },
+      })
+    ).toThrow('email-password')
+    // No emailAndPassword block at all: nothing statically proves it.
+    expect(() =>
+      createBetterAuthEngine({ getPayload, strictLinking: true, options: trusted })
+    ).toThrow('email-password')
+  })
+
+  it('a trusted social provider without an explicit true requirement is a finding (#110)', () => {
+    for (const socialProviders of [
+      undefined,
+      { google: { clientId: 'id', clientSecret: 'secret' } },
+      { google: { clientId: 'id', clientSecret: 'secret', requireEmailVerification: false } },
+    ]) {
+      expect(() =>
+        createBetterAuthEngine({
+          getPayload,
+          strictLinking: true,
+          options: {
+            ...(socialProviders === undefined ? {} : { socialProviders }),
+            account: { accountLinking: { trustedProviders: ['google'] } },
+          },
+        })
+      ).toThrow('google')
+    }
+  })
+
   it('warns on a dynamic trustedProviders function it cannot verify statically', () => {
     const { logger, warn } = spyLogger()
     createBetterAuthEngine({

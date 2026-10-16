@@ -9,6 +9,13 @@ Raise a floor whenever coverage improves. Never lower one without
 updating this page: a lower floor means a security-relevant branch
 lost its test.
 
+Coverage is measured on the workspace **sources**. `vitest.config.ts`
+aliases every `@payload-auth-link/*` import to `packages/<name>/src`
+(`vitest.shared.ts`), so a real-engine suite that boots the plugin by
+package name runs, and is credited to, `plugin/src`. Before issue #110
+those imports resolved to `dist`, and files reached only that way
+(`lifecycle.ts`, `verified-email.ts`) read as 5% and 0%.
+
 ## Floors
 
 Each cell is lines / functions / branches / statements.
@@ -16,20 +23,28 @@ Each cell is lines / functions / branches / statements.
 | File                                             | Floor             | Notes     |
 | ------------------------------------------------ | ----------------- | --------- |
 | `core/src/cookies.ts`                            | 95 / 95 / 95 / 95 | at target |
+| `core/src/use-cases/ensure-linked-user.ts`       | 95 / 95 / 95 / 95 | at target |
 | `plugin/src/access.ts`                           | 95 / 95 / 95 / 95 | at target |
 | `plugin/src/audit.ts`                            | 95 / 91 / 88 / 95 | see below |
 | `plugin/src/collections.ts`                      | 95 / 95 / 86 / 95 | see below |
 | `plugin/src/compat-shim.ts`                      | 95 / 95 / 95 / 95 | at target |
 | `plugin/src/endpoints.ts`                        | 95 / 95 / 91 / 95 | see below |
+| `plugin/src/hooks.ts`                            | 95 / 95 / 95 / 95 | at target |
+| `plugin/src/lifecycle.ts`                        | 95 / 95 / 94 / 95 | see below |
 | `plugin/src/organizations.ts`                    | 95 / 95 / 95 / 95 | see below |
 | `plugin/src/repository.ts`                       | 95 / 95 / 95 / 95 | at target |
 | `plugin/src/server.ts`                           | 95 / 95 / 94 / 95 | see below |
-| `plugin/src/session.ts`                          | 95 / 95 / 94 / 95 | see below |
-| `plugin/src/strategy.ts`                         | 95 / 95 / 86 / 95 | see below |
+| `plugin/src/session.ts`                          | 95 / 95 / 95 / 95 | see below |
+| `plugin/src/strategy.ts`                         | 95 / 95 / 90 / 95 | see below |
+| `plugin/src/verified-email.ts`                   | 95 / 95 / 95 / 95 | at target |
+| `provider-authjs/src/adapter.ts`                 | 95 / 95 / 95 / 95 | see below |
+| `provider-authjs/src/callbacks.ts`               | 93 / 95 / 90 / 93 | see below |
+| `provider-authjs/src/engine.ts`                  | 95 / 95 / 91 / 95 | see below |
 | `provider-authjs/src/port.ts`                    | 95 / 95 / 95 / 95 | at target |
 | `provider-better-auth/src/adapter.ts`            | 80 / 91 / 73 / 81 | see below |
 | `provider-better-auth/src/cookies.ts`            | 95 / 95 / 89 / 95 | see below |
-| `provider-better-auth/src/port.ts`               | 86 / 86 / 77 / 86 | see below |
+| `provider-better-auth/src/engine.ts`             | 95 / 93 / 93 / 95 | see below |
+| `provider-better-auth/src/port.ts`               | 88 / 92 / 85 / 88 | see below |
 | `provider-better-auth/src/session-provenance.ts` | 95 / 95 / 95 / 95 | at target |
 | `provider-better-auth/src/where.ts`              | 95 / 95 / 95 / 95 | at target |
 | `web/src/authz.ts`                               | 95 / 95 / 95 / 95 | at target |
@@ -99,6 +114,15 @@ here and referred to by name below.
 Another change is editing this file at the same time (cookie expiry).
 Re-measure after it lands.
 
+### `plugin/src/lifecycle.ts` (branches 94.73%)
+
+`integration-lifecycle.test.ts` drives the `onInit` subscription on
+real Payload: the verified-email sync, application failure, a failed
+linked-user lookup, and a throwing handler (Error and non-Error
+causes), each logged and never thrown into the provider.
+
+- Line 65: registry miss.
+
 ### `plugin/src/organizations.ts` (branches 99.05%)
 
 Measured 100 / 100 / 99.05 / 100 (lines / functions / branches /
@@ -134,24 +158,78 @@ three uncovered arms are:
 Every fail-loud branch (revoke, revoke-all, verifyApiKey, mint and
 list refusals) is covered by `server-failures.test.ts`.
 
-### `plugin/src/session.ts` (branches 94.94%)
+### `plugin/src/session.ts` (branches 95.04%)
+
+The SSO domain gate for an email-less session (the claim reaches the
+guard as `null`, never as the deprecated `email` alias) is tested in
+`session.test.ts`.
 
 - Lines 105 and 132: registry miss.
 - Line 205: the per-request verify memo on a request whose `context`
   is not a record. Payload always supplies a context object.
-- Lines 348 and 405: `emailClaim?.value ?? null` and
-  `suspendedUntil ?? clock.now()`. These are narrowing arms that the
-  guarding conditions already exclude.
+- Line 396: the `email` log field on the provisioning-refused path for
+  a session with no email claim. That path needs a `UserExistsError`
+  from `create`, and only an email-carrying session creates.
+- Line 420: `suspendedUntil ?? clock.now()`. `isSuspendedAt` is true
+  only for a non-null `suspendedUntil`, so the fallback cannot run.
 
-### `plugin/src/strategy.ts` (branches 86.11%)
+### `plugin/src/strategy.ts` (branches 90%)
+
+The `organizationId` projection under `reqUser: 'document'` is tested
+in `integration-req-user-document.test.ts`.
 
 - Line 46: `?? fallback` on an error cause.
 - Line 68: `roleValues[role] ?? role` (same as `server.ts` line 230).
-- Line 119: `organizationId` projection when a strategy session
-  reports an active organization. This is reachable and is a good
-  candidate for the next test.
 - Two `if#1` arms in the `reqUser: 'document'` memo: a request without
   `context`.
+
+### `provider-authjs/src/adapter.ts` (branches 97.56%)
+
+`adapter-failures.test.ts` pins the fail-loud contract: every
+unmappable document is an `AdapterMappingError`, every Local API
+failure an `AdapterOperationError`, never a `null` read as "not
+found". The remaining arms are `?? {}` spreads for optional fields
+that Auth.js never sends as `undefined` (lines 159, 385, 485) and
+`getUserByAccount` with an account whose user row is gone (line 327).
+
+### `provider-authjs/src/callbacks.ts` (branches 95.71%)
+
+The D6 stamp guard (line 136: `updateUser` returning no `Date` claims
+nothing) and the CAP-14 event narrowing (lines 253–283: unusable rows
+are logged and skipped, no emit without a lifecycle sink) are tested
+in `callbacks-guards.test.ts`.
+
+- Line 88: `normalizeEmail` on a non-string. Both callers have
+  already required a string.
+
+The floor sits below the measured value because another change is
+reshaping the session callback. Re-measure after it lands.
+
+### `provider-authjs/src/engine.ts` (branches 92.07%)
+
+- Lines 333 and 341: `adapter.updateUser === undefined`. The engine
+  always wires its own adapter, which defines `updateUser`. The checks
+  stay so a future adapter swap fails at wiring.
+- Line 435: `readSession` when Auth.js answers the session endpoint
+  with a non-OK status. Auth.js answers 200 (with `null`) for every
+  session miss.
+- Lines 139, 160, 409, 412 and 484: `String(error)` for a non-Error
+  factory throw, `?? '<unknown provider id>'`, the cookie-option `?? {}`
+  spreads, and a non-object bulk result. These are untyped-input
+  narrowing.
+
+### `provider-better-auth/src/engine.ts` (branches 94.11%)
+
+The `trustedProviders` check for `email-password` (safe only while
+`emailAndPassword.requireEmailVerification` stays on) and for social
+providers without an explicit `true` requirement is tested in
+`engine.test.ts`.
+
+- Line 338: `fields ?? []` on builder custom fields.
+- Line 495: `mergedPlugins === undefined`. The engine always appends
+  its provenance plugin, so the list is never empty.
+- Two `if#1` arms in the plugin-id and derived-model loops
+  (untyped-input narrowing).
 
 ### `provider-better-auth/src/adapter.ts` (73% branches)
 
@@ -187,12 +265,15 @@ All of these are configuration permutations of Better Auth's
 `advanced` options rather than security branches. The secure-prefix
 and clearing behaviour is covered by `cookies.test.ts`.
 
-### `provider-better-auth/src/port.ts` (77% branches)
+### `provider-better-auth/src/port.ts` (88.35% branches)
 
-- Lines 829–861, `narrowApiKeyVerification`. Another change in
-  progress adds a real-engine `verifyApiKey` test (with
-  `@better-auth/api-key`) that covers this. Raise the floor once it
-  lands.
+- `narrowApiKeyVerification` (key-owner narrowing) is fully covered
+  by `api-key-narrowing.test.ts`: `referenceId` wins over `userId`,
+  missing, empty or non-string owners fail closed, and invalid
+  verifications narrow to `null`. The real-engine paths are in
+  `api-key-verify.test.ts` and `channel-api-key-engine.test.ts`.
+- Another change is editing this file, so the floor sits a little
+  below the measured 90.7 / 94.7 / 88.4 / 90.7.
 - Lines 561–689: legacy-cookie coexistence and multi-session
   enumeration arms for malformed `$context` shapes, which are
   untyped-input narrowing on Better Auth internals.

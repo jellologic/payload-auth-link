@@ -4,6 +4,7 @@ import { createCookieGetter, getCookies } from 'better-auth/cookies'
 import { describe, expect, it } from 'vitest'
 import {
   getBetterAuthLogoutCookieNames,
+  betterAuthCookieChunkBase,
   getBetterAuthSessionCookieClearOptions,
   getBetterAuthSessionCookieNames,
 } from '../cookies.js'
@@ -278,16 +279,18 @@ describe('getBetterAuthLogoutCookieNames (CAP-8a)', () => {
     }
   })
 
-  it('covers admin_session, dont_remember, session_data and both __Secure- variants', () => {
+  it('covers admin_session, dont_remember, session_data, account_data and both __Secure- variants', () => {
     expect([...getBetterAuthLogoutCookieNames({}, { nodeEnv: 'test' })].sort()).toEqual(
       [
         'better-auth.admin_session',
         'better-auth.dont_remember',
         'better-auth.session_data',
+        'better-auth.account_data',
         '__Secure-better-auth.session_token',
         '__Secure-better-auth.admin_session',
         '__Secure-better-auth.dont_remember',
         '__Secure-better-auth.session_data',
+        '__Secure-better-auth.account_data',
       ].sort()
     )
     expect(
@@ -302,10 +305,12 @@ describe('getBetterAuthLogoutCookieNames (CAP-8a)', () => {
         '__Secure-acme.admin_session',
         '__Secure-acme.dont_remember',
         '__Secure-acme.session_data',
+        '__Secure-acme.account_data',
         'acme.session_token',
         'acme.admin_session',
         'acme.dont_remember',
         'acme.session_data',
+        'acme.account_data',
       ].sort()
     )
   })
@@ -322,13 +327,23 @@ describe('getBetterAuthLogoutCookieNames (CAP-8a)', () => {
         baseURL: 'https://app.example.com',
         advanced: { cookies: { dont_remember: { name: 'custom_dr' } } },
       },
+      {
+        baseURL: 'https://app.example.com',
+        advanced: { cookies: { account_data: { name: 'custom_ad' } } },
+      },
     ]
     for (const options of cases) {
       const getter = createCookieGetter(options)
       const logout = getBetterAuthLogoutCookieNames(options, { nodeEnv: 'test' })
       const session = getBetterAuthSessionCookieNames(options, { nodeEnv: 'test' })
       // Every name BA can write for these keys is session- or logout-covered.
-      for (const key of ['admin_session', 'dont_remember', 'session_data', 'session_token']) {
+      for (const key of [
+        'admin_session',
+        'dont_remember',
+        'session_data',
+        'account_data',
+        'session_token',
+      ]) {
         const name = getter(key).name
         expect([...logout, ...session]).toContain(name)
         const toggled = name.startsWith(secureCookiePrefix)
@@ -337,6 +352,51 @@ describe('getBetterAuthLogoutCookieNames (CAP-8a)', () => {
         expect([...logout, ...session]).toContain(toggled)
       }
     }
+  })
+})
+
+describe('cookie chunks (#110)', () => {
+  it('recognizes only canonical chunk indexes, like BA parseCookieChunkIndex', () => {
+    expect(betterAuthCookieChunkBase('better-auth.session_data.0')).toBe('better-auth.session_data')
+    expect(betterAuthCookieChunkBase('better-auth.session_data.12')).toBe(
+      'better-auth.session_data'
+    )
+    for (const name of [
+      'better-auth.session_data',
+      'better-auth.session_data.01',
+      'better-auth.session_data.-1',
+      'better-auth.session_data.1e2',
+      'better-auth.session_data.',
+      '.0',
+    ]) {
+      expect(betterAuthCookieChunkBase(name)).toBeUndefined()
+    }
+  })
+
+  it("clears a chunk with its base cookie's live attributes", () => {
+    const options: BetterAuthOptions = {
+      baseURL: 'https://app.example.com',
+      session: { cookieCache: { enabled: true } },
+      advanced: {
+        cookies: {
+          session_data: { attributes: { domain: 'example.com' } },
+          account_data: { attributes: { path: '/acct' } },
+        },
+      },
+    }
+    const clear = getBetterAuthSessionCookieClearOptions(options, { nodeEnv: 'test' })
+    expect(clear('__Secure-better-auth.session_data.1')).toEqual(
+      clear('__Secure-better-auth.session_data')
+    )
+    expect(clear('__Secure-better-auth.session_data.1')).toMatchObject({
+      secure: true,
+      domain: 'example.com',
+    })
+    expect(clear('__Secure-better-auth.account_data.0')).toMatchObject({
+      secure: true,
+      path: '/acct',
+    })
+    expect(clear('__Secure-better-auth.unknown.0')).toBeUndefined()
   })
 })
 

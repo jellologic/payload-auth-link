@@ -678,7 +678,10 @@ export type AuthLinkPluginOptions = {
      * linked provider identities authenticates through its provider —
      * local sign-in and the forgot/reset-password flow are refused for
      * it, because a local password would bypass the provider's MFA,
-     * bans, rate limits, and revocation. Defaults to `false` (refuse).
+     * bans, rate limits, and revocation. The same holds for Payload API
+     * keys (`auth.useAPIKey`): linking clears a key enabled before the
+     * link, and a key on a linked document is refused (403). Defaults
+     * to `false` (refuse).
      * Set `true` only for a migration window where documents must keep
      * working with both credentials; remove it once the migration
      * completes. Documents without linked identities (operator
@@ -917,6 +920,13 @@ export type PayloadUserRepositoryDeps = {
     readonly roleValuesReverse?: Readonly<Record<string, string>> | undefined;
     /** Canonical role → stored value (issue #56); writes translate through it. */
     readonly roleValues?: Readonly<Record<string, string>> | undefined;
+    /**
+     * Keep the document's local credentials (Payload API key) when a
+     * provider identity links to it. Mirrors the plugin's
+     * `allowLocalCredentialsForLinkedDocs`; by default linking clears a
+     * Payload API key enabled before the link.
+     */
+    readonly keepLocalCredentialsOnLink?: boolean | undefined;
 };
 /**
  * `UserRepository` over the Payload Local API. Request-scoped: construct one
@@ -1065,7 +1075,7 @@ export declare function createServices(wired: WiredOptions, payload: Payload): {
 // ===== session.d.ts =====
 import { ResultAsync } from 'neverthrow';
 import type { PayloadRequest } from 'payload';
-import { ChannelNotAdmittedError, RepositoryError, SessionExpiredError, SessionInvalidError, UserSuspendedError, type ClockPort, type Email, type GuestPrincipal, type LinkingPolicy, type LoggerPort, type ProviderId, type ProviderRegistry, type Role, type Session, type SessionChannel, type SessionPort, type UserRepository } from '@payload-auth-link/core';
+import { ChannelNotAdmittedError, RepositoryError, SessionExpiredError, SessionInvalidError, UserSuspendedError, type ClockPort, type Email, type GuestPrincipal, type LinkingPolicy, type LoggerPort, type ProviderId, type ProviderRegistry, type ResolvedSessionActor, type Role, type Session, type SessionChannel, type SessionPort, type UserRepository } from '@payload-auth-link/core';
 /** `SessionPort` wiring: user store, provider registry, leaf ports. */
 export type SessionServiceDeps = {
     readonly users: UserRepository;
@@ -1129,6 +1139,14 @@ export declare const REQUEST_VERIFY_KEY = "payload-auth-link:session-verificatio
 export type PluginSessionService = SessionPort & {
     verify(headers: Headers, req?: PayloadRequest): ResultAsync<Session, SessionVerifyError>;
     guest(headers: Headers, req?: PayloadRequest): ResultAsync<GuestPrincipal | null, RepositoryError>;
+    /**
+     * The impersonating operator a live provider session names, read
+     * WITHOUT verifying the target user (no linking, no provisioning).
+     * For refusing and auditing impersonated calls whose target does
+     * not verify; never an authentication result. The actor is in
+     * `provider-only` form (no Payload-user resolution).
+     */
+    presentedActor(headers: Headers, req?: PayloadRequest): ResultAsync<ResolvedSessionActor | null, RepositoryError>;
 };
 /**
  * Read (or lazily create) the request's verified session from

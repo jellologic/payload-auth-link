@@ -142,12 +142,60 @@ async function stampTrustedEmailVerification(
   return updated.emailVerified
 }
 
+type SessionShape = Awaited<ReturnType<SessionCallback>>
+type SessionUser = NonNullable<SessionShape['user']>
+
+/**
+ * The response shape Auth.js's own default `session` callback builds:
+ * `user` reduced to `name` / `email` / `image`, plus `expires`. The
+ * database strategy hands the callback the adapter session row
+ * (`sessionToken`, `userId`, …) merged with the user row; none of that
+ * is copied, so the session JSON carries no credential. `expires`
+ * arrives as a `Date` on database sessions and is serialized the way
+ * upstream does.
+ */
+function allowlistedSession(input: SessionShape): SessionShape {
+  const source: SessionUser = input.user ?? {}
+  const user: SessionUser = {
+    ...(source.name === undefined ? {} : { name: source.name }),
+    ...(source.email === undefined ? {} : { email: source.email }),
+    ...(source.image === undefined ? {} : { image: source.image }),
+  }
+  const expires: unknown = input.expires
+  return { user, expires: expires instanceof Date ? expires.toISOString() : input.expires }
+}
+
+/** Top-level fields of the Auth.js adapter session row. */
+const sessionRowFields = ['sessionToken', 'userId', 'id'] as const
+
+/**
+ * A builder `session` callback's result minus the adapter session row
+ * fields (`sessionToken`, `userId`, `id`), so a builder that returns
+ * `{ ...session, … }` on the database strategy keeps the response to
+ * session data. Every other key the builder returns is kept.
+ */
+function withoutSessionRowFields(result: SessionShape): SessionShape {
+  const kept = { ...result }
+  for (const field of sessionRowFields) {
+    Reflect.deleteProperty(kept, field)
+  }
+  return kept
+}
+
 /**
  * Chain the builder's callbacks (if any) with the claims the port needs.
  * The builder's callbacks run FIRST on raw values; the claims layer then
  * wins on its own keys so a builder callback can never silently break
  * the port contract. A builder jwt callback returning `null` (forced
  * logout) is respected as-is.
+ *
+ * The session response is built from an allowlist, never by spreading
+ * what Auth.js passes in: without a builder `session` callback it is
+ * `{ user: { name, email, image, id, emailVerified }, expires }` (the
+ * Auth.js default shape plus the port's two claims); with one, the
+ * builder's result is kept except for the adapter session row fields
+ * `sessionToken`, `userId` and `id`, which are always removed. Either
+ * way `user.id` and `user.emailVerified` come from the claims layer.
  *
  * Spike findings encoded here: the jwt callback re-runs on every session
  * read WITHOUT `user` (the token re-encodes), so claims are stuffed only
@@ -188,7 +236,9 @@ export function createAuthLinkCallbacks(
   }
 
   const session: SessionCallback = async (params) => {
-    const resolved = builder?.session ? await builder.session(params) : params.session
+    const resolved = builder?.session
+      ? withoutSessionRowFields(await builder.session(params))
+      : allowlistedSession(params.session)
     if (params.token === undefined) {
       // Database strategy: no token — Auth.js passes the adapter user
       // row instead, so identity and verification come from it. (The

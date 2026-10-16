@@ -32,6 +32,7 @@ export function createServices(wired: WiredOptions, payload: Payload) {
     configuredRoles: new Set(wired.config.roles),
     roleValues: wired.roleValues,
     roleValuesReverse: wired.roleValuesReverse,
+    keepLocalCredentialsOnLink: wired.allowLocalCredentialsForLinkedDocs,
   })
   const orgs = wired.organizations
   const sessions: PluginSessionService = createSessionService({

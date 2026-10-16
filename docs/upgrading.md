@@ -38,6 +38,95 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
+## plugin 0.13.0 / migrate 0.7.0 / provider-better-auth 0.10.0 / provider-authjs 0.6.0 (one minor across every package)
+
+**Upgrade impact:** no schema change. Push and migrations have nothing to
+do on SQLite, Postgres or MongoDB. The operator steps are below.
+
+**plugin**
+
+- **Payload API keys on provider-linked documents.** With
+  `auth.useAPIKey`, linking a provider identity now clears the
+  document's API key. A key on a linked document, including one
+  enabled after the link, is refused (403) on every collection and
+  global, and `/access` grants it nothing. Documents without linked
+  identities are unaffected. To keep keys working during a migration,
+  set `allowLocalCredentialsForLinkedDocs: true` and remove it once the
+  migration is done.
+  - Operator step: move service integrations that use a linked user's
+    API key to an unlinked service account.
+- **Granting the linking proof.** Do not grant `linkable` /
+  `linkableEmail` based on `_verified`. Grant it only after a fresh
+  verification of the current address, or from an operator-reviewed
+  list checked against the current email. The earlier snippet that
+  granted it from `_verified` is withdrawn.
+  - If you ran that snippet, re-check the documents it touched.
+  - Refusal logs now say to resolve an email collision (confirm the
+    owner, then rename or remove the conflicting document).
+- **Organization endpoints under impersonation.** `POST
+/auth-link/organizations`, `/invite` and `/accept` now answer every
+  impersonated call with the audited 403. That includes calls where the
+  impersonated user's session does not verify, which used to answer
+  401 without an audit record.
+- **`authLinkServer(payload)` across module copies.** The server
+  registry is now shared by every loaded copy of the plugin. Under
+  TanStack Start, an API route no longer throws
+  `AuthLinkServerMissingError` when `/admin` booted Payload first.
+
+**provider-authjs**
+
+- **Session JSON shape.** The Auth.js session endpoint (`GET
+{basePath}/session`) now returns an allowlisted shape on both session
+  strategies: `{ user: { name, email, image, id, emailVerified },
+expires }`.
+  - A custom `session` callback keeps every field it returns except
+    `sessionToken`, `userId` and `id`, which are always removed.
+  - Client code that read those fields from the session JSON must get
+    what it needs from your own `session` callback.
+
+**provider-better-auth**
+
+- **Logout cookies.** Logout now also expires the cookie-cache and
+  `account_data` chunk cookies (`<name>.0` … `<name>.N`).
+- **In-session MFA step-up.** A correct second factor on an existing
+  session now always marks that session MFA-proven. Apps using
+  `requireMfaForRoles` get the roles back after an in-session TOTP
+  step-up.
+- **`not_in` and NULL.** `not_in` on nullable fields now keeps NULL
+  rows, matching Better Auth's memory adapter. Bulk updates and deletes
+  that use `not_in` may now affect more rows.
+- **Non-ASCII email matching.** Case-insensitive `eq` now matches
+  non-ASCII text on SQLite.
+- **`verifyApiKey` owners.** It refuses organization-owned keys and keys
+  of deleted users with `UnsupportedApiKeyOwnerError`.
+
+**migrate**
+
+- **`finalize`.** It now needs `--config`. It records the finalize in
+  the app's database (Payload's `payload-kv`) and re-signs the
+  manifest. Rollback is refused afterwards, whatever the file says.
+  The manifest signature now covers `finalized`.
+- **`rollback`.**
+  - It only deletes rows in the import's own target collections. Pass
+    the same `--slugs` the import used.
+  - A delete that fails exits non-zero, names the rows and keeps the
+    manifest.
+  - `--allow-unsigned-manifest` no longer deletes rows. Add
+    `--allow-unsigned-deletes` after reviewing a pre-0.6.0 manifest's
+    created rows.
+  - To roll back with a 0.6.0 manifest, pass `--allow-unsigned-manifest`.
+- **`export`.** It takes `--source-map`. It exits 1 when a mapped table
+  is missing (map a model to `null` if it isn't installed), and now
+  includes child, plugin, `ba_*` and `oauth_*` tables. Progress goes to
+  stderr.
+- **Other fixes.**
+  - `verify` checks the configured roles field.
+  - A second `--apply` is a true no-op.
+  - The doctor finds `genericOAuth` under nested import paths.
+  - A new doctor blocker flags adopt mode with Payload's local strategy
+    on. In adopt mode, set `auth: { disableLocalStrategy: true }` on the
+    users collection.
+
 ## plugin 0.12.0 / migrate 0.6.0 (one minor across every package)
 
 **Upgrade impact:** no schema change; nothing to run on any adapter.
@@ -131,27 +220,44 @@ The changes are behavioural; read each before you bump.
    field access lets any signed-in user write it), so a verified
    document re-pointed at someone else's address used to inherit
    their provider identity. **Operator step:** if you relied on
-   `_verified` alone for pre-existing host accounts, grant the proof
-   to the ones you trust. Audit first: before this release a
-   self-service email change kept `_verified`, so only grant it where
-   the address was verified AFTER its last change.
+   `_verified` alone for pre-existing host accounts, do NOT backfill
+   the proof from `_verified`. Before this release a self-service
+   email change kept `_verified`, and the proof reset only applies to
+   email changes made after the upgrade, so a document verified
+   before the upgrade may carry `_verified: true` for an address it
+   never proved — granting it the proof would link that address's
+   owner's next sign-in to a document they may not own. Grant `linkable` +
+   `linkableEmail` only from one of:
+
+   - **a fresh verification of the CURRENT email**, sent to that
+     address after the upgrade (your app's own confirmation flow, or
+     a reset of `_verified` followed by a new verification mail),
+     granted in that flow's handler and only while the document
+     email still equals the confirmed address; or
+   - **an operator-reviewed, explicit list** of documents and the
+     address each was confirmed to own, re-checked at write time:
 
    ```ts
-   const { docs } = await payload.find({
-     collection: 'users',
-     where: { and: [{ _verified: { equals: true } }, { linkable: { not_equals: true } }] },
-     pagination: false,
-     overrideAccess: true,
-   })
-   for (const doc of docs /* filtered by your audit */) {
+   // Each entry was reviewed by an operator: the document AND the
+   // address confirmed to belong to its owner today. Never build this
+   // list from `_verified`.
+   const reviewed: { id: string | number; email: string }[] = [/* … */]
+   for (const entry of reviewed) {
+     const doc = await payload.findByID({ collection: 'users', id: entry.id, overrideAccess: true })
+     if (doc.email.toLowerCase() !== entry.email.toLowerCase()) {
+       continue // the email changed since the review: re-review it
+     }
      await payload.update({
        collection: 'users',
-       id: doc.id,
+       id: entry.id,
        data: { linkable: true, linkableEmail: doc.email },
        overrideAccess: true,
      })
    }
    ```
+
+   Anything else stays unproven: its address owner's sign-in is
+   refused (logged) until the collision is resolved.
 
    The migration importer (`@payload-auth-link/migrate`) already
    grants `linkable` + `linkableEmail` from verified emails and is
@@ -159,7 +265,10 @@ The changes are behavioural; read each before you bump.
    the existing document now logs
    `provisioning refused: the email is held by an existing document
 that is not proven to own it` and answers a typed 401 (it used to
-   surface as a storage error).
+   surface as a storage error). Resolve such a collision by
+   confirming who owns the existing document — rename or remove it
+   when it is not the address owner's — never by granting the proof
+   without a fresh verification of its current address.
 
 2. **A self-service email change resets the proof.** Changing a
    document's email in any write that is neither the plugin's
@@ -514,11 +623,14 @@ published advisory for the attack they close):
   provider identity is attached by email only to documents carrying
   the plugin's `linkable` marker (set automatically on
   plugin-managed and role-manager creates; role managers can toggle
-  it) or Payload's own verified flag. Documents created outside the
-  plugin start unproven: their returning users are refused (401, with
-  a logged reason) until a role manager marks them linkable or the
-  document is deleted. **Runbook note:** the payload-auth migration
-  script marks imported users `linkable: true`.
+  it) or, in that release, Payload's own verified flag (no longer
+  proof since plugin 0.11.0). Documents created outside the plugin
+  start unproven: their returning users are refused (401, with a
+  logged reason) until the collision is resolved — the document
+  renamed or removed, or the proof granted after a fresh
+  verification of its current address (see "`_verified` is not
+  linking proof" above). **Runbook note:** the payload-auth
+  migration script marks imported users `linkable: true`.
 - **Collection-level `create` defaults to role-manager-only** and
   **`read` to self + role managers** (no user enumeration) — both
   only where the host hasn't declared that access function itself.

@@ -107,6 +107,8 @@ function payloadEval(row: Row, where: Where): boolean {
           return (value as number[]).includes(actual)
         case 'not_in':
           return !(value as number[]).includes(actual)
+        case 'exists':
+          return (actual !== null && actual !== undefined) === value
         default:
           throw new Error(`evaluator: unexpected Payload operator ${op}`)
       }
@@ -171,7 +173,9 @@ describe('translateWhereClause (property)', () => {
           node = left
           depth += 1
         }
-        expect(depth).toBe(clauses.length - 1)
+        // A leading `not_in` is itself an `or` pair (`NOT IN` OR null,
+        // #110), one level below the fold.
+        expect(depth).toBe(clauses.length - 1 + (clauses[0]?.operator === 'not_in' ? 1 : 0))
       }),
       runs
     )

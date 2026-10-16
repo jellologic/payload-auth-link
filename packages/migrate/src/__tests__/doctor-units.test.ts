@@ -117,6 +117,54 @@ describe('doctor units', () => {
     expect(off.finding?.notes.join(' ')).toContain('better-auth')
   })
 
+  test('users analysis: adopt mode with the local strategy ON is flagged; the note names no source plugin (#110)', () => {
+    const collection = { slug: 'users', auth: true, fields: [{ name: 'email', type: 'email' }] }
+    const adopt = analyzeUsersCollection(collection, 'roles', { adoptTarget: true })
+    const issue = adopt.issues.find((entry) => entry.code === 'adopt-local-strategy-on')
+    expect(issue?.detail).toContain('disableLocalStrategy: true')
+    expect(issue?.detail).toContain('every NEW user fails')
+    // The note no longer claims payload-auth always leaves it on.
+    expect(adopt.finding?.notes.join(' ')).not.toContain('payload-auth leaves it active')
+    // Not an adopt target (the importer's ba-* layout): no flag.
+    expect(
+      analyzeUsersCollection(collection, 'roles').issues.map((entry) => entry.code)
+    ).not.toContain('adopt-local-strategy-on')
+    // Local strategy off: nothing to flag in adopt mode either.
+    expect(
+      analyzeUsersCollection({ ...collection, auth: { disableLocalStrategy: true } }, 'roles', {
+        adoptTarget: true,
+      }).issues.map((entry) => entry.code)
+    ).not.toContain('adopt-local-strategy-on')
+  })
+
+  test('genericOAuth imported from a nested subpath is detected (#110)', async () => {
+    const { pluginsFromConfigSource } = await import('../doctor/plugins.js')
+    expect(
+      pluginsFromConfigSource(
+        "import { genericOAuth } from 'better-auth/plugins/generic-oauth'\ngenericOAuth({ config: [] })"
+      )
+    ).toEqual(['generic-oauth'])
+    const dir = mkdtempSync(join(tmpdir(), 'doctor-generic-oauth-'))
+    try {
+      writeFileSync(
+        join(dir, 'auth.ts'),
+        [
+          "import { genericOAuth } from 'better-auth/plugins/generic-oauth'",
+          'export const plugins = [genericOAuth({ config: [] })]',
+        ].join('\n')
+      )
+      expect(pluginsFromSourceTree(dir)).toEqual([{ id: 'generic-oauth', file: 'auth.ts' }])
+      const report = await runDoctor({
+        configPath: new URL('../__fixtures__/doctor-fixture/payload.config.ts', import.meta.url)
+          .pathname,
+        srcDir: dir,
+      })
+      expect(report.warnings.map((entry) => entry.code)).toContain('generic-oauth-providers')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   test('source scan classifies each call-site kind', () => {
     const dir = mkdtempSync(join(tmpdir(), 'doctor-scan-'))
     try {

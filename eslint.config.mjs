@@ -48,6 +48,7 @@ export default tseslint.config(
           allowDefaultProject: [
             'vitest.config.ts',
             'vitest.migration.config.ts',
+            'vitest.shared.ts',
             'packages/web/src/__fixtures__/*.ts',
           ],
         },

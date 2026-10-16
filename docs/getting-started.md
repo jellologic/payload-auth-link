@@ -128,8 +128,11 @@ self + role managers (no user enumeration) — declare your own
 `access` to change either. JIT linking attaches a verified provider
 identity by email only to documents PROVEN to own that email (the
 plugin's `linkable` marker, set automatically on plugin-managed and
-manager creates); anything else is refused until a role manager marks
-it. See [concepts](concepts.md#one-role-system-payload-roles).
+manager creates); anything else is refused until the collision is
+resolved — the conflicting document renamed or removed, or the proof
+granted only after a fresh verification of its current address
+(Payload's `_verified` alone is never proof). See
+[concepts](concepts.md#one-role-system-payload-roles).
 
 **Who edits roles.** The injected fields fail closed by default:
 `roles`, `phone`, `suspendedUntil` and `suspendReason` are writable
@@ -148,9 +151,10 @@ in the future) refuses every session for that account — the provider
 session, a local password sign-in, and any local JWT or API key the
 account already holds (the next request is refused, on every
 collection). Documents with linked provider identities are
-**provider-owned**: local sign-in and the forgot/reset-password flow
-are refused for them (`allowLocalCredentialsForLinkedDocs: true`
-re-enables both during a migration window), while operator accounts
+**provider-owned**: local sign-in, the forgot/reset-password flow and
+Payload API keys are refused for them, and linking clears a key
+enabled before it (`allowLocalCredentialsForLinkedDocs: true`
+re-enables them during a migration window), while operator accounts
 without linked identities keep local credentials and password
 recovery. Roles listed in `policies.requireMfaForRoles` are withheld
 from local-strategy sessions, which have no MFA proof. The full

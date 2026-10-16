@@ -57,12 +57,20 @@ export type PayloadDatabaseAdapterDeps = {
  *   paged reads; numbers, dates, and same-case strings agree.
  * - **`null` ordering** follows the database (SQLite/MongoDB: first in
  *   ascending order, like the memory adapter; Postgres: last).
+ * - **String range operators** (`lt`/`lte`/`gt`/`gte` on text) compare
+ *   in the same database collation as sorting; the memory adapter
+ *   compares JS strings. Same-case ASCII strings agree everywhere.
  * - **Unordered reads** (no `sortBy`) return rows in Payload's default
  *   order, not insertion order; callers must not rely on either.
  * - **Pattern operators** (`contains`, `starts_with`, `ends_with`),
  *   case-insensitive `ne`/`in`/`not_in`, and a case-insensitive `eq`
  *   combined with an `OR` connector throw `UnsupportedOperatorError`
  *   rather than risk a silently wrong translation.
+ *
+ * Agreeing by construction (pinned by the same suite, #110): `ne` and
+ * `not_in` keep `NULL` rows (the `not_in` translation adds an
+ * `IS NULL` branch), and case-insensitive `eq` decides in JS, so it is
+ * Unicode-aware on SQLite, whose `LIKE` folds ASCII only.
  */
 export declare function createPayloadDatabaseAdapter(deps: PayloadDatabaseAdapterDeps): AdapterFactory<BetterAuthOptions>;
 
@@ -201,6 +209,8 @@ export type BetterAuthCookieOptions = Pick<BetterAuthOptions, 'advanced' | 'base
  * - the admin plugin's `admin_session` (the impersonating operator's
  *   resumable session token);
  * - `dont_remember` (sign-in without "remember me");
+ * - `account_data` (the account cookie cache, when
+ *   `account.storeAccountCookie` is on);
  * - the cookie-cache `session_data`, even when the cache is disabled
  *   now — it may have been enabled when the cookie was set;
  * - the `__Secure-` / plain counterpart of every session and logout
@@ -209,7 +219,9 @@ export type BetterAuthCookieOptions = Pick<BetterAuthOptions, 'advanced' | 'base
  *   name.
  *
  * Expired unconditionally — a cookie that was never set makes its
- * clearing write a no-op.
+ * clearing write a no-op. Chunks of these cookies (`<name>.0` …) are
+ * per-request and enumerated from the presented Cookie header by the
+ * port's `presentedLogoutCookieNames`.
  */
 export declare function getBetterAuthLogoutCookieNames(options: BetterAuthCookieOptions, environment?: SecureCookieEnvironment): readonly string[];
 /**
@@ -233,6 +245,23 @@ export declare function getBetterAuthSessionCookieNames(options: BetterAuthCooki
  * surviving cookie is dead — the plugin fails closed on it.
  */
 export declare function getBetterAuthSessionCookieClearOptions(options: BetterAuthCookieOptions, environment?: SecureCookieEnvironment): (name: string) => CookieOptions | undefined;
+/**
+ * The base name of a Better Auth cookie chunk, or `undefined` when the
+ * name is not a chunk name. BA's chunking session/account stores split
+ * an oversized cookie (cookie-cache `session_data`, `account_data`)
+ * into `<name>.0` … `<name>.<n>`; the index must be a non-negative
+ * safe integer in canonical decimal form, mirroring BA's own
+ * `parseCookieChunkIndex`.
+ */
+export declare function betterAuthCookieChunkBase(name: string): string | undefined;
+/**
+ * The presented chunks (`<base>.<n>`) of the given cookie names on one
+ * request's Cookie header names. Chunk names exist only per request —
+ * their count follows the payload size — so no static logout list can
+ * hold them; the port enumerates them from the request at logout.
+ * Names only: values are never read.
+ */
+export declare function presentedBetterAuthCookieChunks(presentedNames: Iterable<string>, bases: readonly string[]): readonly string[];
 
 // ===== derive-schema.d.ts =====
 /**
@@ -662,7 +691,7 @@ export declare function createBetterAuthEngine<TOptions extends Omit<BetterAuthO
 export {};
 
 // ===== errors.d.ts =====
-import { AuthLinkError } from '@payload-auth-link/core';
+import { AuthLinkError, ProviderError } from '@payload-auth-link/core';
 /** A Better Auth adapter operation against Payload failed. Wraps the cause. */
 export declare class AdapterOperationError extends AuthLinkError {
     readonly operation: string;
@@ -681,6 +710,21 @@ export declare class UnsupportedOperatorError extends AuthLinkError {
 /** A Better Auth schema customization the Payload mapping cannot honor. */
 export declare class UnsupportedSchemaError extends AuthLinkError {
     constructor(detail: string);
+}
+/**
+ * A valid API key whose owner (`referenceId`) is not a Better Auth
+ * user — in practice an organization-owned key
+ * (`apiKey({ references: 'organization' })`), whose `referenceId` is an
+ * organization id. `verifyApiKey` resolves a USER; returning an
+ * organization id as `userId` would confuse principals, so such keys
+ * are refused (fail closed) until organization-owned keys are
+ * supported. A `ProviderError`, so every existing failure path treats
+ * it as a refusal.
+ */
+export declare class UnsupportedApiKeyOwnerError extends ProviderError {
+    /** The key's owner reference (an organization id, or a deleted user's id). */
+    readonly referenceId: string;
+    constructor(referenceId: string);
 }
 
 // ===== events.d.ts =====
@@ -719,7 +763,7 @@ export { assertBetterAuthVersion, createBetterAuthEngine, supportedBetterAuthBan
 export { createIdentityEventBus } from './events.js';
 export type { IdentityEventBus } from './events.js';
 export type { BetterAuthEngine, BetterAuthEngineInput } from './engine.js';
-export { AdapterOperationError, UnknownModelError, UnsupportedOperatorError, UnsupportedSchemaError, } from './errors.js';
+export { AdapterOperationError, UnknownModelError, UnsupportedApiKeyOwnerError, UnsupportedOperatorError, UnsupportedSchemaError, } from './errors.js';
 export { betterAuthCapabilities, betterAuthPluginCapabilities, createBetterAuthProvider, isPlaceholderEmail, } from './port.js';
 export type { BetterAuthProviderDeps, BetterAuthServerApi, BetterAuthSessionQuery } from './port.js';
 export { baFieldToPayload, translateWhereClause } from './where.js';
@@ -798,6 +842,13 @@ export type BetterAuthServerApi = {
              * `listProviderSessions` (#54).
              */
             readonly listSessions?: ((userId: string) => Promise<unknown>) | undefined;
+            /**
+             * BA core user lookup; present on every real instance. Gates
+             * `verifyApiKey`: a key whose owner is not a user (an
+             * organization-owned key) is refused (#110). Absent → every key
+             * is refused (fail closed).
+             */
+            readonly findUserById?: ((userId: string) => Promise<unknown>) | undefined;
         };
     }>;
     /**
@@ -922,10 +973,19 @@ export declare const MFA_METHODS: readonly AuthMethod[];
  * 2. **Recording** — `hooks.after` on the endpoints whose success
  *    creates (or finally proves) a session: password sign-in records
  *    `password`, the two-factor verifications upgrade their session to
- *    `two-factor`, OAuth callbacks record `oauth`, and so on. A
- *    single-factor session is never relabelled — the second factor's
- *    own endpoint is the only path that writes `two-factor`, and
- *    server-side mints write `server-mint`/`server-step-up` (port.ts).
+ *    `two-factor`, OAuth callbacks record `oauth`, and so on. The
+ *    second factor's own endpoint is the only path that writes
+ *    `two-factor`, and server-side mints write
+ *    `server-mint`/`server-step-up` (port.ts).
+ *
+ *    **Step-up (#110):** a CORRECT second factor verified on an
+ *    EXISTING session (password, aged, or server-minted) relabels that
+ *    session `two-factor` — deterministically, whether or not BA
+ *    re-sets the cookie. Only the session the verification itself
+ *    authenticated is relabelled: the signature-verified request
+ *    cookie must name the session BA resolved for the request
+ *    (`ctx.context.session`). A failed verification (wrong code,
+ *    non-200, APIError, empty result) relabels nothing.
  *
  * The server session API reads this per-session fact for its
  * assurance projection; enrollment flags are never consulted. Paths
