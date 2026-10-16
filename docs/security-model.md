@@ -74,3 +74,39 @@ a new credential path cannot ship without a row there and here.
   | 19 | `authLinkServer.listSessions / revokeSession / revokeAllForUser` (issue #54) | capability-gated port methods (`server-session-list`, `revoke-user-sessions`); ids are provider-verified handles, never cookie-derived | n/a | n/a | n/a | n/a | n/a | n/a |
   | 20 | `authLinkServer.verifyApiKey` (issue #54) | capability-gated (`api-key-verify`); keys verify against the provider's own store — the API-key REST path (row 10) remains the only way a key authenticates a request | n/a | n/a | n/a | n/a | n/a | n/a |
   | 21 | Legacy payload-auth session cookies (`legacySessions` window, issue #51) | READ-ONLY translation inside the dated window: legacy names re-presented under current names (`.sig` suffix preserved) for the lookup only; minting always uses current names; after `until` the names are dropped (session miss) | n/a | n/a | n/a | n/a | n/a | n/a |
+
+## Single-host deployments: `__Host-` session cookies
+
+Better Auth's default cookie names carry at most the `__Secure-`
+prefix, never `__Host-`. A `__Secure-` cookie may still be set by a
+sibling subdomain with `Domain=.example.com` ("cookie tossing"), so a
+compromised or user-content subdomain can plant its own session
+cookie in the browser — a login-fixation vector. When the app is
+served from exactly one host (no `crossSubDomainCookies`), opt in to
+`__Host-` names, which browsers only accept with `Secure`, `Path=/`,
+and no `Domain` — a sibling cannot set them:
+
+```ts
+// The SAME options go to the engine and to every cookie-name helper
+// (middleware, `getBetterAuthSessionCookieNames`), so names agree.
+const cookieOptions = {
+  advanced: {
+    // The prefix becomes part of every name: `__Host-ba.session_token`.
+    cookiePrefix: '__Host-ba',
+    // Turns off ONLY Better Auth's automatic `__Secure-` name prefix
+    // (it would produce `__Secure-__Host-…`); the attributes below
+    // keep every cookie Secure.
+    useSecureCookies: false,
+    defaultCookieAttributes: { secure: true, path: '/' },
+    // Never set `domain` or `crossSubDomainCookies` with `__Host-`.
+  },
+}
+createBetterAuthEngine({ options: { ...cookieOptions /* , … */ } /* , … */ })
+getBetterAuthSessionCookieNames(cookieOptions) // ['__Host-ba.session_token']
+```
+
+Logout clears these names with `Secure; Path=/` and no `Domain`, as
+browsers require. Changing the prefix renames the cookies: existing
+sessions read as signed out once, so roll it out like any
+session-cookie change. Browsers accept `Secure` cookies on
+`http://localhost`, so local development keeps working.

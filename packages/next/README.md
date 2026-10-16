@@ -26,12 +26,30 @@ ESM-only, Node 20.9 or later.
 ```ts
 // middleware.ts
 import { createAuthMiddleware } from '@payload-auth-link/next'
+// Edge-safe subpath: resolves the names Better Auth actually sets,
+// including the `__Secure-` prefix on https (a hard-coded
+// 'better-auth.session_token' never matches there).
+import { getBetterAuthSessionCookieNames } from '@payload-auth-link/provider-better-auth/cookies'
 
 export default createAuthMiddleware({
-  sessionCookieNames: ['better-auth.session_token'],
-  publicPaths: ['/', /^\/api\//],
+  sessionCookieNames: getBetterAuthSessionCookieNames({
+    baseURL: process.env.BETTER_AUTH_URL ?? 'http://localhost:3000',
+  }),
+  publicPaths: ['/', '/sign-in'],
 })
+
+export const config = {
+  // Keep the bounce off assets, API routes, and the admin panel.
+  // Segment-anchored: bare `api`/`admin` prefixes would also exempt
+  // frontend routes like `/admin-only`.
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|api(?:/|$)|admin(?:/|$)).*)'],
+}
 ```
+
+Pass the same Better Auth options your engine uses (`baseURL`,
+`advanced.cookiePrefix`, `advanced.useSecureCookies`, …) so the names
+match. See [Getting started](https://github.com/jellologic/payload-auth-link/blob/main/docs/getting-started.md)
+for the dual-provider (Auth.js) form.
 
 ## Docs
 

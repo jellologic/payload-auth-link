@@ -339,3 +339,31 @@ describe('getBetterAuthLogoutCookieNames (CAP-8a)', () => {
     }
   })
 })
+
+describe('__Host- session cookies (docs/security-model.md)', () => {
+  const options: BetterAuthOptions = {
+    baseURL: 'https://app.example.com',
+    advanced: {
+      cookiePrefix: '__Host-ba',
+      useSecureCookies: false,
+      defaultCookieAttributes: { secure: true, path: '/' },
+    },
+  }
+
+  it("yields __Host- names that match BA's getter and carry Secure, Path=/, no Domain", () => {
+    const getter = createCookieGetter(options)
+    const token = getter('session_token')
+    expect(token.name).toBe('__Host-ba.session_token')
+    expect(token.attributes).toMatchObject({ secure: true, path: '/' })
+    expect(token.attributes.domain).toBeUndefined()
+    expect(getBetterAuthSessionCookieNames(options, { nodeEnv: 'production' })).toEqual([
+      '__Host-ba.session_token',
+    ])
+    const logout = getBetterAuthLogoutCookieNames(options, { nodeEnv: 'production' })
+    expect(logout).toContain('__Host-ba.dont_remember')
+    // No `__Secure-__Host-…` nonsense variants.
+    expect(logout.some((name) => name.startsWith(`${secureCookiePrefix}__Host-`))).toBe(false)
+    const clear = getBetterAuthSessionCookieClearOptions(options, { nodeEnv: 'production' })
+    expect(clear('__Host-ba.session_token')).toEqual({ secure: true, path: '/' })
+  })
+})
