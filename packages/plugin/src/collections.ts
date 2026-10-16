@@ -347,6 +347,14 @@ function accountControlsLoginHook(
  * for `resetPassword` — Payload matches the stored token directly)
  * and refuses documents holding linked identities. Hosts who want the
  * previous behaviour set `allowLocalCredentialsForLinkedDocs`.
+ *
+ * `resetPassword` additionally refuses SUSPENDED documents (401)
+ * here, whatever the opt-out: Payload's reset writes the new password
+ * and clears the sessions BEFORE it runs `beforeLogin`, and where that
+ * write is not rolled back (adapters without transactions) the
+ * `beforeLogin` refusal came too late — the "refused" reset had
+ * rotated the credential (issue #86). The lookup runs inside the
+ * operation's transaction (`req`).
  */
 function passwordIssueGuardHook(wired: WiredOptions): CollectionBeforeOperationHook {
   const usersCollection = wired.config.map.usersCollection
@@ -354,7 +362,8 @@ function passwordIssueGuardHook(wired: WiredOptions): CollectionBeforeOperationH
     if (operation !== 'forgotPassword' && operation !== 'resetPassword') {
       return args
     }
-    if (wired.allowLocalCredentialsForLinkedDocs) {
+    const optedOut = wired.allowLocalCredentialsForLinkedDocs
+    if (optedOut && operation === 'forgotPassword') {
       return args
     }
     const data: unknown = isRecord(args) ? args.data : undefined
@@ -377,11 +386,18 @@ function passwordIssueGuardHook(wired: WiredOptions): CollectionBeforeOperationH
       depth: 0,
       pagination: false,
       overrideAccess: true,
+      req,
     })
     const doc: unknown = (found as { docs?: unknown[] }).docs?.[0]
     if (!isRecord(doc)) {
       // Unknown target: an existing document is not being attacked —
       // Payload's own response (enumeration-neutral) stands.
+      return args
+    }
+    if (operation === 'resetPassword' && suspensionActive(doc, wired)) {
+      throw new APIError('Account suspended', 401)
+    }
+    if (optedOut) {
       return args
     }
     const identities: unknown = doc[wired.config.map.identitiesField]

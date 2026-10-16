@@ -162,9 +162,10 @@ async function runBeforeLogin(users: CollectionConfig): Promise<number | undefin
 
 async function runPasswordFlow(
   users: CollectionConfig,
-  operation: 'forgotPassword' | 'resetPassword'
+  operation: 'forgotPassword' | 'resetPassword',
+  target: Record<string, unknown> = linkedDoc
 ): Promise<{ status: number | undefined; find: ReturnType<typeof vi.fn> }> {
-  const find = vi.fn(() => Promise.resolve({ docs: [linkedDoc] }))
+  const find = vi.fn(() => Promise.resolve({ docs: [target] }))
   const req = { payload: { find }, context: {} } as unknown as PayloadRequest
   const data =
     operation === 'forgotPassword' ? { email: 'linked@test.dev' } : { token: 'reset-token' }
@@ -201,7 +202,29 @@ describe('allowLocalCredentialsForLinkedDocs (provider-owned credentials)', () =
     expect(forgot.find).not.toHaveBeenCalled()
     const reset = await runPasswordFlow(users, 'resetPassword')
     expect(reset.status).toBeUndefined()
-    expect(reset.find).not.toHaveBeenCalled()
+    // The reset still resolves its target: suspension is checked
+    // before Payload writes the new password (issue #86).
+    expect(reset.find).toHaveBeenCalledTimes(1)
+  })
+
+  it('resetPassword refuses a suspended document BEFORE the write, opt-out or not (401)', async () => {
+    const suspendedPlain = {
+      id: 'plain-1',
+      email: 'plain@test.dev',
+      identities: [],
+      suspendedUntil: new Date(Date.now() + 60_000).toISOString(),
+    }
+    for (const users of [
+      usersCollection(),
+      usersCollection({ allowLocalCredentialsForLinkedDocs: true }),
+    ]) {
+      const reset = await runPasswordFlow(users, 'resetPassword', suspendedPlain)
+      expect(reset.status).toBe(401)
+      // forgot-password stays available to a suspended unlinked doc:
+      // the token goes to the owner's inbox and the reset is gated.
+      const forgot = await runPasswordFlow(users, 'forgotPassword', suspendedPlain)
+      expect(forgot.status).toBeUndefined()
+    }
   })
 
   it('opt-out still refuses a suspended linked doc (401)', async () => {
