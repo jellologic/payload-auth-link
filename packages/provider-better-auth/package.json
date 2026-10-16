@@ -1,6 +1,6 @@
 {
   "name": "@payload-auth-link/provider-better-auth",
-  "version": "0.7.3",
+  "version": "0.8.0",
   "description": "payload-auth-link Better Auth provider adapter.",
   "license": "MIT",
   "repository": {
