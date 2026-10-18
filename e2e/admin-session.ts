@@ -55,6 +55,15 @@ const warmUpPaths = ['/', '/sign-in', '/sign-in-authjs', '/admin/login']
  * hits. A page that still raised an error is loaded once more, so an
  * optimizer reload settles here instead of inside a spec. Harmless for
  * Next (it compiles the same routes on first hit).
+ *
+ * Chromium is enough for every engine: what this warms (the optimizer
+ * pass, the RSC environment, Vite's transform cache) lives in the
+ * server, and each spec's browser context starts with an empty HTTP
+ * cache whatever engine warmed it. The `[Unhandled error] TypeError:
+ * Importing a module script failed` lines that WebKit runs still
+ * logged against a WARM server were not cold-start races: they came
+ * from specs navigating away from a page whose module graph was still
+ * loading (see `waitForQuiet` in helpers.ts, which `gotoSettled` runs).
  */
 async function warmUp(baseURL: string): Promise<void> {
   const browser = await chromium.launch()

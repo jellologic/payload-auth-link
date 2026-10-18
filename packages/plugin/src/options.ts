@@ -258,7 +258,10 @@ export type AuthLinkPluginOptions = {
    * reporting the linked user's CURRENT email as verified (a
    * post-import verification) sets this field `true`; the field must
    * exist on the users collection (wiring throws otherwise). The
-   * plugin never sets it `false` — un-verifying is the host's call.
+   * plugin sets it `false` only together with the linking proof's
+   * reset on an unproven email change (a self-service write that is
+   * neither the provider resync nor a role manager's), as it does
+   * Payload's `_verified`; any other un-verifying is the host's call.
    */
   readonly emailVerifiedField?: string | undefined
 }

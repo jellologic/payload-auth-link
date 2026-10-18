@@ -129,7 +129,9 @@ export type DoctorOptions = {
     readonly databaseUrl?: string | undefined;
     /**
      * The `--source-map` JSON (issue #68): model → source table name, or
-     * `null` for "model not installed". Shapes the database section.
+     * `null` for "model not installed". Shapes the database section, on
+     * top of the layout derived from the loaded payload-auth config
+     * (issue #113) — explicit entries win.
      */
     readonly sourceMapJson?: string | undefined;
     /** Config loader, injectable for tests. Defaults to dynamic import. */
@@ -164,6 +166,19 @@ export declare function usersSlugOf(pluginOptions: Record<string, unknown>): str
 export declare function collectionSlugs(config: unknown): string[];
 export declare function runDoctor(options: DoctorOptions): Promise<DoctorReport>;
 
+// ===== doctor/source-layout.d.ts =====
+import type { SourceTableMap } from '../importer/types.js';
+/** Payload's default table name for a slug (the `to-snake-case` rules it uses). */
+export declare function snakeCaseTableName(slug: string): string;
+/**
+ * The model → table map a payload-auth config implies, or `null` when
+ * the config carries no payload-auth user collection. Models whose
+ * plugin is not installed (no collection) map to `null` — "not
+ * installed", exactly what `--source-map` would say. The roles child
+ * table is derived only for payload-auth's hasMany `role` select.
+ */
+export declare function sourceMapFromConfig(config: unknown): SourceTableMap | null;
+
 // ===== doctor/source-scan.d.ts =====
 import type { SourceFinding } from './types.js';
 /**
@@ -181,6 +196,7 @@ export declare function listSourceFiles(dir: string): readonly string[];
 export declare function scanSource(srcDir: string): SourceFinding[];
 
 // ===== doctor/types.d.ts =====
+import type { SourceTableMap } from '../importer/types.js';
 /**
  * The doctor's report shape (issue #52): read-only findings, every
  * one carrying a stable machine code so tests (and the guide) assert
@@ -286,6 +302,13 @@ export type DoctorReport = {
     readonly users: UsersFinding | null;
     readonly source: readonly SourceFinding[];
     readonly database: DatabaseFinding | null;
+    /**
+     * The source layout derived from the loaded payload-auth config
+     * (issue #113): model → table, `null` for a model whose plugin is
+     * not installed. Pass it to the importer, `verify`, and `export` as
+     * `--source-map`. Absent when the config is not a payload-auth one.
+     */
+    readonly sourceMap?: SourceTableMap;
     readonly behaviourChanges: readonly BehaviourChange[];
     readonly blockers: readonly DoctorIssue[];
     readonly warnings: readonly DoctorIssue[];
@@ -428,9 +451,10 @@ import { type ImportManifest, type ImportResult, type PlanRow, type Unmappable }
  *   `ba-users` collection declares the field. A banned or anonymous
  *   source user whose state the target cannot hold is UNMAPPABLE — the
  *   run aborts before writing; a banned user never imports unbanned.
- * - `linkable` + `linkableEmail` are granted from VERIFIED emails only
- *   (grant-only: an existing proof is never revoked); unverified users
- *   are reported by the plan, never linked.
+ * - `linkable` + `linkableEmail` are granted only with
+ *   `grantLinkableFromVerified`, and then from VERIFIED emails only
+ *   (grant-only: an existing proof is never revoked). Every imported
+ *   user resolves through their pre-linked identity without it.
  * - Sessions default to `carry` so nobody is logged out: the carried
  *   rows keep their tokens, and with the same `advanced.cookiePrefix`
  *   the existing cookies keep working.
@@ -461,8 +485,26 @@ export type ApplyOptions = {
     /** Injectable clock for deterministic `linkedAt` stamps. */
     readonly now?: () => Date;
     readonly log?: (message: string) => void;
-    /** Resume from a pre-0.6.0 manifest that has no MAC (`--allow-unsigned-manifest`). */
+    /**
+     * Accept an unsigned or 0.6.0 manifest (`--allow-unsigned-manifest`) —
+     * for the dry run only: such a manifest is never resumed by `--apply`
+     * (GHSA-crrr-3cg7-f6jw); roll it back or finalize it.
+     */
     readonly allowUnsignedManifest?: boolean | undefined;
+    /**
+     * Resume a fully signed manifest written by migrate 0.7.0 or earlier,
+     * which names no database (`--allow-unbound-manifest`): the operator
+     * vouches it was written against THIS database. The resume binds it.
+     */
+    readonly allowUnboundManifest?: boolean | undefined;
+    /**
+     * Grant the linking proof (`linkable` + `linkableEmail`) from the
+     * source `emailVerified` flag (`--grant-linkable-from-verified`).
+     * Off by default: that flag can be stale for an address changed
+     * after it was verified, and the proof lets ANOTHER provider's
+     * sign-in for the address link to the document (GHSA-v6mr).
+     */
+    readonly grantLinkableFromVerified?: boolean | undefined;
 };
 /**
  * Plugin user state the target must be able to hold (issue #88),
@@ -475,9 +517,91 @@ export declare function applyImport(options: ApplyOptions): Promise<ImportResult
 /** Collapse per-row plan entries into one line per model (dry-run print). */
 export declare function summarizePlanRows(rows: readonly PlanRow[]): PlanRow[];
 
+// ===== importer/binding.d.ts =====
+import type { Payload } from 'payload';
+import { type RunRecord } from './guards.js';
+import type { ImportManifest, ManifestKind, TargetSlugMap } from './types.js';
+/**
+ * Manifest ↔ database binding (GHSA-crrr-3cg7-f6jw).
+ *
+ * A manifest is a file; the database it drives is not. Every write the
+ * kit makes from a manifest therefore checks the DATABASE's own record
+ * first, kept in Payload's key-value store:
+ *
+ * - a database id, minted on the first `--apply` (or `adopt-prelink
+ *   --apply`), which every version-4 manifest names inside its
+ *   signature — a manifest from another environment (a rehearsal clone
+ *   sharing `PAYLOAD_SECRET`) names another id and is refused;
+ * - one record per run (a random nonce, also signed into the manifest):
+ *   open, rolled back, or finalized. Only an OPEN run is resumed or
+ *   rolled back, so a stale copy of a rolled-back run's manifest
+ *   changes nothing.
+ *
+ * Unsigned manifests (pre-0.6.0) and 0.6.0 manifests whose signature
+ * does not cover `finalized` are TERMINAL: they may be rolled back or
+ * finalized, never resumed — a resume would re-sign their (unverifiable)
+ * entries into a manifest every later command trusts.
+ */
+/** The database and run a manifest write belongs to. */
+export type RunBinding = {
+    readonly databaseId: string;
+    readonly runId: string;
+    readonly createdAt: string;
+};
+/** Count of version-1 plaintext prior values in the manifest. */
+export declare function plaintextWrites(manifest: Pick<ImportManifest, 'fieldWrites'>): number;
+/**
+ * Check a bound manifest against the database's record: same database,
+ * a run the database knows, of the manifest's kind. Returns the run's
+ * record. Fails closed when the store cannot be read.
+ */
+export declare function boundRun(payload: Payload, manifest: ImportManifest & {
+    readonly databaseId: string;
+    readonly runId: string;
+}, action: string): Promise<RunRecord>;
+/** Mint a new run on this database (creating its id on first use). */
+export declare function startRun(payload: Payload, kind: ManifestKind, createdAt: string, action: string): Promise<RunBinding>;
+/** What an `--apply` pass builds on. */
+export type OpenedRun = {
+    /** The earlier manifest whose entries this pass merges, or `null` (a fresh run). */
+    readonly carried: ImportManifest | null;
+    /** The run this pass writes (`null` on a dry run). */
+    readonly binding: RunBinding | null;
+};
+/**
+ * Decide what an `--apply` (import or `adopt-prelink`) builds on, and
+ * refuse — before anything is written — every manifest it must not
+ * resume:
+ *
+ * - another command's manifest, an edited one, a finalized one;
+ * - an unsigned or 0.6.0 manifest (terminal: roll it back or finalize);
+ * - one holding plaintext prior values (only a pre-0.6.0 manifest
+ *   writes them; a signed manifest carrying any was laundered by an
+ *   earlier resume);
+ * - created rows outside the kit's own targets;
+ * - a version-4 manifest from another database, or whose run this
+ *   database does not hold open. A run the database records as rolled
+ *   back starts FRESH: the manifest's entries are not carried;
+ * - a 0.7.0 (unbound) manifest without `allowUnboundManifest`, or on a
+ *   database that records a finalized migration.
+ *
+ * A dry run only authenticates the manifest.
+ */
+export declare function openRun(options: {
+    readonly payload: Payload;
+    readonly manifest: ImportManifest | null;
+    readonly kind: ManifestKind;
+    readonly apply: boolean;
+    readonly slugs: TargetSlugMap;
+    readonly now: () => Date;
+    readonly log: (message: string) => void;
+    readonly allowUnsignedManifest?: boolean | undefined;
+    readonly allowUnboundManifest?: boolean | undefined;
+}): Promise<OpenedRun>;
+
 // ===== importer/guards.d.ts =====
 import type { Payload } from 'payload';
-import { type CreatedRow, type ImportManifest, type TargetModel, type TargetSlugMap } from './types.js';
+import { type CreatedRow, type ImportManifest, type ManifestKind, type TargetModel, type TargetSlugMap } from './types.js';
 /**
  * The model and deterministic `baId` a created row's `sourceKey`
  * (`<model>:<source id>`) names, or `null` when it names none.
@@ -509,14 +633,45 @@ export declare function finalizeMarkerKey(manifest: Pick<ImportManifest, 'kind' 
 export declare function recordFinalizeMarker(payload: Payload, manifest: Pick<ImportManifest, 'kind' | 'createdAt'>, finalizedAt: string): Promise<void>;
 /**
  * Whether the database says this migration was finalized. `anyOfKind`
- * widens the check to every finalized manifest of the same kind — used
- * when the manifest's own `createdAt` is not covered by a signature.
- * Returns `'unavailable'` when the store cannot be read; the caller
- * decides (and logs) what that means.
+ * widens the check to every finalized manifest of the same kind.
+ * Returns `'unavailable'` when the store cannot be read. Destructive
+ * callers use {@link assertNoFinalizeMarker} instead, which checks
+ * EVERY kind and fails closed.
  */
 export declare function finalizeMarkerState(payload: Payload, manifest: Pick<ImportManifest, 'kind' | 'createdAt'>, options: {
     readonly anyOfKind: boolean;
 }): Promise<'finalized' | 'open' | 'unavailable'>;
+/**
+ * Refuse when the database records ANY finalized migration — import or
+ * adopt-prelink, whatever the manifest claims to be (GHSA-crrr-3cg7-f6jw:
+ * an unsigned manifest's `kind` is the editor's to choose). Fails
+ * closed: a store that cannot be read refuses too.
+ */
+export declare function assertNoFinalizeMarker(payload: Payload, action: string): Promise<void>;
+/** What the database records about one run (GHSA-crrr-3cg7-f6jw). */
+export type RunState = 'open' | 'rolled-back' | 'finalized';
+/** The database's record of one run. */
+export type RunRecord = {
+    readonly kind: ManifestKind;
+    readonly createdAt: string;
+    readonly state: RunState;
+};
+/**
+ * This database's migration identity: a random id the kit stores in
+ * the database's own key-value store, so a manifest names the database
+ * it was written against. `create` mints one when none exists (the
+ * first `--apply`); otherwise a missing id is `null`. Fails closed.
+ */
+export declare function databaseIdentity(payload: Payload, options: {
+    readonly create: boolean;
+    readonly action: string;
+}): Promise<string | null>;
+/** A fresh, unguessable run nonce. */
+export declare function newRunId(): string;
+/** The database's record of one run, or `null` when it holds none. Fails closed. */
+export declare function readRun(payload: Payload, runId: string, action: string): Promise<RunRecord | null>;
+/** Record one run's state in the database. Throws when it cannot. */
+export declare function recordRun(payload: Payload, runId: string, record: RunRecord, action: string): Promise<void>;
 /**
  * The host roles field the app configured (`authLink({ rolesField })`),
  * read off the plugin entry in the booted config (Payload keeps each
@@ -547,8 +702,16 @@ export declare function unsealValue(secret: string, sealed: string, entry: strin
 export declare const restorableFields: ReadonlySet<string>;
 /** {@link restorableFields} plus the app's configured roles field. */
 export declare function restorableFieldsFor(rolesField: string): ReadonlySet<string>;
-/** The captured prior value of one manifest entry, JSON-parsed. */
-export declare function priorValue(secret: string, write: FieldWrite, restorable?: ReadonlySet<string>): unknown;
+/**
+ * The captured prior value of one manifest entry, JSON-parsed. A
+ * version-1 PLAINTEXT value is refused unless `allowPlaintext`
+ * (`--allow-plaintext-restore`, GHSA-crrr-3cg7-f6jw): nothing vouches
+ * for a value stored in the clear, even inside a manifest an older kit
+ * re-signed.
+ */
+export declare function priorValue(secret: string, write: FieldWrite, restorable?: ReadonlySet<string>, options?: {
+    readonly allowPlaintext?: boolean | undefined;
+}): unknown;
 /** Keys of the field writes a manifest already holds (first capture wins). */
 export declare function capturedKeys(writes: readonly FieldWrite[]): Set<string>;
 /**
@@ -575,6 +738,8 @@ export declare function captureBefore(options: {
  */
 export declare function restoreCaptured(payload: Payload, manifest: Pick<ImportManifest, 'fieldWrites'>, options?: {
     readonly rolesField?: string | undefined;
+    /** Restore version-1 plaintext values (`--allow-plaintext-restore`). */
+    readonly allowPlaintext?: boolean | undefined;
 }): Promise<number>;
 
 // ===== importer/lifecycle.d.ts =====
@@ -617,6 +782,14 @@ export type VerifyResult = {
     }[];
 };
 /**
+ * `verify` checks an IMPORT: source rows against the `ba-*` copies the
+ * importer keyed by `baId`. An adopt-mode app (issue #113) copies
+ * nothing — its Better Auth models ARE the payload-auth tables — so
+ * there is nothing for it to compare. Say so, instead of the misleading
+ * "declares none of the target collections" / "baId cannot be queried".
+ */
+export declare const verifyAdoptUnsupported = "verify checks an IMPORT (the ba-* copies keyed by baId), and this config serves Better Auth in ADOPT mode: nothing was copied, so there is nothing for verify to compare. Verify an adopt cutover with the checksum procedure in docs/migrating-from-payload-auth.md (\"Verifying an adopt cutover\"), and adopt-prelink with its dry run (it reports every user as already linked)";
+/**
  * Verify (issues #50, #68, #69): fail closed on the source layout
  * (the probe runs first), per-model counts match EXACTLY (zero never
  * skips; every mapped model is either counted or explicitly
@@ -657,16 +830,29 @@ export type RollbackOptions = {
     /**
      * Accept a manifest without a full signature (`--allow-unsigned-manifest`):
      * a pre-0.6.0 manifest without a MAC, or a 0.6.0 manifest whose MAC
-     * does not cover `finalized`.
+     * does not cover `finalized`. The operator vouches that nobody edited
+     * it and that it was written against THIS database.
      */
     readonly allowUnsignedManifest?: boolean | undefined;
     /**
      * Let a rollback driven by an UNSIGNED (pre-0.6.0) manifest delete the
-     * rows it lists and restore plaintext (version-1) values
-     * (`--allow-unsigned-deletes`). Without it, an unsigned manifest may
-     * only restore sealed field values.
+     * rows it lists (`--allow-unsigned-deletes`). Without it, an unsigned
+     * manifest may only restore sealed field values.
      */
     readonly allowUnsignedDeletes?: boolean | undefined;
+    /**
+     * Restore version-1 PLAINTEXT prior values (`--allow-plaintext-restore`,
+     * GHSA-crrr-3cg7-f6jw). Nothing vouches for a value stored in the
+     * clear — not even a signature an older kit added when it resumed the
+     * manifest — so the operator reviews them and opts in separately.
+     */
+    readonly allowPlaintextRestore?: boolean | undefined;
+    /**
+     * Accept a fully signed manifest written by migrate 0.7.0 or earlier,
+     * which names no database (`--allow-unbound-manifest`): the operator
+     * vouches it was written against THIS database.
+     */
+    readonly allowUnboundManifest?: boolean | undefined;
 };
 /**
  * Rollback (issue #50): delete the created rows in reverse order and
@@ -675,16 +861,22 @@ export type RollbackOptions = {
  * never modified.
  *
  * Before anything is written, rollback refuses: a finalized manifest,
- * or a migration the DATABASE records as finalized (the marker
- * `finalize` writes — a manifest file alone cannot reopen it); a
- * manifest that fails its signature; created rows outside the import's
- * own target collections (signed or not), or whose row no longer
- * carries the importer's deterministic `baId`; and any delete or
- * plaintext restore driven by an unsigned manifest without
- * `allowUnsignedDeletes`. A row already absent is fine (the goal is
+ * or a database that records ANY finalized migration (the marker
+ * `finalize` writes — whatever kind the manifest claims; GHSA-crrr);
+ * a key-value store it cannot read (fail closed); a manifest that
+ * fails its signature; a version-4 manifest naming another database,
+ * or a run this database does not hold open; a 0.7.0 manifest (no
+ * database binding) without `allowUnboundManifest`; created rows
+ * outside the import's own target collections (signed or not), or
+ * whose row no longer carries the importer's deterministic `baId`;
+ * any delete driven by an unsigned manifest without
+ * `allowUnsignedDeletes`; and any plaintext prior value without
+ * `allowPlaintextRestore`. A row already absent is fine (the goal is
  * "absent"); a delete that FAILS (a foreign key, a hook, a permission)
  * aborts the rollback with the rows named, before any field is
  * restored or the manifest reset — so it can be re-run once fixed.
+ * Success records the run as rolled back in the database, so no copy
+ * of this manifest drives a second rollback.
  */
 export declare function rollbackImport(options: RollbackOptions): Promise<{
     deleted: number;
@@ -694,7 +886,7 @@ export declare function rollbackImport(options: RollbackOptions): Promise<{
 export type FinalizeOptions = {
     readonly payload: Payload;
     readonly manifest: ImportManifest;
-    /** Where the finalized, re-signed manifest is written. */
+    /** Where the finalized manifest is written. */
     readonly path: string;
     readonly now?: (() => Date) | undefined;
     /** Accept a manifest without a full signature (`--allow-unsigned-manifest`). */
@@ -704,15 +896,32 @@ export type FinalizeOptions = {
  * Finalize (issue #50): the point of no return. Records a one-way
  * marker in the target database (Payload's key-value store) that every
  * later rollback checks independently of the file, then marks the
- * manifest `finalized` and re-signs it — the signature covers the flag.
- * Idempotent: finalizing a finalized manifest re-records the marker and
- * upgrades its signature.
+ * manifest `finalized`. A signed manifest is re-signed (the signature
+ * covers the flag); a version-4 manifest must name THIS database and a
+ * run it does not record as rolled back, and its run is recorded as
+ * finalized. An unsigned or 0.6.0 manifest is never re-signed
+ * (GHSA-crrr-3cg7-f6jw): its flag is set, and the database marker is
+ * what every later command trusts. Idempotent: finalizing a finalized
+ * manifest re-records the marker.
  */
 export declare function finalizeManifest(options: FinalizeOptions): Promise<ImportManifest>;
 
 // ===== importer/manifest-mac.d.ts =====
 import type { ImportManifest } from './types.js';
-/** Stamp `manifest` as version 3 and sign every field under the app's secret. */
+/** A version-4 manifest: signed AND bound to its database and run. */
+export type BoundManifest = ImportManifest & {
+    readonly version: 4;
+    readonly databaseId: string;
+    readonly runId: string;
+};
+/** Whether the manifest carries its (signed) database and run binding. */
+export declare function isBound(manifest: ImportManifest): manifest is BoundManifest;
+/**
+ * Sign every field under the app's secret. A manifest that names its
+ * database and run is stamped version 4 (GHSA-crrr-3cg7-f6jw); one
+ * without (only `finalize` of a 0.7.0 manifest writes that) stays
+ * version 3.
+ */
 export declare function signManifest(secret: string, manifest: ImportManifest): ImportManifest;
 /**
  * How far a manifest is vouched for:
@@ -757,9 +966,14 @@ import type { ImportManifest, Unmappable } from './types.js';
  *
  * - ONE `better-auth` identity per user, `providerUserId` = the
  *   document id (other providers' identity rows are kept);
- * - `linkable: true` + `linkableEmail: <email>` for users whose
+ * - with `grantLinkableFromVerified` (`--grant-linkable-from-verified`)
+ *   only: `linkable: true` + `linkableEmail: <email>` for users whose
  *   verified-email field (`emailVerified` on payload-auth layouts) is
- *   `true` — grant-only, never revoked.
+ *   `true` — grant-only, never revoked. Off by default: that flag is a
+ *   mirror that can be stale for an address changed after it was
+ *   verified, and the proof lets ANOTHER provider's sign-in for the
+ *   address link to the document (the GHSA-v6mr outcome). The
+ *   better-auth identity resolves every user without it.
  *
  * Dry run by default. `--apply` records every prior value in a manifest
  * (first capture wins, sealed, mode 0600) so `rollback --manifest`
@@ -778,8 +992,18 @@ export type PrelinkOptions = {
     readonly emailField?: string | undefined;
     readonly now?: () => Date;
     readonly log?: (message: string) => void;
-    /** Resume from a pre-0.6.0 manifest that has no MAC (`--allow-unsigned-manifest`). */
+    /**
+     * Accept an unsigned or 0.6.0 manifest (`--allow-unsigned-manifest`) —
+     * for the dry run only: such a manifest is never resumed by `--apply`.
+     */
     readonly allowUnsignedManifest?: boolean | undefined;
+    /** Resume a signed 0.7.0 manifest that names no database (`--allow-unbound-manifest`). */
+    readonly allowUnboundManifest?: boolean | undefined;
+    /**
+     * Grant the linking proof from the verified-email field
+     * (`--grant-linkable-from-verified`). Off by default — see above.
+     */
+    readonly grantLinkableFromVerified?: boolean | undefined;
 };
 export type PrelinkResult = {
     readonly users: number;
@@ -791,6 +1015,11 @@ export type PrelinkResult = {
     readonly proofGranted: number;
     /** Users without a verified email: identity only, no linking proof. */
     readonly unverified: number;
+    /**
+     * Verified documents NOT granted the proof because
+     * `grantLinkableFromVerified` is off (they still get the identity).
+     */
+    readonly proofWithheld: number;
     readonly unmappable: readonly Unmappable[];
     readonly fieldWrites: number;
 };
@@ -835,10 +1064,25 @@ export type ImportCommandOptions = {
     readonly allowUnsignedManifest?: boolean | undefined;
     /**
      * `rollback` only (`--allow-unsigned-deletes`): let an UNSIGNED
-     * manifest delete its created rows and restore plaintext values.
-     * Without it, `--allow-unsigned-manifest` never deletes anything.
+     * manifest delete its created rows. Without it,
+     * `--allow-unsigned-manifest` never deletes anything.
      */
     readonly allowUnsignedDeletes?: boolean | undefined;
+    /**
+     * `rollback` only (`--allow-plaintext-restore`): restore a pre-0.6.0
+     * manifest's PLAINTEXT prior values after reviewing them.
+     */
+    readonly allowPlaintextRestore?: boolean | undefined;
+    /**
+     * Accept a fully signed manifest written by migrate 0.7.0 or earlier,
+     * which names no database (`--allow-unbound-manifest`).
+     */
+    readonly allowUnboundManifest?: boolean | undefined;
+    /**
+     * `from-payload-auth` only (`--grant-linkable-from-verified`): grant
+     * the linking proof from the source `emailVerified` flag.
+     */
+    readonly grantLinkableFromVerified?: boolean | undefined;
 };
 /** The `from-payload-auth` command: dry-run plan, or `--apply` + manifest. */
 export declare function runFromPayloadAuth(options: ImportCommandOptions): Promise<{
@@ -863,7 +1107,7 @@ export type FinalizeCommandOptions = Pick<ImportCommandOptions, 'configPath' | '
  */
 export declare function runFinalize(options: FinalizeCommandOptions): Promise<ImportManifest>;
 /** Options for `adopt-prelink` (issue #88). */
-export type PrelinkCommandOptions = Pick<ImportCommandOptions, 'configPath' | 'apply' | 'manifestPath' | 'json' | 'log' | 'loadPayload' | 'allowUnsignedManifest'> & {
+export type PrelinkCommandOptions = Pick<ImportCommandOptions, 'configPath' | 'apply' | 'manifestPath' | 'json' | 'log' | 'loadPayload' | 'allowUnsignedManifest' | 'allowUnboundManifest' | 'grantLinkableFromVerified'> & {
     readonly usersSlug?: string | undefined;
     readonly verifiedField?: string | undefined;
 };
@@ -1010,6 +1254,14 @@ export declare function unverifiedEmails(users: readonly SourceUser[]): readonly
  *
  * Integrity: a version-3 manifest is signed (`mac`), and rollback,
  * finalize, or a resumed run refuses one that does not verify.
+ *
+ * Binding (GHSA-crrr-3cg7-f6jw): a version-4 manifest also names the
+ * DATABASE it was written against (`databaseId`, a random id the kit
+ * stores in that database's key-value store on the first `--apply`)
+ * and its RUN (`runId`, a per-run nonce the database records as open,
+ * rolled back, or finalized). Both sit inside the signature, and every
+ * command checks them against the database before it writes, so a
+ * manifest from another environment or another run is refused.
  */
 export type CreatedRow = {
     /** Target collection slug. */
@@ -1039,7 +1291,7 @@ export type FieldWrite = {
 /** Which command produced the manifest (issue #88). */
 export type ManifestKind = 'import' | 'adopt-prelink';
 export type ImportManifest = {
-    readonly version: 1 | 2 | 3;
+    readonly version: 1 | 2 | 3 | 4;
     /** The producing command; absent on version-1 manifests (imports). */
     readonly kind?: ManifestKind | undefined;
     readonly createdAt: string;
@@ -1058,6 +1310,18 @@ export type ImportManifest = {
     readonly rolledBackAt?: string | undefined;
     /** When `finalize` ran (recorded alongside the database marker). */
     readonly finalizedAt?: string | undefined;
+    /**
+     * Version 4: the id of the database this manifest belongs to (stored
+     * in that database's Payload key-value store on the first `--apply`).
+     * Absent on manifests written by migrate 0.7.0 and earlier.
+     */
+    readonly databaseId?: string | undefined;
+    /**
+     * Version 4: this run's random nonce. The database records each run's
+     * state (open, rolled back, finalized); a manifest whose run the
+     * database does not hold as open is never resumed or rolled back.
+     */
+    readonly runId?: string | undefined;
     /**
      * Version 3: HMAC over the whole manifest, keyed from the target
      * app's Payload secret. `v2.` MACs cover every field; 0.6.0's `v1.`

@@ -1,9 +1,11 @@
 import { isRecord } from '@payload-auth-link/core'
+import { randomBytes } from 'node:crypto'
 import type { Payload } from 'payload'
 import {
   defaultTargetSlugs,
   type CreatedRow,
   type ImportManifest,
+  type ManifestKind,
   type TargetModel,
   type TargetSlugMap,
 } from './types.js'
@@ -18,6 +20,9 @@ import {
  * - the finalize marker: `finalize` records the point of no return in
  *   the target DATABASE (Payload's key-value store), so a manifest file
  *   alone can never reopen a finalized migration;
+ * - the database record (GHSA-crrr-3cg7-f6jw): the database's own
+ *   migration id and each run's state live in the same store, so a
+ *   manifest from another database or another run is refused;
  * - the host roles field the app configured on `authLink`.
  */
 
@@ -105,7 +110,9 @@ export function baIdMismatch(row: CreatedRow, doc: unknown): boolean {
   if (expected === null) {
     return true
   }
-  return !isRecord(doc) || String(doc['baId']) !== expected.baId
+  // The stored value must BE the expected string: `String(undefined)`
+  // once matched a source key of `user:undefined` (GHSA-crrr-3cg7-f6jw).
+  return !isRecord(doc) || typeof doc['baId'] !== 'string' || doc['baId'] !== expected.baId
 }
 
 /** Payload's key-value store, reached structurally (Payload 3.6x+). */
@@ -128,7 +135,35 @@ function keyValueStore(payload: Payload): KeyValueStore | null {
   return null
 }
 
-const markerPrefix = 'payload-auth-link/migrate/finalized/'
+const storePrefix = 'payload-auth-link/migrate/'
+const markerPrefix = `${storePrefix}finalized/`
+
+/**
+ * The store, or a thrown error naming the fix. Every manifest-driven
+ * write reads its database record there and FAILS CLOSED without it
+ * (GHSA-crrr-3cg7-f6jw): an unreadable store is never read as "not
+ * finalized" or "no other run".
+ */
+function requireStore(payload: Payload, action: string): KeyValueStore {
+  const kv = keyValueStore(payload)
+  if (kv === null) {
+    throw new Error(
+      `this Payload version exposes no key-value store (payload.kv); ${action} reads and records the migration's database record there — upgrade Payload to a release in the kit's supported band`
+    )
+  }
+  return kv
+}
+
+async function storeCall<T>(action: string, call: () => Promise<T>): Promise<T> {
+  try {
+    return await call()
+  } catch (error) {
+    throw new Error(
+      `${action}: Payload's key-value store (the payload-kv collection) could not be read or written: ${error instanceof Error ? error.message : String(error)} — create its table (run your Payload migrations) and re-run; nothing was changed`,
+      { cause: error }
+    )
+  }
+}
 
 /** The finalize marker key of one manifest (its kind + first-apply stamp). */
 export function finalizeMarkerKey(manifest: Pick<ImportManifest, 'kind' | 'createdAt'>): string {
@@ -167,10 +202,10 @@ export async function recordFinalizeMarker(
 
 /**
  * Whether the database says this migration was finalized. `anyOfKind`
- * widens the check to every finalized manifest of the same kind — used
- * when the manifest's own `createdAt` is not covered by a signature.
- * Returns `'unavailable'` when the store cannot be read; the caller
- * decides (and logs) what that means.
+ * widens the check to every finalized manifest of the same kind.
+ * Returns `'unavailable'` when the store cannot be read. Destructive
+ * callers use {@link assertNoFinalizeMarker} instead, which checks
+ * EVERY kind and fails closed.
  */
 export async function finalizeMarkerState(
   payload: Payload,
@@ -196,6 +231,100 @@ export async function finalizeMarkerState(
   } catch {
     return 'unavailable'
   }
+}
+
+/**
+ * Refuse when the database records ANY finalized migration — import or
+ * adopt-prelink, whatever the manifest claims to be (GHSA-crrr-3cg7-f6jw:
+ * an unsigned manifest's `kind` is the editor's to choose). Fails
+ * closed: a store that cannot be read refuses too.
+ */
+export async function assertNoFinalizeMarker(payload: Payload, action: string): Promise<void> {
+  const kv = requireStore(payload, action)
+  const keys = await storeCall(action, () => kv.keys())
+  if (keys.some((key) => key.startsWith(markerPrefix))) {
+    throw new Error(
+      `the database records a finalized migration; ${action} is no longer possible on this database (the manifest file does not override that)`
+    )
+  }
+}
+
+const databaseIdKey = `${storePrefix}database-id`
+const runKeyPrefix = `${storePrefix}runs/`
+
+/** What the database records about one run (GHSA-crrr-3cg7-f6jw). */
+export type RunState = 'open' | 'rolled-back' | 'finalized'
+
+/** The database's record of one run. */
+export type RunRecord = {
+  readonly kind: ManifestKind
+  readonly createdAt: string
+  readonly state: RunState
+}
+
+const isRunState = (value: unknown): value is RunState =>
+  value === 'open' || value === 'rolled-back' || value === 'finalized'
+
+/**
+ * This database's migration identity: a random id the kit stores in
+ * the database's own key-value store, so a manifest names the database
+ * it was written against. `create` mints one when none exists (the
+ * first `--apply`); otherwise a missing id is `null`. Fails closed.
+ */
+export async function databaseIdentity(
+  payload: Payload,
+  options: { readonly create: boolean; readonly action: string }
+): Promise<string | null> {
+  const kv = requireStore(payload, options.action)
+  const stored = await storeCall(options.action, () => kv.get(databaseIdKey))
+  if (isRecord(stored) && typeof stored['id'] === 'string' && stored['id'] !== '') {
+    return stored['id']
+  }
+  if (!options.create) {
+    return null
+  }
+  const id = randomBytes(16).toString('hex')
+  await storeCall(options.action, () =>
+    kv.set(databaseIdKey, { id, createdAt: new Date().toISOString() })
+  )
+  return id
+}
+
+/** A fresh, unguessable run nonce. */
+export function newRunId(): string {
+  return randomBytes(16).toString('hex')
+}
+
+/** The database's record of one run, or `null` when it holds none. Fails closed. */
+export async function readRun(
+  payload: Payload,
+  runId: string,
+  action: string
+): Promise<RunRecord | null> {
+  const kv = requireStore(payload, action)
+  const stored = await storeCall(action, () => kv.get(`${runKeyPrefix}${runId}`))
+  if (
+    !isRecord(stored) ||
+    !isRunState(stored['state']) ||
+    (stored['kind'] !== 'import' && stored['kind'] !== 'adopt-prelink') ||
+    typeof stored['createdAt'] !== 'string'
+  ) {
+    return null
+  }
+  return { kind: stored['kind'], createdAt: stored['createdAt'], state: stored['state'] }
+}
+
+/** Record one run's state in the database. Throws when it cannot. */
+export async function recordRun(
+  payload: Payload,
+  runId: string,
+  record: RunRecord,
+  action: string
+): Promise<void> {
+  const kv = requireStore(payload, action)
+  await storeCall(action, () =>
+    kv.set(`${runKeyPrefix}${runId}`, { ...record, updatedAt: new Date().toISOString() })
+  )
 }
 
 /**

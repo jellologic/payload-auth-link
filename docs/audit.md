@@ -48,8 +48,13 @@ events will be dropped.
 Payload's `beforeOperation` hook does the auditing. The plugin adds
 it to **every collection and every global** in your config, its own
 included, after all hooks you defined. It also fires from the plugin's
-organization endpoints when they refuse a request because the caller
-is impersonating. It is emitted only while an operator is
+organization endpoints: when they refuse a request because the caller
+is impersonating, and for the organization list
+(`GET /auth-link/organizations`, allowed while impersonating). And it
+fires when verifying an impersonated session links the target's
+provider identity to a users document, or provisions one
+(`operation: 'linkIdentity'`) — a write no collection hook sees
+under the impersonation. It is emitted only while an operator is
 impersonating the request's user. Plain requests return before any
 logging.
 
@@ -57,25 +62,26 @@ Because the hook runs `beforeOperation`, attempts that are later
 denied are audited too. For example, a role change that is blocked
 while impersonating still produces an event.
 
-| Field                 | When present                          | Value                                                                     |
-| --------------------- | ------------------------------------- | ------------------------------------------------------------------------- |
-| `actorKind`           | always                                | `'payload-user'`, `'provider-only'`, or `'malformed-actor'`               |
-| `actorProviderUserId` | actor parsed                          | operator's provider user id                                               |
-| `actorUserId`         | `actorKind: 'payload-user'`           | operator's Payload user id (string)                                       |
-| `targetUserId`        | `req.user` has an id                  | impersonated user's Payload id (string)                                   |
-| `operation`           | always                                | Payload's operation name (`read`, `update`, `delete`, …) or endpoint verb |
-| `collection`          | collection hook                       | collection slug                                                           |
-| `global`              | global hook                           | global slug                                                               |
-| `endpoint`            | organization endpoint refusal         | `/auth-link/organizations`, `/auth-link/organizations/invite`, `…/accept` |
-| `denied`              | organization endpoint refusal         | `true` (the endpoint answered 403)                                        |
-| `id`                  | the operation args name a document id | document id (string)                                                      |
+| Field                 | When present                                          | Value                                                                                      |
+| --------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `actorKind`           | always                                                | `'payload-user'`, `'provider-only'`, or `'malformed-actor'`                                |
+| `actorProviderUserId` | actor parsed                                          | operator's provider user id                                                                |
+| `actorUserId`         | `actorKind: 'payload-user'`                           | operator's Payload user id (string)                                                        |
+| `targetUserId`        | `req.user` has an id                                  | impersonated user's Payload id (string)                                                    |
+| `operation`           | always                                                | Payload's operation name (`read`, `update`, `delete`, …), endpoint verb, or `linkIdentity` |
+| `collection`          | collection hook, `linkIdentity`                       | collection slug                                                                            |
+| `global`              | global hook                                           | global slug                                                                                |
+| `endpoint`            | organization endpoint                                 | `/auth-link/organizations`, `/auth-link/organizations/invite`, `…/accept`                  |
+| `denied`              | organization endpoint refusal                         | `true` (the endpoint answered 403); absent on the allowed list read                        |
+| `id`                  | the operation args name a document id; `linkIdentity` | document id (string)                                                                       |
 
 The fields carry ids only. Tokens, emails and document data are never
 included. If the request carries an impersonation marker that cannot
 be parsed, the plugin still audits it (fail-closed), with
 `actorKind: 'malformed-actor'` and no made-up attribution.
 
-For the organization endpoints, `operation` is `create`
+For the organization endpoints, `operation` is `read`
+(`GET /auth-link/organizations`), `create`
 (`POST /auth-link/organizations`), `invite`, or `accept`.
 Organization governance refusals that do **not** involve
 impersonation (not a manager, role above your own, invitation not
@@ -107,30 +113,31 @@ storage failures are left out). Message text is diagnostic output,
 **not** a stable contract (see [stability.md](stability.md)). If you
 key durable capture on these strings, pin them in a test of your own.
 
-| Level | Message                                                                                                     | Fields                                                                                                   |
-| ----- | ----------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| info  | `impersonated session used`                                                                                 | `providerId`, `actorProviderUserId`, `actorKind`, `actorUserId?`, `targetProviderUserId`, `targetUserId` |
-| warn  | `impersonated session actor has no linked Payload user`                                                     | `providerId`, `actorProviderUserId`, `targetUserId`                                                      |
-| warn  | `session refused: user suspended`                                                                           | `providerId`, `userId`, `suspendedUntil`                                                                 |
-| warn  | `<scope> verification failed: user suspended` (scope: `strategy`, `session endpoint`, …)                    | `suspendedUntil`                                                                                         |
-| info  | `suspend: provider sessions revoked` (one per linked identity when `suspendedUntil` moves)                  | `providerId`                                                                                             |
-| error | `suspend: provider session revoke failed`                                                                   | `providerId`, `cause`                                                                                    |
-| warn  | `provider session channel not admitted` / `<scope> verification failed: channel not admitted`               | `providerId`, `channel`                                                                                  |
-| warn  | `sso session refused: email domain not verified for any organization`                                       | `providerId`                                                                                             |
-| warn  | `provisioning refused: the email is held by an existing document that is not proven to own it`              | `providerId`, **`email`**                                                                                |
-| warn  | `email link refused: …` (pre-existing document not linkable, or proof bound to another email)               | **`email`**, `userId`                                                                                    |
-| warn  | `link refused: provider email unverified` / `registration refused: provider email unverified`               | **`email`**, `providerId`                                                                                |
-| warn  | `link refused: anonymous identity never links`, `link refused: session carries no email identity claim`     | `providerId`                                                                                             |
-| info  | `identity linked`, `identity linked by verified phone`, `user registered via provider`                      | `userId`, `providerId`                                                                                   |
-| info  | `local sessions revoked on identity link`                                                                   | `userId`, `providerId`                                                                                   |
-| warn  | `identity linked to a document that also holds a local password; …`                                         | `userId`, `providerId`                                                                                   |
-| info  | `email synced from provider`, `phone synced from provider`                                                  | `userId`, `providerId`                                                                                   |
-| info  | `verified email synced onto the linked user` (provider `email-verified` event)                              | `userId`, `providerId`                                                                                   |
-| info  | `email changed outside the provider resync; linking proof reset`                                            | `userId`                                                                                                 |
-| warn  | `identity event ignored: unverified email change (D9)`                                                      | `providerId`, …                                                                                          |
-| warn  | `local password reset refused: document holds linked identities`                                            | `userId`, `operation`                                                                                    |
-| warn  | `membership relocation refused`, `membership user rewrite refused`                                          | `membershipId`                                                                                           |
-| warn  | boot: `payload-auth-link: N user doc(s) carry roles outside the configured set: …` (stored-role drift, B11) | (counts in the message)                                                                                  |
+| Level | Message                                                                                                                 | Fields                                                                                                               |
+| ----- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| info  | `impersonated session used`                                                                                             | `providerId`, `actorProviderUserId`, `actorKind`, `actorUserId?`, `targetProviderUserId`, `targetUserId`             |
+| warn  | `impersonated session actor has no linked Payload user`                                                                 | `providerId`, `actorProviderUserId`, `targetUserId`                                                                  |
+| warn  | `session refused: user suspended`                                                                                       | `providerId`, `userId`, `suspendedUntil`                                                                             |
+| warn  | `<scope> verification failed: user suspended` (scope: `strategy`, `session endpoint`, …)                                | `suspendedUntil`                                                                                                     |
+| info  | `suspend: provider sessions revoked` (one per linked identity when `suspendedUntil` moves)                              | `providerId`                                                                                                         |
+| error | `suspend: provider session revoke failed`                                                                               | `providerId`, `cause`                                                                                                |
+| warn  | `provider session channel not admitted` / `<scope> verification failed: channel not admitted`                           | `providerId`, `channel`                                                                                              |
+| warn  | `sso session refused: email domain not verified for any organization`                                                   | `providerId`                                                                                                         |
+| warn  | `provisioning refused: the email is held by an existing document that is not proven to own it`                          | `providerId`, **`email`**                                                                                            |
+| warn  | `email link refused: …` (pre-existing document not linkable, or proof bound to another email)                           | **`email`**, `userId`                                                                                                |
+| warn  | `link refused: provider email unverified` / `registration refused: provider email unverified`                           | **`email`**, `providerId`                                                                                            |
+| warn  | `link refused: anonymous identity never links`, `link refused: session carries no email identity claim`                 | `providerId`                                                                                                         |
+| info  | `identity linked`, `identity linked by verified phone`, `user registered via provider`                                  | `userId`, `providerId`                                                                                               |
+| info  | `local sessions revoked on identity link`                                                                               | `userId`, `providerId`                                                                                               |
+| warn  | `identity linked to a document that also holds a local password; …`                                                     | `userId`, `providerId`                                                                                               |
+| info  | `email synced from provider`, `phone synced from provider`                                                              | `userId`, `providerId`                                                                                               |
+| info  | `verified email synced onto the linked user` (provider `email-verified` event)                                          | `userId`, `providerId`                                                                                               |
+| info  | `email changed outside the provider resync; linking proof reset`                                                        | `userId`                                                                                                             |
+| warn  | `identity event ignored: unverified email change (D9)`                                                                  | `providerId`, …                                                                                                      |
+| warn  | `local password reset refused: document holds linked identities`                                                        | `userId`, `operation`                                                                                                |
+| warn  | `local credential refused at authentication` (GHSA-mjvh: a dead account's Payload local JWT / API key resolves no user) | `userId`, `strategy` (`local-jwt` / `api-key`), `reason` (`suspended` / `provider-owned` / `provider-owned-api-key`) |
+| warn  | `membership relocation refused`, `membership user rewrite refused`                                                      | `membershipId`                                                                                                       |
+| warn  | boot: `payload-auth-link: N user doc(s) carry roles outside the configured set: …` (stored-role drift, B11)             | (counts in the message)                                                                                              |
 
 The **bold** fields are emails. Unlike the `onAudit` events, the
 logger-only events are not all limited to ids. Treat your log

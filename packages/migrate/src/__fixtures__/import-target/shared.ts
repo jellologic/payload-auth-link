@@ -38,10 +38,15 @@ const hostUsers: CollectionConfig = {
   ],
 }
 
-export function targetConfig(options: { readonly withAdminPlugins: boolean }) {
-  const connectionString = process.env.PAL_MIGRATE_TARGET_URL
+export function targetConfig(options: {
+  readonly withAdminPlugins: boolean
+  /** The env var naming the database (default `PAL_MIGRATE_TARGET_URL`). */
+  readonly urlEnv?: string
+}) {
+  const urlEnv = options.urlEnv ?? 'PAL_MIGRATE_TARGET_URL'
+  const connectionString = process.env[urlEnv]
   if (connectionString === undefined || connectionString === '') {
-    throw new Error('PAL_MIGRATE_TARGET_URL is not set')
+    throw new Error(`${urlEnv} is not set`)
   }
   const engine = createBetterAuthEngine({
     // The CLI only writes through the Local API; Better Auth itself

@@ -97,11 +97,18 @@ export function restorableFieldsFor(rolesField: string): ReadonlySet<string> {
   return new Set([...restorableFields, rolesField])
 }
 
-/** The captured prior value of one manifest entry, JSON-parsed. */
+/**
+ * The captured prior value of one manifest entry, JSON-parsed. A
+ * version-1 PLAINTEXT value is refused unless `allowPlaintext`
+ * (`--allow-plaintext-restore`, GHSA-crrr-3cg7-f6jw): nothing vouches
+ * for a value stored in the clear, even inside a manifest an older kit
+ * re-signed.
+ */
 export function priorValue(
   secret: string,
   write: FieldWrite,
-  restorable: ReadonlySet<string> = restorableFields
+  restorable: ReadonlySet<string> = restorableFields,
+  options: { readonly allowPlaintext?: boolean | undefined } = {}
 ): unknown {
   if (!restorable.has(write.field)) {
     throw new Error(
@@ -114,6 +121,11 @@ export function priorValue(
     ) as unknown
   }
   // Version-1 manifests stored the value in the clear.
+  if (write.before !== undefined && options.allowPlaintext !== true) {
+    throw new Error(
+      `manifest entry for '${write.collection}.${write.field}' holds a plaintext prior value, which nothing vouches for; review the manifest and pass --allow-plaintext-restore to restore it`
+    )
+  }
   return write.before === null || write.before === undefined
     ? null
     : (JSON.parse(write.before) as unknown)
@@ -180,7 +192,11 @@ export async function captureBefore(options: {
 export async function restoreCaptured(
   payload: Payload,
   manifest: Pick<ImportManifest, 'fieldWrites'>,
-  options: { readonly rolesField?: string | undefined } = {}
+  options: {
+    readonly rolesField?: string | undefined
+    /** Restore version-1 plaintext values (`--allow-plaintext-restore`). */
+    readonly allowPlaintext?: boolean | undefined
+  } = {}
 ): Promise<number> {
   const restorable = restorableFieldsFor(options.rolesField ?? 'roles')
   const byDoc = new Map<
@@ -190,7 +206,9 @@ export async function restoreCaptured(
   for (const write of manifest.fieldWrites) {
     const key = `${write.collection}\u0000${String(write.id)}`
     const entry = byDoc.get(key) ?? { collection: write.collection, id: write.id, data: {} }
-    entry.data[write.field] = priorValue(payload.secret, write, restorable)
+    entry.data[write.field] = priorValue(payload.secret, write, restorable, {
+      allowPlaintext: options.allowPlaintext,
+    })
     byDoc.set(key, entry)
   }
   let restored = 0

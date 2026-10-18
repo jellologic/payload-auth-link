@@ -38,6 +38,260 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
+## plugin 0.14.0 / migrate 0.8.0 / provider-better-auth 0.11.0 / provider-authjs 0.7.0 (one minor across every package)
+
+**Upgrade impact:** no database schema change; push and migrations have
+nothing to do on SQLite, Postgres or MongoDB (the users collection gains
+only an `afterRead` hook). The steps per package are below.
+
+### provider-better-auth: two-factor step-up hardening (advisory GHSA-38wx-69j6-cgm7)
+
+**Upgrade impact:** no schema change. The step-up counter reuses the
+`failedVerificationCount` / `lockedUntil` columns Better Auth 1.7's
+`twoFactor` model already has, so push and migrations have nothing to
+do on SQLite, Postgres or MongoDB. Behaviour changes:
+
+- **Step-ups share the sign-in lockout.** A `/two-factor/verify-*`
+  on an existing session now spends the same per-user failure
+  budget as the sign-in challenge (`twoFactor({ accountLockout })`,
+  default 10 failures → locked 15 minutes). While locked, a step-up
+  is refused with 429 `ACCOUNT_TEMPORARILY_LOCKED` before the code is
+  checked, and failed step-ups can now lock the sign-in path too.
+  Step-up UIs should handle the 429 like the sign-in screen does.
+- **Enrolment no longer counts as MFA proof.** Confirming the FIRST
+  factor (TOTP confirmation after `/two-factor/enable`, a backup code
+  of an unconfirmed enrolment, the OTP that turns 2FA on) used to
+  relabel the session `two-factor`. It now keeps its first-factor
+  label, so a user who just enrolled still has MFA-gated roles
+  withheld (`mfaRequired: true`) until they sign in again with 2FA or
+  step up with the enrolled factor. If your enrolment screen sends
+  users straight to an MFA-gated page, add that sign-in or step-up.
+- **Emailed OTP after an inbox sign-in no longer proves MFA.** A
+  `/two-factor/verify-otp` step-up relabels the session only after a
+  `password` / `passkey` first factor. After a magic-link, email-OTP
+  or OAuth sign-in (or an unrecorded method), it proves nothing; use
+  TOTP or a backup code there. If your `otpOptions.sendOTP` delivers
+  over an independent channel such as SMS, set
+  `createBetterAuthEngine({ twoFactorOtpChannelIndependent: true })`.
+- **Email-OTP sign-ins are recorded.** The provenance table now
+  matches Better Auth 1.7's `/sign-in/email-otp` route, so these
+  sessions report `methods: ['email-otp']` instead of `'unknown'`.
+- Operator step: grant MFA-gated roles (`requireMfaForRoles`) only to
+  users who have already enrolled 2FA. Enabling 2FA needs only the
+  password, so a password-only attacker can still enrol their own
+  authenticator on an account that never enrolled and then sign in
+  with it.
+
+### migrate: manifests bound to their database (advisory GHSA-crrr-3cg7-f6jw)
+
+**Upgrade impact:** no collection schema change; push and migrations
+have nothing to do on any adapter. The kit now writes two kinds of
+records into Payload's key-value store (`payload-kv`; `payload_kv` on
+SQL adapters) — this database's migration id and one record per run —
+and REQUIRES that store for `--apply`, `adopt-prelink --apply`,
+`rollback`, and `finalize` (it already required it for `finalize`).
+If its table was never created, run your Payload migrations first.
+
+**migrate**
+
+- **Manifests are bound to their database and run (version 4).** The
+  first `--apply` stores a random database id in `payload-kv`, and
+  every run a random nonce; both are signed into the manifest. A
+  manifest from another database (a rehearsal clone sharing
+  `PAYLOAD_SECRET`), a run the database has no record of, or a copy of
+  a manifest from before a rollback is refused before anything is
+  written. Never roll back with a manifest from another environment or
+  another run. A 0.7.x kit cannot read a version-4 manifest: do not
+  downgrade the kit mid-migration.
+- **Unsigned manifests are terminal.** A pre-0.6.0 (version 1/2) or
+  0.6.0 manifest is never resumed by `--apply` / `adopt-prelink` and
+  never re-signed: roll it back (`--allow-unsigned-manifest`) or
+  finalize it, then start a new run with a new `--manifest`.
+- **Plaintext prior values need their own flag.** A version-1
+  manifest's plaintext values — including inside a manifest an older
+  kit resumed and signed — are restored only with
+  `--allow-plaintext-restore`, after you review them. A manifest
+  holding any is never resumed.
+- **0.7.0 manifests** (signed, no database binding) need
+  `--allow-unbound-manifest` for `rollback` and for a resumed
+  `--apply` / `adopt-prelink`; a resume binds them to the database it
+  runs against.
+  - Operator step, mid-migration on 0.7.0: run the 0.8.0 `rollback` or
+    `--apply` against the SAME database the manifest was written
+    against, with `--allow-unbound-manifest`. If you are not sure which
+    database wrote it, do not pass the flag.
+- **`rollback` refuses on ANY finalize marker** in the database (an
+  import's or a pre-link's, whatever the manifest claims), and when the
+  key-value store cannot be read (it used to log and trust the
+  manifest's flag). An unsigned manifest may delete a `ba-users` row
+  only when the host `users` document with that id exists.
+- **The linking proof is opt-in.** `from-payload-auth --apply` and
+  `adopt-prelink --apply` no longer grant `linkable` / `linkableEmail`
+  from `emailVerified` by default — the flag can be stale for an
+  address changed after it was verified, and the proof lets another
+  provider's sign-in for the address link to the document
+  (GHSA-v6mr). Every user still resolves through the pre-linked
+  `better-auth` identity.
+  - Operator step: to keep the old behaviour, review `emailVerified`
+    first (no address changed since it was verified), then pass
+    `--grant-linkable-from-verified`. Proofs granted by earlier runs
+    are not revoked; re-check them as for `_verified` (plugin 0.13.0, below).
+- **`verify` in adopt mode** now says it has nothing to compare and
+  points to the checksum procedure ("Verifying an adopt cutover" in
+  the migration guide), instead of failing on missing target
+  collections or `baId`.
+- **The doctor derives the source layout** from the loaded
+  payload-auth config (custom slugs need no `--source-map` there) and
+  prints it as a `--source-map` value for the other commands
+  (`sourceMap` in `--json`).
+- **Refused runs exit 1.** `from-payload-auth` and `adopt-prelink`
+  print `<command> failed: …` and exit 1 when a manifest is refused.
+
+### provider-better-auth: session tokens, logout cookie domain, adopt mode (issue #113)
+
+**Upgrade impact:** no schema change. Push and migrations have nothing to
+do on SQLite, Postgres or MongoDB. The operator steps are below.
+
+- **Session tokens leave Better Auth's HTTP JSON.** `/get-session` no
+  longer returns `session.token`, `/list-sessions` entries no longer
+  carry `token`, and sign-in / sign-up (and other session-minting)
+  bodies drop the new session's `token`. Server-side `auth.api.*`
+  calls are unchanged. `/multi-session/*` and `/one-time-token/*` are
+  untouched.
+  - Operator step: client code that revokes one device with
+    `authClient.revokeSession({ token: session.token })` should pass
+    the listed id instead: `revokeSession({ token: session.id })`. The
+    engine resolves the id server-side.
+  - Operator step: a client that genuinely reads the raw token from a
+    response body (a native app) sets the engine option
+    `exposeSessionTokens: true`, ideally with
+    `bearer({ requireSignature: true })`. Pass the engine a `logger` to
+    see the new wiring warning when `bearer()` without
+    `requireSignature` meets a token-exposing surface.
+- **Adopt mode with Payload's local strategy on.** Better Auth sign-ups
+  into an adopted users collection that keeps Payload's local strategy
+  no longer fail with 422 "password" once other auth traffic has run
+  first: every user create now carries the unusable injected password.
+  No step needed.
+- **Logout under `crossSubDomainCookies`.** The plugin's logout now
+  clears every Better Auth cookie with the `Domain` Better Auth wrote
+  it with (`crossSubDomainCookies.domain`, else the `baseURL`
+  hostname); before, the browser kept the token and cookie-cache
+  cookies until they expired. No step needed. With a dynamic `baseURL`,
+  set `crossSubDomainCookies.domain` explicitly.
+
+### plugin: account controls at authentication (advisory GHSA-mjvh-7vmj-pg2p)
+
+**Upgrade impact:** no schema change. The users collection gains one
+`afterRead` hook and no field, so push and migrations have nothing to
+do on SQLite, Postgres or MongoDB. The behaviour changes and operator
+checks are below.
+
+**plugin**
+
+- **A dead account's Payload credential no longer authenticates
+  anything** (GHSA-mjvh-7vmj-pg2p). Suspension and the provider-owned
+  local-credential default (GHSA-f4hj, GHSA-x45w) were enforced only
+  at the users collection, the collection/global operation gates and
+  the users permission map. A suspended user's Payload API key, an API
+  key re-enabled by an operator on a provider-linked document, a
+  pre-link local JWT on a host with `useSessions: false`, and a
+  suspended user's local JWT still authenticated every surface that
+  runs no collection operation: upload file routes
+  (`/api/<upload>/file/<name>`), host custom endpoints (`req.user`),
+  `payload.auth()`, `payload-preferences`, and `/access` grants on
+  other collections. (The 0.13.0 note below said "`/access` grants it
+  nothing"; that held for the users collection only.) Now such a
+  credential resolves no user when Payload authenticates the request,
+  so every surface sees an anonymous request. Provider sessions were
+  never affected.
+  - **Status codes change for these credentials.** The request is
+    anonymous instead of refused: operations answer what an anonymous
+    request gets from your access rules (usually 403 "You are not
+    allowed to perform this action." where it used to be 401 "Account
+    suspended", 401 "Local sessions are unavailable…", or 403 "API keys
+    are unavailable…"), `GET /users/me` answers 200 with `user: null`,
+    and `POST /users/refresh-token` answers 403. Local sign-in of a
+    suspended or provider-linked account is still refused (401 / 403)
+    as before. If a client keyed "sign in again" on that 401, also treat
+    a 403 from a credential that used to work (or `me` → `user: null`)
+    as signed out.
+  - Host custom endpoints and `payload.auth()` callers now see
+    `user: null` for these credentials. Nothing to change unless your
+    code relied on seeing the suspended user.
+  - Each refusal logs `local credential refused at authentication`
+    (warn) with `userId`, `strategy` and `reason`.
+  - Residual, documented in [security-model.md](security-model.md): a
+    LIVE local credential holding a `requireMfaForRoles` role keeps the
+    role on `req.user` inside a custom endpoint (operations and the
+    users permission map withhold it). Check MFA with
+    `sessionMfaSatisfied` / `denyWithoutMfa` in such endpoints.
+- **A renamed `suspendedUntilField` is enforced for local
+  credentials.** The local sign-in refusal, the reset refusal and the
+  request-time gates read `suspendedUntil` literally, so with a renamed
+  field a suspended user kept local sign-in, local JWTs and API keys
+  (provider sessions were refused). They now read the configured
+  field.
+  - Operator step (renamed field only): review what suspended accounts
+    did with local credentials while suspended.
+- **The verified mirror follows the proof reset.** With
+  `emailVerifiedField`, a self-service email change that resets the
+  linking proof now also sets the mirror `false` (as `_verified` on
+  verify hosts). It used to keep vouching for the new, unproven
+  address.
+- **Resolving an email-link collision is an operator decision.** The
+  earlier guidance allowed granting `linkable` / `linkableEmail` after
+  "a fresh verification of the current address". That proves who
+  controls the address, not who built the document: on a squatted
+  document the verification mail reaches the victim, and granting the
+  proof on their click hands the victim's next sign-in the squatter's
+  document. Grant the proof only for a document you confirmed is the
+  address owner's own; otherwise rename or remove the document after
+  checking who created it. The refusal log messages say so.
+  - Operator step: if you granted the proof from verification clicks
+    on documents that collided with a provider sign-in, check who
+    created each of those documents.
+- **Impersonation audit, two more records.** `onAudit` now receives
+  `impersonated operation` with `operation: 'linkIdentity'` when
+  verifying an impersonated session links or provisions the target's
+  document, and with `operation: 'read'`,
+  `endpoint: '/auth-link/organizations'` for the organization list
+  read while impersonating (still allowed). Sinks that switch on
+  `operation` should accept the new values.
+- **`projectRolesAs: 'stored'` drops an unmappable role.** A role with
+  no stored value is dropped (and logged) instead of reaching
+  `req.user.roles` raw. Wiring through `authLink()` always maps every
+  configured role, so this changes nothing for it.
+
+### provider-authjs: builder `session` callbacks (issue #113)
+
+Only apps that supply their own Auth.js `session` callback on the
+database strategy are affected. The response is now scanned at every
+depth: `sessionToken` keys and any string containing the live session
+token are removed (array items that match are dropped), and the result
+goes out in JSON form (`Date`s become ISO strings, as the client already
+received them). A callback that returns a cyclic object fails with
+`SESSION_SHAPE_INVALID`. Apps without a custom callback, and the JWT
+strategy, are unaffected.
+
+### Adopt mode: local strategy and MFA provenance (issue #113)
+
+- provider-better-auth 0.11.0 injects an unknowable password into each
+  create of an adopted users collection whose Payload local strategy is
+  on, so sign-up and anonymous sign-in work. The doctor's
+  `adopt-local-strategy-on` is now a warning. Turn the local strategy
+  off unless break-glass operator accounts need it.
+- Every adopted model is validated on the first adapter operation, so
+  a missing or mis-mapped REQUIRED field now fails fast at boot.
+  Previously it could go unnoticed until that model was used. A
+  missing OPTIONAL Better Auth field (for example 1.7's
+  `jwks.expiresAt` on a payload-auth layout) is tolerated: writes to it
+  are dropped.
+- An adopted session collection without an `authenticationMethod`
+  field records no MFA provenance, so `requireMfaForRoles` stays
+  withheld (fail closed). Add a text field named `authenticationMethod` to it if you use
+  MFA-gated roles.
+
 ## plugin 0.13.0 / migrate 0.7.0 / provider-better-auth 0.10.0 / provider-authjs 0.6.0 (one minor across every package)
 
 **Upgrade impact:** no schema change. Push and migrations have nothing to
@@ -49,17 +303,21 @@ do on SQLite, Postgres or MongoDB. The operator steps are below.
   `auth.useAPIKey`, linking a provider identity now clears the
   document's API key. A key on a linked document, including one
   enabled after the link, is refused (403) on every collection and
-  global, and `/access` grants it nothing. Documents without linked
+  global, and the users collection's `/access` entry grants it nothing
+  (other surfaces: see the GHSA-mjvh section above). Documents without linked
   identities are unaffected. To keep keys working during a migration,
   set `allowLocalCredentialsForLinkedDocs: true` and remove it once the
   migration is done.
   - Operator step: move service integrations that use a linked user's
     API key to an unlinked service account.
 - **Granting the linking proof.** Do not grant `linkable` /
-  `linkableEmail` based on `_verified`. Grant it only after a fresh
-  verification of the current address, or from an operator-reviewed
-  list checked against the current email. The earlier snippet that
-  granted it from `_verified` is withdrawn.
+  `linkableEmail` based on `_verified`. Grant it only from an
+  operator-reviewed list that confirms the DOCUMENT belongs to the
+  owner of its current address, checked against the current email.
+  (This note used to also allow "a fresh verification of the current
+  address" — withdrawn, see the GHSA-mjvh section above: a
+  verification proves the address, not the document.) The earlier
+  snippet that granted it from `_verified` is withdrawn.
   - If you ran that snippet, re-check the documents it touched.
   - Refusal logs now say to resolve an email collision (confirm the
     owner, then rename or remove the conflicting document).
@@ -227,15 +485,17 @@ The changes are behavioural; read each before you bump.
    before the upgrade may carry `_verified: true` for an address it
    never proved — granting it the proof would link that address's
    owner's next sign-in to a document they may not own. Grant `linkable` +
-   `linkableEmail` only from one of:
-
-   - **a fresh verification of the CURRENT email**, sent to that
-     address after the upgrade (your app's own confirmation flow, or
-     a reset of `_verified` followed by a new verification mail),
-     granted in that flow's handler and only while the document
-     email still equals the confirmed address; or
-   - **an operator-reviewed, explicit list** of documents and the
-     address each was confirmed to own, re-checked at write time:
+   `linkableEmail` only from **an operator-reviewed, explicit list**
+   of documents, each confirmed to BELONG to the owner of its current
+   address (who created it, what it holds), re-checked at write time.
+   A fresh verification of the current email is NOT enough (an
+   earlier version of this note allowed it): it proves who controls
+   the ADDRESS, not who built the DOCUMENT. On a squatted document —
+   one someone else created with, or re-pointed at, the victim's
+   address — the verification mail reaches the victim, and one click
+   would hand the victim's next sign-in that document (its local
+   password, API key, data, and anything else planted on it). The
+   reviewed list, applied:
 
    ```ts
    // Each entry was reviewed by an operator: the document AND the
@@ -265,10 +525,11 @@ The changes are behavioural; read each before you bump.
    the existing document now logs
    `provisioning refused: the email is held by an existing document
 that is not proven to own it` and answers a typed 401 (it used to
-   surface as a storage error). Resolve such a collision by
-   confirming who owns the existing document — rename or remove it
-   when it is not the address owner's — never by granting the proof
-   without a fresh verification of its current address.
+   surface as a storage error). Resolve such a collision as an operator:
+   confirm who created and owns the existing document, and rename or
+   remove it when it is not the address owner's. Never resolve it by
+   sending a verification mail, and grant the proof only for a
+   document you confirmed is the address owner's own.
 
 2. **A self-service email change resets the proof.** Changing a
    document's email in any write that is neither the plugin's

@@ -79,6 +79,8 @@ type ValidatedSchema = {
   readonly dateFields: ReadonlySet<string>
   /** Every Better Auth field name per model (`id` excluded). */
   readonly baFields: ReadonlyMap<string, ReadonlySet<string>>
+  /** The optional (`required: false` or unset) subset, per model. */
+  readonly optionalFields: ReadonlyMap<string, ReadonlySet<string>>
 }
 
 /**
@@ -171,6 +173,15 @@ function validateSchema(
 ): ValidatedSchema {
   const dateFields = new Set<string>()
   const baFields = new Map<string, Set<string>>()
+  const optionalFields = new Map<string, Set<string>>()
+  const record = (
+    model: string,
+    fields: Record<string, { readonly required?: boolean | undefined }>
+  ): void => {
+    const names = Object.keys(fields).filter((field) => field !== 'id')
+    baFields.set(model, new Set(names))
+    optionalFields.set(model, new Set(names.filter((field) => fields[field]?.required !== true)))
+  }
   for (const model of coreModels) {
     const table = ctx.schema[model]
     if (!table) {
@@ -180,7 +191,7 @@ function validateSchema(
       }
       throw new UnsupportedSchemaError(`missing table for model "${model}"`)
     }
-    baFields.set(model, new Set(Object.keys(table.fields).filter((field) => field !== 'id')))
+    record(model, table.fields)
     if (ctx.getModelName(model) !== model && !adoptedKeys.has(model)) {
       throw new UnsupportedSchemaError(
         `model "${model}" is renamed to "${ctx.getModelName(model)}"; custom model names need matching Payload collections`
@@ -210,7 +221,7 @@ function validateSchema(
         `missing table for custom model "${entry.model}"; enable the plugin that registers it`
       )
     }
-    baFields.set(entry.model, new Set(Object.keys(table.fields).filter((field) => field !== 'id')))
+    record(entry.model, table.fields)
     if (ctx.getModelName(entry.model) !== entry.model && !adoptedKeys.has(entry.model)) {
       throw new UnsupportedSchemaError(
         `model "${entry.model}" is renamed to "${ctx.getModelName(entry.model)}"; custom model names need matching Payload collections`
@@ -233,7 +244,7 @@ function validateSchema(
       )
     }
   }
-  return { dateFields, baFields }
+  return { dateFields, baFields, optionalFields }
 }
 
 function resolveModel(
@@ -603,30 +614,32 @@ export function createPayloadDatabaseAdapter(
    * adapter instance.
    */
   /**
-   * Local-strategy detection for adopted AUTH collections (see
-   * {@link ModelPlan.injectPasswordOnCreate}). Runs with host
-   * validation, once.
+   * Local-strategy detection for one adopted AUTH collection (see
+   * {@link ModelPlan.injectPasswordOnCreate}). Evaluated on EVERY
+   * create of an adopted model, never memoized from the first adapter
+   * call: that call may have planned other models only (a session or
+   * verification read), and a once-only mark then left the users model
+   * without the injected password — Payload refused every later
+   * sign-up with 422 "password" (issue #113).
    */
-  const markLocalStrategyCollections = (payload: Payload): void => {
-    for (const plan of plans.values()) {
-      if (!plan.adopted) {
-        continue
-      }
-      const collection = payload.collections[plan.slug]
-      const auth: unknown = collection?.config?.auth
-      const localOn =
-        auth === true ||
-        (typeof auth === 'object' &&
-          auth !== null &&
-          !Array.isArray(auth) &&
-          (auth as { disableLocalStrategy?: unknown }).disableLocalStrategy !== true)
-      plan.injectPasswordOnCreate = localOn
+  const markLocalStrategy = (payload: Payload, plan: ModelPlan): void => {
+    if (!plan.adopted) {
+      return
     }
+    const auth: unknown = payload.collections[plan.slug]?.config?.auth
+    plan.injectPasswordOnCreate =
+      auth === true ||
+      (typeof auth === 'object' &&
+        auth !== null &&
+        !Array.isArray(auth) &&
+        (auth as { disableLocalStrategy?: unknown }).disableLocalStrategy !== true)
   }
   let hostValidation: Promise<void> | undefined
-  const runHostValidation = (payload: Payload, baFields: ValidatedSchema['baFields']): void => {
+  const runHostValidation = (
+    payload: Payload,
+    { baFields, optionalFields }: Pick<ValidatedSchema, 'baFields' | 'optionalFields'>
+  ): void => {
     {
-      markLocalStrategyCollections(payload)
       const hostCache = new Map<string, Map<string, string>>()
       const hostFieldTypes = (slug: string): Map<string, string> => {
         const cached = hostCache.get(slug)
@@ -661,6 +674,16 @@ export function createPayloadDatabaseAdapter(
         hostCache.set(slug, types)
         return types
       }
+      // Every adopted model, not only those planned by the first
+      // operation: a `findOne` resolves Payload before planning its
+      // model, so validating `plans` alone could skip the adopted
+      // collections entirely, leaving them unchecked and their
+      // relationship fields unclassified (issue #113).
+      for (const model of adoptedKeys) {
+        if (baFields.has(model)) {
+          planOf(model)
+        }
+      }
       for (const [model, plan] of plans) {
         if (!plan.adopted) {
           continue
@@ -681,6 +704,15 @@ export function createPayloadDatabaseAdapter(
             continue
           }
           const fieldType = fieldTypes.get(payloadName)
+          if (fieldType === undefined && optionalFields.get(model)?.has(baName) === true) {
+            // An OPTIONAL Better Auth field the adopted collection lacks
+            // (e.g. 1.7's `jwks.expiresAt` on a payload-auth layout, or
+            // the engine's `session.authenticationMethod`): Payload drops
+            // writes to it and reads see it unset. Provenance then
+            // records nothing, which fails closed. Required fields
+            // still fail fast below.
+            continue
+          }
           if (fieldType === undefined) {
             throw new UnsupportedSchemaError(
               `adopted model "${model}" needs a "${plan.slug}.${payloadName}" field for Better Auth's "${baName}"; add it to the host collection or map it in the schemaMap`
@@ -696,25 +728,25 @@ export function createPayloadDatabaseAdapter(
   }
   const validateHostCollections = (
     payload: Payload,
-    baFields: ValidatedSchema['baFields']
+    schema: Pick<ValidatedSchema, 'baFields' | 'optionalFields'>
   ): Promise<void> => {
     // Memoized as a promise: every adapter operation awaits the same
     // validation, and the first failure rejects for all of them.
-    hostValidation ??= Promise.resolve(runHostValidation(payload, baFields))
+    hostValidation ??= Promise.resolve(runHostValidation(payload, schema))
     return hostValidation
   }
 
   return createAdapterFactory<BetterAuthOptions>({
     config: { adapterId: 'payload-auth-link', adapterName: 'Payload CMS' },
     adapter: (ctx: CreatorContext): CustomAdapter => {
-      const { dateFields, baFields } = validateSchema(
+      const { dateFields, baFields, optionalFields } = validateSchema(
         ctx,
         { fields: customFields, models: customModels },
         adoptedKeys
       )
       const payloadOf = (): Promise<Payload> =>
         deps.getPayload().then(async (payload) => {
-          await validateHostCollections(payload, baFields)
+          await validateHostCollections(payload, { baFields, optionalFields })
           return payload
         })
 
@@ -901,6 +933,7 @@ export function createPayloadDatabaseAdapter(
           const plan = planOf(key)
           try {
             const payload = await payloadOf()
+            markLocalStrategy(payload, plan)
             const doc: unknown = await payload.create({
               collection: plan.slug,
               data: toPayloadData(data, plan, { forCreate: true, idCoerce: idCoerceFor(key) }),

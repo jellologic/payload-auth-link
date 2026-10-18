@@ -433,7 +433,7 @@ describe('CAP-9 phone number (D2)', () => {
 })
 
 describe('CAP-6 two-factor + requireMfaForRoles', () => {
-  it('withholds admin without MFA enrollment and restores it after TOTP enrollment', async () => {
+  it('withholds admin without MFA proof: enrollment alone does not restore it, a two-factor sign-in does', async () => {
     const email = 'mfa@capabilities.test'
     const { cookie } = await signUpVerified(email, 'Mfa User')
     const first = await pluginSession(cookie)
@@ -482,15 +482,43 @@ describe('CAP-6 two-factor + requireMfaForRoles', () => {
     expect(mfaCookie).not.toBe(cookie)
     expect((await engine.provider.getSession(new Headers({ cookie })))._unsafeUnwrap()).toBeNull()
 
-    // The native flow records the method (#79): the enrollment's
-    // verify-totp stamps the session `two-factor`, so the signed-in
-    // session IS MFA-proven and admin is restored — no step-up route
-    // needed.
-    const portSession = (
+    // Enrolling the FIRST factor is not MFA proof for the session that
+    // enrolled it (GHSA-38wx-69j6-cgm7): the rotated sign-up session
+    // keeps its (unrecorded) first-factor label and admin stays
+    // withheld — the password alone was enough to enrol.
+    const enrolledSession = (
       await engine.provider.getSession(new Headers({ cookie: mfaCookie }))
+    )._unsafeUnwrap()
+    expect(enrolledSession?.assurance.mfa).not.toBe(true)
+    const stillGated = await sessionBody(await pluginSession(mfaCookie))
+    expect(stillGated.user?.roles).toEqual(['user'])
+    expect(stillGated.user?.mfaRequired).toBe(true)
+
+    // The native two-factor sign-in records the method (#79): the
+    // fresh session IS MFA-proven and admin is restored.
+    const challenge = await engine.auth.handler(
+      authRequest('/sign-in/email', { method: 'POST', body: { email, password: PASSWORD } })
+    )
+    expect(((await challenge.json()) as { twoFactorRedirect?: unknown }).twoFactorRedirect).toBe(
+      true
+    )
+    const signedIn = await engine.auth.handler(
+      authRequest('/two-factor/verify-totp', {
+        method: 'POST',
+        body: { code: totp(secret) },
+        cookie: cookieHeaderFrom(challenge),
+      })
+    )
+    expect(signedIn.status).toBe(200)
+    const signedInCookie = cookieHeaderFrom(signedIn)
+    const portSession = (
+      await engine.provider.getSession(new Headers({ cookie: signedInCookie }))
     )._unsafeUnwrap()
     expect(portSession?.assurance.mfa).toBe(true)
     expect(portSession?.assurance.methods).toEqual(['two-factor'])
+    const restored = await sessionBody(await pluginSession(signedInCookie))
+    expect(restored.user?.roles).toEqual(['admin', 'user'])
+    expect(restored.user?.mfaRequired).toBeUndefined()
     // A server-vouched step-up mint records the method too — the same
     // guarantee for server-side flows.
     const found = await payload.find({

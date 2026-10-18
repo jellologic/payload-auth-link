@@ -238,11 +238,22 @@ export declare function getBetterAuthSessionCookieNames(options: BetterAuthCooki
  * Unknown names yield `undefined` so the caller falls back to
  * `expiringCookieOptions`.
  *
- * Limitation: `crossSubDomainCookies` derives the cookie domain from the
- * base URL inside BA; that derivation is not mirrored here, so
- * cross-subdomain deployments should sign out through BA's own sign-out
- * for full cookie clearing. Server-side revocation still applies, so any
- * surviving cookie is dead — the plugin fails closed on it.
+ * `crossSubDomainCookies` is mirrored like BA's `createCookieGetter`:
+ * when enabled, every cookie is written with `Domain` set to
+ * `crossSubDomainCookies.domain`, or the static `baseURL`'s hostname —
+ * underneath `defaultCookieAttributes` and per-cookie attributes, which
+ * still win. Without the matching `Domain` a clearing write misses the
+ * cookie, and the browser keeps the cookie-cache `session_data` that
+ * BA's own `/get-session` keeps answering from until it expires.
+ * Residual: a dynamic `baseURL` (`allowedHosts`) without an explicit
+ * `crossSubDomainCookies.domain` resolves the domain per request inside
+ * BA; it cannot be known here, so those deployments clear without a
+ * `Domain` (set `crossSubDomainCookies.domain` to close it).
+ *
+ * Also covered: the multi-session plugin's per-session cookies
+ * (`<session_token>_multi-<token>`, written with the session token's
+ * attributes) and the `__Secure-` / plain counterparts of every name
+ * (the same attributes, `Secure` forced on a `__Secure-` name).
  */
 export declare function getBetterAuthSessionCookieClearOptions(options: BetterAuthCookieOptions, environment?: SecureCookieEnvironment): (name: string) => CookieOptions | undefined;
 /**
@@ -381,6 +392,41 @@ export type BetterAuthEngineInput<TOptions extends Omit<BetterAuthOptions, 'data
      */
     readonly strictLinking?: boolean | undefined;
     /**
+     * Declare that the `twoFactor` plugin's OTP channel
+     * (`otpOptions.sendOTP`) is independent of the user's email inbox —
+     * for example SMS — so a `/two-factor/verify-otp` step-up proves a
+     * second factor whatever the session's first factor was
+     * (GHSA-38wx-69j6-cgm7).
+     *
+     * Defaults to `false`: the OTP is assumed to reach the same inbox a
+     * magic link, an email OTP sign-in, or (through the IdP account) an
+     * OAuth sign-in already relies on, so an OTP step-up relabels a
+     * session `two-factor` only when its recorded first factor is
+     * `password` or `passkey` (or it is already MFA-proven). TOTP and
+     * backup-code step-ups are unaffected by this option.
+     */
+    readonly twoFactorOtpChannelIndependent?: boolean | undefined;
+    /**
+     * Keep Better Auth's raw session tokens in its HTTP JSON responses
+     * (issue #113, security-model row 28). Defaults to `false`: the
+     * engine's redaction plugin removes `session.token` from
+     * `/get-session`, `token` from every `/list-sessions` entry, and the
+     * freshly minted session token from session-creating responses
+     * (`/sign-in/*`, `/sign-up/*`, …) — HTTP requests only; server-side
+     * `auth.api.*` calls keep the full shape. `/revoke-session` then also
+     * accepts the listed session `id` in its `token` field. The session
+     * cookie stays `HttpOnly`; a JSON copy of it would hand page
+     * JavaScript a credential that BA's `bearer()` plugin accepts as
+     * `Authorization: Bearer`.
+     *
+     * Set `true` only for a client that genuinely needs the raw token
+     * (e.g. a native app reading it from the sign-in body) — and then
+     * install `bearer({ requireSignature: true })` or accept the logged
+     * warning. `/multi-session/*` and `/one-time-token/*` hand tokens
+     * over by design and are never redacted.
+     */
+    readonly exposeSessionTokens?: boolean | undefined;
+    /**
      * The builder's Better Auth options, passed through verbatim except for
      * `database` (wired to Payload here, so it is omitted from this type),
      * `emailAndPassword` (see below), and
@@ -468,6 +514,7 @@ export declare function createBetterAuthEngine<TOptions extends Omit<BetterAuthO
     };
 }): {
     auth: import("better-auth").Auth<TOptions & {
+        plugins: TPlugins;
         database: import("better-auth/adapters").AdapterFactory<BetterAuthOptions>;
         emailAndPassword: {
             enabled: boolean;
@@ -679,7 +726,6 @@ export declare function createBetterAuthEngine<TOptions extends Omit<BetterAuthO
                 };
             };
         };
-        plugins?: TPlugins;
     }>;
     provider: IdentityProviderPort;
     collections: CollectionConfig[];
@@ -957,35 +1003,54 @@ export declare function createBetterAuthProviderFromUnknown(auth: unknown, sessi
 
 // ===== session-provenance.d.ts =====
 import type { BetterAuthPlugin } from 'better-auth';
-import type { AuthMethod } from '@payload-auth-link/core';
+import { type AuthMethod, type LoggerPort } from '@payload-auth-link/core';
 /** The method value recorded on server-side mints (no 2FA challenge ran). */
 export declare const MINT_METHOD: AuthMethod;
 /** The method recorded when the server vouches a second factor it verified itself. */
 export declare const STEP_UP_METHOD: AuthMethod;
 /** Session methods whose recorded value counts as an MFA proof. */
 export declare const MFA_METHODS: readonly AuthMethod[];
+/** Options for {@link createSessionProvenancePlugin}. */
+export type SessionProvenanceOptions = {
+    /**
+     * Whether the twoFactor OTP channel (`otpOptions.sendOTP`) is
+     * independent of the user's email inbox. See
+     * `BetterAuthEngineInput.twoFactorOtpChannelIndependent`.
+     */
+    readonly twoFactorOtpChannelIndependent?: boolean | undefined;
+    /** Logs lockout refusals and counter-write failures. */
+    readonly logger?: LoggerPort | undefined;
+};
 /**
- * The engine's internal session-provenance plugin. Two jobs:
+ * The engine's internal session-provenance plugin. Three jobs:
  *
  * 1. **Schema** — one nullable, input-excluded field on Better Auth's
  *    session model: `authenticationMethod`, recording HOW the session
  *    came into being.
  * 2. **Recording** — `hooks.after` on the endpoints whose success
  *    creates (or finally proves) a session: password sign-in records
- *    `password`, the two-factor verifications upgrade their session to
- *    `two-factor`, OAuth callbacks record `oauth`, and so on. The
- *    second factor's own endpoint is the only path that writes
- *    `two-factor`, and server-side mints write
+ *    `password`, the two-factor sign-in verification records
+ *    `two-factor` on the session it issues, OAuth callbacks record
+ *    `oauth`, and so on. The second factor's own endpoint is the only
+ *    path that writes `two-factor`, and server-side mints write
  *    `server-mint`/`server-step-up` (port.ts).
- *
- *    **Step-up (#110):** a CORRECT second factor verified on an
- *    EXISTING session (password, aged, or server-minted) relabels that
- *    session `two-factor` — deterministically, whether or not BA
- *    re-sets the cookie. Only the session the verification itself
- *    authenticated is relabelled: the signature-verified request
- *    cookie must name the session BA resolved for the request
- *    (`ctx.context.session`). A failed verification (wrong code,
- *    non-200, APIError, empty result) relabels nothing.
+ * 3. **Step-up guard (#110, GHSA-38wx-69j6-cgm7)** — a `hooks.before`
+ *    on `/two-factor/verify*` assesses a verification presented on an
+ *    EXISTING session (step-up.ts): it is refused while the account is
+ *    locked, its wrong codes spend Better Auth's own per-user failure
+ *    budget (shared with the sign-in path), and a correct one relabels
+ *    the session `two-factor` only when
+ *    - the factor was enrolled BEFORE this request (the verification
+ *      that enrols the first factor — TOTP confirmation, a backup code
+ *      of an unconfirmed enrolment, the OTP that turns 2FA on — proves
+ *      nothing for the session that enrolled it; the session keeps its
+ *      first-factor label),
+ *    - for `/two-factor/verify-otp`, the OTP channel is independent of
+ *      the session's first factor (by default it is not after a
+ *      magic-link, email-OTP or OAuth sign-in, or an unrecorded one),
+ *    - and the signature-verified request cookie names the session BA
+ *      resolved for the request (`ctx.context.session`), which is the
+ *      session assessed. A failed verification relabels nothing.
  *
  * The server session API reads this per-session fact for its
  * assurance projection; enrollment flags are never consulted. Paths
@@ -993,7 +1058,198 @@ export declare const MFA_METHODS: readonly AuthMethod[];
  * `null` reads as "no recorded method", which the assurance projection
  * treats as proving nothing (fail closed).
  */
+export declare function createSessionProvenancePlugin(options?: SessionProvenanceOptions): BetterAuthPlugin;
+/** The plugin with its defaults (no independent OTP channel, silent logger). */
 export declare const sessionProvenancePlugin: BetterAuthPlugin;
+
+// ===== session-token-redaction.d.ts =====
+import { type LoggerPort } from '@payload-auth-link/core';
+import type { BetterAuthPlugin } from 'better-auth';
+/**
+ * Session-token redaction (issue #113, security-model row 28).
+ *
+ * Better Auth's own HTTP endpoints hand the RAW session token to page
+ * JavaScript: `/get-session` (`session.token`), `/list-sessions` (the
+ * token of EVERY live session of the user) and the session-minting
+ * endpoints' bodies (`/sign-in/email` → `{ token }`, …). The session
+ * cookie itself is `HttpOnly` precisely so script cannot read it; a
+ * JSON copy of the same credential undoes that. With BA's `bearer()`
+ * plugin installed (without `requireSignature`), the raw token is a
+ * working `Authorization: Bearer` credential — one XSS away from a
+ * stolen session on every device.
+ *
+ * The engine installs this plugin by default (`exposeSessionTokens`
+ * opts out). For HTTP requests only — server-side `auth.api.*` calls
+ * run in trusted code and keep the full shape (the port's own
+ * `getSession` reads `session.token`) — its after-hook removes:
+ *
+ * - `session.token` from `/get-session`;
+ * - `token` from every `/list-sessions` entry (each keeps its `id`);
+ * - on every other path, a top-level `token` or `session.token` EQUAL
+ *   to the session token the response just minted
+ *   (`ctx.context.newSession`) — so a value that merely shares the key
+ *   name (the `jwt` plugin's `/token`, a one-time token, …) is never
+ *   touched.
+ *
+ * Token hand-off protocols are left alone by design:
+ * `/multi-session/*` (switching and revoking device sessions takes the
+ * token) and `/one-time-token/*` (the exchange returns the session).
+ *
+ * `/revoke-session` takes a session token; with the tokens redacted
+ * from `/list-sessions`, its before-hook also accepts the listed
+ * session `id` (the same opaque handle the server API uses, issue
+ * #80) and resolves it to the token server-side. BA's endpoint still
+ * enforces that the session belongs to the caller.
+ */
+export declare const sessionTokenRedactionPluginId = "payload-auth-link-session-token-redaction";
+/**
+ * The redacted body for one HTTP response, or `undefined` when nothing
+ * needs to change. Pure — the hook below feeds it the endpoint path,
+ * the endpoint's returned value, and the session the response minted.
+ * Exported for the unit suite.
+ */
+export declare function redactSessionTokens(path: string | undefined, returned: unknown, newSession: unknown): unknown;
+/** The hook-context fields this plugin reads (Better Auth 1.7). */
+export type RedactionHookContext = {
+    readonly path?: string | undefined;
+    readonly request?: unknown;
+    readonly body?: unknown;
+    readonly context: {
+        readonly returned?: unknown;
+        readonly newSession?: unknown;
+        readonly adapter?: {
+            readonly findOne?: ((input: {
+                model: string;
+                where: {
+                    field: string;
+                    value: string;
+                }[];
+            }) => Promise<unknown>) | undefined;
+        };
+    };
+};
+/**
+ * `/revoke-session` body rewrite: a `token` that names a session ROW id
+ * becomes that row's token. A real token never matches a row id, so
+ * it passes through unchanged; an unknown value too (BA then answers
+ * as it always does). Exported for the unit suite.
+ */
+export declare function resolveRevokeHandle(ctx: RedactionHookContext): Promise<{
+    context: {
+        body: Record<string, unknown>;
+    };
+} | undefined>;
+/** The engine's session-token redaction plugin (see the module doc). */
+export declare const sessionTokenRedactionPlugin: BetterAuthPlugin;
+/** One plugin as the engine sees it in the builder's list. */
+type InstalledPlugin = {
+    readonly id: string;
+    readonly options?: unknown;
+};
+/**
+ * Wiring-time warning (issue #113): BA's `bearer()` plugin turns a raw
+ * session token into a working `Authorization: Bearer` credential
+ * unless `requireSignature` is set. Combined with a surface that hands
+ * raw tokens to page JavaScript — `exposeSessionTokens: true`, or the
+ * multi-session plugin's `/multi-session/list-device-sessions` — any
+ * script on the page can lift a bearer credential. Warn loudly through
+ * the logger; never `console.*`.
+ */
+export declare function reportSessionTokenExposure(plugins: readonly InstalledPlugin[], exposeSessionTokens: boolean, logger: LoggerPort): void;
+export {};
+
+// ===== step-up.d.ts =====
+import type { LoggerPort } from '@payload-auth-link/core';
+/** Better Auth's `twoFactor({ accountLockout })`, resolved with BA's own defaults. */
+export type LockoutConfig = {
+    readonly enabled: boolean;
+    readonly maxFailedAttempts: number;
+    readonly durationMs: number;
+};
+/**
+ * What the before-hook established about one second-factor request.
+ *
+ * - `sign-in`: no session was presented; Better Auth's challenge path
+ *   runs (and does its own counting and locking).
+ * - `step-up`: a verification on the existing session `token`.
+ *   `provesMfa` is true only when the factor was ALREADY enrolled
+ *   before this request (a verification that enrols the first factor
+ *   proves nothing for the session that enrolled it) and, for the OTP
+ *   route, when the OTP channel is independent of the session's first
+ *   factor. `twoFactorId` is the counter row, or `null` when the user
+ *   has none (OTP-only enrolment — Better Auth keeps no counter for
+ *   those on either path).
+ */
+export type StepUpAssessment = {
+    readonly kind: 'sign-in';
+} | {
+    readonly kind: 'step-up';
+    readonly token: string;
+    readonly userId: string;
+    readonly twoFactorId: string | null;
+    readonly provesMfa: boolean;
+    readonly lockout: LockoutConfig;
+};
+/** Wiring for the step-up guard. */
+export type StepUpOptions = {
+    /** See `BetterAuthEngineInput.twoFactorOtpChannelIndependent`. */
+    readonly otpChannelIndependent: boolean;
+    readonly logger: LoggerPort;
+};
+/** The Better Auth 1.7 hook-context fields this module reads. */
+export type StepUpHookContext = {
+    readonly path?: string | undefined;
+    readonly context: {
+        session?: unknown;
+        readonly getPlugin?: ((id: string) => unknown) | undefined;
+        readonly internalAdapter?: {
+            readonly findSession?: ((token: string) => Promise<unknown>) | undefined;
+            readonly findUserById?: ((id: string) => Promise<unknown>) | undefined;
+        };
+        readonly adapter?: {
+            readonly findOne?: ((query: Record<string, unknown>) => Promise<unknown>) | undefined;
+            readonly incrementOne?: ((query: Record<string, unknown>) => Promise<unknown>) | undefined;
+            readonly update?: ((query: Record<string, unknown>) => Promise<unknown>) | undefined;
+        };
+    };
+};
+/** BA's `resolveAccountLockoutConfig`, read from the installed `two-factor` plugin. */
+export declare function lockoutConfigOf(ctx: StepUpHookContext): LockoutConfig;
+/**
+ * Assess one second-factor request BEFORE its endpoint runs. The
+ * presented session is resolved through Better Auth's own
+ * `getSessionFromCtx` (passed in as `resolveSession`, run with refresh
+ * disabled and its cache restored afterwards so the endpoint resolves —
+ * and refreshes — exactly as it would without this hook). For a
+ * step-up, the state that decides it is read FRESH from storage, never
+ * from the cookie cache: the session's recorded first factor, the
+ * user's enrolment flag, and the `twoFactor` row.
+ *
+ * Throws Better Auth's own `ACCOUNT_TEMPORARILY_LOCKED` (429) while the
+ * account is locked — the step-up is refused before any code is
+ * checked, exactly like the sign-in path. An expired lock is cleared
+ * the way Better Auth clears it (guarded, so a concurrent fresh lock
+ * survives).
+ */
+export declare function assessSecondFactorRequest(ctx: StepUpHookContext, resolveSession: () => Promise<unknown>, options: StepUpOptions): Promise<StepUpAssessment>;
+/** How a second-factor endpoint ended, as far as the counter cares. */
+export type SecondFactorOutcome = 'success' | 'failed-guess' | 'failed';
+/**
+ * Classify the endpoint's result: a 200 body is `success`; Better
+ * Auth's own wrong-code errors are `failed-guess` (they spend the
+ * budget); anything else (expired OTP, too many attempts on one code,
+ * a server error) is `failed` and neither spends nor resets it.
+ */
+export declare function outcomeOf(returned: unknown): SecondFactorOutcome;
+/**
+ * Spend or reset the shared failure budget after a step-up, with
+ * Better Auth's own write sequence: an atomic increment, then a guarded
+ * lock once the budget is spent; a success clears both. A write that
+ * fails is logged and swallowed — the request's own outcome stands.
+ */
+export declare function accountStepUp(ctx: StepUpHookContext, assessment: Extract<StepUpAssessment, {
+    kind: 'step-up';
+}>, outcome: SecondFactorOutcome, logger: LoggerPort): Promise<void>;
 
 // ===== where.d.ts =====
 import type { Where } from 'payload';

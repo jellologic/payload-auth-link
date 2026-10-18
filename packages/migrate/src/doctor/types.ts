@@ -1,3 +1,5 @@
+import type { SourceTableMap } from '../importer/types.js'
+
 /**
  * The doctor's report shape (issue #52): read-only findings, every
  * one carrying a stable machine code so tests (and the guide) assert
@@ -107,6 +109,13 @@ export type DoctorReport = {
   readonly users: UsersFinding | null
   readonly source: readonly SourceFinding[]
   readonly database: DatabaseFinding | null
+  /**
+   * The source layout derived from the loaded payload-auth config
+   * (issue #113): model → table, `null` for a model whose plugin is
+   * not installed. Pass it to the importer, `verify`, and `export` as
+   * `--source-map`. Absent when the config is not a payload-auth one.
+   */
+  readonly sourceMap?: SourceTableMap
   readonly behaviourChanges: readonly BehaviourChange[]
   readonly blockers: readonly DoctorIssue[]
   readonly warnings: readonly DoctorIssue[]

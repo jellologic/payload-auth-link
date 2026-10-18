@@ -223,6 +223,39 @@ describe('role projection (issue #56)', () => {
     expect(user?.roles).toEqual(['frontPlugin'])
   })
 
+  it('drops (never passes through raw) a role the stored projection cannot map', async () => {
+    const stub = createStubProvider()
+    const cookie = stub.issue({
+      sessionId: 'proj-unmapped',
+      providerUserId: 'stub-1',
+      email: 'linked@test.dev',
+      expiresAt: new Date(Date.now() + 3_600_000),
+    })
+    const doc = { ...linkedDoc, roles: ['frontPlugin', 'user'] }
+    const payload = stubPayload({
+      find: () => Promise.resolve({ docs: [doc], totalDocs: 1 }),
+      findByID: () => Promise.resolve(doc),
+    })
+    const { logger, warn } = capturingLogger()
+    const wired = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['user', 'front-plugin'],
+      defaultRole: 'user',
+      roleManagerRoles: ['user'],
+      providers: [stub.provider],
+      roleValues: { 'front-plugin': 'frontPlugin' },
+      projectRolesAs: 'stored',
+      logger,
+    })
+    // A drifted wiring: the map lost its entry for `front-plugin`.
+    const drifted = { ...wired, roleValues: { user: 'user' } }
+    const result = await authenticateWired(drifted, new Headers({ cookie }), payload)
+    expect((result.user as { roles?: string[] } | null)?.roles).toEqual(['user'])
+    expect(warn).toHaveBeenCalledWith('strategy dropped a role with no stored value', {
+      role: 'front-plugin',
+    })
+  })
+
   it('keeps the MFA-gated roles canonical in the default projection', async () => {
     const stub = createStubProvider()
     const cookie = stub.issue({
@@ -302,6 +335,40 @@ describe('reqUser: document (issue #57)', () => {
     expect(user?.roles).toEqual(['user'])
     expect(user?.collection).toBe('users')
     expect(user?._strategy).toBe('auth-link')
+  })
+
+  it('falls back to the projection when the document read returns no record', async () => {
+    const stub = createStubProvider()
+    const cookie = stub.issue({
+      sessionId: 'doc-gone',
+      providerUserId: 'stub-1',
+      email: 'linked@test.dev',
+      expiresAt: new Date(Date.now() + 3_600_000),
+    })
+    let reads = 0
+    const payload = stubPayload({
+      find: () => Promise.resolve({ docs: [linkedDoc], totalDocs: 1 }),
+      // The repository's reload sees the user; the document load (a
+      // second read, e.g. after a concurrent delete) does not.
+      findByID: () => {
+        reads += 1
+        return Promise.resolve(reads === 1 ? linkedDoc : null)
+      },
+    })
+    const wired = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['user'],
+      defaultRole: 'user',
+      roleManagerRoles: ['user'],
+      reqUser: 'document',
+      providers: [stub.provider],
+      logger: nullLogger(),
+    })
+    const result = await authenticateWired(wired, new Headers({ cookie }), payload)
+    const user = result.user as Record<string, unknown> | null
+    expect(user?.id).toBe('user-1')
+    expect(user?._strategy).toBe('auth-link')
+    expect(user).not.toHaveProperty('createdAt')
   })
 
   it('memoizes the document per request context', async () => {

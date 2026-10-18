@@ -106,11 +106,14 @@ provider's own resync is unaffected), and self-service local
 passwords on plugin-managed documents are stripped: one document
 never holds two independently owned credentials. Documents created
 outside the plugin — pre-upgrade rows, imports that skipped the
-marker — are never JIT-linked until the collision is resolved: the
-conflicting document renamed or removed, or the proof granted only
-after a fresh verification of its CURRENT address or from an
-operator-reviewed list (never from `_verified`, which may predate an
-email change; see [upgrading](upgrading.md)). The migration runbook
+marker — are never JIT-linked until an operator resolves the
+collision: after checking who created and owns the conflicting
+document, renames or removes it, or grants the proof from a reviewed
+list confirming the document is the address owner's own. Never from
+`_verified` (which may predate an email change) and never from a
+fresh verification mail alone: that proves who controls the address,
+not who built the document — on a squatted document it would hand the
+victim the squatter's document (see [upgrading](upgrading.md)). The migration runbook
 sets both fields from provider-verified emails. Unproven documents
 also cannot be created by end users: collection-level `create` on the
 users collection defaults to role-manager-only, and collection-level

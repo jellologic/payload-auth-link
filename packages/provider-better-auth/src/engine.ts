@@ -30,7 +30,11 @@ import {
 import { createIdentityEventBus } from './events.js'
 import { deriveBetterAuthSchema } from './derive-schema.js'
 import { createBetterAuthProviderFromUnknown } from './port.js'
-import { sessionProvenancePlugin } from './session-provenance.js'
+import { createSessionProvenancePlugin } from './session-provenance.js'
+import {
+  reportSessionTokenExposure,
+  sessionTokenRedactionPlugin,
+} from './session-token-redaction.js'
 
 /** Engine wiring: Payload access plus the builder's Better Auth options. */
 export type BetterAuthEngineInput<TOptions extends Omit<BetterAuthOptions, 'database'>> = {
@@ -107,6 +111,41 @@ export type BetterAuthEngineInput<TOptions extends Omit<BetterAuthOptions, 'data
    * Defaults to `false` (warn only).
    */
   readonly strictLinking?: boolean | undefined
+  /**
+   * Declare that the `twoFactor` plugin's OTP channel
+   * (`otpOptions.sendOTP`) is independent of the user's email inbox —
+   * for example SMS — so a `/two-factor/verify-otp` step-up proves a
+   * second factor whatever the session's first factor was
+   * (GHSA-38wx-69j6-cgm7).
+   *
+   * Defaults to `false`: the OTP is assumed to reach the same inbox a
+   * magic link, an email OTP sign-in, or (through the IdP account) an
+   * OAuth sign-in already relies on, so an OTP step-up relabels a
+   * session `two-factor` only when its recorded first factor is
+   * `password` or `passkey` (or it is already MFA-proven). TOTP and
+   * backup-code step-ups are unaffected by this option.
+   */
+  readonly twoFactorOtpChannelIndependent?: boolean | undefined
+  /**
+   * Keep Better Auth's raw session tokens in its HTTP JSON responses
+   * (issue #113, security-model row 28). Defaults to `false`: the
+   * engine's redaction plugin removes `session.token` from
+   * `/get-session`, `token` from every `/list-sessions` entry, and the
+   * freshly minted session token from session-creating responses
+   * (`/sign-in/*`, `/sign-up/*`, …) — HTTP requests only; server-side
+   * `auth.api.*` calls keep the full shape. `/revoke-session` then also
+   * accepts the listed session `id` in its `token` field. The session
+   * cookie stays `HttpOnly`; a JSON copy of it would hand page
+   * JavaScript a credential that BA's `bearer()` plugin accepts as
+   * `Authorization: Bearer`.
+   *
+   * Set `true` only for a client that genuinely needs the raw token
+   * (e.g. a native app reading it from the sign-in body) — and then
+   * install `bearer({ requireSignature: true })` or accept the logged
+   * warning. `/multi-session/*` and `/one-time-token/*` hand tokens
+   * over by design and are never redacted.
+   */
+  readonly exposeSessionTokens?: boolean | undefined
   /**
    * The builder's Better Auth options, passed through verbatim except for
    * `database` (wired to Payload here, so it is omitted from this type),
@@ -485,14 +524,22 @@ export function createBetterAuthEngine<
   // composition — pinned by the option-driven-typing test. The
   // provenance plugin contributes NO endpoints (its schema is
   // runtime-only), so typing the merged array as TPlugins is honest
-  // for the API surface the compiler sees.
+  // for the API surface the compiler sees. It also guards second-factor
+  // step-ups (lockout, enrolment, OTP channel; GHSA-38wx-69j6-cgm7).
+  // Session-token redaction (#113) is appended the same way and also
+  // contributes no endpoints (hooks only).
+  const exposeSessionTokens = input.exposeSessionTokens === true
   const mergedPlugins = [
     ...(input.options.plugins ?? []),
-    sessionProvenancePlugin,
+    createSessionProvenancePlugin({
+      twoFactorOtpChannelIndependent: input.twoFactorOtpChannelIndependent === true,
+      logger: input.logger ?? nullLogger(),
+    }),
+    ...(exposeSessionTokens ? [] : [sessionTokenRedactionPlugin]),
   ] as unknown as TPlugins
   const auth = betterAuth({
     ...input.options,
-    ...(mergedPlugins === undefined ? {} : { plugins: mergedPlugins }),
+    plugins: mergedPlugins,
     database,
     emailAndPassword,
     account,
@@ -509,14 +556,16 @@ export function createBetterAuthEngine<
   // plugin — the sole producer of `session.impersonatedBy` — and
   // `'oauth'` additionally when core social providers are configured.
   const plugins: unknown = input.options.plugins
-  const pluginIds: string[] = []
+  const installed: { readonly id: string; readonly options?: unknown }[] = []
   if (Array.isArray(plugins)) {
     for (const plugin of plugins) {
       if (isRecord(plugin) && typeof plugin.id === 'string' && plugin.id !== '') {
-        pluginIds.push(plugin.id)
+        installed.push({ id: plugin.id, options: plugin.options })
       }
     }
   }
+  const pluginIds = installed.map((plugin) => plugin.id)
+  reportSessionTokenExposure(installed, exposeSessionTokens, input.logger ?? nullLogger())
   const socialProviders: unknown = input.options.socialProviders
   const hasSocialOauth = isRecord(socialProviders) && Object.keys(socialProviders).length > 0
   const provider = createBetterAuthProviderFromUnknown(

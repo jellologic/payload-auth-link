@@ -55,9 +55,20 @@ signed manifest — see
 - `finalize --config …` records the finalize in the app's database
   (Payload's `payload-kv` store) and re-signs the manifest; rollback
   is refused afterwards, whatever the file says.
-- `--allow-unsigned-manifest` accepts a pre-0.6.0 manifest (or a
-  0.6.0 one for rollback) but never deletes; add
-  `--allow-unsigned-deletes` after reviewing its created rows.
+- The manifest is bound to its database and run (an id and a nonce
+  kept in the app's `payload-kv`, signed into the file): a manifest
+  from another environment or another run, or one from before a
+  rollback, is refused. Never roll back with a manifest from another
+  environment or run.
+- `--allow-unsigned-manifest` accepts a pre-0.6.0 or 0.6.0 manifest
+  for `rollback` / `finalize` only (never resumed or re-signed) and
+  never deletes; add `--allow-unsigned-deletes` after reviewing its
+  created rows, and `--allow-plaintext-restore` for its plaintext
+  values. A signed 0.7.0 manifest needs `--allow-unbound-manifest`.
+- The linking proof (`linkable`) is granted only with
+  `--grant-linkable-from-verified` (importer and `adopt-prelink`).
+- `verify` checks an import; in adopt mode it says so and points to
+  the checksum procedure.
 - `export --source-map …` exports a renamed layout; a mapped table
   that is missing exits 1.
 

@@ -2,8 +2,8 @@
  * Local sessions issued before linking, on a host WITHOUT Payload's
  * server-side sessions (`auth.useSessions: false`): the JWT is
  * stateless, so clearing the sessions array cannot reach it. The
- * provider-owned local-JWT gate (collections.ts) refuses it on the
- * next operation instead. Real engine: Payload on SQLite in memory.
+ * authentication-time credential gate (credential-gate.ts) resolves
+ * no user for it instead. Real engine: Payload on SQLite in memory.
  */
 import { sqliteAdapter } from '@payloadcms/db-sqlite'
 import {
@@ -93,14 +93,15 @@ describe('stateless local JWTs issued before linking', () => {
     })
     expect(linked.status).toBe(200)
 
-    // After it, every operation under the pre-link JWT is refused.
+    // After it, the pre-link JWT resolves no user at authentication
+    // (GHSA-mjvh): every request it signs is anonymous and refused.
     const read = await rest('GET', `/users/${String(created.id)}`, { cookie: jwt })
-    expect(read.status).toBe(401)
+    expect(read.status).toBe(403)
     const write = await rest('PATCH', `/users/${String(created.id)}`, {
       cookie: jwt,
       body: { email: 'moved@prelink.test' },
     })
-    expect(write.status).toBe(401)
+    expect(write.status).toBe(403)
     const doc = await payload.findByID({
       collection: 'users',
       id: created.id,

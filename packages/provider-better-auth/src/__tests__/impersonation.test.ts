@@ -294,12 +294,16 @@ describe('impersonated provider session (CAP-8a)', () => {
     expect(await canAccessAdmin(impersonatedCookie)).toBeFalsy()
 
     // A role write under impersonation never lands.
-    await rest('PATCH', `/users/${bystanderId}`, impersonatedCookie, { roles: ['admin'] })
+    const roleWrite = await rest('PATCH', `/users/${bystanderId}`, impersonatedCookie, {
+      roles: ['admin'],
+    })
+    expect(roleWrite.status).toBe(403)
     expect((await hostDoc('bystander@impersonation.test')).roles).toEqual(['user'])
     // An email write under impersonation never lands (own doc included).
-    await rest('PATCH', `/users/${targetId}`, impersonatedCookie, {
+    const emailWrite = await rest('PATCH', `/users/${targetId}`, impersonatedCookie, {
       email: 'hijacked@impersonation.test',
     })
+    expect(emailWrite.status).toBe(403)
     expect((await hostDoc(TARGET_EMAIL)).email).toBe(TARGET_EMAIL)
 
     // Control: the identical role write under the target's own session lands.
@@ -328,7 +332,10 @@ describe('impersonated provider session (CAP-8a)', () => {
 
     // A refused write is audited too (beforeOperation runs before access).
     auditEvents.length = 0
-    await rest('PATCH', `/users/${targetId}`, impersonatedCookie, { roles: ['user'] })
+    const refused = await rest('PATCH', `/users/${targetId}`, impersonatedCookie, {
+      roles: ['user'],
+    })
+    expect(refused.status).toBe(403)
     expect(auditEvents).toContainEqual({
       message: 'impersonated operation',
       fields: expect.objectContaining({

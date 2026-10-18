@@ -198,11 +198,22 @@ export function getBetterAuthSessionCookieNames(
  * Unknown names yield `undefined` so the caller falls back to
  * `expiringCookieOptions`.
  *
- * Limitation: `crossSubDomainCookies` derives the cookie domain from the
- * base URL inside BA; that derivation is not mirrored here, so
- * cross-subdomain deployments should sign out through BA's own sign-out
- * for full cookie clearing. Server-side revocation still applies, so any
- * surviving cookie is dead — the plugin fails closed on it.
+ * `crossSubDomainCookies` is mirrored like BA's `createCookieGetter`:
+ * when enabled, every cookie is written with `Domain` set to
+ * `crossSubDomainCookies.domain`, or the static `baseURL`'s hostname —
+ * underneath `defaultCookieAttributes` and per-cookie attributes, which
+ * still win. Without the matching `Domain` a clearing write misses the
+ * cookie, and the browser keeps the cookie-cache `session_data` that
+ * BA's own `/get-session` keeps answering from until it expires.
+ * Residual: a dynamic `baseURL` (`allowedHosts`) without an explicit
+ * `crossSubDomainCookies.domain` resolves the domain per request inside
+ * BA; it cannot be known here, so those deployments clear without a
+ * `Domain` (set `crossSubDomainCookies.domain` to close it).
+ *
+ * Also covered: the multi-session plugin's per-session cookies
+ * (`<session_token>_multi-<token>`, written with the session token's
+ * attributes) and the `__Secure-` / plain counterparts of every name
+ * (the same attributes, `Secure` forced on a `__Secure-` name).
  */
 export function getBetterAuthSessionCookieClearOptions(
   options: BetterAuthCookieOptions,
@@ -211,29 +222,19 @@ export function getBetterAuthSessionCookieClearOptions(
   const entries = sessionCookieEntries(options, environment)
   const secureDefault = secureCookiesEnabled(options, environment)
   const defaults = options.advanced?.defaultCookieAttributes
-  const lookup = new Map<string, CookieOptions>(
-    entries.map((entry) => {
-      const specific = options.advanced?.cookies?.[entry.key]?.attributes
-      return [
-        entry.name,
-        {
-          secure: (specific?.secure ?? defaults?.secure ?? secureDefault) ? true : undefined,
-          domain: specific?.domain ?? defaults?.domain,
-          path: specific?.path ?? defaults?.path,
-          partitioned: (specific?.partitioned ?? defaults?.partitioned) === true ? true : undefined,
-        },
-      ]
-    })
-  )
+  const crossSubDomain = crossSubDomainCookieDomain(options)
   const clearFor = (key: SessionCookieKey | 'dont_remember' | 'account_data'): CookieOptions => {
     const specific = options.advanced?.cookies?.[key]?.attributes
     return {
       secure: (specific?.secure ?? defaults?.secure ?? secureDefault) ? true : undefined,
-      domain: specific?.domain ?? defaults?.domain,
+      domain: specific?.domain ?? defaults?.domain ?? crossSubDomain,
       path: specific?.path ?? defaults?.path,
       partitioned: (specific?.partitioned ?? defaults?.partitioned) === true ? true : undefined,
     }
   }
+  const lookup = new Map<string, CookieOptions>(
+    entries.map((entry) => [entry.name, clearFor(entry.key)])
+  )
   // Logout-only cookies BA writes with their own attributes.
   const sessionDataName = sessionCookieName('session_data', options, environment)
   if (!lookup.has(sessionDataName)) {
@@ -244,17 +245,61 @@ export function getBetterAuthSessionCookieClearOptions(
   // BA sets `admin_session` with the session token's live attributes
   // (`authCookies.sessionToken.attributes`), not its own per-cookie
   // attributes, so its clearing write must reuse the session token's.
-  const sessionTokenEntry = entries.find((entry) => entry.key === 'session_token')
-  const sessionTokenClear =
-    sessionTokenEntry === undefined ? undefined : lookup.get(sessionTokenEntry.name)
-  if (sessionTokenClear !== undefined) {
-    lookup.set(auxiliaryCookieName(adminSessionCookieKey, options, environment), sessionTokenClear)
+  const sessionTokenName = sessionCookieName('session_token', options, environment)
+  const sessionTokenClear = clearFor('session_token')
+  lookup.set(auxiliaryCookieName(adminSessionCookieKey, options, environment), sessionTokenClear)
+  // The `__Secure-` / plain counterparts (a deployment that switched
+  // between http and https left them behind) were written with the same
+  // configured attributes; a `__Secure-` name additionally demands
+  // `Secure` on every write, the clearing one included.
+  for (const [name, clear] of [...lookup]) {
+    const toggled = toggledSecureVariant(name)
+    if (toggled !== undefined && !lookup.has(toggled)) {
+      lookup.set(
+        toggled,
+        toggled.startsWith(secureCookiePrefix) ? { ...clear, secure: true } : { ...clear }
+      )
+    }
   }
+  const multiSessionPrefix = `${sessionTokenName}_multi-`
   return (name: string): CookieOptions | undefined => {
     // A chunk (`<name>.<n>`, see `betterAuthCookieChunkBase`) is
-    // written with its base cookie's attributes.
-    const found = lookup.get(name) ?? lookup.get(betterAuthCookieChunkBase(name) ?? '')
+    // written with its base cookie's attributes; a multi-session
+    // cookie with the session token's (BA's multi-session plugin
+    // writes it from `authCookies.sessionToken.attributes`).
+    const found =
+      lookup.get(name) ??
+      lookup.get(betterAuthCookieChunkBase(name) ?? '') ??
+      (name.startsWith(multiSessionPrefix) ? sessionTokenClear : undefined)
     return found === undefined ? undefined : { ...found }
+  }
+}
+
+/**
+ * The `Domain` BA's `createCookieGetter` puts under every cookie when
+ * `crossSubDomainCookies` is enabled: the explicit
+ * `crossSubDomainCookies.domain`, otherwise the hostname of a static
+ * string `baseURL`. `undefined` when cross-subdomain cookies are off,
+ * or when the domain is resolved per request (a dynamic `baseURL`
+ * without an explicit domain).
+ */
+function crossSubDomainCookieDomain(options: BetterAuthCookieOptions): string | undefined {
+  const cross = options.advanced?.crossSubDomainCookies
+  if (cross?.enabled !== true) {
+    return undefined
+  }
+  if (typeof cross.domain === 'string' && cross.domain !== '') {
+    return cross.domain
+  }
+  if (typeof options.baseURL !== 'string') {
+    return undefined
+  }
+  try {
+    return new URL(options.baseURL).hostname
+  } catch {
+    // BA itself refuses an unparseable baseURL at construction; no
+    // domain can be derived from it here.
+    return undefined
   }
 }
 

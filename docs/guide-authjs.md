@@ -181,6 +181,13 @@ sensitive deployments; the window is always exactly your `maxAge`.
   every key it returns except the adapter session row fields
   (`sessionToken`, `userId`, `id`), which are always removed; add
   what the browser needs explicitly rather than relying on them.
+  On database sessions the credential is also removed at any depth:
+  every nested `sessionToken` key, and every string (object value or
+  array item) containing the live session token, so a callback that
+  nests the session it was given (`{ ...session, debug: { session } }`)
+  cannot leak it. The rest of your result is sent in its JSON form
+  (`Date`s as ISO strings); a cyclic result fails the session read
+  with `SESSION_SHAPE_INVALID`, as `JSON.stringify` would.
 - The port reads sessions through Auth.js's own session action
   (never a hand-rolled JWT decode) and needs a `host` header to
   build the internal request — the plugin endpoints pass live

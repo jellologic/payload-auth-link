@@ -204,13 +204,14 @@ export function analyzeUsersCollection(
       'Payload local strategy is ON for this collection: since 0.7.0, provider-linked documents refuse local sign-in and forgot/reset by default — break-glass operator accounts keep theirs; allowLocalCredentialsForLinkedDocs: true reopens it only for a migration window'
     )
     if (options.adoptTarget === true) {
-      // Adopt mode (issue #110): Better Auth creates its users IN this
-      // collection, and Payload's local strategy demands a password on
-      // every create — sign-up and anonymous sign-in fail for every
-      // new user.
+      // Adopt mode (issues #110, #113): Better Auth creates its users
+      // IN this collection, and Payload's local strategy demands a
+      // password on every create. provider-better-auth 0.11.0 injects
+      // an unknowable password on each create, so new users work; older
+      // engines failed every new user. A warning, not a blocker.
       issues.push({
         code: 'adopt-local-strategy-on',
-        detail: `adopt mode serves Better Auth's users from the collection '${typeof collection.slug === 'string' ? collection.slug : 'users'}', but Payload's local strategy is ON there: Payload requires a password on every create, so every NEW user fails (email sign-up 422, anonymous sign-in 500 "field is invalid: password"). Set auth: { disableLocalStrategy: true } on the collection (payload-auth's disableDefaultPayloadAuth: true did the same), or use the importer (ba-* collections) instead of adopt`,
+        detail: `adopt mode serves Better Auth's users from the collection '${typeof collection.slug === 'string' ? collection.slug : 'users'}' while Payload's local strategy is ON there. Use @payload-auth-link/provider-better-auth 0.11.0 or later: it injects an unknowable password on every create (older engines fail every NEW user: email sign-up 422, anonymous sign-in 500 "field is invalid: password"). Keep the local strategy only for break-glass operator accounts; otherwise set auth: { disableLocalStrategy: true } (payload-auth's disableDefaultPayloadAuth: true did the same)`,
       })
     }
   } else {

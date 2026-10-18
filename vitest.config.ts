@@ -105,11 +105,18 @@ export default defineConfig({
           statements: 95,
         },
         'packages/plugin/src/access.ts': { lines: 95, functions: 95, branches: 95, statements: 95 },
-        'packages/plugin/src/audit.ts': { lines: 95, functions: 91, branches: 88, statements: 95 },
+        'packages/plugin/src/audit.ts': { lines: 95, functions: 95, branches: 95, statements: 95 },
         'packages/plugin/src/collections.ts': {
           lines: 95,
           functions: 95,
-          branches: 86,
+          branches: 88,
+          statements: 95,
+        },
+        // GHSA-mjvh: the authentication-time credential gate.
+        'packages/plugin/src/credential-gate.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 95,
           statements: 95,
         },
         'packages/plugin/src/compat-shim.ts': {
@@ -153,7 +160,7 @@ export default defineConfig({
         'packages/plugin/src/strategy.ts': {
           lines: 95,
           functions: 95,
-          branches: 90,
+          branches: 95,
           statements: 95,
         },
         'packages/plugin/src/verified-email.ts': {
@@ -168,19 +175,16 @@ export default defineConfig({
           branches: 95,
           statements: 95,
         },
-        // Another change is reshaping the session callback; the floor
-        // sits below the measured 98.6 / 100 / 95.7 / 98.6 so that
-        // change can land and re-measure.
         'packages/provider-authjs/src/callbacks.ts': {
-          lines: 93,
+          lines: 95,
           functions: 95,
-          branches: 90,
-          statements: 93,
+          branches: 95,
+          statements: 95,
         },
         'packages/provider-authjs/src/engine.ts': {
           lines: 95,
           functions: 95,
-          branches: 91,
+          branches: 93,
           statements: 95,
         },
         'packages/provider-authjs/src/port.ts': {
@@ -190,32 +194,48 @@ export default defineConfig({
           statements: 95,
         },
         'packages/provider-better-auth/src/adapter.ts': {
-          lines: 80,
-          functions: 91,
-          branches: 73,
-          statements: 81,
+          lines: 95,
+          functions: 95,
+          branches: 95,
+          statements: 95,
         },
         'packages/provider-better-auth/src/cookies.ts': {
           lines: 95,
           functions: 95,
-          branches: 89,
+          branches: 95,
           statements: 95,
         },
         'packages/provider-better-auth/src/engine.ts': {
           lines: 95,
-          functions: 93,
-          branches: 93,
+          functions: 95,
+          branches: 95,
           statements: 95,
         },
-        // Measured 90.7 / 94.7 / 88.4 / 90.7; another change is editing
-        // this file, so the floor leaves it a little room.
+        'packages/provider-better-auth/src/events.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 95,
+          statements: 95,
+        },
         'packages/provider-better-auth/src/port.ts': {
-          lines: 88,
-          functions: 92,
-          branches: 85,
-          statements: 88,
+          lines: 95,
+          functions: 95,
+          branches: 95,
+          statements: 95,
         },
         'packages/provider-better-auth/src/session-provenance.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 95,
+          statements: 95,
+        },
+        'packages/provider-better-auth/src/session-token-redaction.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 95,
+          statements: 95,
+        },
+        'packages/provider-better-auth/src/step-up.ts': {
           lines: 95,
           functions: 95,
           branches: 95,

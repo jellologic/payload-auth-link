@@ -10,7 +10,8 @@
  * no credential: no `sessionToken` / `userId` key at any depth, and no
  * value equal to any cookie the sign-in set. A builder callback that
  * spreads the session it is given keeps its own keys and loses only the
- * adapter session row fields.
+ * adapter session row fields; one that NESTS the session (or copies the
+ * token under another key) loses the credential at every depth.
  */
 import { sqliteAdapter } from '@payloadcms/db-sqlite'
 import type { AuthConfig } from '@auth/core'
@@ -38,6 +39,7 @@ const magicLink: AuthConfig['providers'][number] = {
 let payload: Payload | undefined
 
 type Strategy = 'jwt' | 'database'
+type Builder = 'none' | 'spread' | 'nest'
 
 /** A builder callback that hands back everything it was given, plus a key. */
 const spreadingSession: NonNullable<NonNullable<AuthConfig['callbacks']>['session']> = ({
@@ -47,7 +49,29 @@ const spreadingSession: NonNullable<NonNullable<AuthConfig['callbacks']>['sessio
   return extended
 }
 
-function engineFor(strategy: Strategy, withBuilderSession: boolean): AuthJsEngine {
+/**
+ * A careless builder callback: it nests the whole session (database
+ * strategy: the adapter row, `sessionToken` included) and copies the
+ * token into an array and a derived string under unrelated keys.
+ */
+const nestingSession: NonNullable<NonNullable<AuthConfig['callbacks']>['session']> = ({
+  session,
+}) => {
+  const token: unknown = (session as { sessionToken?: unknown }).sessionToken
+  const raw = typeof token === 'string' ? token : 'no-token'
+  const extended = {
+    ...session,
+    theme: 'dark',
+    debug: { s: session, depth: { again: [session, raw] } },
+    trace: [raw, 'kept'],
+    header: `Bearer ${raw}`,
+  }
+  return extended
+}
+
+const builders = { spread: spreadingSession, nest: nestingSession } as const
+
+function engineFor(strategy: Strategy, builder: Builder): AuthJsEngine {
   return createAuthJsEngine({
     getPayload: () => {
       if (!payload) {
@@ -61,7 +85,7 @@ function engineFor(strategy: Strategy, withBuilderSession: boolean): AuthJsEngin
       secret: SECRET,
       session: { strategy },
       providers: [magicLink],
-      ...(withBuilderSession ? { callbacks: { session: spreadingSession } } : {}),
+      ...(builder === 'none' ? {} : { callbacks: { session: builders[builder] } }),
     },
   })
 }
@@ -153,13 +177,15 @@ function walk(value: unknown, keys: string[] = [], strings: string[] = []) {
 }
 
 const cases = [
-  { strategy: 'jwt', withBuilderSession: false },
-  { strategy: 'jwt', withBuilderSession: true },
-  { strategy: 'database', withBuilderSession: false },
-  { strategy: 'database', withBuilderSession: true },
+  { strategy: 'jwt', builder: 'none' },
+  { strategy: 'jwt', builder: 'spread' },
+  { strategy: 'jwt', builder: 'nest' },
+  { strategy: 'database', builder: 'none' },
+  { strategy: 'database', builder: 'spread' },
+  { strategy: 'database', builder: 'nest' },
 ] as const
 
-const engines = cases.map((c) => ({ ...c, engine: engineFor(c.strategy, c.withBuilderSession) }))
+const engines = cases.map((c) => ({ ...c, engine: engineFor(c.strategy, c.builder) }))
 
 beforeAll(async () => {
   const first = engines[0]
@@ -179,9 +205,9 @@ beforeAll(async () => {
 
 describe('Auth.js session JSON (real engine)', () => {
   it.each(engines)(
-    '$strategy strategy, builder session callback: $withBuilderSession — carries no credential',
-    async ({ strategy, withBuilderSession, engine }) => {
-      const email = `${strategy}-${String(withBuilderSession)}@session-shape.test`
+    '$strategy strategy, builder session callback: $builder — carries no credential',
+    async ({ strategy, builder, engine }) => {
+      const email = `${strategy}-${builder}@session-shape.test`
       const jar = await signIn(engine, email)
       const sessionCookie = jar.get(engine.sessionCookieNames[0] ?? '')
       expect(sessionCookie).toBeDefined()
@@ -194,12 +220,16 @@ describe('Auth.js session JSON (real engine)', () => {
 
       const { keys, strings } = walk(body)
       expect(keys).not.toContain('sessionToken')
-      expect(keys).not.toContain('userId')
+      if (builder !== 'nest') {
+        expect(keys).not.toContain('userId')
+      }
       const cookieValues = jar.values()
       expect(cookieValues.length).toBeGreaterThan(0)
       for (const value of cookieValues) {
-        expect(strings).not.toContain(value)
-        expect(strings).not.toContain(decodeURIComponent(value))
+        for (const string of strings) {
+          expect(string).not.toContain(value)
+          expect(string).not.toContain(decodeURIComponent(value))
+        }
       }
 
       const user = body.user as Record<string, unknown> | undefined
@@ -207,9 +237,24 @@ describe('Auth.js session JSON (real engine)', () => {
       expect(typeof user?.id).toBe('string')
       expect(user?.emailVerified).toBe(true)
       expect(typeof body.expires).toBe('string')
-      if (withBuilderSession) {
+      if (builder === 'spread') {
         expect(body.theme).toBe('dark')
         expect(Object.keys(body).sort()).toEqual(['expires', 'theme', 'user'])
+      } else if (builder === 'nest') {
+        // Only the credential goes: the builder's own keys and the
+        // nested session data stay.
+        expect(body.theme).toBe('dark')
+        const nested = (body.debug as { s?: { user?: { email?: unknown } } } | undefined)?.s
+        expect(nested?.user?.email).toBe(email)
+        if (strategy === 'database') {
+          // The token-bearing array item and string are gone.
+          expect(body.trace).toEqual(['kept'])
+          expect(Object.keys(body).sort()).toEqual(['debug', 'expires', 'theme', 'trace', 'user'])
+        } else {
+          // JWT sessions hand the callback no database token.
+          expect(body.trace).toEqual(['no-token', 'kept'])
+          expect(body.header).toBe('Bearer no-token')
+        }
       } else {
         expect(Object.keys(body).sort()).toEqual(['expires', 'user'])
         expect(Object.keys(user ?? {}).sort()).toEqual(['email', 'emailVerified', 'id'])

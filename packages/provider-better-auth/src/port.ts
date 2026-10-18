@@ -212,10 +212,19 @@ type PortFunctions = {
     options: { readonly expiresAt: Date; readonly mfaProof?: boolean | undefined }
   ) => Promise<unknown>
   readonly listProviderSessions: (userId: string) => Promise<unknown>
-  readonly verifyApiKey?: ((key: string) => Promise<unknown>) | undefined
-  /** Whether an id names a live BA user (the API-key owner gate, #110). */
-  readonly isProviderUser?: ((userId: string) => Promise<boolean>) | undefined
-  readonly buildSessionCookie?: ((token: string) => Promise<string>) | undefined
+  /**
+   * API-key verification (#54) and its owner gate (#110), present
+   * together or not at all: a verifier without the owner lookup cannot
+   * be wired, so no key can ever skip the gate.
+   */
+  readonly apiKeys?:
+    | {
+        readonly verify: (key: string) => Promise<unknown>
+        /** Whether an id names a live BA user (the API-key owner gate, #110). */
+        readonly isProviderUser: (userId: string) => Promise<boolean>
+      }
+    | undefined
+  readonly buildSessionCookie: (token: string) => Promise<string>
   readonly listDeviceSessions?: ((input: { headers: Headers }) => Promise<unknown>) | undefined
   readonly sessionCookieNames: readonly string[]
   readonly capabilities: ReadonlySet<Capability>
@@ -489,6 +498,8 @@ function createPortFromFunctions(deps: PortFunctions): IdentityProviderPort {
   const logoutCookieNames = deps.logoutCookieNames
   const events = deps.events
   const buildSessionCookie = deps.buildSessionCookie
+  const apiKeys = deps.apiKeys
+  const listDeviceSessions = deps.listDeviceSessions
   const legacySessions = deps.legacySessions
   return {
     id: providerId,
@@ -565,36 +576,26 @@ function createPortFromFunctions(deps: PortFunctions): IdentityProviderPort {
         narrowProviderSessions
       )
     },
-    ...(deps.verifyApiKey === undefined
+    ...(apiKeys === undefined
       ? {}
       : {
           verifyApiKey: (key: string) =>
             runProviderOperation(
               providerId,
               'verifyApiKey',
-              () => {
-                const verify = deps.verifyApiKey
-                return verify === undefined ? Promise.resolve(null) : verify(key)
-              },
+              () => apiKeys.verify(key),
               (result) => narrowApiKeyVerification(result)
-            ).andThen((verified) => refuseNonUserApiKeyOwner(verified, deps.isProviderUser)),
+            ).andThen((verified) => refuseNonUserApiKeyOwner(verified, apiKeys.isProviderUser)),
         }),
-    ...(buildSessionCookie === undefined
-      ? {}
-      : { sessionCookie: (token: string) => buildSessionCookie(token) }),
-    ...(deps.listDeviceSessions === undefined
+    sessionCookie: (token: string) => buildSessionCookie(token),
+    ...(listDeviceSessions === undefined
       ? {}
       : {
           listPresentedSessionIds: (headers: Headers) =>
             runProviderOperation(
               providerId,
               'listPresentedSessionIds',
-              // Narrowed from unknown below; the explicit local keeps
-              // one stable binding for the closure.
-              () => {
-                const list = deps.listDeviceSessions
-                return list === undefined ? Promise.resolve([]) : list({ headers })
-              },
+              () => listDeviceSessions({ headers }),
               (result) => narrowDeviceSessionIds(result)
             ),
         }),
@@ -848,23 +849,17 @@ function narrowProviderSessions(result: unknown): { sessionId: string; expiresAt
  * `references: 'organization'` configuration. The verify response
  * does not say which, so the owner must resolve to a live BA user —
  * otherwise the key is refused with {@link UnsupportedApiKeyOwnerError}
- * instead of handing an organization id out as `userId`. A missing
- * lookup refuses too (fail closed).
+ * instead of handing an organization id out as `userId`. The lookup
+ * is wired together with the verifier (`PortFunctions.apiKeys`), and a
+ * lookup that cannot run (no `internalAdapter.findUserById`) rejects,
+ * so the key is refused (fail closed).
  */
 function refuseNonUserApiKeyOwner(
   verified: ApiKeyVerification | null,
-  isProviderUser: ((userId: string) => Promise<boolean>) | undefined
+  isProviderUser: (userId: string) => Promise<boolean>
 ): ResultAsync<ApiKeyVerification | null, ProviderError> {
   if (verified === null) {
     return okAsync(null)
-  }
-  if (isProviderUser === undefined) {
-    return errAsync(
-      new ProviderError(
-        wellKnownProviderIds.betterAuth,
-        'verifyApiKey: internalAdapter.findUserById is unavailable'
-      )
-    )
   }
   return ResultAsync.fromPromise(
     isProviderUser(verified.userId),
@@ -1007,6 +1002,7 @@ function presentedLogoutCookies(
  * `internalAdapter.deleteSession` (which also clears secondary storage).
  */
 export function createBetterAuthProvider(deps: BetterAuthProviderDeps): IdentityProviderPort {
+  const verifyApiKey = deps.auth.verifyApiKey
   return createPortFromFunctions({
     getSession: (input) =>
       getSessionMaybeWithLegacy(
@@ -1132,24 +1128,23 @@ export function createBetterAuthProvider(deps: BetterAuthProviderDeps): Identity
         }
         return listSessions(userId) as Promise<{ id: string; expiresAt: Date | null }[]>
       }),
-    ...(deps.auth.verifyApiKey === undefined
+    ...(verifyApiKey === undefined
       ? {}
       : {
-          verifyApiKey: (key: string) =>
-            (deps.auth.verifyApiKey as (i: { body: { key: string } }) => Promise<unknown>)({
-              body: { key },
-            }),
-          isProviderUser: (userId: string) =>
-            deps.auth.$context.then(async (ctx) => {
-              const find = ctx.internalAdapter.findUserById
-              if (find === undefined) {
-                throw new ProviderError(
-                  wellKnownProviderIds.betterAuth,
-                  'verifyApiKey: internalAdapter.findUserById is unavailable'
-                )
-              }
-              return isRecord(await find(userId))
-            }),
+          apiKeys: {
+            verify: (key: string) => verifyApiKey({ body: { key } }),
+            isProviderUser: (userId: string) =>
+              deps.auth.$context.then(async (ctx) => {
+                const find = ctx.internalAdapter.findUserById
+                if (find === undefined) {
+                  throw new ProviderError(
+                    wellKnownProviderIds.betterAuth,
+                    'verifyApiKey: internalAdapter.findUserById is unavailable'
+                  )
+                }
+                return isRecord(await find(userId))
+              }),
+          },
         }),
     ...(deps.legacySessions === undefined ? {} : { legacySessions: deps.legacySessions }),
     // #54/#72: the signed session cookie, built from the instance's
@@ -1357,11 +1352,13 @@ export function createBetterAuthProviderFromUnknown(
     ...(verifyApiKey === undefined
       ? {}
       : {
-          verifyApiKey,
-          isProviderUser: (userId: string) =>
-            internalAdapterCall('findUserById', (findUserById) =>
-              (findUserById as (id: string) => Promise<unknown>)(userId)
-            ).then((user) => isRecord(user)),
+          apiKeys: {
+            verify: verifyApiKey,
+            isProviderUser: (userId: string) =>
+              internalAdapterCall('findUserById', (findUserById) =>
+                (findUserById as (id: string) => Promise<unknown>)(userId)
+              ).then((user) => isRecord(user)),
+          },
         }),
     // #54/#72: the signed session cookie, built from the instance's
     // own resolved context (secret + cookie attributes).

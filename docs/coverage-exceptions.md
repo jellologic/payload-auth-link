@@ -20,35 +20,39 @@ those imports resolved to `dist`, and files reached only that way
 
 Each cell is lines / functions / branches / statements.
 
-| File                                             | Floor             | Notes     |
-| ------------------------------------------------ | ----------------- | --------- |
-| `core/src/cookies.ts`                            | 95 / 95 / 95 / 95 | at target |
-| `core/src/use-cases/ensure-linked-user.ts`       | 95 / 95 / 95 / 95 | at target |
-| `plugin/src/access.ts`                           | 95 / 95 / 95 / 95 | at target |
-| `plugin/src/audit.ts`                            | 95 / 91 / 88 / 95 | see below |
-| `plugin/src/collections.ts`                      | 95 / 95 / 86 / 95 | see below |
-| `plugin/src/compat-shim.ts`                      | 95 / 95 / 95 / 95 | at target |
-| `plugin/src/endpoints.ts`                        | 95 / 95 / 91 / 95 | see below |
-| `plugin/src/hooks.ts`                            | 95 / 95 / 95 / 95 | at target |
-| `plugin/src/lifecycle.ts`                        | 95 / 95 / 94 / 95 | see below |
-| `plugin/src/organizations.ts`                    | 95 / 95 / 95 / 95 | see below |
-| `plugin/src/repository.ts`                       | 95 / 95 / 95 / 95 | at target |
-| `plugin/src/server.ts`                           | 95 / 95 / 94 / 95 | see below |
-| `plugin/src/session.ts`                          | 95 / 95 / 95 / 95 | see below |
-| `plugin/src/strategy.ts`                         | 95 / 95 / 90 / 95 | see below |
-| `plugin/src/verified-email.ts`                   | 95 / 95 / 95 / 95 | at target |
-| `provider-authjs/src/adapter.ts`                 | 95 / 95 / 95 / 95 | see below |
-| `provider-authjs/src/callbacks.ts`               | 93 / 95 / 90 / 93 | see below |
-| `provider-authjs/src/engine.ts`                  | 95 / 95 / 91 / 95 | see below |
-| `provider-authjs/src/port.ts`                    | 95 / 95 / 95 / 95 | at target |
-| `provider-better-auth/src/adapter.ts`            | 80 / 91 / 73 / 81 | see below |
-| `provider-better-auth/src/cookies.ts`            | 95 / 95 / 89 / 95 | see below |
-| `provider-better-auth/src/engine.ts`             | 95 / 93 / 93 / 95 | see below |
-| `provider-better-auth/src/port.ts`               | 88 / 92 / 85 / 88 | see below |
-| `provider-better-auth/src/session-provenance.ts` | 95 / 95 / 95 / 95 | at target |
-| `provider-better-auth/src/where.ts`              | 95 / 95 / 95 / 95 | at target |
-| `web/src/authz.ts`                               | 95 / 95 / 95 / 95 | at target |
-| `web/src/verify.ts`                              | 95 / 95 / 95 / 95 | at target |
+| File                                                  | Floor             | Notes     |
+| ----------------------------------------------------- | ----------------- | --------- |
+| `core/src/cookies.ts`                                 | 95 / 95 / 95 / 95 | at target |
+| `core/src/use-cases/ensure-linked-user.ts`            | 95 / 95 / 95 / 95 | at target |
+| `plugin/src/access.ts`                                | 95 / 95 / 95 / 95 | at target |
+| `plugin/src/audit.ts`                                 | 95 / 95 / 95 / 95 | at target |
+| `plugin/src/collections.ts`                           | 95 / 95 / 88 / 95 | see below |
+| `plugin/src/compat-shim.ts`                           | 95 / 95 / 95 / 95 | at target |
+| `plugin/src/credential-gate.ts`                       | 95 / 95 / 95 / 95 | at target |
+| `plugin/src/endpoints.ts`                             | 95 / 95 / 91 / 95 | see below |
+| `plugin/src/hooks.ts`                                 | 95 / 95 / 95 / 95 | at target |
+| `plugin/src/lifecycle.ts`                             | 95 / 95 / 94 / 95 | see below |
+| `plugin/src/organizations.ts`                         | 95 / 95 / 95 / 95 | see below |
+| `plugin/src/repository.ts`                            | 95 / 95 / 95 / 95 | at target |
+| `plugin/src/server.ts`                                | 95 / 95 / 94 / 95 | see below |
+| `plugin/src/session.ts`                               | 95 / 95 / 95 / 95 | see below |
+| `plugin/src/strategy.ts`                              | 95 / 95 / 95 / 95 | see below |
+| `plugin/src/verified-email.ts`                        | 95 / 95 / 95 / 95 | at target |
+| `provider-authjs/src/adapter.ts`                      | 95 / 95 / 95 / 95 | see below |
+| `provider-authjs/src/callbacks.ts`                    | 95 / 95 / 95 / 95 | at target |
+| `provider-authjs/src/engine.ts`                       | 95 / 95 / 93 / 95 | see below |
+| `provider-authjs/src/port.ts`                         | 95 / 95 / 95 / 95 | at target |
+| `provider-better-auth/src/adapter.ts`                 | 95 / 95 / 95 / 95 | see below |
+| `provider-better-auth/src/cookies.ts`                 | 95 / 95 / 95 / 95 | at target |
+| `provider-better-auth/src/engine.ts`                  | 95 / 95 / 95 / 95 | see below |
+| `provider-better-auth/src/events.ts`                  | 95 / 95 / 95 / 95 | at target |
+| `provider-better-auth/src/port.ts`                    | 95 / 95 / 95 / 95 | at target |
+| `provider-better-auth/src/session-provenance.ts`      | 95 / 95 / 95 / 95 | at target |
+| `provider-better-auth/src/session-token-redaction.ts` | 95 / 95 / 95 / 95 | at target |
+| `provider-better-auth/src/step-up.ts`                 | 95 / 95 / 95 / 95 | at target |
+| `provider-better-auth/src/where.ts`                   | 95 / 95 / 95 / 95 | at target |
+| `web/src/authz.ts`                                    | 95 / 95 / 95 / 95 | at target |
+| `web/src/verify.ts`                                   | 95 / 95 / 95 / 95 | at target |
 
 ## Recurring kinds of uncovered branch
 
@@ -75,24 +79,20 @@ here and referred to by name below.
 
 ## Per file
 
-### `plugin/src/audit.ts` (branches 88.88%)
-
-- Lines 57, 59 and 64: `targetUserId`/`actorUserId` arms for a
-  request user with no id, or a non-`payload-user` actor (untyped-input
-  narrowing; the strategy always projects an id).
-- Line 96: `fields ?? {}` in `composeAuditLogger`. Every audit call
-  site passes fields.
-
-### `plugin/src/collections.ts` (branches 86%)
+### `plugin/src/collections.ts` (branches 88.91%)
 
 - Lines 45 and 85: role narrowing on a user without a `roles` array,
   and a host-supplied access function in a slot the belt wraps
   (untyped-input narrowing).
 - Lines 297, 800, 804 and 808: `suspensionActive`/`suspendRevokeHook`
   arms for a non-record document (untyped-input narrowing).
-- Line 447: the re-entrant account-status read. It runs only when the
-  status read re-enters the gate on the same request. No current test
-  in this run reaches it.
+- The re-entrant account-status read is pinned by a unit test
+  (`collections-fail-closed.test.ts`); the engine never reaches it,
+  because the status read runs on its own request.
+- Since GHSA-mjvh, a dead account's Payload local JWT / API key
+  resolves no user at authentication (`credential-gate.ts`), so the
+  operation-layer provider-owned refusals are reached by the unit
+  tests and Local API calls handed such a user, not by REST walks.
 - Lines 744 and 748: the phone field's `validate`. This is the CAP-9
   phone path, which has its own suite in the provider packages.
 - Lines 826 and 1016–1021: registry miss in the suspend-revoke hook,
@@ -158,7 +158,7 @@ three uncovered arms are:
 Every fail-loud branch (revoke, revoke-all, verifyApiKey, mint and
 list refusals) is covered by `server-failures.test.ts`.
 
-### `plugin/src/session.ts` (branches 95.04%)
+### `plugin/src/session.ts` (branches 96.69%)
 
 The SSO domain gate for an email-less session (the claim reaches the
 guard as `null`, never as the deprecated `email` alias) is tested in
@@ -170,18 +170,17 @@ guard as `null`, never as the deprecated `email` alias) is tested in
 - Line 396: the `email` log field on the provisioning-refused path for
   a session with no email claim. That path needs a `UserExistsError`
   from `create`, and only an email-carrying session creates.
-- Line 420: `suspendedUntil ?? clock.now()`. `isSuspendedAt` is true
-  only for a non-null `suspendedUntil`, so the fallback cannot run.
 
-### `plugin/src/strategy.ts` (branches 90%)
+### `plugin/src/strategy.ts` (branches 95.23%)
 
 The `organizationId` projection under `reqUser: 'document'` is tested
-in `integration-req-user-document.test.ts`.
+in `integration-req-user-document.test.ts`; the stored-role projection
+drops (and logs) a role with no stored value instead of passing it
+through raw (`strategy.test.ts`).
 
-- Line 46: `?? fallback` on an error cause.
-- Line 68: `roleValues[role] ?? role` (same as `server.ts` line 230).
-- Two `if#1` arms in the `reqUser: 'document'` memo: a request without
-  `context`.
+- `?? fallback` on an error cause (repository errors always carry one).
+- `payloadUser.assurance !== undefined`: the strategy always projects
+  from a verified session, which always carries assurance.
 
 ### `provider-authjs/src/adapter.ts` (branches 97.56%)
 
@@ -189,95 +188,72 @@ in `integration-req-user-document.test.ts`.
 unmappable document is an `AdapterMappingError`, every Local API
 failure an `AdapterOperationError`, never a `null` read as "not
 found". The remaining arms are `?? {}` spreads for optional fields
-that Auth.js never sends as `undefined` (lines 159, 385, 485) and
-`getUserByAccount` with an account whose user row is gone (line 327).
+that Auth.js never sends as `undefined` (lines 159, 397, 497) and
+`getUserByAccount` with an account whose user row is gone (line 339).
 
-### `provider-authjs/src/callbacks.ts` (branches 95.71%)
+### `provider-authjs/src/callbacks.ts` (branches 97.36%)
 
-The D6 stamp guard (line 136: `updateUser` returning no `Date` claims
-nothing) and the CAP-14 event narrowing (lines 253–283: unusable rows
-are logged and skipped, no emit without a lifecycle sink) are tested
-in `callbacks-guards.test.ts`.
+At target. The D6 stamp guards (the adapter returning no `Date`, a
+missing, blank or mismatched email on either side), the CAP-14 event
+narrowing, and the builder-session credential scrub (nested
+`sessionToken` keys, token-bearing strings, shared values, cycles) are
+tested in `callbacks-guards.test.ts`; the scrub also runs against the
+real engine in `session-shape-engine.test.ts`. The remaining arms are
+`input.user ?? {}` and `image === undefined` in the allowlisted
+session (Auth.js always passes a user, with `image`), and a sign-in
+`user` without an `id` in the jwt callback (lines 159, 163, 304).
 
-- Line 88: `normalizeEmail` on a non-string. Both callers have
-  already required a string.
+### `provider-authjs/src/engine.ts` (branches 93.68%)
 
-The floor sits below the measured value because another change is
-reshaping the session callback. Re-measure after it lands.
+The engine wires its own adapter through `createWiredAuthJsAdapter`,
+whose type makes `updateUser` required, so the former "adapter without
+`updateUser`" checks are gone rather than untested.
 
-### `provider-authjs/src/engine.ts` (branches 92.07%)
-
-- Lines 333 and 341: `adapter.updateUser === undefined`. The engine
-  always wires its own adapter, which defines `updateUser`. The checks
-  stay so a future adapter swap fails at wiring.
-- Line 435: `readSession` when Auth.js answers the session endpoint
+- Line 427: `readSession` when Auth.js answers the session endpoint
   with a non-OK status. Auth.js answers 200 (with `null`) for every
   session miss.
-- Lines 139, 160, 409, 412 and 484: `String(error)` for a non-Error
+- Lines 139, 160, 399, 402 and 474: `String(error)` for a non-Error
   factory throw, `?? '<unknown provider id>'`, the cookie-option `?? {}`
   spreads, and a non-object bulk result. These are untyped-input
   narrowing.
 
-### `provider-better-auth/src/engine.ts` (branches 94.11%)
+### `provider-better-auth/src/engine.ts` (branches 96.5%)
 
 The `trustedProviders` check for `email-password` (safe only while
 `emailAndPassword.requireEmailVerification` stays on) and for social
 providers without an explicit `true` requirement is tested in
 `engine.test.ts`.
 
-- Line 338: `fields ?? []` on builder custom fields.
-- Line 495: `mergedPlugins === undefined`. The engine always appends
-  its provenance plugin, so the list is never empty.
+- `fields ?? []` on builder custom fields (a `Partial` record value
+  the builder declared as `undefined`).
 - Two `if#1` arms in the plugin-id and derived-model loops
   (untyped-input narrowing).
 
-### `provider-better-auth/src/adapter.ts` (73% branches)
+### `provider-better-auth/src/adapter.ts` (branches 96.2%)
 
-- Lines 607–685, the host-collection validation for adopted models
-  (`schemaMap`, issue #49): auth-collection detection, tabs and ui
-  walking, and missing-collection errors. The happy path is covered by
-  `integration-adopt.test.ts`. The error arms need host configs that
-  Payload itself would reject at `buildConfig`.
-- Lines 123–305, the `narrow*` helpers for Local API results: the
-  arms for "Payload returned a non-record / non-array". These are
-  untyped-input narrowing.
-- Lines 385–472, id-coercion arms for adopted models with numeric
-  Payload ids (`idStrategy: 'payload'`). The SQLite suite uses string
-  ids on the BA collections. Postgres and MongoDB run these arms in
-  the e2e matrix, which does not report coverage.
-- Lines 787–1131, `count`/`findMany` pagination fallbacks for
-  post-filtered reads when Payload returns an unpaginated result, and
-  `rethrowAsOperation` for non-Error causes.
-- The failure contract is pinned by `adapter-failures.test.ts`: bulk
-  partial failure, malformed bulk results, empty-where refusal, and
-  the post-filter with no exact match. Query semantics are pinned by
-  `adapter-differential.test.ts`.
+`adapter-unit.test.ts` drives the raw adapter without Better Auth's
+adapter factory (issue #113): schema validation, malformed Local API
+results, the empty-where `update` guard (the factory answers that case
+itself, so no engine suite can reach the adapter's own guard), joins,
+and adopted-model host validation. Still uncovered:
 
-### `provider-better-auth/src/cookies.ts` (branches 89.13%)
+- `planFor`'s unknown-slug throw: `resolveModel` refuses unknown
+  models first.
+- `asModelRow`'s throw: rows are always built by `toBaRow`.
+- Host validation: the per-slug cache hit (two adopted models on one
+  slug), a non-array `fields`, a non-string field `type`, and a model
+  with no validated field set (untyped-input narrowing).
+- `findOne`'s post-filter paging past a full 100-row page.
 
-- Line 105: the admin-session cookie name override from
-  `advanced.cookies.admin_session.name`.
-- Lines 162–175: the `?? defaults ?? secureDefault` attribute chain
-  for cookies with no per-cookie or default attributes, and a config
-  with no session-token entry.
-
-All of these are configuration permutations of Better Auth's
-`advanced` options rather than security branches. The secure-prefix
-and clearing behaviour is covered by `cookies.test.ts`.
-
-### `provider-better-auth/src/port.ts` (88.35% branches)
-
-- `narrowApiKeyVerification` (key-owner narrowing) is fully covered
-  by `api-key-narrowing.test.ts`: `referenceId` wins over `userId`,
-  missing, empty or non-string owners fail closed, and invalid
-  verifications narrow to `null`. The real-engine paths are in
-  `api-key-verify.test.ts` and `channel-api-key-engine.test.ts`.
-- Another change is editing this file, so the floor sits a little
-  below the measured 90.7 / 94.7 / 88.4 / 90.7.
-- Lines 561–689: legacy-cookie coexistence and multi-session
-  enumeration arms for malformed `$context` shapes, which are
-  untyped-input narrowing on Better Auth internals.
-- Lines 1022–1167: `createBetterAuthProviderFromUnknown` arms for
-  instances missing optional internal-adapter methods.
-  `port-failures.test.ts` covers the revoke and verify arms; the rest
-  are capability-probe fallbacks.
+Fixed (issue #113): host validation used to run only for the models
+planned by the adapter's FIRST operation, so when another model's
+`findOne` ran first the adopted collections were never validated and
+their relationship fields stayed unclassified. It now validates every
+adopted model on the first operation (`adapter-unit.test.ts`). A
+missing REQUIRED Better Auth field fails fast; a missing OPTIONAL one
+(Better Auth 1.7's `jwks.expiresAt` on a payload-auth layout, the
+engine's `session.authenticationMethod`) is tolerated: writes to it are
+dropped and reads see it unset. Without `authenticationMethod` no MFA
+provenance is recorded, which fails closed. The password
+injection for local-strategy auth collections is decided on each
+create (`integration-adopt-local-strategy.test.ts`).

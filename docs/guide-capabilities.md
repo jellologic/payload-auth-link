@@ -153,11 +153,44 @@ never enrollment (`twoFactorEnabled`):
   resolved for the request; a request carrying a different session
   cookie relabels nothing.
 - A failed verification (wrong code, non-200, error) never relabels.
+- **Step-up lockout:** a step-up shares Better Auth's per-user
+  failure budget with the sign-in challenge (the `twoFactor` row's
+  `failedVerificationCount` / `lockedUntil`, tuned with
+  `twoFactor({ accountLockout })`; default 10 failures, 15 minutes).
+  Wrong step-up codes spend it, a correct one resets it, and while
+  the account is locked every verification, step-up or sign-in, is
+  refused with 429 `ACCOUNT_TEMPORARILY_LOCKED`. Users who enabled
+  only the emailed OTP have no `twoFactor` row; Better Auth then
+  limits each code to `otpOptions.allowedAttempts` on both paths.
+- **Enrolling is not proof:** the verification that enrols the
+  FIRST factor (the TOTP confirmation after `/two-factor/enable`, a
+  backup code of an unconfirmed enrolment, the OTP that turns 2FA on)
+  does not relabel the session; it keeps its first-factor label.
+  Enabling 2FA needs only the password, so the enrolling session has
+  proven nothing more. MFA proof comes from the next two-factor
+  sign-in, or a step-up with the factor that was already enrolled.
+- **Emailed OTP after an inbox sign-in:** by default a
+  `/two-factor/verify-otp` step-up relabels the session only when
+  its first factor was `password` or `passkey` (or it was already
+  MFA-proven). After a magic-link, email-OTP or OAuth sign-in, or
+  a session with no recorded method, the OTP likely reaches the same
+  inbox that signed the user in, so it proves nothing. TOTP and
+  backup codes are not affected. If `sendOTP` delivers over an
+  independent channel such as SMS, declare it:
+  `createBetterAuthEngine({ twoFactorOtpChannelIndependent: true, … })`.
 - Server mints record `server-mint` (`mfa: false`), or
   `server-step-up` with `createSessionFor(…, { mfaProof: true })`.
 
 The record is a session fact, not recency: a session that passed a
 second factor stays MFA-proven for its lifetime.
+
+**Grant MFA-gated roles to enrolled users only.** Because enabling
+2FA needs only the password, someone who knows just the password of
+a user who never enrolled can enrol their own authenticator and then
+sign in with it. Before granting a role listed in
+`requireMfaForRoles`, check that the user has already enrolled
+(`twoFactorEnabled` on the provider user), or enrol them through a
+channel you trust.
 
 Enforce with either or both:
 
@@ -403,9 +436,8 @@ sessions verify through their provider, but the observed channel is
 fail-closed: an api-key presentation is only admitted when you list
 `'api-key'`.
 
-Known issue: with `'bearer'` admitted, Payload's `GET /api/users/me`
-answers 500 for a Better Auth bearer session (Payload decodes the
-`Authorization: Bearer` value as a JWT, and BA's token is opaque).
-Use `GET /api/auth-link/session` for bearer clients; every other
-route works on the same token. Pinned as `it.fails` in
-`channel-bearer-engine.test.ts`.
+With `'bearer'` admitted, Payload's `GET /api/users/me` answers 200
+for a Better Auth bearer session: the plugin's `me` hook answers for
+auth-link users (with `exp` from the provider session), so Payload
+never decodes BA's opaque token as a Payload JWT and never echoes it
+back as `token`. Pinned in `channel-bearer-engine.test.ts`.

@@ -47,15 +47,17 @@ function auditOperation(
   // (actorKind 'malformed-actor', no fabricated attribution) — an
   // unparseable impersonation marker must never vanish from audit.
   const state = impersonationStateFromRequest(req)
-  if (state.kind === 'none' && fields.sessionActor === undefined) {
-    return
+  let actor: ResolvedSessionActor | null
+  if (state.kind === 'actor') {
+    actor = state.actor
+  } else if (state.kind === 'none') {
+    if (fields.sessionActor === undefined) {
+      return
+    }
+    actor = fields.sessionActor
+  } else {
+    actor = null
   }
-  const actor =
-    state.kind === 'actor'
-      ? state.actor
-      : state.kind === 'none'
-        ? (fields.sessionActor ?? null)
-        : null
   const args: unknown = fields.args
   const documentId =
     isRecord(args) && (typeof args.id === 'string' || typeof args.id === 'number')
@@ -81,11 +83,13 @@ function auditOperation(
 }
 
 /**
- * Audit an impersonated attempt at a plugin endpoint the plugin then
- * refuses (organization management while impersonating). Endpoints
- * run no collection operation for the `beforeOperation` hook to see,
- * so they report here — same message, same id-only fields, plus the
- * endpoint path and `denied: true`.
+ * Audit an impersonated call at a plugin endpoint. Endpoints run no
+ * collection operation for the `beforeOperation` hook to see, so they
+ * report here — same message, same id-only fields, plus the endpoint
+ * path. Refused calls (organization management while impersonating)
+ * carry `denied: true`; allowed reads (the organization list) pass
+ * `denied: false` and are audited all the same. Plain (not
+ * impersonated) calls record nothing.
  */
 export function auditImpersonatedEndpoint(
   logger: LoggerPort,
@@ -94,9 +98,11 @@ export function auditImpersonatedEndpoint(
     readonly operation: string
     readonly endpoint: string
     readonly sessionActor?: ResolvedSessionActor | undefined
+    /** Defaults to `true` (a refused call). */
+    readonly denied?: boolean
   }
 ): void {
-  auditOperation(logger, req, { ...fields, denied: true, args: undefined })
+  auditOperation(logger, req, { ...fields, denied: fields.denied ?? true, args: undefined })
 }
 
 /** Collection `beforeOperation` audit hook; leaves args untouched. */

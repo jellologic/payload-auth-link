@@ -135,7 +135,7 @@ describe('rows 3–7 and 22: local credentials on a BA-linked document', () => {
   it('row 22: the pre-link local JWT is dead after the BA link', async () => {
     expect(await h.meId({ cookie: preLinkJwt })).toBeNull()
     const write = await h.rest('POST', '/pages', { cookie: preLinkJwt, body: { title: 'nope' } })
-    expect([401, 403]).toContain(write.status)
+    expect(write.status).toBe(403)
     expect(await h.readsDoc({ cookie: preLinkJwt }, id)).toBe(false)
   })
 
@@ -168,9 +168,10 @@ describe('rows 3–7 and 22: local credentials on a BA-linked document', () => {
     const jwt = h.jwtCookieOf(await h.localLogin(local))
     expect((await h.rest('POST', '/pages', { cookie: jwt, body: { title: 'y' } })).status).toBe(201)
     await h.suspend(localId)
-    expect((await h.rest('POST', '/pages', { cookie: jwt, body: { title: 'x' } })).status).toBe(401)
+    // The JWT resolves no user at authentication (GHSA-mjvh): anonymous.
+    expect((await h.rest('POST', '/pages', { cookie: jwt, body: { title: 'x' } })).status).toBe(403)
     expect((await h.rest('POST', '/users/refresh-token', { cookie: jwt, body: {} })).status).toBe(
-      401
+      403
     )
     expect((await h.localLogin(local)).status).toBe(401)
   })
@@ -220,7 +221,7 @@ describe('rows 3–7 and 22: local credentials on a BA-linked document', () => {
 })
 
 describe('row 10: useAPIKey on an unlinked document', () => {
-  it('an existing key works until the user is suspended, then 401 on the next request', async () => {
+  it('an existing key works until the user is suspended, then anonymous on the next request', async () => {
     const id = await h.createDoc('api-key@ba-rest.test')
     const key = 'ba-unlinked-api-key-0123456789abcdef'
     await h.live().update({
@@ -235,10 +236,12 @@ describe('row 10: useAPIKey on an unlinked document', () => {
       201
     )
     await h.suspend(id)
+    // The key resolves no user at authentication (GHSA-mjvh): anonymous.
+    expect(await h.meId({ authorization })).toBeNull()
     expect((await h.rest('POST', '/pages', { authorization, body: { title: 'k' } })).status).toBe(
-      401
+      403
     )
-    expect((await h.rest('PATCH', `/users/${id}`, { authorization, body: {} })).status).toBe(401)
+    expect((await h.rest('PATCH', `/users/${id}`, { authorization, body: {} })).status).toBe(403)
   })
 
   it("failure: an unknown key is anonymous; a key reaches only its own user's grants", async () => {
@@ -266,7 +269,7 @@ describe('row 10: useAPIKey on an unlinked document', () => {
       authorization,
       body: { email: 'hijacked@ba-rest.test' },
     })
-    expect([403, 404]).toContain(hijack.status)
+    expect(hijack.status).toBe(403)
     expect((await h.hostDoc(other.id)).email).toBe('api-key-other@ba-rest.test')
   })
 })
@@ -305,7 +308,8 @@ describe('row 10a: a Payload API key enabled before the BA link', () => {
       overrideAccess: true,
     })
     const reEnabled = `users API-Key ${again}`
-    expect((await h.rest('GET', '/users/me', { authorization: reEnabled })).status).toBe(403)
+    // It resolves no user at authentication (GHSA-mjvh): `me` is anonymous.
+    expect(await h.meId({ authorization: reEnabled })).toBeNull()
     expect((await h.rest('GET', `/users/${id}`, { authorization: reEnabled })).status).toBe(403)
     expect(
       (await h.rest('POST', '/pages', { authorization: reEnabled, body: { title: 'k' } })).status
@@ -609,10 +613,10 @@ describe('row 27: users writes by other signed-in BA users', () => {
       cookie: alice.cookie,
       body: { email: 'hijacked@ba-rest.test' },
     })
-    expect([403, 404]).toContain(other.status)
+    expect(other.status).toBe(403)
     expect((await h.hostDoc(bob.id)).email).toBe('row27-bob@ba-rest.test')
     const removed = await h.rest('DELETE', `/users/${bob.id}`, { cookie: alice.cookie })
-    expect([403, 404]).toContain(removed.status)
+    expect(removed.status).toBe(403)
     expect((await h.hostDoc(bob.id)).id).toBeDefined()
     const unlock = await h.rest('POST', '/users/unlock', {
       cookie: alice.cookie,
@@ -627,8 +631,10 @@ describe('row 27: users writes by other signed-in BA users', () => {
       cookie: carol.cookie,
       body: { roles: ['admin'] },
     })
+    // Payload field access strips the governed field and the rest of
+    // the write succeeds: 200, with the role unchanged.
+    expect(escalate.status).toBe(200)
     expect((await h.hostDoc(carol.id)).roles).toEqual(['user'])
-    expect([200, 403]).toContain(escalate.status)
     const admin = await h.linkedUser('row27-admin@ba-rest.test', { roles: ['admin'] })
     const managed = await h.rest('PATCH', `/users/${carol.id}`, {
       cookie: admin.cookie,
@@ -642,6 +648,6 @@ describe('row 27: users writes by other signed-in BA users', () => {
     const dave = await h.linkedUser('row27-dave@ba-rest.test')
     await h.suspend(dave.id)
     const own = await h.rest('PATCH', `/users/${dave.id}`, { cookie: dave.cookie, body: {} })
-    expect([401, 403]).toContain(own.status)
+    expect(own.status).toBe(403)
   })
 })

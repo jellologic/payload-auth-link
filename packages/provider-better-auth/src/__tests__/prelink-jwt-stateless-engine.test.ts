@@ -62,12 +62,13 @@ describe('row 22: stateless local JWTs issued before a real BA link', () => {
     const jwt = h.jwtCookieOf(await h.localLogin(email))
     expect(await h.readsDoc({ cookie: jwt }, id)).toBe(true)
     expect(await h.hostIdOf(await h.verifiedSession(email))).toBe(id)
-    expect((await h.rest('GET', `/users/${id}`, { cookie: jwt })).status).toBe(401)
+    // The JWT resolves no user at authentication (GHSA-mjvh): anonymous.
+    expect((await h.rest('GET', `/users/${id}`, { cookie: jwt })).status).toBe(403)
     const write = await h.rest('PATCH', `/users/${id}`, {
       cookie: jwt,
       body: { email: 'moved@ba-prelink.test' },
     })
-    expect(write.status).toBe(401)
+    expect(write.status).toBe(403)
     expect((await h.hostDoc(id)).email).toBe(email)
     expect((await h.localLogin(email)).status).toBe(403)
   })
@@ -85,6 +86,6 @@ describe('row 22: stateless local JWTs issued before a real BA link', () => {
     const id = await h.createDoc(email)
     const jwt = h.jwtCookieOf(await h.localLogin(email))
     await h.suspend(id)
-    expect((await h.rest('GET', `/users/${id}`, { cookie: jwt })).status).toBe(401)
+    expect((await h.rest('GET', `/users/${id}`, { cookie: jwt })).status).toBe(403)
   })
 })

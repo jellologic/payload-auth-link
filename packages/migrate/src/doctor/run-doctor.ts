@@ -11,6 +11,7 @@ import {
   pluginsFromSourceTree,
 } from './plugins.js'
 import { scanSource } from './source-scan.js'
+import { sourceMapFromConfig } from './source-layout.js'
 import { analyzeUsersCollection, findUsersCollection } from './users.js'
 import { parseSourceMapJson, resolveSourceTables } from '../importer/types.js'
 import type { BehaviourChange, DoctorIssue, DoctorReport, PluginFinding } from './types.js'
@@ -39,7 +40,9 @@ export type DoctorOptions = {
   readonly databaseUrl?: string | undefined
   /**
    * The `--source-map` JSON (issue #68): model → source table name, or
-   * `null` for "model not installed". Shapes the database section.
+   * `null` for "model not installed". Shapes the database section, on
+   * top of the layout derived from the loaded payload-auth config
+   * (issue #113) — explicit entries win.
    */
   readonly sourceMapJson?: string | undefined
   /** Config loader, injectable for tests. Defaults to dynamic import. */
@@ -320,8 +323,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
       if (
         issue.code === 'injected-field-collision' ||
         issue.code === 'roles-field-not-select' ||
-        issue.code === 'users-collection-missing' ||
-        issue.code === 'adopt-local-strategy-on'
+        issue.code === 'users-collection-missing'
       ) {
         blockers.push(issue)
       } else {
@@ -340,14 +342,20 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     }
   }
 
+  // The source layout the loaded payload-auth config implies (issue
+  // #113): custom slugs need no hand-written --source-map. Explicit
+  // --source-map entries still win.
+  const derivedSourceMap = configLoaded ? sourceMapFromConfig(config) : null
   const databaseUrl = options.databaseUrl ?? process.env.DATABASE_URL
   let database: DoctorReport['database'] = null
   if (databaseUrl !== undefined && databaseUrl !== '') {
     try {
+      const explicit =
+        options.sourceMapJson === undefined ? undefined : parseSourceMapJson(options.sourceMapJson)
       const sourceTables =
-        options.sourceMapJson === undefined
+        derivedSourceMap === null && explicit === undefined
           ? undefined
-          : resolveSourceTables(parseSourceMapJson(options.sourceMapJson))
+          : resolveSourceTables({ ...(derivedSourceMap ?? {}), ...(explicit ?? {}) })
       const found = await introspectDatabase(databaseUrl, { sourceTables })
       database = found
       if (found.unverifiedUsers !== null && found.unverifiedUsers > 0) {
@@ -361,7 +369,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
       for (const table of found.missingTables ?? []) {
         blockers.push({
           code: 'source-table-missing',
-          detail: `model '${table.model}' expects source table '${table.table}', which does not exist — if your layout renamed it, pass --source-map '{"${table.model}":"<table>"}', or map it null to record it as not installed`,
+          detail: `model '${table.model}' expects source table '${table.table}', which does not exist${derivedSourceMap === null ? '' : ' (layout derived from the payload-auth config)'} — if your layout renamed it, pass --source-map '{"${table.model}":"<table>"}', or map it null to record it as not installed`,
         })
       }
       for (const orphan of found.orphans) {
@@ -432,6 +440,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     users,
     source,
     database,
+    ...(derivedSourceMap === null ? {} : { sourceMap: derivedSourceMap }),
     behaviourChanges,
     blockers,
     warnings,

@@ -193,8 +193,23 @@ describe('getBetterAuthSessionCookieClearOptions', () => {
       { nodeEnv: 'test' }
     )
     expect(clear('__Secure-better-auth.session_token')).toEqual({ secure: true })
-    expect(clear('better-auth.session_token')).toBeUndefined()
     expect(clear('other')).toBeUndefined()
+    expect(clear('better-auth.other')).toBeUndefined()
+  })
+
+  it('clears the __Secure- / plain counterpart with the same attributes, Secure on __Secure-', () => {
+    const https = getBetterAuthSessionCookieClearOptions(
+      { baseURL: 'https://app.example.com', advanced: { defaultCookieAttributes: { path: '/a' } } },
+      { nodeEnv: 'test' }
+    )
+    expect(https('better-auth.session_token')).toEqual({ secure: true, path: '/a' })
+    const http = getBetterAuthSessionCookieClearOptions(
+      { baseURL: 'http://app.example.com', advanced: { defaultCookieAttributes: { path: '/a' } } },
+      { nodeEnv: 'test' }
+    )
+    expect(http('better-auth.session_token')).toEqual({ path: '/a' })
+    expect(http('__Secure-better-auth.session_token')).toEqual({ secure: true, path: '/a' })
+    expect(http('__Secure-better-auth.dont_remember')).toEqual({ secure: true, path: '/a' })
   })
 
   it('resolves overridden names with their secure attributes', () => {
@@ -229,6 +244,21 @@ describe('getBetterAuthSessionCookieClearOptions', () => {
     expect(fallback('better-auth.session_token')).toEqual({ domain: 'example.com' })
   })
 
+  it('mirrors Partitioned from the per-cookie or default attributes', () => {
+    const clear = getBetterAuthSessionCookieClearOptions(
+      {
+        baseURL: 'https://app.example.com',
+        advanced: {
+          defaultCookieAttributes: { partitioned: true },
+          cookies: { dont_remember: { attributes: { partitioned: false } } },
+        },
+      },
+      { nodeEnv: 'test' }
+    )
+    expect(clear('__Secure-better-auth.session_token')).toEqual({ secure: true, partitioned: true })
+    expect(clear('__Secure-better-auth.dont_remember')).toEqual({ secure: true })
+  })
+
   it('covers admin_session with the session token attributes BA sets it with (CAP-8a)', () => {
     const clear = getBetterAuthSessionCookieClearOptions(
       {
@@ -261,6 +291,101 @@ describe('getBetterAuthSessionCookieClearOptions', () => {
     )
     expect(plain('better-auth.session_data')).toEqual({ domain: 'example.com' })
     expect(plain('better-auth.dont_remember')).toEqual({})
+  })
+})
+
+describe('crossSubDomainCookies (issue #113)', () => {
+  const cases: Array<{ readonly name: string; readonly options: BetterAuthOptions }> = [
+    {
+      name: 'explicit domain',
+      options: {
+        baseURL: 'https://app.example.com',
+        session: { cookieCache: { enabled: true } },
+        advanced: { crossSubDomainCookies: { enabled: true, domain: 'example.com' } },
+      },
+    },
+    {
+      name: 'domain derived from the baseURL hostname',
+      options: {
+        baseURL: 'http://auth.example.com:3000',
+        advanced: { crossSubDomainCookies: { enabled: true } },
+      },
+    },
+    {
+      name: 'defaultCookieAttributes.domain wins over the cross-subdomain domain',
+      options: {
+        baseURL: 'https://app.example.com',
+        advanced: {
+          crossSubDomainCookies: { enabled: true, domain: 'example.com' },
+          defaultCookieAttributes: { domain: 'override.example.com' },
+        },
+      },
+    },
+    {
+      name: 'per-cookie attributes win over both',
+      options: {
+        baseURL: 'https://app.example.com',
+        advanced: {
+          crossSubDomainCookies: { enabled: true, domain: 'example.com' },
+          cookies: { session_token: { attributes: { domain: 'token.example.com' } } },
+        },
+      },
+    },
+  ]
+
+  it.each(cases)(
+    "$name: every clearing write carries BA's real Domain, Path and Secure",
+    ({ options }) => {
+      const getter = createCookieGetter(options)
+      const clear = getBetterAuthSessionCookieClearOptions(options, { nodeEnv: 'test' })
+      for (const key of ['session_token', 'session_data', 'dont_remember', 'account_data']) {
+        const real = getter(key)
+        const ours = clear(real.name)
+        expect(ours?.domain, key).toBe(real.attributes.domain)
+        expect(ours?.path ?? '/', key).toBe(real.attributes.path)
+        expect(ours?.secure === true, key).toBe(real.attributes.secure)
+        // Chunks and the multi-session cookies carry the same Domain.
+        expect(clear(`${real.name}.0`)?.domain, key).toBe(real.attributes.domain)
+      }
+      const token = getter('session_token')
+      expect(clear(`${token.name}_multi-abc123`)?.domain).toBe(token.attributes.domain)
+      expect(clear(`${token.name.replace(/^__Secure-/, '')}.x`)).toBeUndefined()
+    }
+  )
+
+  it('carries the Domain onto the __Secure- / plain counterparts and admin_session', () => {
+    const options: BetterAuthOptions = {
+      baseURL: 'https://app.example.com',
+      advanced: { crossSubDomainCookies: { enabled: true, domain: 'example.com' } },
+    }
+    const clear = getBetterAuthSessionCookieClearOptions(options, { nodeEnv: 'test' })
+    for (const name of getBetterAuthLogoutCookieNames(options, { nodeEnv: 'test' })) {
+      expect(clear(name)?.domain, name).toBe('example.com')
+    }
+  })
+
+  it('stays off when cross-subdomain cookies are disabled or the domain is per-request', () => {
+    const off = getBetterAuthSessionCookieClearOptions(
+      {
+        baseURL: 'https://app.example.com',
+        advanced: { crossSubDomainCookies: { enabled: false, domain: 'example.com' } },
+      },
+      { nodeEnv: 'test' }
+    )
+    expect(off('__Secure-better-auth.session_token')?.domain).toBeUndefined()
+    const dynamic = getBetterAuthSessionCookieClearOptions(
+      {
+        baseURL: { allowedHosts: ['app.example.com'], protocol: 'https' } as unknown as string,
+        advanced: { crossSubDomainCookies: { enabled: true } },
+      },
+      { nodeEnv: 'test' }
+    )
+    expect(dynamic('__Secure-better-auth.session_token')).toEqual({ secure: true })
+    const unparseable = getBetterAuthSessionCookieClearOptions(
+      { baseURL: 'not a url', advanced: { crossSubDomainCookies: { enabled: true } } },
+      { nodeEnv: 'test' }
+    )
+    expect(unparseable('better-auth.session_token')?.domain).toBeUndefined()
   })
 })
 

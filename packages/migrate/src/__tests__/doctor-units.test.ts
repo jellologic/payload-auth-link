@@ -5,6 +5,7 @@ import { describe, expect, test } from 'vitest'
 import { classifyPlugins, pluginsFromSourceTree } from '../doctor/plugins.js'
 import { runDoctor } from '../doctor/run-doctor.js'
 import { scanSource } from '../doctor/source-scan.js'
+import { snakeCaseTableName, sourceMapFromConfig } from '../doctor/source-layout.js'
 import { analyzeUsersCollection } from '../doctor/users.js'
 
 describe('doctor units', () => {
@@ -117,12 +118,13 @@ describe('doctor units', () => {
     expect(off.finding?.notes.join(' ')).toContain('better-auth')
   })
 
-  test('users analysis: adopt mode with the local strategy ON is flagged; the note names no source plugin (#110)', () => {
+  test('users analysis: adopt mode with the local strategy ON is flagged; the note names no source plugin (#110, #113)', () => {
     const collection = { slug: 'users', auth: true, fields: [{ name: 'email', type: 'email' }] }
     const adopt = analyzeUsersCollection(collection, 'roles', { adoptTarget: true })
     const issue = adopt.issues.find((entry) => entry.code === 'adopt-local-strategy-on')
     expect(issue?.detail).toContain('disableLocalStrategy: true')
-    expect(issue?.detail).toContain('every NEW user fails')
+    expect(issue?.detail).toContain('provider-better-auth 0.11.0 or later')
+    expect(issue?.detail).toContain('older engines fail every NEW user')
     // The note no longer claims payload-auth always leaves it on.
     expect(adopt.finding?.notes.join(' ')).not.toContain('payload-auth leaves it active')
     // Not an adopt target (the importer's ba-* layout): no flag.
@@ -192,6 +194,71 @@ describe('doctor units', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('doctor: the source layout from the payload-auth config (#113)', () => {
+  const stamped = (slug: string, key: string, extra: Record<string, unknown> = {}) => ({
+    slug,
+    custom: { betterAuthModelKey: key },
+    fields: [],
+    ...extra,
+  })
+
+  test('custom slugs map to their snake_case tables; absent plugins map to null', () => {
+    const config = {
+      collections: [
+        stamped('users', 'user', {
+          fields: [{ name: 'role', type: 'select', hasMany: true, options: ['user'] }],
+        }),
+        stamped('user-accounts', 'account'),
+        stamped('userSessions', 'session'),
+        stamped('verifications', 'verification'),
+        stamped('apiKeys', 'apikey'),
+        stamped('jwks', 'jwks', { dbName: 'auth_jwks' }),
+        { slug: 'posts', fields: [] },
+      ],
+    }
+    expect(sourceMapFromConfig(config)).toEqual({
+      users: 'users',
+      accounts: 'user_accounts',
+      sessions: 'user_sessions',
+      verifications: 'verifications',
+      api_keys: 'api_keys',
+      jwks: 'auth_jwks',
+      organizations: null,
+      members: null,
+      invitations: null,
+      users_role: 'users_role',
+    })
+    expect(snakeCaseTableName('organizationRoles')).toBe('organization_roles')
+  })
+
+  test('a config without payload-auth collections derives nothing', () => {
+    expect(sourceMapFromConfig({ collections: [{ slug: 'users', fields: [] }] })).toBeNull()
+    expect(sourceMapFromConfig(null)).toBeNull()
+    // A single-select role keeps the default child table (not guessed).
+    expect(
+      sourceMapFromConfig({
+        collections: [stamped('members-of-staff', 'user', { fields: [{ name: 'role' }] })],
+      })?.users_role
+    ).toBeUndefined()
+  })
+
+  test('runDoctor reports the derived map, and prints it for --source-map', async () => {
+    const report = await runDoctor({
+      configPath: new URL('../__fixtures__/doctor-fixture/payload.config.ts', import.meta.url)
+        .pathname,
+      srcDir: mkdtempSync(join(tmpdir(), 'doctor-layout-')),
+      databaseUrl: '',
+      loadModule: () =>
+        Promise.resolve({
+          custom: { hasBetterAuthPlugin: true },
+          collections: [stamped('users', 'user'), stamped('user-sessions', 'session')],
+        }),
+    })
+    expect(report.sourceMap?.sessions).toBe('user_sessions')
+    expect(report.sourceMap?.accounts).toBeNull()
   })
 })
 

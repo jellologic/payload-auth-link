@@ -15,6 +15,10 @@ House rules for specs:
   other.
 - Navigate with `gotoOwn` / `gotoSettled` (`helpers.ts`) after sign-in:
   they wait for hydration and absorb WebKit/Gecko navigation races.
+  `gotoSettled` first waits until the current page has no request in
+  flight: leaving a page mid-load cancels its module graph or loader
+  fetches, which WebKit reports as page errors ("Importing a module
+  script failed", "Load failed") in the dev-server log.
 - Calls whose responses swap or expire cookies (sign-out, Better Auth
   impersonation) run as in-page `fetch` (`pageFetch`): WebKit's
   `page.request` may keep a cookie the response expires.

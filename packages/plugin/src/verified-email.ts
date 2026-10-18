@@ -17,7 +17,8 @@ import type { WiredOptions } from './options.js'
  * grants on a change: the proof is bound to the address
  * (`linkableEmail`), and the configured mirror is set `true`. Writes
  * only what differs, so the per-update provider hook stays a no-op
- * once in step. Never sets the mirror `false`.
+ * once in step. Never sets the mirror `false` (only the proof reset on
+ * an unproven email change does, `collections.ts`).
  */
 export async function syncVerifiedEmail(
   wired: WiredOptions,

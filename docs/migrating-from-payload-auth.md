@@ -75,14 +75,21 @@ What the database section flags for the importer (issue #88):
 
 On the TARGET config the doctor also checks the adopt-mode wiring:
 
-| Code                      | Meaning                                                                                                                                                                                                                                                                                                                                       |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `adopt-local-strategy-on` | Blocker. Adopt mode serves Better Auth's users from your `users` collection while Payload's local strategy is ON there: Payload then requires a password on every create, so every NEW user fails (email sign-up 422, anonymous sign-in 500 "field is invalid: password"). Set `auth: { disableLocalStrategy: true }` (see adopt mode below). |
+| Code                      | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `adopt-local-strategy-on` | Warning. Adopt mode serves Better Auth's users from your `users` collection while Payload's local strategy is ON there: Payload requires a password on every create. provider-better-auth 0.11.0+ injects an unknowable password on each create, so new users work; older engines fail every NEW user (email sign-up 422, anonymous sign-in 500 "field is invalid: password"). Keep the local strategy only for break-glass operator accounts, or set `auth: { disableLocalStrategy: true }` (see adopt mode below). |
 
 **Custom table slugs.** If your layout renamed the payload-auth tables
-(the production field report: `user_accounts`, `user_sessions`), say so
-explicitly with `--source-map` — the doctor, the importer, `verify`,
-and `export` all take it:
+(the production field report: `user_accounts`, `user_sessions`), the
+doctor reads the layout off the payload-auth config it loaded: every
+collection payload-auth builds is stamped with its Better Auth model,
+and its table is the collection's `dbName` or its slug in snake_case.
+The report prints the derived map (`sourceMap` in `--json`) as a
+ready-made `--source-map` value, and a model whose plugin is not
+installed maps to `null`. The importer, `verify`, and `export` load
+the TARGET config, so pass them that map explicitly — and pass it to
+the doctor too when the derivation is wrong (a `dbName` function, a
+single-select role field); explicit entries win:
 
 ```sh
 --source-map '{"accounts":"user_accounts","sessions":"user_sessions"}'
@@ -233,13 +240,15 @@ verifying. Pass the old value as the engine's `options.secret`.
 Add the plugin's additive users columns before boot (identities,
 linkable, linkableEmail, phone, suspension — a migration or `push`).
 
-**Turn Payload's local strategy OFF on the adopted users collection.**
-In adopt mode Better Auth CREATES its users in that collection, and
-with the local strategy on, Payload requires a password on every
-create: every new user fails (email sign-up returns 422, anonymous
-sign-in 500 "field is invalid: password"). payload-auth apps that set
-`disableDefaultPayloadAuth: true` already have it off; otherwise set
-it on the collection:
+**Payload's local strategy on the adopted users collection.** In
+adopt mode Better Auth CREATES its users in that collection, and with
+the local strategy on, Payload requires a password on every create.
+provider-better-auth 0.11.0 and later inject an unknowable random
+password into each create, so sign-up and anonymous sign-in work
+either way (older engines failed every new user with 422 / 500
+"field is invalid: password"). Unless you keep local passwords for
+break-glass operator accounts, turn the local strategy off; payload-auth
+apps that set `disableDefaultPayloadAuth: true` already have it off:
 
 ```ts
 { slug: 'users', auth: { disableLocalStrategy: true }, fields: [/* … */] }
@@ -247,8 +256,17 @@ it on the collection:
 
 Operators then reach `/admin` through the provider
 (`admin: { loginView: 'provider' }`). The doctor run against the
-TARGET config reports `adopt-local-strategy-on` as a blocker until
-this is done.
+TARGET config reports `adopt-local-strategy-on` as a warning while
+the local strategy is on.
+
+**MFA provenance on an adopted session collection.** The engine
+records how each session was established in a `session.authenticationMethod`
+column (MFA provenance; `requireMfaForRoles` relies on it). An adopted
+session collection without that field still boots (a missing OPTIONAL
+Better Auth field is tolerated; a missing required one fails fast), but
+records no provenance, so MFA-gated roles stay withheld (fail closed). Add a
+`{ name: 'authenticationMethod', type: 'text' }` field to the adopted
+session collection if you use `requireMfaForRoles`.
 
 ### Pre-link the users: `adopt-prelink`
 
@@ -262,14 +280,28 @@ writes exactly what the importer writes on the host users:
 - ONE `better-auth` identity per user (`providerUserId` = the document
   id — the Better Auth user id under `idStrategy: 'payload'`); other
   providers' identity rows are kept;
-- `linkable: true` + `linkableEmail` for users whose `emailVerified`
-  is true (grant-only; `--verified-field` names another checkbox).
+- only with `--grant-linkable-from-verified`: `linkable: true` +
+  `linkableEmail` for users whose `emailVerified` is true (grant-only;
+  `--verified-field` names another checkbox).
+
+**The linking proof is not granted by default.** `emailVerified` is a
+mirror: an address changed under payload-auth (an admin edit, a
+Local API update, an email change that did not re-verify) can keep
+`true` for an address nobody proved. The proof lets ANOTHER provider's
+sign-in for that address link to the document — exactly the
+pre-account / email-squat outcome of GHSA-v6mr — so the kit no longer
+grants it from the mirror on its own. Every user still resolves
+through their `better-auth` identity without it. Grant it only after
+checking the flag is current for every verified user (for example,
+that no `email` changed since it was last verified), or later from an
+operator-reviewed list, as for `_verified` in docs/upgrading.md.
 
 ```sh
 # Plan (dry run, nothing written)
 bunx @payload-auth-link/migrate adopt-prelink --config ./src/payload.config.ts
 # Write, recording the manifest (./payload-auth-link-prelink.json)
 bunx @payload-auth-link/migrate adopt-prelink --config ./src/payload.config.ts --apply
+# (add --grant-linkable-from-verified only after reviewing emailVerified)
 # Undo exactly
 bunx @payload-auth-link/migrate rollback --config ./src/payload.config.ts \
   --manifest ./payload-auth-link-prelink.json
@@ -291,10 +323,44 @@ Better Auth tables; never drop them.
 
 There is no copy to roll back to: from the first request, Better Auth
 reads and WRITES the payload-auth tables — new sessions, updated
-users — and it deletes an expired `sessions` row whenever a lookup
-meets one. Plan rollback as a database restore (snapshot before the
-deploy) plus `rollback --manifest` for the pre-link fields, never as
-"the old rows are untouched".
+users — and, during coexistence with the legacy app as well as after
+it:
+
+- it DELETES an expired `sessions` row whenever a lookup meets one
+  (both apps read the same table, so the legacy app sees those rows
+  disappear too);
+- it UPDATES API-key usage state on the live `api_keys` rows on every
+  verified key: `request_count`, `remaining`, `last_request`, and the
+  refill counters (`last_refill_at`). The legacy app's rate limits and
+  quotas see the same counters move.
+
+Plan rollback as a database restore (snapshot before the deploy) plus
+`rollback --manifest` for the pre-link fields, never as "the old rows
+are untouched".
+
+### Verifying an adopt cutover
+
+`verify` checks an IMPORT (source rows against their `ba-*` copies)
+and says so when pointed at an adopt-mode config: adopt copies nothing,
+so there is nothing for it to compare. Verify an adopt cutover with
+checksums of the tables Better Auth now serves, taken right before the
+deploy and right after the boot — before traffic, which writes them:
+
+```sql
+-- Credentials and identities: must be byte-identical across the deploy.
+SELECT count(*), md5(string_agg(id::text || ':' || coalesce(password, '') || ':' || provider_id || ':' || account_id, ',' ORDER BY id))
+  FROM accounts;
+SELECT count(*), md5(string_agg(id::text || ':' || email || ':' || email_verified::text, ',' ORDER BY id))
+  FROM users;
+SELECT count(*), md5(string_agg(id::text || ':' || key, ',' ORDER BY id)) FROM api_keys;
+SELECT count(*), md5(string_agg(id::text || ':' || public_key, ',' ORDER BY id)) FROM jwks;
+SELECT count(*) FROM sessions WHERE expires_at > now();
+```
+
+(Use your `--source-map` table names on a renamed layout.) The first
+four must match exactly; the live-session count may only drop by
+sessions that expired in between. Then run `adopt-prelink` without
+`--apply`: after the pre-link it reports every user as already linked.
 
 ## The importer: `from-payload-auth` (#50)
 
@@ -340,9 +406,11 @@ bunx @payload-auth-link/migrate finalize --config ./src/payload.config.ts
 
 What it copies: users — each with ONE pre-linked `better-auth` identity
 resolving to their `ba-users` row, so a provider sign-in (now or after
-a later email verification) lands on the ORIGINAL Payload document,
-while `linkable` + `linkableEmail` stay granted from VERIFIED emails
-only (that gate is email-ownership proof, not identity resolution) —
+a later email verification) lands on the ORIGINAL Payload document.
+`linkable` + `linkableEmail` (email-ownership proof, not identity
+resolution) are granted only with `--grant-linkable-from-verified`,
+and then from VERIFIED emails only — the source `email_verified` flag
+can be stale for a changed address, see `adopt-prelink` above —
 plus credential accounts with their password hashes VERBATIM, OAuth
 accounts with their tokens, magic-link verifications, API keys with
 hash/prefix/metadata/rate-limit state, jwks, and the organization
@@ -383,13 +451,36 @@ with AES-256-GCM under a key derived from the app's `PAYLOAD_SECRET`,
 so `rollback` must run against the same app with the same secret. The
 file is written with mode `0600`.
 
-The manifest is also **signed** (version 3): an HMAC-SHA256 over the
-whole file — `finalized` included — keyed from the same secret.
-Rollback deletes rows and restores fields with `overrideAccess`, so an
-edited manifest must not be able to steer it. `rollback`, `finalize`,
-and any resumed `--apply` or `adopt-prelink` refuse a manifest that
-fails the check, before writing anything. Independently of the
-signature:
+The manifest is also **signed**: an HMAC-SHA256 over the whole file —
+`finalized` included — keyed from the same secret. Rollback deletes
+rows and restores fields with `overrideAccess`, so an edited manifest
+must not be able to steer it. `rollback`, `finalize`, and any resumed
+`--apply` or `adopt-prelink` refuse a manifest that fails the check,
+before writing anything.
+
+**The manifest is bound to its database and its run** (version 4,
+GHSA-crrr-3cg7-f6jw). A signature proves which APP wrote the file,
+not which DATABASE it belongs to — a rehearsal or staging database
+cloned from production shares its `PAYLOAD_SECRET`. So the first
+`--apply` stores a random database id in that database's Payload
+key-value store (`payload-kv`), and every run gets a random nonce the
+database records as open, rolled back, or finalized. Both sit inside
+the signature, and every command checks them first:
+
+- a manifest from another database is refused ("written against a
+  different database"), and so is one whose run this database has no
+  record of;
+- `rollback` closes the run in the database: a copy of the manifest
+  from before the rollback is refused as stale, and the next `--apply`
+  starts a fresh run;
+- every check fails closed: a key-value store that cannot be read
+  refuses the command instead of trusting the file.
+
+**Never roll back with a manifest from another environment or another
+run.** A database cloned AFTER its first `--apply` carries the same
+id; treat each clone's manifests as belonging to it alone.
+
+Independently of the signature:
 
 - **Rollback deletes only the importer's own rows.** Every created
   row must sit in one of the import's target collections (the `ba-*`
@@ -404,27 +495,41 @@ signature:
   takes `--config`, like `rollback`), writes a one-way marker into
   Payload's built-in key-value store (the `payload-kv` collection;
   `payload_kv` on SQL adapters), then re-signs the manifest as
-  finalized. Every later `rollback` and resumed `--apply` checks the
-  marker as well, so neither an edited flag nor a restored
+  finalized. Every later `rollback` refuses on ANY finalize marker in
+  the database — an import's or a pre-link's, whatever kind the
+  manifest claims — so neither an edited flag nor a restored
   pre-finalize copy of the manifest reopens the migration. If the
   store is unavailable (its table was never created), `finalize` fails
   with the manifest unchanged — run your Payload migrations and re-run
   it.
+- **Imported users are identifiable.** An imported `ba-users` row's
+  `baId` is the source user id (no prefix), which alone cannot tell it
+  from a live sign-up. A signed manifest's rows are the app's own; an
+  UNSIGNED manifest may delete a `ba-users` row only when the host
+  `users` document with that id exists (the importer's users ARE the
+  host's documents).
 
 Manifests from older kits:
 
-- **Version 1/2 (before 0.6.0)** carry no signature. If you are
-  mid-migration with one, and sure nobody has edited it,
-  `--allow-unsigned-manifest` accepts it — but a rollback then only
-  restores sealed field values and deletes nothing. To also DELETE the
-  rows it lists (and restore a version-1 manifest's plaintext values),
-  review its `created` entries and add `--allow-unsigned-deletes`; the
-  scoping rules above still apply. The next write signs the manifest.
+- **Version 1/2 (before 0.6.0)** carry no signature. They are
+  TERMINAL: `rollback` or `finalize` only, never resumed by `--apply`
+  and never re-signed (a resume would have signed their unverifiable
+  entries). If you are sure nobody has edited one and it was written
+  against THIS database, `--allow-unsigned-manifest` accepts it — a
+  rollback then only restores sealed field values and deletes nothing.
+  To also DELETE the rows it lists, review its `created` entries and
+  add `--allow-unsigned-deletes`; to restore a version-1 manifest's
+  PLAINTEXT prior values, review them and add
+  `--allow-plaintext-restore`. The scoping rules above still apply.
 - **Version 3 from migrate 0.6.0** is signed, but that signature did
-  not cover `finalized`. It still works for a resumed `--apply` and
-  for `finalize`; `rollback` asks for `--allow-unsigned-manifest` to
-  vouch that it was never finalized. Any write re-signs it under the
-  current scheme. A manifest already finalized stays finalized.
+  not cover `finalized`. It is terminal too (`rollback` with
+  `--allow-unsigned-manifest`, or `finalize`).
+- **Version 3 from migrate 0.7.0** is fully signed but names no
+  database. `rollback` and a resumed `--apply` / `adopt-prelink` ask
+  for `--allow-unbound-manifest` to vouch it was written against THIS
+  database; a resume then binds it (version 4). A manifest holding
+  plaintext values (a version-1 manifest an older kit resumed) is
+  never resumed; roll it back with `--allow-plaintext-restore`.
 
 Keep it until you have run `finalize` AND your soak window has passed
 (rollback needs it); then delete it.
@@ -435,8 +540,9 @@ Keep it until you have run `finalize` AND your soak window has passed
 captured host field to its value from BEFORE the first `--apply` (only
 the first capture per field is kept, so any number of `--apply` passes
 still roll back to the pre-import state) — `users.updated_at`
-included. It then RESETS the manifest (no rows, no field writes), so a
-later `--apply` starts fresh instead of building on stale entries.
+included. It then records the run as rolled back in the database and
+RESETS the manifest (no rows, no field writes), so a later `--apply`
+starts a fresh run instead of building on stale entries.
 
 A row that is already gone is fine — the goal is "absent". A delete
 that FAILS (a foreign key from one of your tables, a hook, a
@@ -468,9 +574,12 @@ The copy is verbatim except for these normalisations:
   the same; an exact column diff shows `''` → `NULL`. The reverse
   holds for required columns: a missing user `name` or API-key
   `config_id` is stored as `''`.
-- **`ba_users.updated_at` is the import time**, not the source row's
-  `updated_at`: Payload stamps it on create. `created_at` carries, and
-  the other models carry both timestamps.
+- **`ba_users` timestamps carry**: `created_at` AND `updated_at` are the
+  source user's, like every other model's.
+- **The first `--apply` bumps the host `users.updated_at`** of every
+  user it writes (identity, roles, linking proof): the forward write
+  goes through the Local API. `rollback` restores the captured value
+  exactly; a second `--apply` writes nothing and bumps nothing.
 - **Host roles use the field configured on `authLink`** (`rolesField`,
   e.g. `role`): the importer, `rollback`, and `verify` read it from the
   booted config, so the roles check runs on `role` layouts too.
@@ -507,17 +616,22 @@ reports sessions created since the import (and expired imported
 sessions Better Auth already cleaned up) as information, never as a
 failure. The other models keep EXACT counts, so new sign-ups after
 go-live make `verify` report more `ba-users` than the source: run it
-right after the copy, before you open traffic.
+right after the copy, before you open traffic. In adopt mode there is
+no copy; `verify` says so and points to
+[Verifying an adopt cutover](#verifying-an-adopt-cutover).
 
 ### Email verification after the import
 
-An unverified user is imported pre-linked by identity but without the
-linking proof. When they verify later, the plugin receives Better
+An unverified user (and, unless you passed
+`--grant-linkable-from-verified`, every user) is imported pre-linked by
+identity but without the linking proof. When they verify later, the plugin receives Better
 Auth's update and grants the bound proof (`linkable` +
 `linkableEmail`) on their document. If your users collection keeps
 payload-auth's own `emailVerified` checkbox, set
 `authLink({ emailVerifiedField: 'emailVerified' })` and the plugin
-also sets it `true` on that verification (it never sets it `false`).
+also sets it `true` on that verification. It sets it `false` only when
+a self-service email change resets the linking proof (the mirror no
+longer vouches for the new, unproven address).
 
 The importer's target slugs default to `ba-users`, `ba-accounts`,
 `ba-sessions`, `ba-verifications`, `ba-apikey`, `ba-jwks`,
