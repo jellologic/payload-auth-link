@@ -262,8 +262,9 @@ the local strategy is on.
 **MFA provenance on an adopted session collection.** The engine
 records how each session was established in a `session.authenticationMethod`
 column (MFA provenance; `requireMfaForRoles` relies on it). An adopted
-session collection without that field still boots, but records no
-provenance, so MFA-gated roles stay withheld (fail closed). Add a
+session collection without that field still boots (a missing OPTIONAL
+Better Auth field is tolerated; a missing required one fails fast), but
+records no provenance, so MFA-gated roles stay withheld (fail closed). Add a
 `{ name: 'authenticationMethod', type: 'text' }` field to the adopted
 session collection if you use `requireMfaForRoles`.
 

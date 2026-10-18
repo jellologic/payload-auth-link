@@ -440,6 +440,33 @@ describe('adopted models: host validation on first use (issue #49)', () => {
     expect(((failure as Error).cause as Error).message).toMatch(/needs a "users.name" field/)
   })
 
+  it('tolerates an adopted collection without an OPTIONAL Better Auth field', async () => {
+    // e.g. Better Auth 1.7's optional `jwks.expiresAt` on a payload-auth
+    // layout: writes to it are dropped, reads see it unset. A missing
+    // REQUIRED field still fails fast (above).
+    const { payload } = fakePayload(
+      { find: () => Promise.resolve({ docs: [] }) },
+      {
+        users: {
+          config: {
+            auth: { disableLocalStrategy: true },
+            fields: [
+              { name: 'email', type: 'email' },
+              { name: 'name', type: 'text' },
+              { name: 'emailVerified', type: 'checkbox' },
+              { name: 'createdAt', type: 'date' },
+              { name: 'updatedAt', type: 'date' },
+            ],
+          },
+        },
+      }
+    )
+    const adapter = rawAdapter(payload, { schemaMap: { user: { slug: 'users' } } })
+    expect(
+      await adapter.findOne({ model: 'user', where: [eq('email', 'n@example.com')] })
+    ).toBeNull()
+  })
+
   it('coerces renamed relationship ids to the host id type on writes', async () => {
     const hostSessions = {
       config: {

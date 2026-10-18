@@ -249,9 +249,11 @@ Fixed (issue #113): host validation used to run only for the models
 planned by the adapter's FIRST operation, so when another model's
 `findOne` ran first the adopted collections were never validated and
 their relationship fields stayed unclassified. It now validates every
-adopted model on the first operation (`adapter-unit.test.ts`). The
-engine's own runtime column `session.authenticationMethod` is exempt:
-an adopted session collection without it records no MFA provenance,
-which fails closed (`requireMfaForRoles` stays withheld). The password
+adopted model on the first operation (`adapter-unit.test.ts`). A
+missing REQUIRED Better Auth field fails fast; a missing OPTIONAL one
+(Better Auth 1.7's `jwks.expiresAt` on a payload-auth layout, the
+engine's `session.authenticationMethod`) is tolerated: writes to it are
+dropped and reads see it unset. Without `authenticationMethod` no MFA
+provenance is recorded, which fails closed. The password
 injection for local-strategy auth collections is decided on each
 create (`integration-adopt-local-strategy.test.ts`).

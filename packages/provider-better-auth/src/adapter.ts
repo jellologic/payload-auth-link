@@ -79,6 +79,8 @@ type ValidatedSchema = {
   readonly dateFields: ReadonlySet<string>
   /** Every Better Auth field name per model (`id` excluded). */
   readonly baFields: ReadonlyMap<string, ReadonlySet<string>>
+  /** The optional (`required: false` or unset) subset, per model. */
+  readonly optionalFields: ReadonlyMap<string, ReadonlySet<string>>
 }
 
 /**
@@ -171,6 +173,15 @@ function validateSchema(
 ): ValidatedSchema {
   const dateFields = new Set<string>()
   const baFields = new Map<string, Set<string>>()
+  const optionalFields = new Map<string, Set<string>>()
+  const record = (
+    model: string,
+    fields: Record<string, { readonly required?: boolean | undefined }>
+  ): void => {
+    const names = Object.keys(fields).filter((field) => field !== 'id')
+    baFields.set(model, new Set(names))
+    optionalFields.set(model, new Set(names.filter((field) => fields[field]?.required !== true)))
+  }
   for (const model of coreModels) {
     const table = ctx.schema[model]
     if (!table) {
@@ -180,7 +191,7 @@ function validateSchema(
       }
       throw new UnsupportedSchemaError(`missing table for model "${model}"`)
     }
-    baFields.set(model, new Set(Object.keys(table.fields).filter((field) => field !== 'id')))
+    record(model, table.fields)
     if (ctx.getModelName(model) !== model && !adoptedKeys.has(model)) {
       throw new UnsupportedSchemaError(
         `model "${model}" is renamed to "${ctx.getModelName(model)}"; custom model names need matching Payload collections`
@@ -210,7 +221,7 @@ function validateSchema(
         `missing table for custom model "${entry.model}"; enable the plugin that registers it`
       )
     }
-    baFields.set(entry.model, new Set(Object.keys(table.fields).filter((field) => field !== 'id')))
+    record(entry.model, table.fields)
     if (ctx.getModelName(entry.model) !== entry.model && !adoptedKeys.has(entry.model)) {
       throw new UnsupportedSchemaError(
         `model "${entry.model}" is renamed to "${ctx.getModelName(entry.model)}"; custom model names need matching Payload collections`
@@ -233,7 +244,7 @@ function validateSchema(
       )
     }
   }
-  return { dateFields, baFields }
+  return { dateFields, baFields, optionalFields }
 }
 
 function resolveModel(
@@ -485,16 +496,6 @@ function rethrowAsOperation(
 }
 
 /**
- * Fields the engine itself adds to Better Auth's schema at runtime
- * (session provenance). Host validation tolerates an adopted
- * collection without them: writes to a missing column are dropped,
- * which fails closed.
- */
-const engineRuntimeFields: Readonly<Record<string, readonly string[]>> = {
-  session: ['authenticationMethod'],
-}
-
-/**
  * Better Auth database adapter over the Payload Local API. System-level
  * persistence (like the plugin repository): reads and writes bypass access
  * control with `overrideAccess`, and the collections default to deny-all
@@ -634,7 +635,10 @@ export function createPayloadDatabaseAdapter(
         (auth as { disableLocalStrategy?: unknown }).disableLocalStrategy !== true)
   }
   let hostValidation: Promise<void> | undefined
-  const runHostValidation = (payload: Payload, baFields: ValidatedSchema['baFields']): void => {
+  const runHostValidation = (
+    payload: Payload,
+    { baFields, optionalFields }: Pick<ValidatedSchema, 'baFields' | 'optionalFields'>
+  ): void => {
     {
       const hostCache = new Map<string, Map<string, string>>()
       const hostFieldTypes = (slug: string): Map<string, string> => {
@@ -700,10 +704,13 @@ export function createPayloadDatabaseAdapter(
             continue
           }
           const fieldType = fieldTypes.get(payloadName)
-          if (fieldType === undefined && engineRuntimeFields[model]?.includes(baName) === true) {
-            // The engine's own runtime-only column: an adopted collection
-            // without it simply records nothing (fail closed — e.g. no
-            // MFA provenance, so `requireMfaForRoles` stays withheld).
+          if (fieldType === undefined && optionalFields.get(model)?.has(baName) === true) {
+            // An OPTIONAL Better Auth field the adopted collection lacks
+            // (e.g. 1.7's `jwks.expiresAt` on a payload-auth layout, or
+            // the engine's `session.authenticationMethod`): Payload drops
+            // writes to it and reads see it unset. Provenance then
+            // records nothing, which fails closed. Required fields
+            // still fail fast below.
             continue
           }
           if (fieldType === undefined) {
@@ -721,25 +728,25 @@ export function createPayloadDatabaseAdapter(
   }
   const validateHostCollections = (
     payload: Payload,
-    baFields: ValidatedSchema['baFields']
+    schema: Pick<ValidatedSchema, 'baFields' | 'optionalFields'>
   ): Promise<void> => {
     // Memoized as a promise: every adapter operation awaits the same
     // validation, and the first failure rejects for all of them.
-    hostValidation ??= Promise.resolve(runHostValidation(payload, baFields))
+    hostValidation ??= Promise.resolve(runHostValidation(payload, schema))
     return hostValidation
   }
 
   return createAdapterFactory<BetterAuthOptions>({
     config: { adapterId: 'payload-auth-link', adapterName: 'Payload CMS' },
     adapter: (ctx: CreatorContext): CustomAdapter => {
-      const { dateFields, baFields } = validateSchema(
+      const { dateFields, baFields, optionalFields } = validateSchema(
         ctx,
         { fields: customFields, models: customModels },
         adoptedKeys
       )
       const payloadOf = (): Promise<Payload> =>
         deps.getPayload().then(async (payload) => {
-          await validateHostCollections(payload, baFields)
+          await validateHostCollections(payload, { baFields, optionalFields })
           return payload
         })
 

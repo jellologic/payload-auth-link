@@ -2332,12 +2332,15 @@ strategy, are unaffected.
   `adopt-local-strategy-on` is now a warning. Turn the local strategy
   off unless break-glass operator accounts need it.
 - Every adopted model is validated on the first adapter operation, so
-  a missing or mis-mapped field now fails fast at boot. Previously it
-  could go unnoticed until that model was used.
+  a missing or mis-mapped REQUIRED field now fails fast at boot.
+  Previously it could go unnoticed until that model was used. A
+  missing OPTIONAL Better Auth field (for example 1.7's
+  `jwks.expiresAt` on a payload-auth layout) is tolerated: writes to it
+  are dropped.
 - An adopted session collection without an `authenticationMethod`
   field records no MFA provenance, so `requireMfaForRoles` stays
-  withheld (fail closed). Add `{ name: 'authenticationMethod', type:
-'text' }` to it if you use MFA-gated roles.
+  withheld (fail closed). Add a text field named `authenticationMethod` to it if you use
+  MFA-gated roles.
 
 ## plugin 0.13.0 / migrate 0.7.0 / provider-better-auth 0.10.0 / provider-authjs 0.6.0 (one minor across every package)
 
