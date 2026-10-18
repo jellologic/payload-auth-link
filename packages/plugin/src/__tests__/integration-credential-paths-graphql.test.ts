@@ -212,15 +212,18 @@ describe('GraphQL credential paths (rows 3–7, 9–11, 16)', () => {
   })
 
   it('row 4: an existing local JWT is refused on the next GraphQL operation', async () => {
+    // The token resolves no user at authentication (GHSA-mjvh): the
+    // operation runs anonymous and the default access denies it.
     const result = await gql(createPage, { jar: idOf('suspendedJwt') })
-    expect(result.status).toBe(401)
+    expect(result.status).toBe(403)
   })
 
   it('row 5: refreshTokenUsers refuses a suspended JWT', async () => {
     const result = await gql(`mutation { refreshTokenUser { refreshedToken } }`, {
       jar: idOf('suspendedJwt'),
     })
-    expect(result.status).toBe(401)
+    // No user to refresh: the token resolved none (GHSA-mjvh).
+    expect(result.status).toBe(403)
   })
 
   it('row 6: forgotPasswordUsers refuses a linked document (403)', async () => {
@@ -250,7 +253,7 @@ describe('GraphQL credential paths (rows 3–7, 9–11, 16)', () => {
   it('row 9: unlockUsers needs a session and runs the row-4 gate', async () => {
     const unlock = `mutation { unlockUser(email: "plain@test.dev") }`
     expect((await gql(unlock)).status).toBe(403)
-    expect((await gql(unlock, { jar: idOf('suspendedJwt') })).status).toBe(401)
+    expect((await gql(unlock, { jar: idOf('suspendedJwt') })).status).toBe(403)
     const operatorJar = await restLogin('admin@test.dev', PASSWORD)
     const allowed = await gql(unlock, { jar: operatorJar })
     expect(allowed.status).toBeUndefined()
@@ -261,7 +264,7 @@ describe('GraphQL credential paths (rows 3–7, 9–11, 16)', () => {
     const result = await gql(createPage, {
       authorization: 'users API-Key gql-suspended-api-key-0123456789ab',
     })
-    expect(result.status).toBe(401)
+    expect(result.status).toBe(403)
   })
 
   it('row 1 over GraphQL: a suspended provider session resolves no user', async () => {
@@ -272,7 +275,7 @@ describe('GraphQL credential paths (rows 3–7, 9–11, 16)', () => {
       expiresAt: new Date(Date.now() + 3_600_000),
     })
     const result = await gql(createPage, { jar })
-    expect([401, 403]).toContain(result.status)
+    expect(result.status).toBe(403)
     const me = await gql(`query { meUser { user { id } } }`, { jar })
     expect((me.data?.meUser as { user?: unknown } | undefined)?.user ?? null).toBeNull()
   })

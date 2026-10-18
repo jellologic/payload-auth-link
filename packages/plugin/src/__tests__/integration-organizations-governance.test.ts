@@ -262,9 +262,9 @@ describe('membership relocation is refused', () => {
       cookie: cookieFor('owner'),
       body: { organization: idValue(orgB), role: 'owner' },
     })
-    // Field access drops the write (or the request is refused); either
-    // way the row never leaves its tenant.
-    expect([200, 403]).toContain(attempt.status)
+    // Field access drops the write (200, the row unchanged): the row
+    // never leaves its tenant.
+    expect(attempt.status).toBe(200)
     expect((await requireMembership('owner', orgA)).organization).toBe(orgA)
     expect(await membershipOf('owner', orgB)).toBeNull()
   })
@@ -286,7 +286,8 @@ describe('membership relocation is refused', () => {
       cookie: cookieFor('victim'),
       body: { user: idValue(userId('member')) },
     })
-    expect([200, 403]).toContain(attempt.status)
+    // Field access drops the `user` write (200, the row unchanged).
+    expect(attempt.status).toBe(200)
     expect((await requireMembership('outsider', orgB)).user).toBe(userId('outsider'))
     expect(await membershipOf('member', orgB)).toBeNull()
     await payload.delete({ collection: 'memberships', id: seeded.id, overrideAccess: true })
@@ -447,7 +448,9 @@ describe('membership collection access paths', () => {
     const direct = await call('GET', `/memberships/${victimRow.id}`, {
       cookie: cookieFor('member'),
     })
-    expect(direct.status).not.toBe(200)
+    // The read access scopes rows by `Where`, so another org's row is
+    // simply not found for this member.
+    expect(direct.status).toBe(404)
   })
 
   it('update/delete: unknown ids and unauthenticated callers are refused', async () => {
@@ -455,11 +458,11 @@ describe('membership collection access paths', () => {
       cookie: cookieFor('owner'),
       body: { role: 'member' },
     })
-    expect(unknown.status).not.toBe(200)
+    expect(unknown.status).toBe(403)
     const unknownDelete = await call('DELETE', '/memberships/987654', {
       cookie: cookieFor('owner'),
     })
-    expect(unknownDelete.status).not.toBe(200)
+    expect(unknownDelete.status).toBe(403)
     const memberRow = await requireMembership('member', orgA)
     const anonymous = await call('PATCH', `/memberships/${memberRow.id}`, {
       body: { role: 'admin' },
@@ -962,7 +965,8 @@ describe('organization collection access paths', () => {
       cookie: cookieFor('member'),
       body: { verifiedDomains: [{ domain: 'gmail.com' }] },
     })
-    expect([200, 403]).toContain(patched.status)
+    // Field access drops the domain write (200, nothing claimed).
+    expect(patched.status).toBe(200)
     expect(await domains(claimedId)).toEqual([])
     const sso = await payload.find({
       collection: 'organizations',

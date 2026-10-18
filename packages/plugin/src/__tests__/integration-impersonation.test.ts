@@ -360,8 +360,9 @@ describe('real Payload auth path (strategy -> req.user)', () => {
         body: JSON.stringify({ roles: ['admin'] }),
       }),
     })
-    // Denied or field-stripped: either way the stored roles must not move.
-    expect([200, 400, 401, 403]).toContain(patch.status)
+    // Refused (403): role writes are role-manager-only and denied while
+    // impersonating — and the stored roles do not move.
+    expect(patch.status).toBe(403)
     const after = await payload.findByID({
       overrideAccess: true,
       collection: 'users',

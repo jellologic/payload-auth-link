@@ -436,9 +436,8 @@ sessions verify through their provider, but the observed channel is
 fail-closed: an api-key presentation is only admitted when you list
 `'api-key'`.
 
-Known issue: with `'bearer'` admitted, Payload's `GET /api/users/me`
-answers 500 for a Better Auth bearer session (Payload decodes the
-`Authorization: Bearer` value as a JWT, and BA's token is opaque).
-Use `GET /api/auth-link/session` for bearer clients; every other
-route works on the same token. Pinned as `it.fails` in
-`channel-bearer-engine.test.ts`.
+With `'bearer'` admitted, Payload's `GET /api/users/me` answers 200
+for a Better Auth bearer session: the plugin's `me` hook answers for
+auth-link users (with `exp` from the provider session), so Payload
+never decodes BA's opaque token as a Payload JWT and never echoes it
+back as `token`. Pinned in `channel-bearer-engine.test.ts`.

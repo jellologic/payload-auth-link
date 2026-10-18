@@ -168,9 +168,10 @@ describe('rows 3–7 and 22: local credentials on a BA-linked document', () => {
     const jwt = h.jwtCookieOf(await h.localLogin(local))
     expect((await h.rest('POST', '/pages', { cookie: jwt, body: { title: 'y' } })).status).toBe(201)
     await h.suspend(localId)
-    expect((await h.rest('POST', '/pages', { cookie: jwt, body: { title: 'x' } })).status).toBe(401)
+    // The JWT resolves no user at authentication (GHSA-mjvh): anonymous.
+    expect((await h.rest('POST', '/pages', { cookie: jwt, body: { title: 'x' } })).status).toBe(403)
     expect((await h.rest('POST', '/users/refresh-token', { cookie: jwt, body: {} })).status).toBe(
-      401
+      403
     )
     expect((await h.localLogin(local)).status).toBe(401)
   })
@@ -220,7 +221,7 @@ describe('rows 3–7 and 22: local credentials on a BA-linked document', () => {
 })
 
 describe('row 10: useAPIKey on an unlinked document', () => {
-  it('an existing key works until the user is suspended, then 401 on the next request', async () => {
+  it('an existing key works until the user is suspended, then anonymous on the next request', async () => {
     const id = await h.createDoc('api-key@ba-rest.test')
     const key = 'ba-unlinked-api-key-0123456789abcdef'
     await h.live().update({
@@ -235,10 +236,12 @@ describe('row 10: useAPIKey on an unlinked document', () => {
       201
     )
     await h.suspend(id)
+    // The key resolves no user at authentication (GHSA-mjvh): anonymous.
+    expect(await h.meId({ authorization })).toBeNull()
     expect((await h.rest('POST', '/pages', { authorization, body: { title: 'k' } })).status).toBe(
-      401
+      403
     )
-    expect((await h.rest('PATCH', `/users/${id}`, { authorization, body: {} })).status).toBe(401)
+    expect((await h.rest('PATCH', `/users/${id}`, { authorization, body: {} })).status).toBe(403)
   })
 
   it("failure: an unknown key is anonymous; a key reaches only its own user's grants", async () => {
@@ -305,7 +308,8 @@ describe('row 10a: a Payload API key enabled before the BA link', () => {
       overrideAccess: true,
     })
     const reEnabled = `users API-Key ${again}`
-    expect((await h.rest('GET', '/users/me', { authorization: reEnabled })).status).toBe(403)
+    // It resolves no user at authentication (GHSA-mjvh): `me` is anonymous.
+    expect(await h.meId({ authorization: reEnabled })).toBeNull()
     expect((await h.rest('GET', `/users/${id}`, { authorization: reEnabled })).status).toBe(403)
     expect(
       (await h.rest('POST', '/pages', { authorization: reEnabled, body: { title: 'k' } })).status

@@ -105,11 +105,18 @@ export default defineConfig({
           statements: 95,
         },
         'packages/plugin/src/access.ts': { lines: 95, functions: 95, branches: 95, statements: 95 },
-        'packages/plugin/src/audit.ts': { lines: 95, functions: 91, branches: 88, statements: 95 },
+        'packages/plugin/src/audit.ts': { lines: 95, functions: 95, branches: 95, statements: 95 },
         'packages/plugin/src/collections.ts': {
           lines: 95,
           functions: 95,
-          branches: 86,
+          branches: 88,
+          statements: 95,
+        },
+        // GHSA-mjvh: the authentication-time credential gate.
+        'packages/plugin/src/credential-gate.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 95,
           statements: 95,
         },
         'packages/plugin/src/compat-shim.ts': {
@@ -153,7 +160,7 @@ export default defineConfig({
         'packages/plugin/src/strategy.ts': {
           lines: 95,
           functions: 95,
-          branches: 90,
+          branches: 95,
           statements: 95,
         },
         'packages/plugin/src/verified-email.ts': {

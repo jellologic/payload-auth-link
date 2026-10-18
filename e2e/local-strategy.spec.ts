@@ -138,14 +138,15 @@ test('a suspended operator is locked out on every credential they hold', async (
   })
   expect(suspend.status).toBe(200)
 
-  // The pre-existing local JWT is refused on the very next request —
-  // users operations and host collections alike.
+  // The pre-existing local JWT resolves no user from the very next
+  // request on (GHSA-mjvh): it is anonymous everywhere — users
+  // operations, host collections, and refresh alike.
   const write = await session.call('POST', '/api/pages', { title: 'nope' })
-  expect(write.status).toBe(401)
+  expect(write.status).toBe(403)
   const self = await session.call('PATCH', `/api/users/${id}`, {})
-  expect(self.status).toBe(401)
+  expect(self.status).toBe(403)
   const refreshed = await session.call('POST', '/api/users/refresh-token', {})
-  expect(refreshed.status).toBe(401)
+  expect(refreshed.status).toBe(403)
 
   // A fresh local login is refused too.
   const relogin = await localSession(baseURL, browser, email, password)

@@ -134,6 +134,72 @@ describe('account status read failure fails CLOSED (503)', () => {
   })
 })
 
+/**
+ * The operation-layer provider-owned refusals stay as defense in depth
+ * behind the authentication-time credential gate (GHSA-mjvh): they
+ * still govern a Local API call handed a local-strategy user directly.
+ */
+describe('operation-layer refusals for local credentials on linked documents', () => {
+  function localRequest(strategy: string, doc: unknown = linkedDoc) {
+    const findByID = vi.fn(() => Promise.resolve(doc))
+    return {
+      req: {
+        user: { id: 'linked-1', collection: 'users', _strategy: strategy, roles: ['user'] },
+        payload: { findByID },
+        context: {},
+      } as unknown as PayloadRequest,
+      findByID,
+    }
+  }
+
+  it('refuses a local JWT (401) and an API key (403) on a linked document', async () => {
+    const hook = accountControlsGateHook(wired({ logger: spyLogger() }))
+    expect(await statusOfCall(() => hook({ req: localRequest('local-jwt').req } as never))).toBe(
+      401
+    )
+    expect(await statusOfCall(() => hook({ req: localRequest('api-key').req } as never))).toBe(403)
+    // The plugin's own strategy is the provider's credential: no refusal.
+    expect(
+      await statusOfCall(() => hook({ req: localRequest('auth-link').req } as never))
+    ).toBeUndefined()
+  })
+
+  it('the users access belt grants neither credential anything', async () => {
+    const users = usersCollection()
+    const read = users.access?.read
+    if (read === undefined) {
+      throw new Error('users.access.read missing')
+    }
+    expect(await read({ req: localRequest('local-jwt').req } as never)).toBe(false)
+    expect(await read({ req: localRequest('api-key').req } as never)).toBe(false)
+  })
+
+  it('the opt-in keeps both credentials working', async () => {
+    const hook = accountControlsGateHook(
+      wired({ logger: spyLogger(), allowLocalCredentialsForLinkedDocs: true })
+    )
+    expect(
+      await statusOfCall(() => hook({ req: localRequest('local-jwt').req } as never))
+    ).toBeUndefined()
+    expect(
+      await statusOfCall(() => hook({ req: localRequest('api-key').req } as never))
+    ).toBeUndefined()
+  })
+
+  it('a re-entrant status read and a fabricated request are not governed', async () => {
+    const hook = accountControlsGateHook(wired({ logger: spyLogger() }))
+    const { req, findByID } = localRequest('local-jwt')
+    ;(req.context as Record<string, unknown>)['payload-auth-link:account-status-inflight'] = true
+    expect(await statusOfCall(() => hook({ req } as never))).toBeUndefined()
+    expect(findByID).not.toHaveBeenCalled()
+    const bare = {
+      user: { id: 'linked-1', collection: 'users', _strategy: 'local-jwt' },
+      context: {},
+    } as unknown as PayloadRequest
+    expect(await statusOfCall(() => hook({ req: bare } as never))).toBeUndefined()
+  })
+})
+
 function usersCollection(extra: Partial<AuthLinkPluginOptions> = {}): CollectionConfig {
   const options = wired({ logger: spyLogger(), ...extra })
   const [users] = applyUsersCollection([], options, createAuthLinkStrategy(options))

@@ -394,7 +394,9 @@ describe('injected field access defaults', () => {
     const replant = await rest('POST', '/users/login', {
       body: { email: 'plain@test.dev', password: 'AttackerKnows-9' },
     })
-    expect(replant.status).not.toBe(200)
+    // 401: the planted password never landed (stripped), so the
+    // credentials are simply wrong.
+    expect(replant.status).toBe(401)
     // ...and neither does the pre-existing one: the document holds
     // linked identities, so local sign-in is refused outright
     // (GHSA-f4hj provider-owned documents).

@@ -78,13 +78,13 @@ describe('a Payload API key enabled before the link (default)', () => {
     })
     expect(await keyIndexed(strict, reEnabled)).toBe(true)
     const auth = { authorization: apiKeyHeader(reEnabled) }
+    // The key resolves no user at authentication (GHSA-mjvh): every
+    // request it signs is anonymous, so the default access denies it.
     expect((await rest(strict, 'GET', `/users/${id}`, auth)).status).toBe(403)
     expect((await rest(strict, 'PATCH', `/users/${id}`, { ...auth, body: {} })).status).toBe(403)
     expect((await rest(strict, 'GET', '/users', auth)).status).toBe(403)
-    // `me` reads the document through the gated read, so the refusal
-    // surfaces as Payload's error response (never the document).
     const me = await rest(strict, 'GET', '/users/me', auth)
-    expect(me.status).toBe(403)
+    expect(me.status).toBe(200)
     expect(meUserId(me)).toBeNull()
     const access = await rest(strict, 'GET', '/access', auth)
     expect(access.status).toBe(200)

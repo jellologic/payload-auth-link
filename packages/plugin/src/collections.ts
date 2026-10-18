@@ -28,6 +28,13 @@ import type {
 } from 'payload'
 import { APIError } from 'payload'
 import { isImpersonating } from './access.js'
+import {
+  apiKeyStrategyName,
+  holdsLinkedIdentities,
+  localCredentialGateHook,
+  localJwtStrategyName,
+  suspensionActive,
+} from './credential-gate.js'
 import type { WiredOptions } from './options.js'
 import { normalizeUserEmailHook } from './hooks.js'
 import { REQUEST_VERIFY_KEY } from './session.js'
@@ -253,7 +260,8 @@ function linkableMarkerHook(wired: WiredOptions): CollectionBeforeChangeHook {
  * provider-verified address in the same write) nor a role manager's,
  * the `linkable` proof and its `linkableEmail` are cleared — and, on
  * hosts with `auth.verify`, Payload's `_verified` flag too, which
- * Payload itself keeps across email changes. The document is then
+ * Payload itself keeps across email changes, and the host's verified
+ * mirror (`emailVerifiedField`) when one is configured. The document is then
  * unproven until a role manager re-grants the proof.
  *
  * "Re-granted in the same write" is safe to honor: field access lets
@@ -293,6 +301,12 @@ function resetProofOnEmailChange(
   const auth = args.collection.auth
   if (isRecord(auth) && auth.verify !== undefined && auth.verify !== false) {
     data._verified = false
+  }
+  // The host's verified mirror (`emailVerifiedField`, issue #88) vouched
+  // for the OLD address; left `true`, it would tell every host reader
+  // that the new, unproven address is verified.
+  if (wired.emailVerifiedField !== null) {
+    data[wired.emailVerifiedField] = false
   }
   const userId =
     isRecord(originalDoc) &&
@@ -454,18 +468,6 @@ function emailField(wired: WiredOptions): Field {
 }
 
 /**
- * Is the document currently suspended (CAP-7)? Shared by the login
- * gate and the request-time constraints.
- */
-function suspensionActive(doc: unknown, wired: WiredOptions): boolean {
-  if (!isRecord(doc)) {
-    return false
-  }
-  const suspendedUntil = toDate(doc.suspendedUntil)
-  return isSuspendedAt(suspendedUntil, wired.clock.now())
-}
-
-/**
  * Local sign-in refusal for suspended users (GHSA-f4hj): Payload's
  * local strategy never consulted the plugin, so a suspended user with
  * a local password could still sign in. Payload's `beforeLogin` only
@@ -491,8 +493,7 @@ function accountControlsLoginHook(
     if (wired.allowLocalCredentialsForLinkedDocs) {
       return
     }
-    const identities: unknown = isRecord(user) ? user[wired.config.map.identitiesField] : undefined
-    if (Array.isArray(identities) && identities.length > 0) {
+    if (holdsLinkedIdentities(user, wired)) {
       throw new APIError(
         'Local sign-in is unavailable for provider-linked accounts; use your identity provider',
         403
@@ -564,8 +565,7 @@ function passwordIssueGuardHook(wired: WiredOptions): CollectionBeforeOperationH
     if (optedOut) {
       return args
     }
-    const identities: unknown = doc[wired.config.map.identitiesField]
-    if (!Array.isArray(identities) || identities.length === 0) {
+    if (!holdsLinkedIdentities(doc, wired)) {
       return args
     }
     const docId = typeof doc.id === 'string' || typeof doc.id === 'number' ? String(doc.id) : ''
@@ -602,11 +602,6 @@ type AccountStatus = {
   /** The document holds linked provider identities (provider-owned). */
   readonly linked?: boolean
 }
-
-/** Payload's local JWT strategy name (`_strategy` on `req.user`). */
-const localJwtStrategyName = 'local-jwt'
-/** Payload's API-key strategy name (`_strategy` on `req.user`). */
-const apiKeyStrategyName = 'api-key'
 
 type AccountDecision = 'ok' | 'suspended' | 'failed' | 'provider-owned' | 'provider-owned-api-key'
 
@@ -647,10 +642,9 @@ async function requestAccountStatus(
       depth: 0,
       overrideAccess: true,
     })
-    const identities: unknown = isRecord(doc) ? doc[wired.config.map.identitiesField] : undefined
     status = {
       suspended: suspensionActive(doc, wired),
-      linked: Array.isArray(identities) && identities.length > 0,
+      linked: holdsLinkedIdentities(doc, wired),
     }
   } catch (cause) {
     // Fail closed: an unreadable account state must never wave a
@@ -1141,6 +1135,9 @@ function createUsersCollection(wired: WiredOptions, strategy: AuthStrategy): Col
       ],
       beforeLogin: [accountControlsLoginHook(wired)],
       beforeChange: [linkableMarkerHook(wired)],
+      // First, so it sees the document as read (GHSA-mjvh): the
+      // authentication-time veto for Payload's own credentials.
+      afterRead: [localCredentialGateHook(wired)],
       afterChange: [suspendRevokeHook(wired)],
       me: [authLinkMeHook],
     },
@@ -1315,6 +1312,10 @@ export function applyUsersCollection(
             ],
             beforeLogin: [...(existing.hooks?.beforeLogin ?? []), accountControlsLoginHook(wired)],
             beforeChange: [...(existing.hooks?.beforeChange ?? []), linkableMarkerHook(wired)],
+            // First, so it sees the document before host hooks reshape
+            // it (GHSA-mjvh): the authentication-time veto for
+            // Payload's own credentials.
+            afterRead: [localCredentialGateHook(wired), ...(existing.hooks?.afterRead ?? [])],
             afterChange: [...afterChange, suspendRevokeHook(wired)],
             me: [authLinkMeHook, ...(existing.hooks?.me ?? [])],
           },
