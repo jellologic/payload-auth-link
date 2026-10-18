@@ -59,9 +59,16 @@ describe.skipIf(!canLoadFixture)('doctor: in-process fixture report (exact block
       'ba-internals-usage',
     ])
     expect(report.warnings.map((issue) => issue.code)).toEqual([
+      // payload-auth's session collection has no authenticationMethod
+      // field; adopting it as-is records no MFA provenance (#116).
+      'adopt-session-no-authentication-method',
       'non-canonical-role-value',
       'database-not-inspected',
     ])
+    expect(
+      report.warnings.find((issue) => issue.code === 'adopt-session-no-authentication-method')
+        ?.detail
+    ).toContain("'sessions'")
     const byId = new Map(report.plugins.map((finding) => [finding.id, finding.status]))
     expect(byId.get('api-key')).toBe('supported')
     expect(byId.get('organization')).toBe('auto-declarable')

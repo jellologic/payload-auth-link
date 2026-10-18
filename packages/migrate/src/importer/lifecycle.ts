@@ -1,18 +1,33 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { writePrivateFile } from '../private-file.js'
 import type { Payload } from 'payload'
-import { boundRun, plaintextWrites, startRun, type RunBinding } from './binding.js'
+import {
+  assertNoOtherRowBearingRun,
+  boundRun,
+  plaintextWrites,
+  startRun,
+  type RunBinding,
+} from './binding.js'
 import {
   assertCreatedRowsScoped,
   assertNoFinalizeMarker,
   baIdMismatch,
+  databaseIdentity,
   expectedBaId,
   hostRolesField,
   recordFinalizeMarker,
   recordRun,
   targetSlugsOf,
+  type IdentityCheck,
 } from './guards.js'
-import { restoreCaptured } from './host-writes.js'
+import {
+  inTransaction,
+  priorValue,
+  restorableFieldsFor,
+  restoreCaptured,
+  sealScopeOf,
+  transactionReq,
+} from './host-writes.js'
 import { authenticateManifest, isBound, signManifest } from './manifest-mac.js'
 import {
   defaultTargetSlugs,
@@ -79,16 +94,6 @@ export type VerifyResult = {
 }
 
 /**
- * `verify` checks an IMPORT: source rows against the `ba-*` copies the
- * importer keyed by `baId`. An adopt-mode app (issue #113) copies
- * nothing — its Better Auth models ARE the payload-auth tables — so
- * there is nothing for it to compare. Say so, instead of the misleading
- * "declares none of the target collections" / "baId cannot be queried".
- */
-export const verifyAdoptUnsupported =
-  'verify checks an IMPORT (the ba-* copies keyed by baId), and this config serves Better Auth in ADOPT mode: nothing was copied, so there is nothing for verify to compare. Verify an adopt cutover with the checksum procedure in docs/migrating-from-payload-auth.md ("Verifying an adopt cutover"), and adopt-prelink with its dry run (it reports every user as already linked)'
-
-/**
  * Verify (issues #50, #68, #69): fail closed on the source layout
  * (the probe runs first), per-model counts match EXACTLY (zero never
  * skips; every mapped model is either counted or explicitly
@@ -98,7 +103,8 @@ export const verifyAdoptUnsupported =
  * its user, every API key carries its hash with a resolvable owner,
  * and every member/invitation references an existing org and user.
  * Exits non-zero on any mismatch (the caller maps `ok` to the exit
- * code).
+ * code). An ADOPT-mode config (no `baId` on the user target) runs the
+ * adopt checks instead (issue #116; see `verify-adopt.ts`).
  */
 export async function verifyImport(options: {
   readonly payload: Payload
@@ -120,18 +126,20 @@ export async function verifyImport(options: {
   const sessions = options.sessions ?? 'carry'
   const issues: VerifyIssue[] = []
   const checks: { name: string; passed: boolean }[] = []
-  // Adopt mode (issue #113): the user target carries no baId — nothing
-  // was imported, so nothing is compared.
+  // Adopt mode (issues #113, #116): the user target carries no baId —
+  // nothing was imported, so the adopt checks run instead.
   const userTarget = payload.collections[String(slugs['user'])]
   if (
     userTarget === undefined ||
     !userTarget.config.flattenedFields.some((field) => field.name === 'baId')
   ) {
-    return {
-      ok: false,
-      issues: [{ code: 'verify-adopt-unsupported', detail: verifyAdoptUnsupported }],
-      checks,
-    }
+    const { adoptUsersSlug, verifyAdopt } = await import('./verify-adopt.js')
+    return verifyAdopt({
+      payload,
+      sourceConnectionString,
+      sourceTables,
+      usersSlug: adoptUsersSlug(payload, String(slugs['user'])),
+    })
   }
   const check = (name: string, passed: boolean, detail?: string): void => {
     checks.push({ name, passed })
@@ -566,6 +574,30 @@ export type RollbackOptions = {
    * vouches it was written against THIS database.
    */
   readonly allowUnboundManifest?: boolean | undefined
+  /** How this environment identifies itself (GHSA-xw9m-ph95-84rx). */
+  readonly identity?: IdentityCheck | undefined
+}
+
+/**
+ * Refuse an UNSIGNED (pre-0.6.0) manifest on a database that holds a
+ * migration id (GHSA-xw9m-ph95-84rx): every manifest written against
+ * such a database since migrate 0.8.0 is signed and bound, so an
+ * unsigned one cannot belong to its current state — it is a downgrade
+ * (a bound manifest stripped of its signature, sealed values copied
+ * in). Unsigned manifests stay usable only on databases that never ran
+ * 0.8.0 or later.
+ */
+async function refuseUnsignedOnBoundDatabase(
+  payload: Payload,
+  action: string,
+  identity: IdentityCheck | undefined
+): Promise<void> {
+  const databaseId = await databaseIdentity(payload, { create: false, action, check: identity })
+  if (databaseId !== null) {
+    throw new Error(
+      `the manifest is unsigned (written before 0.6.0), but this database has run migrate 0.8.0 or later (it holds a migration database id): every manifest written against it since is signed and bound to it, so an unsigned one is refused — whatever --allow-unsigned-manifest says. Use the signed manifest the kit wrote; nothing was changed`
+    )
+  }
 }
 
 /**
@@ -578,7 +610,10 @@ export type RollbackOptions = {
  * or a database that records ANY finalized migration (the marker
  * `finalize` writes — whatever kind the manifest claims; GHSA-crrr);
  * a key-value store it cannot read (fail closed); a manifest that
- * fails its signature; a version-4 manifest naming another database,
+ * fails its signature; an UNSIGNED manifest on a database that holds a
+ * migration id (GHSA-xw9m-ph95-84rx); a database whose migration
+ * record was copied from another one; a captured value sealed for
+ * another run; a version-4 manifest naming another database,
  * or a run this database does not hold open; a 0.7.0 manifest (no
  * database binding) without `allowUnboundManifest`; created rows
  * outside the import's own target collections (signed or not), or
@@ -589,6 +624,8 @@ export type RollbackOptions = {
  * "absent"); a delete that FAILS (a foreign key, a hook, a permission)
  * aborts the rollback with the rows named, before any field is
  * restored or the manifest reset — so it can be re-run once fixed.
+ * Deletes and restores share one database transaction where the
+ * adapter offers one, so a failed rollback changes nothing.
  * Success records the run as rolled back in the database, so no copy
  * of this manifest drives a second rollback.
  */
@@ -616,10 +653,13 @@ export async function rollbackImport(
   // ANY finalized migration on this database, and an unreadable store
   // refuses too (GHSA-crrr-3cg7-f6jw).
   await assertNoFinalizeMarker(payload, 'rollback')
+  if (trust === 'unsigned') {
+    await refuseUnsignedOnBoundDatabase(payload, 'rollback', options.identity)
+  }
   // The database's record of THIS manifest: its database and its run.
   let binding: RunBinding | null = null
   if (isBound(manifest)) {
-    const run = await boundRun(payload, manifest, 'rollback')
+    const run = await boundRun(payload, manifest, 'rollback', options.identity)
     if (run.state === 'finalized') {
       throw new Error(
         'the database records this migration as finalized; rollback is no longer possible (the manifest file does not override that)'
@@ -688,51 +728,93 @@ export async function rollbackImport(
       `${foreign.length} created row(s) no longer carry the baId the importer gave them, so they are not the imported rows: ${listSome(foreign, ', ')}. Refusing to delete anything`
     )
   }
+  // Every captured value must open — for THIS manifest's run
+  // (GHSA-xw9m-ph95-84rx) — before the first delete: a value copied in
+  // from another manifest refuses the rollback with nothing changed.
+  const restorable = restorableFieldsFor(hostRolesField(payload))
+  const scope = sealScopeOf(manifest)
+  for (const write of manifest.fieldWrites) {
+    priorValue(payload.secret, write, restorable, {
+      allowPlaintext: options.allowPlaintextRestore === true,
+      scope,
+    })
+  }
 
-  let deleted = 0
-  const failed: string[] = []
-  for (const row of present) {
-    try {
-      await payload.delete({ collection: row.collection, id: row.id, overrideAccess: true })
-      deleted += 1
-    } catch (error) {
-      if ((await findRow(payload, row)) === null) {
-        // Removed concurrently: the goal state is "row absent".
-        absent += 1
-        continue
+  // Deletes and restores run in ONE transaction where the adapter has
+  // one (Postgres, SQLite; MongoDB on a replica set): a failure leaves
+  // the database exactly as it was. Without one, each write commits on
+  // its own, and a re-run completes the rollback (rows already deleted
+  // count as absent; restoring a captured value again is idempotent).
+  const { deleted, restored } = await inTransaction(payload, async (transactionID) => {
+    let removed = 0
+    const failed: string[] = []
+    for (const row of present) {
+      try {
+        await payload.delete({
+          collection: row.collection,
+          id: row.id,
+          overrideAccess: true,
+          ...transactionReq(transactionID),
+        })
+        removed += 1
+      } catch (error) {
+        const reason = `${row.collection}#${String(row.id)}: ${error instanceof Error ? error.message : String(error)}`
+        if (transactionID !== null) {
+          // Payload has rolled the transaction back already: stop at
+          // the first failure — nothing was deleted.
+          failed.push(reason)
+          break
+        }
+        if ((await findRow(payload, row)) === null) {
+          // Removed concurrently: the goal state is "row absent".
+          absent += 1
+          continue
+        }
+        failed.push(reason)
       }
-      failed.push(
-        `${row.collection}#${String(row.id)}: ${error instanceof Error ? error.message : String(error)}`
+    }
+    if (failed.length > 0) {
+      for (const line of failed) {
+        log(`rollback: FAILED to delete ${line}`)
+      }
+      throw new Error(
+        transactionID !== null
+          ? `rollback could not delete ${failed.length} row(s): ${listSome(failed, '; ')}. The rollback ran in one transaction and was undone: nothing was deleted, no field value was restored, and the manifest was kept — fix the cause (e.g. rows that reference them) and re-run rollback`
+          : `rollback deleted ${removed} row(s) but could not delete ${failed.length}: ${listSome(failed, '; ')}. This database adapter offers no transaction, so the deleted rows stay deleted; no field value was restored and the manifest was kept — fix the cause (e.g. rows that reference them) and re-run rollback, which completes it`
       )
     }
-  }
-  if (failed.length > 0) {
-    for (const line of failed) {
-      log(`rollback: FAILED to delete ${line}`)
-    }
-    throw new Error(
-      `rollback deleted ${deleted} row(s) but could not delete ${failed.length}: ${listSome(failed, '; ')}. No field value was restored and the manifest was kept — fix the cause (e.g. rows that reference them) and re-run rollback`
-    )
-  }
+    // Captured values go back through the adapter, one write per
+    // document, `updatedAt` included — see host-writes.ts for why.
+    const values = await restoreCaptured(payload, manifest, {
+      rolesField: hostRolesField(payload),
+      allowPlaintext: options.allowPlaintextRestore === true,
+      transactionID,
+    })
+    return { deleted: removed, restored: values }
+  })
   if (absent > 0) {
     log(`rollback: ${absent} created row(s) were already absent`)
   }
-  // Captured values go back through the adapter, one write per
-  // document, `updatedAt` included — see host-writes.ts for why.
-  const restored = await restoreCaptured(payload, manifest, {
-    rolesField: hostRolesField(payload),
-    allowPlaintext: options.allowPlaintextRestore === true,
-  })
   // The run is closed in the DATABASE: no copy of this manifest drives
   // a second rollback, and the next --apply starts a fresh run. An
   // unbound manifest closes a run minted for the record.
   const kind = manifest.kind ?? 'import'
   const closed: RunBinding =
-    binding ?? (await startRun(payload, kind, manifest.createdAt, 'rollback'))
+    binding ??
+    (await startRun(payload, kind, manifest.createdAt, 'rollback', {
+      exclusive: false,
+      identity: options.identity,
+    }))
   await recordRun(
     payload,
     closed.runId,
-    { kind, createdAt: closed.createdAt, state: 'rolled-back' },
+    {
+      kind,
+      createdAt: closed.createdAt,
+      state: 'rolled-back',
+      databaseId: closed.databaseId,
+      entries: 0,
+    },
     'rollback'
   )
   if (options.manifestPath !== undefined) {
@@ -804,6 +886,8 @@ export type FinalizeOptions = {
   readonly now?: (() => Date) | undefined
   /** Accept a manifest without a full signature (`--allow-unsigned-manifest`). */
   readonly allowUnsignedManifest?: boolean | undefined
+  /** How this environment identifies itself (GHSA-xw9m-ph95-84rx). */
+  readonly identity?: IdentityCheck | undefined
 }
 
 /**
@@ -817,6 +901,11 @@ export type FinalizeOptions = {
  * (GHSA-crrr-3cg7-f6jw): its flag is set, and the database marker is
  * what every later command trusts. Idempotent: finalizing a finalized
  * manifest re-records the marker.
+ *
+ * Refused (GHSA-xw9m-ph95-84rx, issue #116): an UNSIGNED manifest on a
+ * database that holds a migration id — a forged one would otherwise
+ * write the marker and block every rollback for good — and any
+ * finalize while ANOTHER open run may still hold rows.
  */
 export async function finalizeManifest(options: FinalizeOptions): Promise<ImportManifest> {
   const { payload, manifest } = options
@@ -824,12 +913,27 @@ export async function finalizeManifest(options: FinalizeOptions): Promise<Import
     allowUnsigned: options.allowUnsignedManifest,
   })
   const kind = manifest.kind ?? 'import'
+  if (trust === 'unsigned') {
+    await refuseUnsignedOnBoundDatabase(payload, 'finalize', options.identity)
+  }
   if (isBound(manifest)) {
-    const run = await boundRun(payload, manifest, 'finalize')
+    const run = await boundRun(payload, manifest, 'finalize', options.identity)
     if (run.state === 'rolled-back') {
       throw new Error(
         'the database records this run as rolled back; there is nothing to finalize (run --apply for a new run first)'
       )
+    }
+    await assertNoOtherRowBearingRun(payload, manifest.databaseId, manifest.runId, 'finalize')
+  } else {
+    // An unbound (0.7.0 / 0.6.0) manifest names no run: every open run
+    // on this database is "another" one.
+    const databaseId = await databaseIdentity(payload, {
+      create: false,
+      action: 'finalize',
+      check: options.identity,
+    })
+    if (databaseId !== null) {
+      await assertNoOtherRowBearingRun(payload, databaseId, null, 'finalize')
     }
   }
   const finalizedAt = manifest.finalizedAt ?? (options.now ?? (() => new Date()))().toISOString()
@@ -840,7 +944,13 @@ export async function finalizeManifest(options: FinalizeOptions): Promise<Import
     await recordRun(
       payload,
       manifest.runId,
-      { kind, createdAt: manifest.createdAt, state: 'finalized' },
+      {
+        kind,
+        createdAt: manifest.createdAt,
+        state: 'finalized',
+        databaseId: manifest.databaseId,
+        entries: manifest.created.length + manifest.fieldWrites.length,
+      },
       'finalize'
     )
   }
