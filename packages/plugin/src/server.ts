@@ -4,6 +4,7 @@ import {
   type Capability,
   type IdentityProviderPort,
   type UserId,
+  type UserRecord,
 } from '@payload-auth-link/core'
 
 /** Accept number or string ids from app code; the brand is compile-time only. */
@@ -158,7 +159,25 @@ export type AuthLinkServer = {
   readonly revokeSession: (sessionId: string) => Promise<void>
   /** Revoke every live session of one Payload user. */
   readonly revokeAllForUser: (userId: number | string) => Promise<void>
-  /** Verify an API key; `null` when the key is unknown. */
+  /**
+   * Verify an API key against the provider's own store AND apply the
+   * plugin's account controls to its owner (GHSA-j68x-qjr5-vqv9).
+   * Resolves `null` — the key authenticates no one — when the
+   * provider does not know the key (unknown, disabled, expired,
+   * deleted), when the key's provider user is linked to no Payload
+   * user (the document was deleted, or the identity never signed in
+   * and was never linked), or when that Payload user is suspended
+   * (`suspendedUntil`, or the configured `suspendedUntilField`, in
+   * the future). A lapsed suspension verifies again. Refusals are
+   * logged (`api key refused: owner fails account controls`, with a
+   * `reason`). Safe to use as the authentication step of a host's
+   * own routes.
+   *
+   * `userId` in the result is the PROVIDER user id. Throws when no
+   * registered provider declares `api-key-verify`, or on a provider
+   * or user-store error (a provider's typed refusal, e.g. Better
+   * Auth's `UnsupportedApiKeyOwnerError`, rides as the `cause`).
+   */
   readonly verifyApiKey: (key: string) => Promise<ApiKeyVerification | null>
   /**
    * The provider's signed session cookie for one session token
@@ -226,6 +245,25 @@ function allProvidersWith(wired: WiredOptions, capability: Capability): Identity
     }
   }
   return providers
+}
+
+/** Why `verifyApiKey` refuses a key the provider itself accepts. */
+type ApiKeyOwnerRefusal = 'no-linked-user' | 'suspended'
+
+/**
+ * The account-control decision for an API key's owner: the Payload
+ * user linked to the key's provider identity must exist and not be
+ * suspended (CAP-7). `null` means the key may stand.
+ */
+function apiKeyOwnerRefusal(owner: UserRecord | null, now: Date): ApiKeyOwnerRefusal | null {
+  if (owner === null) {
+    return 'no-linked-user'
+  }
+  const suspendedUntil = owner.suspendedUntil ?? null
+  if (suspendedUntil !== null && isSuspendedAt(suspendedUntil, now)) {
+    return 'suspended'
+  }
+  return null
 }
 
 function buildAuthLinkServer(wired: WiredOptions, payload: Payload): AuthLinkServer {
@@ -434,7 +472,35 @@ function buildAuthLinkServer(wired: WiredOptions, payload: Payload): AuthLinkSer
       if (result.isErr()) {
         throw new Error(`verifyApiKey: ${result.error.message}`, { cause: result.error })
       }
-      return result.value
+      const verification = result.value
+      if (verification === null) {
+        return null
+      }
+      // Account controls (GHSA-j68x-qjr5-vqv9): the key names a
+      // PROVIDER user; it verifies only when that identity is linked
+      // to a live Payload user — the same owner the API-key session
+      // channel (row 10) would authenticate. Payload owns suspension,
+      // so a suspended owner, or an owner with no linked document
+      // (deleted, never linked), verifies nothing.
+      const { users } = createServices(wired, payload)
+      const owner = await users.findByProviderIdentity({
+        providerId: provider.id,
+        providerUserId: verification.userId,
+      })
+      if (owner.isErr()) {
+        throw new Error(`verifyApiKey: ${owner.error.message}`, { cause: owner.error })
+      }
+      const refusal = apiKeyOwnerRefusal(owner.value, wired.clock.now())
+      if (refusal !== null) {
+        wired.logger.warn('api key refused: owner fails account controls', {
+          providerId: provider.id,
+          providerUserId: verification.userId,
+          ...(owner.value === null ? {} : { userId: String(owner.value.id) }),
+          reason: refusal,
+        })
+        return null
+      }
+      return verification
     },
 
     async sessionCookie(token) {

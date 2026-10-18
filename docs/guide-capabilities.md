@@ -392,6 +392,19 @@ an org-owned key (or a key whose user was deleted) is refused with
 handing the org id out as `userId`. Better Auth itself refuses such
 keys on the `x-api-key` session channel.
 
+**Account controls apply (GHSA-j68x-qjr5-vqv9).** `verifyApiKey` is
+safe as the authentication step of your own routes (partner APIs,
+webhooks, key→session bridges): after the provider accepts the key,
+the plugin resolves the Payload user linked to the key's provider
+identity and resolves `null` when there is none (the document was
+deleted, or the provider user was never linked — it has not signed in
+yet, or the link gate refused it) or when that user is suspended
+(`suspendedUntilField` in the future; a lapsed suspension verifies
+again). Each refusal is logged as
+`api key refused: owner fails account controls` with a `reason`
+(`no-linked-user` / `suspended`). The returned `userId` is the
+PROVIDER user id.
+
 ## Deriving declarations from Better Auth's schema (issue #17)
 
 Hand-declaring `customFields`/`customModels` for every plugin is
