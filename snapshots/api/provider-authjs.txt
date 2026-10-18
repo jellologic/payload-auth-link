@@ -27,6 +27,14 @@ export declare function verificationTokenKey(identifier: string, token: string):
  * `userId` references hold `auId` values.
  */
 export declare function createAuthJsAdapter(deps: AuthJsAdapterDeps): Adapter;
+/**
+ * The adapter as the engine sees it: the optional Auth.js methods this
+ * package always implements and the engine calls are required here, so
+ * the engine needs no "adapter without updateUser" branch.
+ */
+export type WiredAuthJsAdapter = Adapter & Required<Pick<Adapter, 'updateUser'>>;
+/** {@link createAuthJsAdapter} with its engine-facing type (internal). */
+export declare function createWiredAuthJsAdapter(deps: AuthJsAdapterDeps): WiredAuthJsAdapter;
 
 // ===== callbacks.d.ts =====
 import type { AuthConfig } from '@auth/core';
@@ -88,8 +96,10 @@ export type AuthLinkTrustOptions = {
  * `{ user: { name, email, image, id, emailVerified }, expires }` (the
  * Auth.js default shape plus the port's two claims); with one, the
  * builder's result is kept except for the adapter session row fields
- * `sessionToken`, `userId` and `id`, which are always removed. Either
- * way `user.id` and `user.emailVerified` come from the claims layer.
+ * `sessionToken`, `userId` and `id` at the top level and — at any
+ * depth — every `sessionToken` key and every string containing the
+ * live database session token, which are always removed. Either way
+ * `user.id` and `user.emailVerified` come from the claims layer.
  *
  * Spike findings encoded here: the jwt callback re-runs on every session
  * read WITHOUT `user` (the token re-encodes), so claims are stuffed only
@@ -430,6 +440,15 @@ export declare class AdapterMappingError extends AuthLinkError {
 /** A credentials password violates the minimum length policy. */
 export declare class WeakPasswordError extends AuthLinkError {
     constructor(minLength: number);
+}
+/**
+ * A builder `session` callback returned a value that cannot be the
+ * session JSON (a cycle, or not an object). Auth.js could not
+ * serialize it either; failing here means the credential scrub is
+ * never skipped.
+ */
+export declare class SessionShapeError extends AuthLinkError {
+    constructor(detail: string);
 }
 
 // ===== index.d.ts =====
