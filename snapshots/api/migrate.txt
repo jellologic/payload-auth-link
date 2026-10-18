@@ -714,14 +714,14 @@ export type RunRecord = {
     readonly createdAt: string;
     readonly state: RunState;
     /**
-     * The database id the run was started under (migrate 0.8.1+). A run
+     * The database id the run was started under (migrate 0.9.0+). A run
      * record copied into a clone that has since taken its own identity
      * names the original's id, and is not this database's run.
      */
     readonly databaseId?: string | undefined;
     /**
      * How many entries (created rows + captured field values) the run's
-     * manifest held when it was last written (migrate 0.8.1+, issue
+     * manifest held when it was last written (migrate 0.9.0+, issue
      * #116). `undefined`: not known — an in-flight run, one that died
      * before writing its manifest, or one recorded by 0.8.0 — and treated
      * as holding rows.
