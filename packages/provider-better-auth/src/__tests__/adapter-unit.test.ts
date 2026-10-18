@@ -421,6 +421,25 @@ describe('adopted models: host validation on first use (issue #49)', () => {
     ).toMatch(/needs a "users.name" field/)
   })
 
+  it('validates every adopted model, even when the first operation plans another one', async () => {
+    // Issue #113: validation used to cover only the models planned by
+    // the first operation, so a read of another model first left the
+    // adopted users collection unchecked (and its ids unclassified).
+    const lacking = fakePayload(
+      { find: () => Promise.resolve({ docs: [] }) },
+      { users: { config: { auth: true, fields: [{ name: 'email', type: 'email' }] } } }
+    )
+    const adapter = rawAdapter(lacking.payload, { schemaMap: { user: { slug: 'users' } } })
+    const failure = await adapter
+      .findOne({ model: 'verification', where: [{ field: 'identifier', value: 'x' }] })
+      .then(
+        () => null,
+        (error: unknown) => error
+      )
+    expect(failure).toBeInstanceOf(AdapterOperationError)
+    expect(((failure as Error).cause as Error).message).toMatch(/needs a "users.name" field/)
+  })
+
   it('coerces renamed relationship ids to the host id type on writes', async () => {
     const hostSessions = {
       config: {

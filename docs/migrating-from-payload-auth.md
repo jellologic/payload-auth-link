@@ -75,9 +75,9 @@ What the database section flags for the importer (issue #88):
 
 On the TARGET config the doctor also checks the adopt-mode wiring:
 
-| Code                      | Meaning                                                                                                                                                                                                                                                                                                                                       |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `adopt-local-strategy-on` | Blocker. Adopt mode serves Better Auth's users from your `users` collection while Payload's local strategy is ON there: Payload then requires a password on every create, so every NEW user fails (email sign-up 422, anonymous sign-in 500 "field is invalid: password"). Set `auth: { disableLocalStrategy: true }` (see adopt mode below). |
+| Code                      | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `adopt-local-strategy-on` | Warning. Adopt mode serves Better Auth's users from your `users` collection while Payload's local strategy is ON there: Payload requires a password on every create. provider-better-auth 0.11.0+ injects an unknowable password on each create, so new users work; older engines fail every NEW user (email sign-up 422, anonymous sign-in 500 "field is invalid: password"). Keep the local strategy only for break-glass operator accounts, or set `auth: { disableLocalStrategy: true }` (see adopt mode below). |
 
 **Custom table slugs.** If your layout renamed the payload-auth tables
 (the production field report: `user_accounts`, `user_sessions`), the
@@ -240,13 +240,15 @@ verifying. Pass the old value as the engine's `options.secret`.
 Add the plugin's additive users columns before boot (identities,
 linkable, linkableEmail, phone, suspension — a migration or `push`).
 
-**Turn Payload's local strategy OFF on the adopted users collection.**
-In adopt mode Better Auth CREATES its users in that collection, and
-with the local strategy on, Payload requires a password on every
-create: every new user fails (email sign-up returns 422, anonymous
-sign-in 500 "field is invalid: password"). payload-auth apps that set
-`disableDefaultPayloadAuth: true` already have it off; otherwise set
-it on the collection:
+**Payload's local strategy on the adopted users collection.** In
+adopt mode Better Auth CREATES its users in that collection, and with
+the local strategy on, Payload requires a password on every create.
+provider-better-auth 0.11.0 and later inject an unknowable random
+password into each create, so sign-up and anonymous sign-in work
+either way (older engines failed every new user with 422 / 500
+"field is invalid: password"). Unless you keep local passwords for
+break-glass operator accounts, turn the local strategy off; payload-auth
+apps that set `disableDefaultPayloadAuth: true` already have it off:
 
 ```ts
 { slug: 'users', auth: { disableLocalStrategy: true }, fields: [/* … */] }
@@ -254,8 +256,16 @@ it on the collection:
 
 Operators then reach `/admin` through the provider
 (`admin: { loginView: 'provider' }`). The doctor run against the
-TARGET config reports `adopt-local-strategy-on` as a blocker until
-this is done.
+TARGET config reports `adopt-local-strategy-on` as a warning while
+the local strategy is on.
+
+**MFA provenance on an adopted session collection.** The engine
+records how each session was established in a `session.authenticationMethod`
+column (MFA provenance; `requireMfaForRoles` relies on it). An adopted
+session collection without that field still boots, but records no
+provenance, so MFA-gated roles stay withheld (fail closed). Add a
+`{ name: 'authenticationMethod', type: 'text' }` field to the adopted
+session collection if you use `requireMfaForRoles`.
 
 ### Pre-link the users: `adopt-prelink`
 

@@ -323,8 +323,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
       if (
         issue.code === 'injected-field-collision' ||
         issue.code === 'roles-field-not-select' ||
-        issue.code === 'users-collection-missing' ||
-        issue.code === 'adopt-local-strategy-on'
+        issue.code === 'users-collection-missing'
       ) {
         blockers.push(issue)
       } else {

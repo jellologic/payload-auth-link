@@ -485,6 +485,16 @@ function rethrowAsOperation(
 }
 
 /**
+ * Fields the engine itself adds to Better Auth's schema at runtime
+ * (session provenance). Host validation tolerates an adopted
+ * collection without them: writes to a missing column are dropped,
+ * which fails closed.
+ */
+const engineRuntimeFields: Readonly<Record<string, readonly string[]>> = {
+  session: ['authenticationMethod'],
+}
+
+/**
  * Better Auth database adapter over the Payload Local API. System-level
  * persistence (like the plugin repository): reads and writes bypass access
  * control with `overrideAccess`, and the collections default to deny-all
@@ -660,6 +670,16 @@ export function createPayloadDatabaseAdapter(
         hostCache.set(slug, types)
         return types
       }
+      // Every adopted model, not only those planned by the first
+      // operation: a `findOne` resolves Payload before planning its
+      // model, so validating `plans` alone could skip the adopted
+      // collections entirely, leaving them unchecked and their
+      // relationship fields unclassified (issue #113).
+      for (const model of adoptedKeys) {
+        if (baFields.has(model)) {
+          planOf(model)
+        }
+      }
       for (const [model, plan] of plans) {
         if (!plan.adopted) {
           continue
@@ -680,6 +700,12 @@ export function createPayloadDatabaseAdapter(
             continue
           }
           const fieldType = fieldTypes.get(payloadName)
+          if (fieldType === undefined && engineRuntimeFields[model]?.includes(baName) === true) {
+            // The engine's own runtime-only column: an adopted collection
+            // without it simply records nothing (fail closed — e.g. no
+            // MFA provenance, so `requireMfaForRoles` stays withheld).
+            continue
+          }
           if (fieldType === undefined) {
             throw new UnsupportedSchemaError(
               `adopted model "${model}" needs a "${plan.slug}.${payloadName}" field for Better Auth's "${baName}"; add it to the host collection or map it in the schemaMap`

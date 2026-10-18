@@ -245,15 +245,13 @@ and adopted-model host validation. Still uncovered:
   with no validated field set (untyped-input narrowing).
 - `findOne`'s post-filter paging past a full 100-row page.
 
-Finding (issue #113): host validation for adopted models runs on the
-adapter's FIRST operation and validates only the models planned by
-then. `findOne` resolves Payload before planning its model, so when a
-`findOne` runs first (as in `integration-adopt.test.ts`) the adopted
-collections are never validated. The password injection for
-local-strategy auth collections used to ride that same pass and
-missed every later sign-up (422); it is now decided on each create
-(`integration-adopt-local-strategy.test.ts`). Validation itself is
-left as is: planning every `schemaMap` model up front would also
-refuse adopted session collections without the engine-owned
-`authenticationMethod` column, an upgrade-impacting change for the
-session-provenance owner to schedule.
+Fixed (issue #113): host validation used to run only for the models
+planned by the adapter's FIRST operation, so when another model's
+`findOne` ran first the adopted collections were never validated and
+their relationship fields stayed unclassified. It now validates every
+adopted model on the first operation (`adapter-unit.test.ts`). The
+engine's own runtime column `session.authenticationMethod` is exempt:
+an adopted session collection without it records no MFA provenance,
+which fails closed (`requireMfaForRoles` stays withheld). The password
+injection for local-strategy auth collections is decided on each
+create (`integration-adopt-local-strategy.test.ts`).

@@ -118,12 +118,13 @@ describe('doctor units', () => {
     expect(off.finding?.notes.join(' ')).toContain('better-auth')
   })
 
-  test('users analysis: adopt mode with the local strategy ON is flagged; the note names no source plugin (#110)', () => {
+  test('users analysis: adopt mode with the local strategy ON is flagged; the note names no source plugin (#110, #113)', () => {
     const collection = { slug: 'users', auth: true, fields: [{ name: 'email', type: 'email' }] }
     const adopt = analyzeUsersCollection(collection, 'roles', { adoptTarget: true })
     const issue = adopt.issues.find((entry) => entry.code === 'adopt-local-strategy-on')
     expect(issue?.detail).toContain('disableLocalStrategy: true')
-    expect(issue?.detail).toContain('every NEW user fails')
+    expect(issue?.detail).toContain('provider-better-auth 0.11.0 or later')
+    expect(issue?.detail).toContain('older engines fail every NEW user')
     // The note no longer claims payload-auth always leaves it on.
     expect(adopt.finding?.notes.join(' ')).not.toContain('payload-auth leaves it active')
     // Not an adopt target (the importer's ba-* layout): no flag.
