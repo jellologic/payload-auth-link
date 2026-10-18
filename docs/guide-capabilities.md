@@ -159,25 +159,47 @@ never enrollment (`twoFactorEnabled`):
   `twoFactor({ accountLockout })`; default 10 failures, 15 minutes).
   Wrong step-up codes spend it, a correct one resets it, and while
   the account is locked every verification, step-up or sign-in, is
-  refused with 429 `ACCOUNT_TEMPORARILY_LOCKED`. Users who enabled
-  only the emailed OTP have no `twoFactor` row; Better Auth then
-  limits each code to `otpOptions.allowedAttempts` on both paths.
-- **Enrolling is not proof:** the verification that enrols the
-  FIRST factor (the TOTP confirmation after `/two-factor/enable`, a
-  backup code of an unconfirmed enrolment, the OTP that turns 2FA on)
-  does not relabel the session; it keeps its first-factor label.
-  Enabling 2FA needs only the password, so the enrolling session has
-  proven nothing more. MFA proof comes from the next two-factor
-  sign-in, or a step-up with the factor that was already enrolled.
-- **Emailed OTP after an inbox sign-in:** by default a
-  `/two-factor/verify-otp` step-up relabels the session only when
-  its first factor was `password` or `passkey` (or it was already
-  MFA-proven). After a magic-link, email-OTP or OAuth sign-in, or
-  a session with no recorded method, the OTP likely reaches the same
-  inbox that signed the user in, so it proves nothing. TOTP and
-  backup codes are not affected. If `sendOTP` delivers over an
-  independent channel such as SMS, declare it:
+  refused with 429 `ACCOUNT_TEMPORARILY_LOCKED`. Each attempt is
+  reserved BEFORE its code is checked, so a concurrent burst
+  evaluates at most the remaining budget (the reservation is
+  serialized per user within one server process). Users who enabled
+  only the emailed OTP have no `twoFactor` row; they get the same
+  budget as a window of attempt rows in Better Auth's `verification`
+  table (`maxFailedAttempts` failures per `durationSeconds`), on the
+  step-up and the sign-in path.
+- **Enrolling is not proof:** a factor proves MFA only for a session
+  created AFTER it was enrolled. The verification that enrols it (the
+  TOTP confirmation after `/two-factor/enable`, a backup code of an
+  unconfirmed enrolment, the OTP that turns 2FA on) does not relabel
+  the session, and neither does any later verification on that
+  session or on any other session that already existed. Enabling 2FA
+  needs only the password, so those sessions have proven nothing
+  more. MFA proof comes from the next two-factor sign-in, or a
+  step-up on a session created after the enrolment (a magic-link or
+  OAuth sign-in, say).
+- **Managing an enrolled factor needs MFA:** once the user holds an
+  MFA-grade factor (a confirmed TOTP, or an OTP declared
+  independent), `/two-factor/get-totp-uri`, `generate-backup-codes`,
+  `enable` and `disable` are refused with 403
+  `TWO_FACTOR_SESSION_REQUIRED` unless the calling session itself
+  carries MFA proof — with only a password (or, under
+  `allowPasswordless`, only an inbox) nobody can read the secret,
+  mint backup codes, swap or remove the factor. Whatever such a call
+  reveals proves nothing for any session that already existed.
+- **Emailed OTP:** by default a `/two-factor/verify-otp` code is not
+  MFA proof — the inbox that receives it can also reset the password,
+  receive a magic link, or back an OAuth account. A step-up with it
+  relabels nothing, and a sign-in completed with it is labelled
+  `password`. TOTP and backup codes are not affected. If `sendOTP`
+  delivers over an independent channel such as SMS, declare it:
   `createBetterAuthEngine({ twoFactorOtpChannelIndependent: true, … })`.
+- **Enrolment guidance for MFA-gated roles:** a user who enrols
+  their own factor and then signs in with it IS MFA-proven — the
+  policy cannot tell a legitimate enrolment from one made by someone
+  who only knows the password. Grant roles listed in
+  `requireMfaForRoles` only to users who already enrolled (or enrol
+  them under supervision), and treat an unexpected enrolment on such
+  an account as a security event.
 - Server mints record `server-mint` (`mfa: false`), or
   `server-step-up` with `createSessionFor(…, { mfaProof: true })`.
 

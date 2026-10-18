@@ -185,3 +185,31 @@ describe('revokeSession post-delete verification (createBetterAuthProviderFromUn
     expect(result.isErr()).toBe(true)
   })
 })
+
+describe('createProviderSession records the minted method (createBetterAuthProvider)', () => {
+  it.each([
+    [true, 'server-step-up'],
+    [false, 'server-mint'],
+    [undefined, 'server-mint'],
+  ] as const)('mfaProof=%s writes authenticationMethod %s', async (mfaProof, method) => {
+    const expiresAt = new Date(Date.now() + 60_000)
+    const createSession = vi
+      .fn()
+      .mockResolvedValue({ id: 'sess-1', token: 'tok-1', expiresAt: expiresAt.toISOString() })
+    const provider = createBetterAuthProvider({
+      auth: typed(null, { internalAdapter: { createSession } }),
+      sessionCookieNames: cookieNames,
+    })
+    const created = await provider.createProviderSession?.('ba-1', {
+      expiresAt,
+      ...(mfaProof === undefined ? {} : { mfaProof }),
+    })
+    expect(created?.isOk()).toBe(true)
+    expect(createSession).toHaveBeenCalledWith(
+      'ba-1',
+      false,
+      { expiresAt, authenticationMethod: method },
+      true
+    )
+  })
+})

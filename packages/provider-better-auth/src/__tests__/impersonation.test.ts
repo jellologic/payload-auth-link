@@ -368,6 +368,65 @@ describe('impersonated provider session (CAP-8a)', () => {
 
 // Runs last: suspending the target revokes every session it holds,
 // impersonated ones included.
+describe('admin endpoints hand page JavaScript no session token (issue #116, real BA)', () => {
+  /** The raw session token inside a cookie header's signed session cookie. */
+  function rawTokenOf(cookie: string): string {
+    const pair = cookie.split('; ').find((entry) => entry.startsWith('better-auth.session_token='))
+    if (pair === undefined) {
+      throw new Error('no session cookie')
+    }
+    const value = decodeURIComponent(pair.slice(pair.indexOf('=') + 1))
+    return value.slice(0, value.lastIndexOf('.'))
+  }
+
+  async function freshAdminCookie(): Promise<string> {
+    const signIn = await engine.auth.handler(
+      authRequest('/sign-in/email', {
+        method: 'POST',
+        body: { email: ADMIN_EMAIL, password: 'correct-horse-battery' },
+      })
+    )
+    expect(signIn.status).toBe(200)
+    return cookieHeaderFrom(signIn)
+  }
+
+  it('/admin/list-user-sessions lists the target sessions without their tokens', async () => {
+    const listed = await engine.auth.handler(
+      authRequest('/admin/list-user-sessions', {
+        method: 'POST',
+        body: { userId: targetBaUserId },
+        cookie: await freshAdminCookie(),
+      })
+    )
+    expect(listed.status).toBe(200)
+    const text = await listed.text()
+    const sessions = (JSON.parse(text) as { sessions: Record<string, unknown>[] }).sessions
+    expect(sessions.length).toBeGreaterThanOrEqual(1)
+    for (const session of sessions) {
+      expect(session.id).toEqual(expect.any(String))
+      expect(session.userId).toBe(targetBaUserId)
+      expect(session).not.toHaveProperty('token')
+    }
+    expect(text).not.toContain(rawTokenOf(targetCookie))
+  })
+
+  it('/admin/impersonate-user answers without the impersonation session token', async () => {
+    const impersonation = await engine.auth.handler(
+      authRequest('/admin/impersonate-user', {
+        method: 'POST',
+        body: { userId: targetBaUserId },
+        cookie: await freshAdminCookie(),
+      })
+    )
+    expect(impersonation.status).toBe(200)
+    const text = await impersonation.text()
+    const body = JSON.parse(text) as { session?: Record<string, unknown> }
+    expect(body.session?.userId).toBe(targetBaUserId)
+    expect(body.session).not.toHaveProperty('token')
+    expect(text).not.toContain(rawTokenOf(cookieHeaderFrom(impersonation)))
+  })
+})
+
 describe('impersonated session of a suspended target (row 15, real BA)', () => {
   it('a fresh impersonation is refused once the TARGET is suspended', async () => {
     const signIn = await engine.auth.handler(
