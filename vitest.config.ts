@@ -184,7 +184,7 @@ export default defineConfig({
         'packages/provider-authjs/src/engine.ts': {
           lines: 95,
           functions: 95,
-          branches: 93,
+          branches: 95,
           statements: 95,
         },
         'packages/provider-authjs/src/port.ts': {

@@ -5,6 +5,7 @@ import {
   gotoSettled,
   listCell,
   listTable,
+  RETRY_ON_RESET,
   seededAdminCell,
   toggleToSignUp,
 } from './helpers.js'
@@ -19,7 +20,7 @@ test('admin users show roles and linked identities', async ({ page }) => {
   await page.getByLabel(/password/i).fill('e2e-test-password-1')
   await page.getByRole('button', { name: /create account/i }).click()
   await expect(page.getByTestId('account-email')).toContainText(email, { timeout: 30_000 })
-  const session = await page.request.get('/api/auth-link/session')
+  const session = await page.request.get('/api/auth-link/session', RETRY_ON_RESET)
   const { user } = (await session.json()) as { user: { id: string | number } }
 
   // Inspect it from the Payload admin as the seeded local admin. The

@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { adminContext } from './admin-session.js'
-import { gotoOwn, toggleToSignUp } from './helpers.js'
+import { gotoOwn, RETRY_ON_RESET, toggleToSignUp } from './helpers.js'
 import { totp } from './totp.js'
 
 /**
@@ -36,7 +36,9 @@ async function signOut(page: Page): Promise<void> {
 test('TOTP verification records a step-up and flips assurance to mfa:true', async ({ page }) => {
   const email = uniqueEmail('totp')
   await signUp(page, email)
-  const before = (await (await page.request.get('/api/auth-link/session')).json()) as {
+  const before = (await (
+    await page.request.get('/api/auth-link/session', RETRY_ON_RESET)
+  ).json()) as {
     user: { assurance?: { mfa: unknown } }
   }
   expect(before.user.assurance?.mfa).not.toBe(true)
@@ -62,7 +64,9 @@ test('TOTP verification records a step-up and flips assurance to mfa:true', asyn
     timeout: 30_000,
   })
 
-  const after = (await (await page.request.get('/api/auth-link/session')).json()) as {
+  const after = (await (
+    await page.request.get('/api/auth-link/session', RETRY_ON_RESET)
+  ).json()) as {
     user: { assurance?: { mfa: unknown } }
   }
   expect(after.user.assurance?.mfa).toBe(true)
@@ -79,7 +83,9 @@ test('suspending a user in Payload bounces their next session read (CAP-7)', asy
 }) => {
   const email = uniqueEmail('suspend')
   await signUp(page, email)
-  const session = (await (await page.request.get('/api/auth-link/session')).json()) as {
+  const session = (await (
+    await page.request.get('/api/auth-link/session', RETRY_ON_RESET)
+  ).json()) as {
     user: { id: string }
   }
   const admin = await adminContext(browser, baseURL)
@@ -107,7 +113,7 @@ test('suspending a user in Payload bounces their next session read (CAP-7)', asy
     await admin.close()
   }
   // The very next verification refuses: endpoint 401, account signed out.
-  const refused = await page.request.get('/api/auth-link/session')
+  const refused = await page.request.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(refused.status()).toBe(401)
   await gotoOwn(page, '/account')
   await expect(page.getByTestId('account-email')).toHaveCount(0)

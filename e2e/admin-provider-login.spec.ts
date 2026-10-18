@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext } from '@playwright/test'
 import { adminContext } from './admin-session.js'
-import { gotoSettled } from './helpers.js'
+import { gotoSettled, RETRY_ON_RESET } from './helpers.js'
 
 /**
  * An admin signs into the Payload admin through the PROVIDER form of
@@ -23,7 +23,7 @@ async function signUpVerified(request: APIRequestContext, email: string): Promis
   expect(signup.ok()).toBe(true)
   const stamped = await request.post('/api/dev-auto-verify', { data: { email } })
   expect(stamped.ok()).toBe(true)
-  const session = await request.get('/api/auth-link/session')
+  const session = await request.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(session.ok()).toBe(true)
   const body = (await session.json()) as { user: { id: string | number } }
   return String(body.user.id)
@@ -82,7 +82,7 @@ test('a provider-linked admin signs in through the provider login view', async (
   await expect(page.locator('a[href*="/admin/collections/users"]').first()).toBeVisible({
     timeout: 30_000,
   })
-  const session = await page.request.get('/api/auth-link/session')
+  const session = await page.request.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(session.ok()).toBe(true)
   const body = (await session.json()) as { user: { email: string; roles: string[] } }
   expect(body.user.email).toBe(email)

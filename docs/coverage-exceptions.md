@@ -40,7 +40,7 @@ Each cell is lines / functions / branches / statements.
 | `plugin/src/verified-email.ts`                        | 95 / 95 / 95 / 95 | at target |
 | `provider-authjs/src/adapter.ts`                      | 95 / 95 / 95 / 95 | see below |
 | `provider-authjs/src/callbacks.ts`                    | 95 / 95 / 95 / 95 | at target |
-| `provider-authjs/src/engine.ts`                       | 95 / 95 / 93 / 95 | see below |
+| `provider-authjs/src/engine.ts`                       | 95 / 95 / 95 / 95 | at target |
 | `provider-authjs/src/port.ts`                         | 95 / 95 / 95 / 95 | at target |
 | `provider-better-auth/src/adapter.ts`                 | 95 / 95 / 95 / 95 | see below |
 | `provider-better-auth/src/cookies.ts`                 | 95 / 95 / 95 / 95 | at target |
@@ -212,20 +212,6 @@ real engine in `session-shape-engine.test.ts`. The remaining arms are
 `input.user ?? {}` and `image === undefined` in the allowlisted
 session (Auth.js always passes a user, with `image`), and a sign-in
 `user` without an `id` in the jwt callback (lines 159, 163, 304).
-
-### `provider-authjs/src/engine.ts` (branches 93.68%)
-
-The engine wires its own adapter through `createWiredAuthJsAdapter`,
-whose type makes `updateUser` required, so the former "adapter without
-`updateUser`" checks are gone rather than untested.
-
-- Line 427: `readSession` when Auth.js answers the session endpoint
-  with a non-OK status. Auth.js answers 200 (with `null`) for every
-  session miss.
-- Lines 139, 160, 399, 402 and 474: `String(error)` for a non-Error
-  factory throw, `?? '<unknown provider id>'`, the cookie-option `?? {}`
-  spreads, and a non-object bulk result. These are untyped-input
-  narrowing.
 
 ### `provider-better-auth/src/engine.ts` (branches 96.5%)
 

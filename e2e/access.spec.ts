@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext, type Browser, type Page } from '@playwright/test'
 import { adminContext } from './admin-session.js'
+import { RETRY_ON_RESET } from './helpers.js'
 
 /**
  * Injected-field access defaults: a plain,
@@ -25,7 +26,7 @@ async function signUpVerified(
   expect(signup.ok()).toBe(true)
   const stamped = await request.post('/api/dev-auto-verify', { data: { email } })
   expect(stamped.ok()).toBe(true)
-  const session = await request.get('/api/auth-link/session')
+  const session = await request.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(session.ok()).toBe(true)
   const body = (await session.json()) as { user: { id: string; email: string; roles: string[] } }
   return { id: body.user.id, roles: body.user.roles }
@@ -136,7 +137,7 @@ test('an unproven pre-created document is never JIT-linked; a proven one is', as
   })
   expect(signup.ok()).toBe(true)
   await api.post('/api/dev-auto-verify', { data: { email: victimEmail } })
-  const denied = await api.get('/api/auth-link/session')
+  const denied = await api.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(denied.status()).toBe(401)
 
   // Restore the proof: the SAME verified identity now links to the
@@ -145,7 +146,7 @@ test('an unproven pre-created document is never JIT-linked; a proven one is', as
     linkable: true,
   })
   expect(restore.status).toBe(200)
-  const linked = await api.get('/api/auth-link/session')
+  const linked = await api.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(linked.ok()).toBe(true)
   const session = (await linked.json()) as { user: { id: string; roles: string[] } }
   expect(session.user.id).toBe(String(doc.doc.id))
@@ -162,8 +163,11 @@ test('GHSA-8524 chain: self email change is neutered and the victim is never lin
 
   // Step 1 (was the exploit): the attacker plants the victim's email
   // on their own plugin-created document. Field access strips it.
+  // Idempotent (the same body re-applies the same refusal), so it may
+  // take the reset retry: it follows a slow admin login (issue #116).
   const plant = await api.patch(`/api/users/${attacker.id}`, {
     data: { email: `e2e-jit-victim-${Date.now()}@example.com` },
+    ...RETRY_ON_RESET,
   })
   const plantBody = (await plant.json().catch(() => ({}))) as { doc?: { email?: string } }
   expect(plantBody.doc?.email ?? attackerEmail).toBe(attackerEmail)
@@ -185,7 +189,7 @@ test('GHSA-8524 chain: self email change is neutered and the victim is never lin
   })
   expect(victimSignup.ok()).toBe(true)
   await api.post('/api/dev-auto-verify', { data: { email: victimAddress } })
-  const session = await api.get('/api/auth-link/session')
+  const session = await api.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(session.status()).toBe(401)
 })
 
@@ -213,7 +217,7 @@ test('the migration import path (role-manager proven) still links; provider resy
   })
   expect(signup.ok()).toBe(true)
   await api.post('/api/dev-auto-verify', { data: { email: importEmail } })
-  const session = await api.get('/api/auth-link/session')
+  const session = await api.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(session.ok()).toBe(true)
   const body = (await session.json()) as { user: { id: string; email: string } }
   expect(body.user.id).toBe(String(doc.doc.id))
@@ -244,7 +248,7 @@ test('a plain user cannot grant themselves roles', async ({ page }) => {
   const body = (await attempt.json().catch(() => ({}))) as { doc?: { roles?: string[] } }
   expect(body.doc?.roles).not.toEqual(['admin'])
 
-  const after = await api.get('/api/auth-link/session')
+  const after = await api.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(after.ok()).toBe(true)
   const session = (await after.json()) as { user: { roles: string[] } }
   expect(session.user.roles).toEqual(['user'])

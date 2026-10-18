@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { gotoOwn, toggleToSignUp } from './helpers.js'
+import { gotoOwn, RETRY_ON_RESET, toggleToSignUp } from './helpers.js'
 
 const password = 'e2e-test-password-1'
 let counter = 0
@@ -27,7 +27,7 @@ test('auth.js sign-up provisions a Payload user, sign-out revokes, sign-in resto
 
   // The plugin session endpoint serves the JIT-provisioned Payload user,
   // resolved through the Auth.js provider in the registry.
-  const session = await page.request.get('/api/auth-link/session')
+  const session = await page.request.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(session.ok()).toBe(true)
   const body = (await session.json()) as { user: { email: string; roles: string[] } }
   expect(body.user.email).toBe(email)
@@ -40,7 +40,7 @@ test('auth.js sign-up provisions a Payload user, sign-out revokes, sign-in resto
   await expect(page).toHaveURL(/\/$/)
   await gotoOwn(page, '/account')
   await expect(page).toHaveURL(/\/sign-in\?redirect=%2Faccount/)
-  const revoked = await page.request.get('/api/auth-link/session')
+  const revoked = await page.request.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(revoked.status()).toBe(401)
 
   // Sign back in with the same credentials.

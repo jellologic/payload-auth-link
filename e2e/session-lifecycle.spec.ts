@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
-import { gotoOwn } from './helpers.js'
+import { gotoOwn, RETRY_ON_RESET } from './helpers.js'
 
 /**
  * Session lifecycle beyond the credentials happy path: stale and
@@ -31,7 +31,7 @@ async function betterAuthSignUp(api: APIRequestContext, email: string): Promise<
 }
 
 async function sessionUserId(api: APIRequestContext): Promise<string | number> {
-  const session = await api.get('/api/auth-link/session')
+  const session = await api.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(session.ok()).toBe(true)
   const { user } = (await session.json()) as { user: { id: string | number } }
   return user.id
@@ -111,12 +111,14 @@ test('unconfigured OAuth entry points fail closed', async ({ page }) => {
     data: { provider: 'github', callbackURL: '/account' },
     maxRedirects: 0,
   })
-  expect(social.ok()).toBe(false)
+  // Better Auth answers a provider missing from its config with 404
+  // (`PROVIDER_NOT_FOUND`) before building any authorization URL.
+  expect(social.status()).toBe(404)
   const authjs = await page.request.get('/api/authjs/signin/github', { maxRedirects: 0 })
   // Auth.js answers unknown providers with a redirect to its error or
   // sign-in page, never an authorization URL off-site.
   const location = authjs.headers()['location'] ?? ''
   expect(location.startsWith('/') || location.startsWith('http://localhost')).toBe(true)
-  const session = await page.request.get('/api/auth-link/session')
+  const session = await page.request.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(session.status()).toBe(401)
 })
