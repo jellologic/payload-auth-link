@@ -135,7 +135,7 @@ export default defineConfig({
         'packages/plugin/src/lifecycle.ts': {
           lines: 95,
           functions: 95,
-          branches: 94,
+          branches: 95,
           statements: 95,
         },
         'packages/plugin/src/organizations.ts': {

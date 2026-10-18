@@ -31,7 +31,7 @@ Each cell is lines / functions / branches / statements.
 | `plugin/src/credential-gate.ts`                       | 95 / 95 / 95 / 95 | at target |
 | `plugin/src/endpoints.ts`                             | 95 / 95 / 91 / 95 | see below |
 | `plugin/src/hooks.ts`                                 | 95 / 95 / 95 / 95 | at target |
-| `plugin/src/lifecycle.ts`                             | 95 / 95 / 94 / 95 | see below |
+| `plugin/src/lifecycle.ts`                             | 95 / 95 / 95 / 95 | at target |
 | `plugin/src/organizations.ts`                         | 95 / 95 / 95 / 95 | see below |
 | `plugin/src/repository.ts`                            | 95 / 95 / 95 / 95 | at target |
 | `plugin/src/server.ts`                                | 95 / 95 / 94 / 95 | see below |
@@ -113,15 +113,6 @@ here and referred to by name below.
 
 Another change is editing this file at the same time (cookie expiry).
 Re-measure after it lands.
-
-### `plugin/src/lifecycle.ts` (branches 94.73%)
-
-`integration-lifecycle.test.ts` drives the `onInit` subscription on
-real Payload: the verified-email sync, application failure, a failed
-linked-user lookup, and a throwing handler (Error and non-Error
-causes), each logged and never thrown into the provider.
-
-- Line 65: registry miss.
 
 ### `plugin/src/organizations.ts` (branches 99.05%)
 
