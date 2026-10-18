@@ -12,7 +12,7 @@ import {
 } from '@payload-auth-link/core'
 import { Auth, type AuthConfig } from '@auth/core'
 import type { CollectionConfig, Payload } from 'payload'
-import { createAuthJsAdapter } from './adapter.js'
+import { createWiredAuthJsAdapter } from './adapter.js'
 import {
   createAuthLinkCallbacks,
   createAuthLinkEvents,
@@ -323,28 +323,20 @@ export function createAuthJsEngine(input: AuthJsEngineInput): AuthJsEngine {
     input.logger ?? nullLogger()
   )
   const slugs: AuthJsCollectionSlugs = resolveSlugs(defaultAuthJsSlugs, input.slugs)
-  const adapter = createAuthJsAdapter({ getPayload: input.getPayload, slugs, depth: input.depth })
+  const adapter = createWiredAuthJsAdapter({
+    getPayload: input.getPayload,
+    slugs,
+    depth: input.depth,
+  })
   const trustedProviders = input.trustProviderEmailVerification ?? []
   assertTrustIsNotDangerous(input.options, trustedProviders)
   reportDangerousLinking(input.options, {
     logger: input.logger ?? nullLogger(),
     strictLinking: input.strictLinking === true,
   })
-  if (trustedProviders.length > 0 && adapter.updateUser === undefined) {
-    throw new InvalidConfigError(
-      'Auth.js trustProviderEmailVerification requires an adapter updateUser to stamp emailVerified'
-    )
-  }
   const trust: AuthLinkTrustOptions = {
     trustProviderEmailVerification: trustedProviders,
-    updateUser: (user) => {
-      if (adapter.updateUser === undefined) {
-        throw new InvalidConfigError(
-          'Auth.js trustProviderEmailVerification requires an adapter updateUser to stamp emailVerified'
-        )
-      }
-      return adapter.updateUser(user)
-    },
+    updateUser: (user) => adapter.updateUser(user),
   }
   const strategy = input.options.session?.strategy ?? 'database'
   if (strategy === 'database' && hasCredentialsProvider(input.options)) {

@@ -38,8 +38,8 @@ Each cell is lines / functions / branches / statements.
 | `plugin/src/strategy.ts`                         | 95 / 95 / 90 / 95 | see below |
 | `plugin/src/verified-email.ts`                   | 95 / 95 / 95 / 95 | at target |
 | `provider-authjs/src/adapter.ts`                 | 95 / 95 / 95 / 95 | see below |
-| `provider-authjs/src/callbacks.ts`               | 93 / 95 / 90 / 93 | see below |
-| `provider-authjs/src/engine.ts`                  | 95 / 95 / 91 / 95 | see below |
+| `provider-authjs/src/callbacks.ts`               | 95 / 95 / 95 / 95 | at target |
+| `provider-authjs/src/engine.ts`                  | 95 / 95 / 93 / 95 | see below |
 | `provider-authjs/src/port.ts`                    | 95 / 95 / 95 / 95 | at target |
 | `provider-better-auth/src/adapter.ts`            | 80 / 91 / 73 / 81 | see below |
 | `provider-better-auth/src/cookies.ts`            | 95 / 95 / 89 / 95 | see below |
@@ -189,31 +189,31 @@ in `integration-req-user-document.test.ts`.
 unmappable document is an `AdapterMappingError`, every Local API
 failure an `AdapterOperationError`, never a `null` read as "not
 found". The remaining arms are `?? {}` spreads for optional fields
-that Auth.js never sends as `undefined` (lines 159, 385, 485) and
-`getUserByAccount` with an account whose user row is gone (line 327).
+that Auth.js never sends as `undefined` (lines 159, 397, 497) and
+`getUserByAccount` with an account whose user row is gone (line 339).
 
-### `provider-authjs/src/callbacks.ts` (branches 95.71%)
+### `provider-authjs/src/callbacks.ts` (branches 97.36%)
 
-The D6 stamp guard (line 136: `updateUser` returning no `Date` claims
-nothing) and the CAP-14 event narrowing (lines 253–283: unusable rows
-are logged and skipped, no emit without a lifecycle sink) are tested
-in `callbacks-guards.test.ts`.
+At target. The D6 stamp guards (the adapter returning no `Date`, a
+missing, blank or mismatched email on either side), the CAP-14 event
+narrowing, and the builder-session credential scrub (nested
+`sessionToken` keys, token-bearing strings, shared values, cycles) are
+tested in `callbacks-guards.test.ts`; the scrub also runs against the
+real engine in `session-shape-engine.test.ts`. The remaining arms are
+`input.user ?? {}` and `image === undefined` in the allowlisted
+session (Auth.js always passes a user, with `image`), and a sign-in
+`user` without an `id` in the jwt callback (lines 159, 163, 304).
 
-- Line 88: `normalizeEmail` on a non-string. Both callers have
-  already required a string.
+### `provider-authjs/src/engine.ts` (branches 93.68%)
 
-The floor sits below the measured value because another change is
-reshaping the session callback. Re-measure after it lands.
+The engine wires its own adapter through `createWiredAuthJsAdapter`,
+whose type makes `updateUser` required, so the former "adapter without
+`updateUser`" checks are gone rather than untested.
 
-### `provider-authjs/src/engine.ts` (branches 92.07%)
-
-- Lines 333 and 341: `adapter.updateUser === undefined`. The engine
-  always wires its own adapter, which defines `updateUser`. The checks
-  stay so a future adapter swap fails at wiring.
-- Line 435: `readSession` when Auth.js answers the session endpoint
+- Line 427: `readSession` when Auth.js answers the session endpoint
   with a non-OK status. Auth.js answers 200 (with `null`) for every
   session miss.
-- Lines 139, 160, 409, 412 and 484: `String(error)` for a non-Error
+- Lines 139, 160, 399, 402 and 474: `String(error)` for a non-Error
   factory throw, `?? '<unknown provider id>'`, the cookie-option `?? {}`
   spreads, and a non-object bulk result. These are untyped-input
   narrowing.

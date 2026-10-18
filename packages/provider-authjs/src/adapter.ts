@@ -168,6 +168,18 @@ function toAuthenticator(doc: Record<string, unknown>): AdapterAuthenticator {
  * `userId` references hold `auId` values.
  */
 export function createAuthJsAdapter(deps: AuthJsAdapterDeps): Adapter {
+  return createWiredAuthJsAdapter(deps)
+}
+
+/**
+ * The adapter as the engine sees it: the optional Auth.js methods this
+ * package always implements and the engine calls are required here, so
+ * the engine needs no "adapter without updateUser" branch.
+ */
+export type WiredAuthJsAdapter = Adapter & Required<Pick<Adapter, 'updateUser'>>
+
+/** {@link createAuthJsAdapter} with its engine-facing type (internal). */
+export function createWiredAuthJsAdapter(deps: AuthJsAdapterDeps): WiredAuthJsAdapter {
   const slugs: AuthJsCollectionSlugs = resolveSlugs(defaultAuthJsSlugs, deps.slugs)
   const depth = deps.depth ?? 0
 

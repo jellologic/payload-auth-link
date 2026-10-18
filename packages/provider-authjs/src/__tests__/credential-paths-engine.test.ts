@@ -583,7 +583,8 @@ describe("row 8: Payload's verify token is not linkable proof on its own (real A
   })
 
   it('failure: a wrong verification token verifies nothing', async () => {
-    expect((await rest('POST', '/users/verify/not-the-token')).status).toBeGreaterThanOrEqual(400)
+    // Payload answers an unknown verification token with Forbidden.
+    expect((await rest('POST', '/users/verify/not-the-token')).status).toBe(403)
     expect((await hostDoc(id))._verified).toBe(false)
   })
 
@@ -759,7 +760,8 @@ describe('row 14: provider-side changes on Auth.js (adapter updateUser; no passw
       const response = await engine.handleRequest(
         new Request(`${ORIGIN}${BASE_PATH}/${action}`, { method: 'POST' })
       )
-      expect(response.status).toBeGreaterThanOrEqual(400)
+      // Auth.js rejects an action it does not define (UnknownAction).
+      expect(response.status).toBe(400)
     }
   })
 })

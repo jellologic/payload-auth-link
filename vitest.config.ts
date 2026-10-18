@@ -168,19 +168,16 @@ export default defineConfig({
           branches: 95,
           statements: 95,
         },
-        // Another change is reshaping the session callback; the floor
-        // sits below the measured 98.6 / 100 / 95.7 / 98.6 so that
-        // change can land and re-measure.
         'packages/provider-authjs/src/callbacks.ts': {
-          lines: 93,
+          lines: 95,
           functions: 95,
-          branches: 90,
-          statements: 93,
+          branches: 95,
+          statements: 95,
         },
         'packages/provider-authjs/src/engine.ts': {
           lines: 95,
           functions: 95,
-          branches: 91,
+          branches: 93,
           statements: 95,
         },
         'packages/provider-authjs/src/port.ts': {
