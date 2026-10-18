@@ -319,7 +319,7 @@ to their ORIGINAL document on their next sign-in.
 
 What the pre-link changes on each document it links: the `identities`
 rows (and, with the opt-in, `linkable` / `linkableEmail`) — nothing
-else. Since migrate 0.8.1 the document's `updated_at` is kept (the
+else. Since migrate 0.9.0 the document's `updated_at` is kept (the
 write puts the captured value back in the same transaction). One side
 effect remains: the write goes through Payload's Local API, whose
 full-document upsert re-creates hasMany child rows — the `users_role`
@@ -357,7 +357,7 @@ are untouched".
 ### Verifying an adopt cutover
 
 Adopt copies nothing, so `verify` pointed at an adopt-mode config
-(migrate 0.8.1+) checks the live tables Better Auth now serves instead
+(migrate 0.9.0+) checks the live tables Better Auth now serves instead
 of comparing copies:
 
 ```sh
@@ -509,7 +509,7 @@ the signature, and every command checks them first:
   starts a fresh run;
 - every check fails closed: a key-value store that cannot be read
   refuses the command instead of trusting the file;
-- every captured value is sealed FOR its run (since 0.8.1; the
+- every captured value is sealed FOR its run (since 0.9.0; the
   database id and run nonce are part of the AES-GCM associated data),
   so a value copied into another manifest — another run's, or an
   unsigned one — does not open (GHSA-xw9m-ph95-84rx);
@@ -598,7 +598,7 @@ Manifests from older kits:
   add `--allow-unsigned-deletes`; to restore a version-1 manifest's
   PLAINTEXT prior values, review them and add
   `--allow-plaintext-restore`. The scoping rules above still apply.
-  Since 0.8.1 such a manifest is refused outright — rollback AND
+  Since 0.9.0 such a manifest is refused outright — rollback AND
   finalize, whatever the flags — on a database that has run migrate
   0.8.0 or later (it holds a migration database id): every manifest
   written there since is signed and bound, so an unsigned one is a
@@ -614,7 +614,7 @@ Manifests from older kits:
   never resumed; roll it back with `--allow-plaintext-restore`.
 - **Version 4 from migrate 0.8.0** seals its values for their entry
   only. It keeps working: those values open inside the signed, bound
-  manifest that carries them; values captured since 0.8.1 are sealed
+  manifest that carries them; values captured since 0.9.0 are sealed
   for their run.
 
 Keep it until you have run `finalize` AND your soak window has passed
@@ -649,7 +649,7 @@ A row that is already gone is fine — the goal is "absent". A delete
 that FAILS (a foreign key from one of your tables, a hook, a
 permission) is an error: rollback names the row it could not delete
 and why, exits non-zero, restores no field value, and keeps the
-manifest as it was. Since 0.8.1 the deletes and restores run in ONE
+manifest as it was. Since 0.9.0 the deletes and restores run in ONE
 database transaction where the adapter offers one (Postgres, SQLite;
 MongoDB on a replica set): the rows deleted before the failure come
 back with it, and the database is exactly as before. On an adapter

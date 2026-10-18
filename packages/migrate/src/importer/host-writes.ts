@@ -33,7 +33,7 @@ import type { FieldWrite, ImportManifest } from './types.js'
 
 /** Seals written by migrate 0.5–0.8.0: bound to the entry only. */
 const legacySealPrefix = 'v1.'
-/** Seals written since 0.8.1: bound to the entry AND its database and run. */
+/** Seals written since 0.9.0: bound to the entry AND its database and run. */
 const boundSealPrefix = 'v2.'
 
 type SealScheme = 'v1' | 'v2'
