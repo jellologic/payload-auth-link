@@ -1,8 +1,9 @@
-import { errAsync, okAsync } from 'neverthrow'
+import { err, errAsync, okAsync } from 'neverthrow'
 import {
   defineProviderId,
   parseEmail,
   ProviderError,
+  UnknownProviderError,
   type CookieOptions,
   type IdentityProviderPort,
   type LoggerPort,
@@ -118,6 +119,18 @@ describe('logout cookie clearing', () => {
   it('derives Secure from the __Secure- prefix when the provider predates the hook', async () => {
     const cookies = await logoutCookies([clearProvider('legacy', ['__Secure-al_session'])])
     expect(cookies).toEqual(['__Secure-al_session=; Max-Age=0; Path=/; Secure'])
+  })
+
+  it('expires a cookie name two providers share exactly once', async () => {
+    const cookies = await logoutCookies([
+      clearProvider('first', ['shared.session'], () => ({ secure: true })),
+      clearProvider('second', ['shared.session', 'second.session'], () => ({})),
+    ])
+    // The first registered provider's attributes win.
+    expect(cookies).toEqual([
+      'shared.session=; Max-Age=0; Path=/; Secure',
+      'second.session=; Max-Age=0; Path=/',
+    ])
   })
 
   it('also expires non-session logout cookies like BA admin_session (CAP-8a)', async () => {
@@ -603,6 +616,58 @@ describe('multi-provider logout', () => {
       payload: stubPayload({ find }),
     } as unknown as PayloadRequest)
     expect(getSession).toHaveBeenCalled()
+  })
+
+  it('skips providers the registry lists but no longer resolves (no throw)', async () => {
+    // A provider de-registered mid-request: the registry still lists
+    // the ids, but `require` fails once the active session is revoked.
+    const revoked: string[] = []
+    const { stub, cookie } = signedInStub()
+    let dropped = false
+    const live: IdentityProviderPort = {
+      ...stub.provider,
+      revokeSession: (sessionId) => {
+        revoked.push(sessionId)
+        dropped = true
+        return okAsync(undefined)
+      },
+      listPresentedSessionIds: () => okAsync(['sibling-session']),
+    }
+    const second = presentingProvider('second', revoked)
+    const wired = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['user'],
+      defaultRole: 'user',
+      roleManagerRoles: ['user'],
+      providers: [live, second],
+      logger: capturingLogger().logger,
+    })
+    const registry = wired.registry
+    const handler = createEndpoints({
+      ...wired,
+      registry: {
+        ...registry,
+        ids: () => [defineProviderId('ghost'), ...registry.ids()],
+        require: (id) =>
+          id === 'ghost' || (dropped && id === 'stub')
+            ? err(new UnknownProviderError(id))
+            : registry.require(id),
+      },
+    }).find(
+      (candidate) => candidate.path === '/auth-link/session' && candidate.method === 'delete'
+    )?.handler
+    if (handler === undefined) {
+      throw new Error('logout endpoint missing')
+    }
+    const signedOut = await handler({
+      headers: new Headers({ ...csrf, cookie }),
+      payload: stubPayload({ find: () => Promise.resolve({ docs: [linkedDoc] }) }),
+    } as unknown as PayloadRequest)
+    expect(signedOut.status).toBe(200)
+    // The active session and the other provider's: the unresolvable
+    // ids (the ghost, and the dropped provider's sibling enumeration)
+    // are skipped, never thrown.
+    expect(revoked).toEqual(['live-multi', 'second-session'])
   })
 
   it('logs a failing sweep revoke without failing the logout', async () => {

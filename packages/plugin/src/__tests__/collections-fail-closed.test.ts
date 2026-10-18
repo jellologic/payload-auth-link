@@ -11,7 +11,7 @@
  *   forgot/reset flow; without it, both are refused (403).
  */
 import { ProviderError, type LoggerPort } from '@payload-auth-link/core'
-import { errAsync } from 'neverthrow'
+import { errAsync, okAsync } from 'neverthrow'
 import type { CollectionConfig, PayloadRequest } from 'payload'
 import { describe, expect, it, vi } from 'vitest'
 import {
@@ -362,5 +362,39 @@ describe('suspension revokes provider sessions best-effort (CAP-7)', () => {
       'suspend: provider session revoke failed',
       expect.objectContaining({ providerId: 'failing' })
     )
+  })
+
+  it('revokes through every capable provider, skipping one that cannot revoke', async () => {
+    const capable = createStubProvider({ id: 'capable' }).provider
+    const revokeUserSessions = vi.fn(() => okAsync(undefined))
+    const incapable = {
+      ...createStubProvider({ id: 'incapable' }).provider,
+      revokeUserSessions: undefined,
+    }
+    const options = wired({
+      logger: spyLogger(),
+      providers: [incapable, { ...capable, revokeUserSessions }],
+    })
+    const [users] = applyUsersCollection([], options, createAuthLinkStrategy(options))
+    const hooks = users?.hooks?.afterChange ?? []
+    const doc = {
+      id: 'u10',
+      suspendedUntil: new Date(Date.now() + 3_600_000).toISOString(),
+      identities: [
+        { providerId: 'incapable', providerUserId: 'i-1' },
+        { providerId: 'capable', providerUserId: 'c-1' },
+      ],
+    }
+    // A first suspension (no previous document at all) revokes.
+    for (const hook of hooks) {
+      await hook({ doc, previousDoc: undefined } as never)
+    }
+    expect(revokeUserSessions).toHaveBeenCalledTimes(1)
+    expect(revokeUserSessions).toHaveBeenCalledWith('c-1')
+    // A non-record document carries no suspension: nothing to revoke.
+    for (const hook of hooks) {
+      await hook({ doc: null, previousDoc: doc } as never)
+    }
+    expect(revokeUserSessions).toHaveBeenCalledTimes(1)
   })
 })

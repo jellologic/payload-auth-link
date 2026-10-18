@@ -22,13 +22,20 @@ import {
   type NewUser,
   type ProviderId,
   type ProviderSession,
+  type SessionPort,
   type Role,
   type UserId,
   type UserRecord,
   type UserRepository,
 } from '@payload-auth-link/core'
+import type { PayloadRequest } from 'payload'
 import { describe, expect, it, vi } from 'vitest'
-import { createSessionService, type SessionServiceDeps } from '../session.js'
+import {
+  createSessionService,
+  REQUEST_VERIFY_KEY,
+  requestVerifiedSession,
+  type SessionServiceDeps,
+} from '../session.js'
 
 function email(value: string): Email {
   const parsed = parseEmail(value)
@@ -991,5 +998,26 @@ describe('presented actor (impersonation refusal without verification)', () => {
     }
     const sessions = createSessionService(depsFor(throwing))
     expect((await sessions.presentedActor(new Headers())).isErr()).toBe(true)
+  })
+})
+
+describe('requestVerifiedSession: one verification per request (issue #42)', () => {
+  it('memoizes on req.context and serves later readers from the memo', async () => {
+    const verify = vi.fn(() => errAsync(new SessionInvalidError('no active provider session')))
+    const sessions: SessionPort = { verify, revoke: () => okAsync(undefined) }
+    const req = { headers: new Headers(), context: {} } as unknown as PayloadRequest
+    const first = requestVerifiedSession(sessions, req)
+    const second = requestVerifiedSession(sessions, req)
+    // The cache hit hands back the very same pending result.
+    expect(second).toBe(first)
+    expect(req.context[REQUEST_VERIFY_KEY]).toBe(first)
+    expect(verify).toHaveBeenCalledTimes(1)
+    expect((await second).isErr()).toBe(true)
+    // A new request verifies afresh.
+    requestVerifiedSession(sessions, {
+      headers: new Headers(),
+      context: {},
+    } as unknown as PayloadRequest)
+    expect(verify).toHaveBeenCalledTimes(2)
   })
 })

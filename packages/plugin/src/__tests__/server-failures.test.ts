@@ -16,6 +16,7 @@ import {
   parseEmail,
   parseRole,
   ProviderError,
+  UnknownProviderError,
   type ApiKeyVerification,
   type Capability,
   type Email,
@@ -26,7 +27,7 @@ import {
   type UserId,
   type UserRecord,
 } from '@payload-auth-link/core'
-import { errAsync, okAsync, type ResultAsync } from 'neverthrow'
+import { err, errAsync, okAsync, type ResultAsync } from 'neverthrow'
 import type { Payload } from 'payload'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { wireOptions, type AuthLinkPluginOptions } from '../options.js'
@@ -355,6 +356,43 @@ describe('authLinkServer.verifyApiKey', () => {
       findByProviderIdentity: () => errAsync(new Error('db down')),
     }
     await expect(keysServer().verifyApiKey('good')).rejects.toThrow('verifyApiKey: db down')
+  })
+})
+
+describe('authLinkServer — registry ids that no longer resolve', () => {
+  it('skips them on every provider walk instead of throwing', async () => {
+    const fakePayload = {} as Payload
+    const wired = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['user', 'admin'],
+      defaultRole: 'user',
+      roleManagerRoles: ['admin'],
+      providers: [
+        // Lacks every server capability: walked past, never chosen.
+        port('plain', { capabilities: new Set<Capability>() }),
+        port('keys', {
+          capabilities: new Set<Capability>(['api-key-verify', 'server-session-create']),
+          verifyApiKey: () => okAsync(null),
+        }),
+      ],
+      logger: nullLogger(),
+    })
+    const registry = wired.registry
+    registerAuthLinkServer(fakePayload, {
+      ...wired,
+      registry: {
+        ...registry,
+        ids: () => [defineProviderId('ghost'), ...registry.ids()],
+        require: (id) =>
+          id === 'ghost' ? err(new UnknownProviderError(id)) : registry.require(id),
+      },
+    })
+    const server = authLinkServer(fakePayload)
+    await expect(server.verifyApiKey('unknown')).resolves.toBeNull()
+    await expect(server.sessionCookie('tok')).resolves.toBe(
+      'al_stub_session=tok; Path=/; HttpOnly; SameSite=Lax'
+    )
+    await expect(server.revokeSession('sess-1')).resolves.toBeUndefined()
   })
 })
 
