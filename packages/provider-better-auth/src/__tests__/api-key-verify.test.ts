@@ -6,6 +6,8 @@
  * 1. `authLinkServer(payload).verifyApiKey` resolves a valid 1.7.x key.
  *    The satellite names the owner `referenceId`; the port used to
  *    demand `userId` and threw for every valid key.
+ *    GHSA-j68x-qjr5-vqv9: only for an owner linked to a live,
+ *    unsuspended Payload user.
  * 2. A provider-side email verification of the address a linked user
  *    ALREADY carries (the post-import verification) grants the bound
  *    linking proof and sets the host's verified mirror
@@ -66,6 +68,37 @@ async function signUp(email: string): Promise<string> {
     throw new Error('sign-up returned no user id')
   }
   return id
+}
+
+/**
+ * Link a BA user to a host document (the import-mode shape: the
+ * identity row names the BA user). `verifyApiKey` resolves a key only
+ * for an owner linked to a live Payload user (GHSA-j68x-qjr5-vqv9).
+ */
+async function linkHost(email: string, baUserId: string): Promise<string> {
+  const host = await payload.create({
+    collection: 'users',
+    data: {
+      email,
+      password: 'unused-local-password-1',
+      identities: [
+        {
+          providerId: 'better-auth',
+          providerUserId: baUserId,
+          email,
+          linkedAt: new Date().toISOString(),
+        },
+      ],
+    },
+    overrideAccess: true,
+  })
+  return String(host.id)
+}
+
+/** Sign up a BA user and link it to a host document. */
+async function linkedOwner(email: string): Promise<{ userId: string; hostId: string }> {
+  const userId = await signUp(email)
+  return { userId, hostId: await linkHost(email, userId) }
 }
 
 /** A real key minted by the satellite for a BA user. */
@@ -134,7 +167,7 @@ beforeAll(async () => {
 
 describe('verifyApiKey on @better-auth/api-key 1.7.x (#88)', () => {
   it('resolves a valid key to its owner through authLinkServer', async () => {
-    const userId = await signUp('key-owner@test.dev')
+    const { userId } = await linkedOwner('key-owner@test.dev')
     const created = (await engine.auth.api.createApiKey({
       body: { userId, name: 'ci key', metadata: { purpose: 'ci' } },
     })) as { key?: unknown }
@@ -211,7 +244,7 @@ describe('verifyApiKey on @better-auth/api-key 1.7.x (#88)', () => {
   // lives in the provider's own store (the derived api-key collection),
   // so each case flips that row and re-verifies the SAME key.
   it('refuses a disabled key (null), after it verified while enabled', async () => {
-    const userId = await signUp('key-disabled@test.dev')
+    const { userId } = await linkedOwner('key-disabled@test.dev')
     const { key, keyId } = await mintKey(userId)
     expect((await authLinkServer(payload).verifyApiKey(key))?.userId).toBe(userId)
     await updateKeyRow(keyId, { enabled: false })
@@ -226,7 +259,7 @@ describe('verifyApiKey on @better-auth/api-key 1.7.x (#88)', () => {
   })
 
   it('refuses a deleted key (null); a sibling key of the same owner still verifies', async () => {
-    const userId = await signUp('key-deleted@test.dev')
+    const { userId } = await linkedOwner('key-deleted@test.dev')
     const first = await mintKey(userId)
     const second = await mintKey(userId)
     const removed = await payload.delete({
@@ -240,8 +273,8 @@ describe('verifyApiKey on @better-auth/api-key 1.7.x (#88)', () => {
   })
 
   it("resolves each key to its own owner, never another user's", async () => {
-    const alice = await signUp('key-alice@test.dev')
-    const bob = await signUp('key-bob@test.dev')
+    const { userId: alice } = await linkedOwner('key-alice@test.dev')
+    const { userId: bob } = await linkedOwner('key-bob@test.dev')
     const aliceKey = await mintKey(alice)
     const bobKey = await mintKey(bob)
     const server = authLinkServer(payload)
@@ -250,6 +283,99 @@ describe('verifyApiKey on @better-auth/api-key 1.7.x (#88)', () => {
     // A key one character off another user's key is unknown, not theirs.
     const tampered = `${bobKey.key.slice(0, -1)}${bobKey.key.endsWith('a') ? 'b' : 'a'}`
     await expect(server.verifyApiKey(tampered)).resolves.toBeNull()
+  })
+})
+
+// GHSA-j68x-qjr5-vqv9: the provider accepting a key is not enough —
+// its owner's Payload account controls apply, as on the x-api-key
+// session channel. Each case verifies the SAME real key before and
+// after the owner's Payload state changes.
+describe('verifyApiKey applies the owner account controls (GHSA-j68x-qjr5-vqv9)', () => {
+  async function setSuspension(hostId: string, until: string | null): Promise<void> {
+    await payload.update({
+      collection: 'users',
+      id: hostId,
+      data: { suspendedUntil: until },
+      overrideAccess: true,
+    })
+  }
+
+  it('refuses a suspended owner (null); a lapsed suspension verifies again', async () => {
+    const { userId, hostId } = await linkedOwner('key-suspended@test.dev')
+    const { key } = await mintKey(userId)
+    expect((await authLinkServer(payload).verifyApiKey(key))?.userId).toBe(userId)
+    await setSuspension(hostId, new Date(Date.now() + 86_400_000).toISOString())
+    await expect(authLinkServer(payload).verifyApiKey(key)).resolves.toBeNull()
+    // The provider still accepts the key: the refusal is the plugin's.
+    const verify = engine.provider.verifyApiKey
+    if (verify === undefined) {
+      throw new Error('the better-auth provider cannot verify API keys')
+    }
+    const raw = await verify(key)
+    expect(raw.isOk() ? raw.value?.userId : null).toBe(userId)
+    await setSuspension(hostId, new Date(Date.now() - 1000).toISOString())
+    expect((await authLinkServer(payload).verifyApiKey(key))?.userId).toBe(userId)
+    await setSuspension(hostId, null)
+    expect((await authLinkServer(payload).verifyApiKey(key))?.userId).toBe(userId)
+  })
+
+  it('refuses a key whose owner document was deleted (null)', async () => {
+    const { userId, hostId } = await linkedOwner('key-host-deleted@test.dev')
+    const { key } = await mintKey(userId)
+    expect((await authLinkServer(payload).verifyApiKey(key))?.userId).toBe(userId)
+    await payload.delete({ collection: 'users', id: hostId, overrideAccess: true })
+    await expect(authLinkServer(payload).verifyApiKey(key)).resolves.toBeNull()
+  })
+
+  it('refuses a key whose owner was never linked to a Payload user (null)', async () => {
+    const userId = await signUp('key-never-linked@test.dev')
+    const { key } = await mintKey(userId)
+    await expect(authLinkServer(payload).verifyApiKey(key)).resolves.toBeNull()
+  })
+
+  it('refuses a key whose owner the session gate will not link (an unproven document holds the email)', async () => {
+    const email = 'key-unproven@test.dev'
+    const userId = await signUp(email)
+    // A document holds the address but does not prove it owns it and
+    // carries no identity: the session gate refuses the link, so the
+    // key's provider user maps to no Payload user.
+    const unproven = await payload.create({
+      collection: 'users',
+      data: { email, password: 'unused-local-password-1' },
+      overrideAccess: true,
+    })
+    await payload.update({
+      collection: 'users',
+      id: unproven.id,
+      data: { linkable: false, linkableEmail: null },
+      overrideAccess: true,
+    })
+    const { key } = await mintKey(userId)
+    await expect(authLinkServer(payload).verifyApiKey(key)).resolves.toBeNull()
+  })
+
+  it("a key bound to another provider's identity of the same id is not this owner's", async () => {
+    const userId = await signUp('key-foreign-identity@test.dev')
+    // The host document links the SAME id under a different provider:
+    // the key's owner is the better-auth identity, which nothing links.
+    await payload.create({
+      collection: 'users',
+      data: {
+        email: 'key-foreign-identity@test.dev',
+        password: 'unused-local-password-1',
+        identities: [
+          {
+            providerId: 'authjs',
+            providerUserId: userId,
+            email: 'key-foreign-identity@test.dev',
+            linkedAt: new Date().toISOString(),
+          },
+        ],
+      },
+      overrideAccess: true,
+    })
+    const { key } = await mintKey(userId)
+    await expect(authLinkServer(payload).verifyApiKey(key)).resolves.toBeNull()
   })
 })
 

@@ -16,6 +16,7 @@ import {
   parseEmail,
   parseRole,
   ProviderError,
+  UnknownProviderError,
   type ApiKeyVerification,
   type Capability,
   type Email,
@@ -26,7 +27,7 @@ import {
   type UserId,
   type UserRecord,
 } from '@payload-auth-link/core'
-import { errAsync, okAsync, type ResultAsync } from 'neverthrow'
+import { err, errAsync, okAsync, type ResultAsync } from 'neverthrow'
 import type { Payload } from 'payload'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { wireOptions, type AuthLinkPluginOptions } from '../options.js'
@@ -40,6 +41,10 @@ import { createStubProvider } from './stub-provider.js'
 
 type FakeUsers = {
   readonly findById: (id: UserId) => ResultAsync<UserRecord | null, Error>
+  readonly findByProviderIdentity?: (ref: {
+    readonly providerId: string
+    readonly providerUserId: string
+  }) => ResultAsync<UserRecord | null, Error>
 }
 type FakeSessions = {
   readonly verify: (headers: Headers) => ResultAsync<Session | null, Error>
@@ -95,6 +100,16 @@ function record(
 function usersWith(...records: UserRecord[]): FakeUsers {
   return {
     findById: (id) => okAsync(records.find((candidate) => candidate.id === id) ?? null),
+    findByProviderIdentity: (ref) =>
+      okAsync(
+        records.find((candidate) =>
+          candidate.identities.some(
+            (identity) =>
+              identity.providerId === ref.providerId &&
+              identity.providerUserId === ref.providerUserId
+          )
+        ) ?? null
+      ),
   }
 }
 
@@ -277,6 +292,9 @@ describe('authLinkServer.verifyApiKey', () => {
   })
 
   it('maps the provider verification through unchanged, and null for an unknown key', async () => {
+    services.users = usersWith(
+      record('o1', [{ providerId: 'keys', providerUserId: 'provider-user-1' }])
+    )
     const verify = vi.fn((key: string) => okAsync(key === 'good' ? verification : null))
     const server = serverFor([
       port('plain'),
@@ -288,6 +306,93 @@ describe('authLinkServer.verifyApiKey', () => {
     await expect(server.verifyApiKey('good')).resolves.toEqual(verification)
     await expect(server.verifyApiKey('bad')).resolves.toBeNull()
     expect(verify).toHaveBeenCalledTimes(2)
+  })
+
+  // GHSA-j68x-qjr5-vqv9: the owner's account controls apply.
+  function keysServer(logger = nullLogger()) {
+    return serverFor(
+      [
+        port('keys', {
+          capabilities: new Set<Capability>(['api-key-verify']),
+          verifyApiKey: () => okAsync(verification),
+        }),
+      ],
+      { logger }
+    )
+  }
+
+  it('refuses (null) a key whose owner is linked to no Payload user, and logs why', async () => {
+    services.users = usersWith(
+      record('o2', [{ providerId: 'other', providerUserId: 'provider-user-1' }])
+    )
+    const warn = vi.fn()
+    const server = keysServer({ ...nullLogger(), warn })
+    await expect(server.verifyApiKey('good')).resolves.toBeNull()
+    expect(warn).toHaveBeenCalledWith('api key refused: owner fails account controls', {
+      providerId: 'keys',
+      providerUserId: 'provider-user-1',
+      reason: 'no-linked-user',
+    })
+  })
+
+  it('refuses (null) a suspended owner and accepts a lapsed suspension', async () => {
+    const owner = (suspendedUntil: Date) =>
+      record('o3', [{ providerId: 'keys', providerUserId: 'provider-user-1' }], { suspendedUntil })
+    const warn = vi.fn()
+    const server = keysServer({ ...nullLogger(), warn })
+    services.users = usersWith(owner(new Date(Date.now() + 86_400_000)))
+    await expect(server.verifyApiKey('good')).resolves.toBeNull()
+    expect(warn).toHaveBeenCalledWith(
+      'api key refused: owner fails account controls',
+      expect.objectContaining({ userId: 'o3', reason: 'suspended' })
+    )
+    services.users = usersWith(owner(new Date(Date.now() - 86_400_000)))
+    await expect(server.verifyApiKey('good')).resolves.toEqual(verification)
+  })
+
+  it('throws on a user-store error instead of verifying or reporting the key unknown', async () => {
+    services.users = {
+      findById: () => okAsync(null),
+      findByProviderIdentity: () => errAsync(new Error('db down')),
+    }
+    await expect(keysServer().verifyApiKey('good')).rejects.toThrow('verifyApiKey: db down')
+  })
+})
+
+describe('authLinkServer — registry ids that no longer resolve', () => {
+  it('skips them on every provider walk instead of throwing', async () => {
+    const fakePayload = {} as Payload
+    const wired = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['user', 'admin'],
+      defaultRole: 'user',
+      roleManagerRoles: ['admin'],
+      providers: [
+        // Lacks every server capability: walked past, never chosen.
+        port('plain', { capabilities: new Set<Capability>() }),
+        port('keys', {
+          capabilities: new Set<Capability>(['api-key-verify', 'server-session-create']),
+          verifyApiKey: () => okAsync(null),
+        }),
+      ],
+      logger: nullLogger(),
+    })
+    const registry = wired.registry
+    registerAuthLinkServer(fakePayload, {
+      ...wired,
+      registry: {
+        ...registry,
+        ids: () => [defineProviderId('ghost'), ...registry.ids()],
+        require: (id) =>
+          id === 'ghost' ? err(new UnknownProviderError(id)) : registry.require(id),
+      },
+    })
+    const server = authLinkServer(fakePayload)
+    await expect(server.verifyApiKey('unknown')).resolves.toBeNull()
+    await expect(server.sessionCookie('tok')).resolves.toBe(
+      'al_stub_session=tok; Path=/; HttpOnly; SameSite=Lax'
+    )
+    await expect(server.revokeSession('sess-1')).resolves.toBeUndefined()
   })
 })
 

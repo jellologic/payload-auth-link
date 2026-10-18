@@ -232,8 +232,8 @@ export function createEndpoints(wired: WiredOptions): Endpoint[] {
           // CAP-10 (D3): a live anonymous provider session is a guest,
           // not a failed login — report it distinctly so apps can key
           // anonymous state on it. Guests never get a Payload user.
-          const guest = sessions.guest === undefined ? null : await sessions.guest(req.headers, req)
-          if (guest !== null && guest.isOk() && guest.value !== null) {
+          const guest = await sessions.guest(req.headers, req)
+          if (guest.isOk() && guest.value !== null) {
             return jsonResponse(
               {
                 user: null,

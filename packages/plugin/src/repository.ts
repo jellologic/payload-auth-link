@@ -51,6 +51,20 @@ export type PayloadUserRepositoryDeps = {
    * Payload API key enabled before the link.
    */
   readonly keepLocalCredentialsOnLink?: boolean | undefined
+  /**
+   * Observer for the users-document writes this repository actually
+   * performs — called once per successful write, never for a no-op
+   * (an identity already linked, an unchanged email or phone) and
+   * never for a lost create race (`UserExistsError`). The session
+   * service audits impersonated verification through it (issue #116).
+   */
+  readonly onWrite?: ((write: UserDocumentWrite) => void) | undefined
+}
+
+/** A users-document write the repository performed (see `onWrite`). */
+export type UserDocumentWrite = {
+  readonly operation: 'create' | 'linkIdentity' | 'setEmail' | 'setPhone'
+  readonly userId: UserId
 }
 
 /**
@@ -266,6 +280,7 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
         if (!record) {
           return err(new RepositoryError('create: unmappable result'))
         }
+        deps.onWrite?.({ operation: 'create', userId: record.id })
         return ok(record)
       })
     },
@@ -373,6 +388,7 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
             if (!record) {
               return err(new RepositoryError('linkIdentity: unmappable result'))
             }
+            deps.onWrite?.({ operation: 'linkIdentity', userId: record.id })
             return ok(record)
           })
         })
@@ -466,6 +482,7 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
           if (!record) {
             return err(new RepositoryError('setEmail: unmappable result'))
           }
+          deps.onWrite?.({ operation: 'setEmail', userId: record.id })
           return ok(record)
         })
       })
@@ -499,6 +516,7 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
               if (!record) {
                 return err(new RepositoryError('setPhone: unmappable result'))
               }
+              deps.onWrite?.({ operation: 'setPhone', userId: record.id })
               return ok(record)
             })
           }

@@ -109,7 +109,7 @@ export default defineConfig({
         'packages/plugin/src/collections.ts': {
           lines: 95,
           functions: 95,
-          branches: 88,
+          branches: 91,
           statements: 95,
         },
         // GHSA-mjvh: the authentication-time credential gate.
@@ -128,7 +128,7 @@ export default defineConfig({
         'packages/plugin/src/endpoints.ts': {
           lines: 95,
           functions: 95,
-          branches: 91,
+          branches: 95,
           statements: 95,
         },
         'packages/plugin/src/hooks.ts': { lines: 95, functions: 95, branches: 95, statements: 95 },
@@ -150,7 +150,7 @@ export default defineConfig({
           branches: 95,
           statements: 95,
         },
-        'packages/plugin/src/server.ts': { lines: 95, functions: 95, branches: 94, statements: 95 },
+        'packages/plugin/src/server.ts': { lines: 95, functions: 95, branches: 95, statements: 95 },
         'packages/plugin/src/session.ts': {
           lines: 95,
           functions: 95,

@@ -810,7 +810,11 @@ describe('organization delete', () => {
     const bulk = await call('DELETE', `/organizations?where[id][equals]=${orgA}`, {
       cookie: cookieFor('owner'),
     })
-    expect(bulk.status).not.toBe(500)
+    // The bulk path is refused outright, not filtered to nothing.
+    expect(bulk.status).toBe(403)
+    expect(bulk.body).toEqual({
+      errors: [{ message: 'You are not allowed to perform this action.' }],
+    })
     const org = await payload.find({
       collection: 'organizations',
       where: { id: { equals: idValue(orgA) } },
@@ -866,11 +870,23 @@ describe('organization collection access paths', () => {
       cookie: cookieFor('admin'),
       body: { organization: idValue(orgA), name: 'Hijacked', verifiedDomains: [] },
     })
-    expect(forged.status).not.toBe(500)
+    // Access scopes the bulk write to managed organizations: the
+    // victim matches nothing, so nothing is written.
+    expect(forged.status).toBe(200)
+    expect(forged.body).toEqual({
+      docs: [],
+      errors: [],
+      message: 'Updated 0 Organizations successfully.',
+    })
     const forgedDelete = await call('DELETE', '/organizations?where[slug][equals]=victim-corp', {
       cookie: cookieFor('admin'),
     })
-    expect(forgedDelete.status).not.toBe(500)
+    expect(forgedDelete.status).toBe(200)
+    expect(forgedDelete.body).toEqual({
+      docs: [],
+      errors: [],
+      message: 'Deleted 0 Organizations successfully.',
+    })
     const after = await payload.findByID({
       collection: 'organizations',
       id: victim.id,

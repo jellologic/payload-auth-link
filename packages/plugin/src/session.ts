@@ -1,5 +1,6 @@
 import { err, errAsync, okAsync, ResultAsync } from 'neverthrow'
 import type { PayloadRequest } from 'payload'
+import type { UserDocumentWrite } from './repository.js'
 import {
   ChannelNotAdmittedError,
   defineSessionId,
@@ -66,18 +67,25 @@ export type SessionServiceDeps = {
     | ((providerId: ProviderId, email: Email | null) => ResultAsync<boolean, RepositoryError>)
     | undefined
   /**
-   * Durable audit channel (CAP-8b, issue #113): the logger composed
-   * with the host's `onAudit` sink. When an impersonated session's
-   * verification links the target's identity to a users document (or
-   * provisions one), that write is recorded here as an
-   * `impersonated operation` — not only as a log line. Optional:
-   * omitted means the plain `logger`.
+   * Durable audit channel (CAP-8b, issues #113 / #116): the logger
+   * composed with the host's `onAudit` sink. Every users-document
+   * write an impersonated session's verification performs — linking
+   * the target's identity, provisioning its document, re-syncing its
+   * email or phone — is recorded here as an `impersonated operation`,
+   * once, by the request that actually wrote (concurrent first touches
+   * that lose the race record nothing). Optional: omitted means those
+   * writes are not audited (the plugin always wires it).
    */
   readonly audit?:
     | {
         readonly logger: LoggerPort
         /** The users collection slug the audit record names. */
         readonly collection: string
+        /**
+         * A repository over the same store that reports each write it
+         * performs (never a no-op or a lost race) to `onWrite`.
+         */
+        readonly observedUsers: (onWrite: (write: UserDocumentWrite) => void) => UserRepository
       }
     | undefined
 }
@@ -355,9 +363,22 @@ export function createSessionService(deps: SessionServiceDeps): PluginSessionSer
         // identity lookup (returning immediately on a linked match), so a
         // pre-read here would only double the miss path. The lost-create-race
         // retry below is the only second read, and only on that race.
+        // Impersonation audit (CAP-8b, issues #113 / #116): an
+        // impersonated session's verification may WRITE the target's
+        // document (link, provision, email/phone re-sync). The writes
+        // are observed at the repository, so each is audited once, by
+        // the request that performed it — a lost create race or an
+        // already-linked identity records nothing.
+        const writes: UserDocumentWrite[] = []
+        const linkingUsers =
+          actor === null || deps.audit === undefined
+            ? deps.users
+            : deps.audit.observedUsers((write) => {
+                writes.push(write)
+              })
         const linkUser = () =>
           ensureLinkedUser(
-            { users: deps.users, logger: deps.logger },
+            { users: linkingUsers, logger: deps.logger },
             {
               providerId: found.providerId,
               profile,
@@ -365,21 +386,9 @@ export function createSessionService(deps: SessionServiceDeps): PluginSessionSer
               ...(deps.linkingPolicy === undefined ? {} : { linkingPolicy: deps.linkingPolicy }),
             }
           )
-        // Impersonation audit (CAP-8b, issue #113): an impersonated
-        // session whose target has no linked document yet makes this
-        // verification WRITE one (link or provision). Read the link
-        // state first (impersonated sessions only) so that write is
-        // audited below.
-        let targetLinkedHere = false
-        const linkStateRead: ResultAsync<void, RepositoryError> =
-          actor === null
-            ? okAsync(undefined)
-            : deps.users.findByProviderIdentity(ref).map((existing) => {
-                targetLinkedHere = existing === null
-              })
         // SSO domain gate (CAP-15): runs before any linking when
         // wired; the checker itself decides applicability per provider.
-        const linkedUser = linkStateRead.andThen(() =>
+        const linkedUser =
           deps.ssoDomainAllowed === undefined
             ? linkUser()
             : deps
@@ -400,7 +409,6 @@ export function createSessionService(deps: SessionServiceDeps): PluginSessionSer
                   }
                   return linkUser()
                 })
-        )
         return linkedUser
           .orElse(
             (
@@ -505,21 +513,25 @@ export function createSessionService(deps: SessionServiceDeps): PluginSessionSer
                   targetProviderUserId: found.providerSession.providerUserId,
                   targetUserId: String(user.id),
                 })
-                if (targetLinkedHere) {
-                  // The same record shape as the per-operation audit
-                  // (`audit.ts`), on the durable channel.
-                  const audit = deps.audit
-                  ;(audit?.logger ?? deps.logger).info('impersonated operation', {
-                    actorProviderUserId: actor.providerUserId,
-                    actorKind: resolvedActor.kind,
-                    ...(resolvedActor.kind === 'payload-user'
-                      ? { actorUserId: String(resolvedActor.userId) }
-                      : {}),
-                    targetUserId: String(user.id),
-                    operation: 'linkIdentity',
-                    ...(audit === undefined ? {} : { collection: audit.collection }),
-                    id: String(user.id),
-                  })
+                const audit = deps.audit
+                if (audit !== undefined) {
+                  for (const write of writes) {
+                    // The same record shape as the per-operation audit
+                    // (`audit.ts`), on the durable channel. Provisioning
+                    // creates the document WITH the identity link, so it
+                    // records as `linkIdentity` (#113).
+                    audit.logger.info('impersonated operation', {
+                      actorProviderUserId: actor.providerUserId,
+                      actorKind: resolvedActor.kind,
+                      ...(resolvedActor.kind === 'payload-user'
+                        ? { actorUserId: String(resolvedActor.userId) }
+                        : {}),
+                      targetUserId: String(user.id),
+                      operation: write.operation === 'create' ? 'linkIdentity' : write.operation,
+                      collection: audit.collection,
+                      id: String(write.userId),
+                    })
+                  }
                 }
                 if (resolvedActor.kind === 'provider-only') {
                   deps.logger.warn('impersonated session actor has no linked Payload user', {
