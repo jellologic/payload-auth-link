@@ -276,7 +276,8 @@ describe('local sessions issued before linking', () => {
       cookie: jwt,
       body: { email: 'elsewhere@verified.test' },
     })
-    expect(write.status).not.toBe(200)
+    // Anonymous now: the users update access refuses it.
+    expect(write.status).toBe(403)
     expect((await rawDoc(ownerId)).email).toBe(owner)
   })
 })

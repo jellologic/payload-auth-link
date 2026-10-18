@@ -922,6 +922,17 @@ export function createOrganizationEndpoints(wired: WiredOptions): Endpoint[] {
         if (user === null) {
           return unauthorized()
         }
+        // Reads stay allowed while impersonating, but are audited like
+        // every other impersonated call (CAP-8b, issue #113). The
+        // verification is the one `verifiedUser` just ran (memoized).
+        const { sessions } = createServices(wired, req.payload)
+        const session = await sessions.verify(req.headers)
+        auditImpersonatedEndpoint(auditLogger, req, {
+          operation: 'read',
+          endpoint: '/auth-link/organizations',
+          sessionActor: session.isOk() ? session.value.actor : undefined,
+          denied: false,
+        })
         const mine = await findMemberships(req.payload, orgs, {
           and: [{ user: { equals: String(user.id) } }, { status: { equals: 'active' } }],
         })

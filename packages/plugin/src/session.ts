@@ -65,6 +65,21 @@ export type SessionServiceDeps = {
   readonly ssoDomainAllowed?:
     | ((providerId: ProviderId, email: Email | null) => ResultAsync<boolean, RepositoryError>)
     | undefined
+  /**
+   * Durable audit channel (CAP-8b, issue #113): the logger composed
+   * with the host's `onAudit` sink. When an impersonated session's
+   * verification links the target's identity to a users document (or
+   * provisions one), that write is recorded here as an
+   * `impersonated operation` — not only as a log line. Optional:
+   * omitted means the plain `logger`.
+   */
+  readonly audit?:
+    | {
+        readonly logger: LoggerPort
+        /** The users collection slug the audit record names. */
+        readonly collection: string
+      }
+    | undefined
 }
 
 type FoundProviderSession = {
@@ -350,9 +365,21 @@ export function createSessionService(deps: SessionServiceDeps): PluginSessionSer
               ...(deps.linkingPolicy === undefined ? {} : { linkingPolicy: deps.linkingPolicy }),
             }
           )
+        // Impersonation audit (CAP-8b, issue #113): an impersonated
+        // session whose target has no linked document yet makes this
+        // verification WRITE one (link or provision). Read the link
+        // state first (impersonated sessions only) so that write is
+        // audited below.
+        let targetLinkedHere = false
+        const linkStateRead: ResultAsync<void, RepositoryError> =
+          actor === null
+            ? okAsync(undefined)
+            : deps.users.findByProviderIdentity(ref).map((existing) => {
+                targetLinkedHere = existing === null
+              })
         // SSO domain gate (CAP-15): runs before any linking when
         // wired; the checker itself decides applicability per provider.
-        const linkedUser =
+        const linkedUser = linkStateRead.andThen(() =>
           deps.ssoDomainAllowed === undefined
             ? linkUser()
             : deps
@@ -373,6 +400,7 @@ export function createSessionService(deps: SessionServiceDeps): PluginSessionSer
                   }
                   return linkUser()
                 })
+        )
         return linkedUser
           .orElse(
             (
@@ -422,13 +450,14 @@ export function createSessionService(deps: SessionServiceDeps): PluginSessionSer
             // no provider-side revoke can reach. Runs before actor
             // resolution: a suspended target must not verify even
             // under impersonation.
-            if (isSuspendedAt(user.suspendedUntil, deps.clock.now())) {
+            const suspendedUntil = user.suspendedUntil ?? null
+            if (suspendedUntil !== null && isSuspendedAt(suspendedUntil, deps.clock.now())) {
               deps.logger.warn('session refused: user suspended', {
                 providerId: found.providerId,
                 userId: String(user.id),
-                suspendedUntil: user.suspendedUntil?.toISOString(),
+                suspendedUntil: suspendedUntil.toISOString(),
               })
-              return errAsync(new UserSuspendedError(user.suspendedUntil ?? deps.clock.now()))
+              return errAsync(new UserSuspendedError(suspendedUntil))
             }
             return okAsync(user)
           })
@@ -476,6 +505,22 @@ export function createSessionService(deps: SessionServiceDeps): PluginSessionSer
                   targetProviderUserId: found.providerSession.providerUserId,
                   targetUserId: String(user.id),
                 })
+                if (targetLinkedHere) {
+                  // The same record shape as the per-operation audit
+                  // (`audit.ts`), on the durable channel.
+                  const audit = deps.audit
+                  ;(audit?.logger ?? deps.logger).info('impersonated operation', {
+                    actorProviderUserId: actor.providerUserId,
+                    actorKind: resolvedActor.kind,
+                    ...(resolvedActor.kind === 'payload-user'
+                      ? { actorUserId: String(resolvedActor.userId) }
+                      : {}),
+                    targetUserId: String(user.id),
+                    operation: 'linkIdentity',
+                    ...(audit === undefined ? {} : { collection: audit.collection }),
+                    id: String(user.id),
+                  })
+                }
                 if (resolvedActor.kind === 'provider-only') {
                   deps.logger.warn('impersonated session actor has no linked Payload user', {
                     providerId: found.providerId,

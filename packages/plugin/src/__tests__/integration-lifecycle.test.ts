@@ -334,3 +334,61 @@ describe('syncVerifiedEmail', () => {
     expect(after.emailVerified).toBe(false)
   })
 })
+
+describe('an unproven email change resets the verified mirror', () => {
+  it('a self-service change clears emailVerified with the proof', async () => {
+    const created = await payload.create({
+      collection: 'users',
+      data: {
+        email: 'mirror-owner@test.dev',
+        password: 'mirror-password-1',
+        roles: ['user'],
+        linkable: true,
+        linkableEmail: 'mirror-owner@test.dev',
+        emailVerified: true,
+      },
+      overrideAccess: true,
+    })
+    await payload.update({
+      collection: 'users',
+      id: created.id,
+      data: { email: 'mirror-moved@test.dev' },
+      user: { ...created, collection: 'users' },
+      overrideAccess: false,
+    })
+    const after = await rawDoc(created.id)
+    expect(after.email).toBe('mirror-moved@test.dev')
+    expect(after.linkable).toBe(false)
+    // The mirror vouched for the OLD address; it must not vouch for
+    // the new, unproven one.
+    expect(after.emailVerified).toBe(false)
+  })
+
+  it("a role manager's change keeps the mirror (an operator decision)", async () => {
+    const operator = await payload.create({
+      collection: 'users',
+      data: { email: 'mirror-operator@test.dev', password: 'mirror-password-2', roles: ['admin'] },
+      overrideAccess: true,
+    })
+    const created = await payload.create({
+      collection: 'users',
+      data: {
+        email: 'mirror-managed@test.dev',
+        password: 'mirror-password-3',
+        roles: ['user'],
+        linkable: true,
+        linkableEmail: 'mirror-managed@test.dev',
+        emailVerified: true,
+      },
+      overrideAccess: true,
+    })
+    await payload.update({
+      collection: 'users',
+      id: created.id,
+      data: { email: 'mirror-managed-new@test.dev' },
+      user: { ...operator, collection: 'users' },
+      overrideAccess: false,
+    })
+    expect((await rawDoc(created.id)).emailVerified).toBe(true)
+  })
+})

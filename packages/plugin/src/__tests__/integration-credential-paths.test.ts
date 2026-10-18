@@ -270,17 +270,19 @@ describe('credential paths for a suspended account are refused (every channel)',
       jar,
       body: { title: 'nope' },
     })
-    expect([401, 403]).toContain(attempt.status)
+    expect(attempt.status).toBe(403)
   })
 
   it('existing local JWT: refused on the next request (GHSA-f4hj)', async () => {
     const jwt = String(ids.suspendedJwtCookie)
+    // The token resolves no user at authentication (GHSA-mjvh), so the
+    // request is anonymous and the default access denies it.
     const patch = await raw('PATCH', `/users/${idOf('suspended')}`, { jar: jwt, body: {} })
-    expect(patch.status).toBe(401)
+    expect(patch.status).toBe(403)
     const page = await raw('POST', '/pages', { jar: jwt, body: { title: 'nope' } })
-    expect(page.status).toBe(401)
+    expect(page.status).toBe(403)
     const refresh = await raw('POST', '/users/refresh-token', { jar: jwt, body: {} })
-    expect(refresh.status).toBe(401)
+    expect(refresh.status).toBe(403)
     // The authorization map carries no grant either.
     const perms = await accessOf({ jar: jwt })
     expect(perms.canAccessAdmin).toBeFalsy()
@@ -289,10 +291,11 @@ describe('credential paths for a suspended account are refused (every channel)',
 
   it('api-key channel: refused on the next request', async () => {
     const key = { authorization: 'users API-Key suspended-api-key-0123456789abcdef' }
+    // Anonymous at authentication (GHSA-mjvh): default access denies.
     const patch = await raw('PATCH', `/users/${idOf('suspended')}`, { ...key, body: {} })
-    expect(patch.status).toBe(401)
+    expect(patch.status).toBe(403)
     const page = await raw('POST', '/pages', { ...key, body: { title: 'nope' } })
-    expect(page.status).toBe(401)
+    expect(page.status).toBe(403)
   })
 
   it('local login: refused by beforeLogin', async () => {
@@ -466,14 +469,14 @@ describe('role governance and the linkable proof (unchanged controls)', () => {
 })
 
 describe('unlock (row 9)', () => {
-  it('anonymous unlock is refused; a suspended JWT is refused by the row-4 gate', async () => {
+  it('anonymous unlock is refused; a suspended JWT resolves no user (anonymous)', async () => {
     const anonymous = await raw('POST', '/users/unlock', { body: { email: 'unproven@test.dev' } })
     expect(anonymous.status).toBe(403)
     const suspended = await raw('POST', '/users/unlock', {
       jar: String(ids.suspendedJwtCookie),
       body: { email: 'unproven@test.dev' },
     })
-    expect(suspended.status).toBe(401)
+    expect(suspended.status).toBe(403)
   })
 
   it('a plain signed-in user may not unlock (not even their own account)', async () => {

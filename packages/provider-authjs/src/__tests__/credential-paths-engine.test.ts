@@ -549,8 +549,9 @@ describe('rows 3–7 and 22: local credentials on an Auth.js-linked document', (
     const localId = await createDoc(local)
     const jwt = jwtCookieOf(await localLogin(local))
     await suspend(localId)
-    expect((await rest('POST', '/pages', { cookie: jwt, body: { title: 'x' } })).status).toBe(401)
-    expect((await rest('POST', '/users/refresh-token', { cookie: jwt, body: {} })).status).toBe(401)
+    // The JWT resolves no user at authentication (GHSA-mjvh): anonymous.
+    expect((await rest('POST', '/pages', { cookie: jwt, body: { title: 'x' } })).status).toBe(403)
+    expect((await rest('POST', '/users/refresh-token', { cookie: jwt, body: {} })).status).toBe(403)
     expect((await localLogin(local)).status).toBe(401)
   })
 
@@ -607,7 +608,7 @@ describe("row 8: Payload's verify token is not linkable proof on its own (real A
 })
 
 describe('row 10: useAPIKey (real Auth.js)', () => {
-  it('an existing key on an unlinked document works until the user is suspended, then 401', async () => {
+  it('an existing key on an unlinked document works until the user is suspended, then anonymous', async () => {
     const id = await createDoc('api-key@authjs-paths.test')
     const key = 'authjs-unlinked-api-key-0123456789abcdef'
     await live().update({
@@ -620,8 +621,10 @@ describe('row 10: useAPIKey (real Auth.js)', () => {
     expect(await meId({ authorization })).toBe(id)
     expect((await rest('POST', '/pages', { authorization, body: { title: 'k' } })).status).toBe(201)
     await suspend(id)
-    expect((await rest('POST', '/pages', { authorization, body: { title: 'k' } })).status).toBe(401)
-    expect((await rest('PATCH', `/users/${id}`, { authorization, body: {} })).status).toBe(401)
+    // The key resolves no user at authentication (GHSA-mjvh): anonymous.
+    expect(await meId({ authorization })).toBeNull()
+    expect((await rest('POST', '/pages', { authorization, body: { title: 'k' } })).status).toBe(403)
+    expect((await rest('PATCH', `/users/${id}`, { authorization, body: {} })).status).toBe(403)
     expect(await meId({ authorization: 'users API-Key not-a-real-key' })).toBeNull()
   })
 

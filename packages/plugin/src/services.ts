@@ -7,6 +7,7 @@ import {
   type ProviderId,
 } from '@payload-auth-link/core'
 import type { Payload } from 'payload'
+import { composeAuditLogger } from './audit.js'
 import type { WiredOptions } from './options.js'
 import { createPayloadUserRepository } from './repository.js'
 import { createSessionService, type PluginSessionService } from './session.js'
@@ -43,6 +44,12 @@ export function createServices(wired: WiredOptions, payload: Payload) {
     defaultRoles: [wired.config.defaultRole],
     linkingPolicy: wired.linkingPolicy,
     admitChannels: wired.admitChannels,
+    // CAP-8b (#113): impersonated provisioning reaches `onAudit` too.
+    audit: {
+      logger:
+        wired.onAudit === null ? wired.logger : composeAuditLogger(wired.logger, wired.onAudit),
+      collection: wired.config.map.usersCollection,
+    },
     // CAP-15: only wired when SSO providers are registered. The
     // checker resolves the email domain against every Payload
     // organization's verified domains, live per request.

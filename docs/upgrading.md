@@ -38,6 +38,89 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
+## plugin, next release (GHSA-mjvh-7vmj-pg2p: account controls at authentication)
+
+**Upgrade impact:** no schema change. The users collection gains one
+`afterRead` hook and no field, so push and migrations have nothing to
+do on SQLite, Postgres or MongoDB. The behaviour changes and operator
+checks are below.
+
+**plugin**
+
+- **A dead account's Payload credential no longer authenticates
+  anything** (GHSA-mjvh-7vmj-pg2p). Suspension and the provider-owned
+  local-credential default (GHSA-f4hj, GHSA-x45w) were enforced only
+  at the users collection, the collection/global operation gates and
+  the users permission map. A suspended user's Payload API key, an API
+  key re-enabled by an operator on a provider-linked document, a
+  pre-link local JWT on a host with `useSessions: false`, and a
+  suspended user's local JWT still authenticated every surface that
+  runs no collection operation: upload file routes
+  (`/api/<upload>/file/<name>`), host custom endpoints (`req.user`),
+  `payload.auth()`, `payload-preferences`, and `/access` grants on
+  other collections. (The 0.13.0 note below said "`/access` grants it
+  nothing"; that held for the users collection only.) Now such a
+  credential resolves no user when Payload authenticates the request,
+  so every surface sees an anonymous request. Provider sessions were
+  never affected.
+  - **Status codes change for these credentials.** The request is
+    anonymous instead of refused: operations answer what an anonymous
+    request gets from your access rules (usually 403 "You are not
+    allowed to perform this action." where it used to be 401 "Account
+    suspended", 401 "Local sessions are unavailable…", or 403 "API keys
+    are unavailable…"), `GET /users/me` answers 200 with `user: null`,
+    and `POST /users/refresh-token` answers 403. Local sign-in of a
+    suspended or provider-linked account is still refused (401 / 403)
+    as before. If a client keyed "sign in again" on that 401, also treat
+    a 403 from a credential that used to work (or `me` → `user: null`)
+    as signed out.
+  - Host custom endpoints and `payload.auth()` callers now see
+    `user: null` for these credentials. Nothing to change unless your
+    code relied on seeing the suspended user.
+  - Each refusal logs `local credential refused at authentication`
+    (warn) with `userId`, `strategy` and `reason`.
+  - Residual, documented in [security-model.md](security-model.md): a
+    LIVE local credential holding a `requireMfaForRoles` role keeps the
+    role on `req.user` inside a custom endpoint (operations and the
+    users permission map withhold it). Check MFA with
+    `sessionMfaSatisfied` / `denyWithoutMfa` in such endpoints.
+- **A renamed `suspendedUntilField` is enforced for local
+  credentials.** The local sign-in refusal, the reset refusal and the
+  request-time gates read `suspendedUntil` literally, so with a renamed
+  field a suspended user kept local sign-in, local JWTs and API keys
+  (provider sessions were refused). They now read the configured
+  field.
+  - Operator step (renamed field only): review what suspended accounts
+    did with local credentials while suspended.
+- **The verified mirror follows the proof reset.** With
+  `emailVerifiedField`, a self-service email change that resets the
+  linking proof now also sets the mirror `false` (as `_verified` on
+  verify hosts). It used to keep vouching for the new, unproven
+  address.
+- **Resolving an email-link collision is an operator decision.** The
+  earlier guidance allowed granting `linkable` / `linkableEmail` after
+  "a fresh verification of the current address". That proves who
+  controls the address, not who built the document: on a squatted
+  document the verification mail reaches the victim, and granting the
+  proof on their click hands the victim's next sign-in the squatter's
+  document. Grant the proof only for a document you confirmed is the
+  address owner's own; otherwise rename or remove the document after
+  checking who created it. The refusal log messages say so.
+  - Operator step: if you granted the proof from verification clicks
+    on documents that collided with a provider sign-in, check who
+    created each of those documents.
+- **Impersonation audit, two more records.** `onAudit` now receives
+  `impersonated operation` with `operation: 'linkIdentity'` when
+  verifying an impersonated session links or provisions the target's
+  document, and with `operation: 'read'`,
+  `endpoint: '/auth-link/organizations'` for the organization list
+  read while impersonating (still allowed). Sinks that switch on
+  `operation` should accept the new values.
+- **`projectRolesAs: 'stored'` drops an unmappable role.** A role with
+  no stored value is dropped (and logged) instead of reaching
+  `req.user.roles` raw. Wiring through `authLink()` always maps every
+  configured role, so this changes nothing for it.
+
 ## plugin 0.13.0 / migrate 0.7.0 / provider-better-auth 0.10.0 / provider-authjs 0.6.0 (one minor across every package)
 
 **Upgrade impact:** no schema change. Push and migrations have nothing to
@@ -49,17 +132,21 @@ do on SQLite, Postgres or MongoDB. The operator steps are below.
   `auth.useAPIKey`, linking a provider identity now clears the
   document's API key. A key on a linked document, including one
   enabled after the link, is refused (403) on every collection and
-  global, and `/access` grants it nothing. Documents without linked
+  global, and the users collection's `/access` entry grants it nothing
+  (other surfaces: see the GHSA-mjvh section above). Documents without linked
   identities are unaffected. To keep keys working during a migration,
   set `allowLocalCredentialsForLinkedDocs: true` and remove it once the
   migration is done.
   - Operator step: move service integrations that use a linked user's
     API key to an unlinked service account.
 - **Granting the linking proof.** Do not grant `linkable` /
-  `linkableEmail` based on `_verified`. Grant it only after a fresh
-  verification of the current address, or from an operator-reviewed
-  list checked against the current email. The earlier snippet that
-  granted it from `_verified` is withdrawn.
+  `linkableEmail` based on `_verified`. Grant it only from an
+  operator-reviewed list that confirms the DOCUMENT belongs to the
+  owner of its current address, checked against the current email.
+  (This note used to also allow "a fresh verification of the current
+  address" — withdrawn, see the GHSA-mjvh section above: a
+  verification proves the address, not the document.) The earlier
+  snippet that granted it from `_verified` is withdrawn.
   - If you ran that snippet, re-check the documents it touched.
   - Refusal logs now say to resolve an email collision (confirm the
     owner, then rename or remove the conflicting document).
@@ -227,15 +314,17 @@ The changes are behavioural; read each before you bump.
    before the upgrade may carry `_verified: true` for an address it
    never proved — granting it the proof would link that address's
    owner's next sign-in to a document they may not own. Grant `linkable` +
-   `linkableEmail` only from one of:
-
-   - **a fresh verification of the CURRENT email**, sent to that
-     address after the upgrade (your app's own confirmation flow, or
-     a reset of `_verified` followed by a new verification mail),
-     granted in that flow's handler and only while the document
-     email still equals the confirmed address; or
-   - **an operator-reviewed, explicit list** of documents and the
-     address each was confirmed to own, re-checked at write time:
+   `linkableEmail` only from **an operator-reviewed, explicit list**
+   of documents, each confirmed to BELONG to the owner of its current
+   address (who created it, what it holds), re-checked at write time.
+   A fresh verification of the current email is NOT enough (an
+   earlier version of this note allowed it): it proves who controls
+   the ADDRESS, not who built the DOCUMENT. On a squatted document —
+   one someone else created with, or re-pointed at, the victim's
+   address — the verification mail reaches the victim, and one click
+   would hand the victim's next sign-in that document (its local
+   password, API key, data, and anything else planted on it). The
+   reviewed list, applied:
 
    ```ts
    // Each entry was reviewed by an operator: the document AND the
@@ -265,10 +354,11 @@ The changes are behavioural; read each before you bump.
    the existing document now logs
    `provisioning refused: the email is held by an existing document
 that is not proven to own it` and answers a typed 401 (it used to
-   surface as a storage error). Resolve such a collision by
-   confirming who owns the existing document — rename or remove it
-   when it is not the address owner's — never by granting the proof
-   without a fresh verification of its current address.
+   surface as a storage error). Resolve such a collision as an operator:
+   confirm who created and owns the existing document, and rename or
+   remove it when it is not the address owner's. Never resolve it by
+   sending a verification mail, and grant the proof only for a
+   document you confirmed is the address owner's own.
 
 2. **A self-service email change resets the proof.** Changing a
    document's email in any write that is neither the plugin's

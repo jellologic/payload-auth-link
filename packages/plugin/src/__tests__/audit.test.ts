@@ -150,6 +150,16 @@ describe('durable audit sink (onAudit)', () => {
     composed.debug('nothing here either')
     expect(events).toHaveLength(0)
   })
+
+  it('records a field-less event with empty fields, and its child is itself', () => {
+    const { logger, info } = capturingLogger()
+    const events: Array<{ message: string; fields: Record<string, unknown> }> = []
+    const composed = composeAuditLogger(logger, (event) => events.push(event))
+    composed.child({ scope: 'x' }).info('bare event')
+    expect(composed.child({})).toBe(composed)
+    expect(info).toHaveBeenCalledWith('bare event', undefined)
+    expect(events).toEqual([{ message: 'bare event', fields: {} }])
+  })
 })
 
 describe('impersonated endpoint audit', () => {

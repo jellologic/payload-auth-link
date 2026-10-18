@@ -204,16 +204,20 @@ import { type LoggerPort, type ResolvedSessionActor } from '@payload-auth-link/c
 import type { CollectionBeforeOperationHook, CollectionConfig, GlobalBeforeOperationHook, GlobalConfig, PayloadRequest } from 'payload';
 import type { AuditSink } from './options.js';
 /**
- * Audit an impersonated attempt at a plugin endpoint the plugin then
- * refuses (organization management while impersonating). Endpoints
- * run no collection operation for the `beforeOperation` hook to see,
- * so they report here — same message, same id-only fields, plus the
- * endpoint path and `denied: true`.
+ * Audit an impersonated call at a plugin endpoint. Endpoints run no
+ * collection operation for the `beforeOperation` hook to see, so they
+ * report here — same message, same id-only fields, plus the endpoint
+ * path. Refused calls (organization management while impersonating)
+ * carry `denied: true`; allowed reads (the organization list) pass
+ * `denied: false` and are audited all the same. Plain (not
+ * impersonated) calls record nothing.
  */
 export declare function auditImpersonatedEndpoint(logger: LoggerPort, req: PayloadRequest, fields: {
     readonly operation: string;
     readonly endpoint: string;
     readonly sessionActor?: ResolvedSessionActor | undefined;
+    /** Defaults to `true` (a refused call). */
+    readonly denied?: boolean;
 }): void;
 /** Collection `beforeOperation` audit hook; leaves args untouched. */
 export declare function impersonatedCollectionAuditHook(logger: LoggerPort): CollectionBeforeOperationHook;
@@ -286,6 +290,90 @@ export type BetterAuthCompatShim = {
     };
 };
 export declare function createBetterAuthCompatShim(payload: Payload): BetterAuthCompatShim;
+
+// ===== credential-gate.d.ts =====
+import type { CollectionAfterReadHook, Payload, PayloadRequest } from 'payload';
+import type { WiredOptions } from './options.js';
+/**
+ * Authentication-time account controls for Payload's OWN credentials
+ * on the users collection (GHSA-mjvh-7vmj-pg2p).
+ *
+ * Payload resolves `req.user` once per request, by running the
+ * registered auth strategies in order: every collection's custom
+ * `auth.strategies` first, then its API-key strategy, then the shared
+ * local-JWT strategy last. A strategy can only return a user or pass;
+ * nothing in Payload's config lets one strategy veto a later one, and
+ * the built-in strategies never consult the plugin. A suspended
+ * user's API key, a key re-enabled on a provider-linked document, or
+ * a pre-link local JWT on a host without `useSessions` therefore
+ * authenticated everywhere the per-collection gates do not reach:
+ * upload file routes, custom endpoints, `payload.auth()`,
+ * `payload-preferences`, and `/access` on other collections.
+ *
+ * The veto lives where the built-in strategies load the user: both
+ * read the users collection through the Local API with the request's
+ * `req` and `overrideAccess` (JWT: `findByID` of the token's `id`;
+ * API key: `find` on `apiKeyIndex`), so the users collection's
+ * `afterRead` hooks run on the very document they are about to
+ * authenticate — fresh from the database. The plugin's own strategy
+ * (always registered before them on the users collection) arms the
+ * gate for the credential this request presents; the gate's
+ * `afterRead` hook refuses that one lookup when the account is dead,
+ * and the built-in strategy, which treats a failed lookup as "no
+ * user", resolves `req.user = null`. Every surface downstream then
+ * sees an anonymous request.
+ *
+ * Only Payload-supported extension points are used (a collection
+ * auth strategy, a collection hook, `req.context`); Payload's
+ * strategies are never wrapped or replaced.
+ */
+export declare const LOCAL_CREDENTIAL_GATE_KEY = "payload-auth-link:local-credential-gate";
+/** Payload's local JWT strategy name (`_strategy` on `req.user`). */
+export declare const localJwtStrategyName = "local-jwt";
+/** Payload's API-key strategy name (`_strategy` on `req.user`). */
+export declare const apiKeyStrategyName = "api-key";
+type LocalStrategy = typeof localJwtStrategyName | typeof apiKeyStrategyName;
+/**
+ * Is the document currently suspended (CAP-7)? Reads the CONFIGURED
+ * suspension field (`suspendedUntilField`), so a renamed field is
+ * enforced like the default.
+ */
+export declare function suspensionActive(doc: unknown, wired: WiredOptions): boolean;
+/** Does the document hold linked provider identities (provider-owned)? */
+export declare function holdsLinkedIdentities(doc: unknown, wired: WiredOptions): boolean;
+/** Why a Payload local credential may not authenticate this document. */
+export type LocalCredentialRefusal = 'suspended' | 'provider-owned' | 'provider-owned-api-key';
+/**
+ * The account-control decision for a Payload local credential (local
+ * JWT or API key) on a users-collection document: suspension refuses
+ * every credential; a provider-linked document refuses local ones
+ * unless the host opted into `allowLocalCredentialsForLinkedDocs`
+ * (GHSA-f4hj / GHSA-x45w). `null` means the credential may stand.
+ */
+export declare function localCredentialRefusal(doc: unknown, strategy: LocalStrategy, wired: WiredOptions): LocalCredentialRefusal | null;
+/**
+ * Arm the gate for the users-collection credential this request
+ * presents to Payload's built-in strategies. Called by the plugin's
+ * strategy whenever it resolves no user — the only case in which
+ * Payload goes on to try its own strategies.
+ */
+export declare function armLocalCredentialGate(headers: Headers, payload: Payload, req: PayloadRequest | undefined, wired: WiredOptions): void;
+/**
+ * Drop any armed gate: the plugin's strategy authenticated the request
+ * itself, so Payload's built-in strategies never run for it.
+ */
+export declare function disarmLocalCredentialGate(req: PayloadRequest | undefined): void;
+/**
+ * The gate's veto: the users-collection `afterRead` hook that refuses
+ * the armed credential's lookup when the account is dead. It matches
+ * exactly the built-in strategies' reads — `overrideAccess`, the
+ * JWT's `findByID` of the named document, or the API key's `find` on
+ * `apiKeyIndex` — and is consumed by the first one, so every other
+ * read of the request is untouched. The thrown error never reaches
+ * the client: Payload's strategies treat it as "no user".
+ */
+export declare function localCredentialGateHook(wired: WiredOptions): CollectionAfterReadHook;
+export {};
 
 // ===== endpoints.d.ts =====
 import { type CookieOptions } from '@payload-auth-link/core';
@@ -696,7 +784,10 @@ export type AuthLinkPluginOptions = {
      * reporting the linked user's CURRENT email as verified (a
      * post-import verification) sets this field `true`; the field must
      * exist on the users collection (wiring throws otherwise). The
-     * plugin never sets it `false` — un-verifying is the host's call.
+     * plugin sets it `false` only together with the linking proof's
+     * reset on an unproven email change (a self-service write that is
+     * neither the provider resync nor a role manager's), as it does
+     * Payload's `_verified`; any other un-verifying is the host's call.
      */
     readonly emailVerifiedField?: string | undefined;
 };
@@ -1106,6 +1197,19 @@ export type SessionServiceDeps = {
      * foreign domain can never reach `ensureLinkedUser`.
      */
     readonly ssoDomainAllowed?: ((providerId: ProviderId, email: Email | null) => ResultAsync<boolean, RepositoryError>) | undefined;
+    /**
+     * Durable audit channel (CAP-8b, issue #113): the logger composed
+     * with the host's `onAudit` sink. When an impersonated session's
+     * verification links the target's identity to a users document (or
+     * provisions one), that write is recorded here as an
+     * `impersonated operation` — not only as a log line. Optional:
+     * omitted means the plain `logger`.
+     */
+    readonly audit?: {
+        readonly logger: LoggerPort;
+        /** The users collection slug the audit record names. */
+        readonly collection: string;
+    } | undefined;
 };
 /**
  * Per-`Headers`-identity verification cache. Payload runs the auth
@@ -1193,6 +1297,7 @@ import type { WiredOptions } from './options.js';
  * grants on a change: the proof is bound to the address
  * (`linkableEmail`), and the configured mirror is set `true`. Writes
  * only what differs, so the per-update provider hook stays a no-op
- * once in step. Never sets the mirror `false`.
+ * once in step. Never sets the mirror `false` (only the proof reset on
+ * an unproven email change does, `collections.ts`).
  */
 export declare function syncVerifiedEmail(wired: WiredOptions, payload: Payload, userId: UserId, email: Email): Promise<'updated' | 'unchanged'>;

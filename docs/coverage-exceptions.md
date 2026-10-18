@@ -25,9 +25,10 @@ Each cell is lines / functions / branches / statements.
 | `core/src/cookies.ts`                            | 95 / 95 / 95 / 95 | at target |
 | `core/src/use-cases/ensure-linked-user.ts`       | 95 / 95 / 95 / 95 | at target |
 | `plugin/src/access.ts`                           | 95 / 95 / 95 / 95 | at target |
-| `plugin/src/audit.ts`                            | 95 / 91 / 88 / 95 | see below |
-| `plugin/src/collections.ts`                      | 95 / 95 / 86 / 95 | see below |
+| `plugin/src/audit.ts`                            | 95 / 95 / 95 / 95 | at target |
+| `plugin/src/collections.ts`                      | 95 / 95 / 88 / 95 | see below |
 | `plugin/src/compat-shim.ts`                      | 95 / 95 / 95 / 95 | at target |
+| `plugin/src/credential-gate.ts`                  | 95 / 95 / 95 / 95 | at target |
 | `plugin/src/endpoints.ts`                        | 95 / 95 / 91 / 95 | see below |
 | `plugin/src/hooks.ts`                            | 95 / 95 / 95 / 95 | at target |
 | `plugin/src/lifecycle.ts`                        | 95 / 95 / 94 / 95 | see below |
@@ -35,7 +36,7 @@ Each cell is lines / functions / branches / statements.
 | `plugin/src/repository.ts`                       | 95 / 95 / 95 / 95 | at target |
 | `plugin/src/server.ts`                           | 95 / 95 / 94 / 95 | see below |
 | `plugin/src/session.ts`                          | 95 / 95 / 95 / 95 | see below |
-| `plugin/src/strategy.ts`                         | 95 / 95 / 90 / 95 | see below |
+| `plugin/src/strategy.ts`                         | 95 / 95 / 95 / 95 | see below |
 | `plugin/src/verified-email.ts`                   | 95 / 95 / 95 / 95 | at target |
 | `provider-authjs/src/adapter.ts`                 | 95 / 95 / 95 / 95 | see below |
 | `provider-authjs/src/callbacks.ts`               | 93 / 95 / 90 / 93 | see below |
@@ -75,24 +76,20 @@ here and referred to by name below.
 
 ## Per file
 
-### `plugin/src/audit.ts` (branches 88.88%)
-
-- Lines 57, 59 and 64: `targetUserId`/`actorUserId` arms for a
-  request user with no id, or a non-`payload-user` actor (untyped-input
-  narrowing; the strategy always projects an id).
-- Line 96: `fields ?? {}` in `composeAuditLogger`. Every audit call
-  site passes fields.
-
-### `plugin/src/collections.ts` (branches 86%)
+### `plugin/src/collections.ts` (branches 88.91%)
 
 - Lines 45 and 85: role narrowing on a user without a `roles` array,
   and a host-supplied access function in a slot the belt wraps
   (untyped-input narrowing).
 - Lines 297, 800, 804 and 808: `suspensionActive`/`suspendRevokeHook`
   arms for a non-record document (untyped-input narrowing).
-- Line 447: the re-entrant account-status read. It runs only when the
-  status read re-enters the gate on the same request. No current test
-  in this run reaches it.
+- The re-entrant account-status read is pinned by a unit test
+  (`collections-fail-closed.test.ts`); the engine never reaches it,
+  because the status read runs on its own request.
+- Since GHSA-mjvh, a dead account's Payload local JWT / API key
+  resolves no user at authentication (`credential-gate.ts`), so the
+  operation-layer provider-owned refusals are reached by the unit
+  tests and Local API calls handed such a user, not by REST walks.
 - Lines 744 and 748: the phone field's `validate`. This is the CAP-9
   phone path, which has its own suite in the provider packages.
 - Lines 826 and 1016–1021: registry miss in the suspend-revoke hook,
@@ -158,7 +155,7 @@ three uncovered arms are:
 Every fail-loud branch (revoke, revoke-all, verifyApiKey, mint and
 list refusals) is covered by `server-failures.test.ts`.
 
-### `plugin/src/session.ts` (branches 95.04%)
+### `plugin/src/session.ts` (branches 96.69%)
 
 The SSO domain gate for an email-less session (the claim reaches the
 guard as `null`, never as the deprecated `email` alias) is tested in
@@ -170,18 +167,17 @@ guard as `null`, never as the deprecated `email` alias) is tested in
 - Line 396: the `email` log field on the provisioning-refused path for
   a session with no email claim. That path needs a `UserExistsError`
   from `create`, and only an email-carrying session creates.
-- Line 420: `suspendedUntil ?? clock.now()`. `isSuspendedAt` is true
-  only for a non-null `suspendedUntil`, so the fallback cannot run.
 
-### `plugin/src/strategy.ts` (branches 90%)
+### `plugin/src/strategy.ts` (branches 95.23%)
 
 The `organizationId` projection under `reqUser: 'document'` is tested
-in `integration-req-user-document.test.ts`.
+in `integration-req-user-document.test.ts`; the stored-role projection
+drops (and logs) a role with no stored value instead of passing it
+through raw (`strategy.test.ts`).
 
-- Line 46: `?? fallback` on an error cause.
-- Line 68: `roleValues[role] ?? role` (same as `server.ts` line 230).
-- Two `if#1` arms in the `reqUser: 'document'` memo: a request without
-  `context`.
+- `?? fallback` on an error cause (repository errors always carry one).
+- `payloadUser.assurance !== undefined`: the strategy always projects
+  from a verified session, which always carries assurance.
 
 ### `provider-authjs/src/adapter.ts` (branches 97.56%)
 

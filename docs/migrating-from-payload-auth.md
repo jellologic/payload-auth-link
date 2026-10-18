@@ -517,7 +517,9 @@ Auth's update and grants the bound proof (`linkable` +
 `linkableEmail`) on their document. If your users collection keeps
 payload-auth's own `emailVerified` checkbox, set
 `authLink({ emailVerifiedField: 'emailVerified' })` and the plugin
-also sets it `true` on that verification (it never sets it `false`).
+also sets it `true` on that verification. It sets it `false` only when
+a self-service email change resets the linking proof (the mirror no
+longer vouches for the new, unproven address).
 
 The importer's target slugs default to `ba-users`, `ba-accounts`,
 `ba-sessions`, `ba-verifications`, `ba-apikey`, `ba-jwks`,

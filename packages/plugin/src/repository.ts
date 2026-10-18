@@ -203,8 +203,8 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
         if (doc.linkable !== true) {
           deps.logger.warn(
             doc._verified === true
-              ? "email link refused: an existing document holds this email without an ownership proof (Payload's verified flag is not one); resolve the collision: confirm who owns that document, then rename or remove it"
-              : 'email link refused: an existing document holds this email without an ownership proof (created outside payload-auth-link?); resolve the collision: confirm who owns that document, then rename or remove it',
+              ? "email link refused: an existing document holds this email without an ownership proof (Payload's verified flag is not one); an operator must resolve the collision: confirm who created and owns that document, then rename or remove it if it is not the address owner's (a verification mail proves the address, not the document)"
+              : "email link refused: an existing document holds this email without an ownership proof (created outside payload-auth-link?); an operator must resolve the collision: confirm who created and owns that document, then rename or remove it if it is not the address owner's (a verification mail proves the address, not the document)",
             { email, userId: docId }
           )
           return null
@@ -218,7 +218,7 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
         const docEmail = typeof doc.email === 'string' ? doc.email : ''
         if (provenEmail === '' || provenEmail.toLowerCase() !== docEmail.toLowerCase()) {
           deps.logger.warn(
-            'email link refused: linkable proof does not match the document email (unproven email change?)',
+            "email link refused: linkable proof does not match the document email (unproven email change?); an operator must confirm the document is the address owner's before re-granting the proof",
             { email, userId: docId }
           )
           return null

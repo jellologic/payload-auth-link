@@ -169,6 +169,14 @@ in your build:
   `payload.db.updateOne` and `payload.db.create` (the database
   adapter contract, present on every adapter in the band) to lock
   the organization row and to restore a refused removal.
+  `CollectionAfterReadHook` (the authentication-time credential gate,
+  GHSA-mjvh) is a type-only import present across the whole band. The
+  gate relies on Payload's local-JWT and API-key strategies loading the
+  user through the users collection's Local API with the request's
+  `req` and `overrideAccess` (`findByID` / `find` on `apiKeyIndex`),
+  which holds on 3.83+ and 4.0.0-beta.0;
+  `integration-local-credential-gate.test.ts` fails if a release stops
+  doing so.
 
 ## Schema interoperability (Zod, Effect, Standard Schema)
 
