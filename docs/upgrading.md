@@ -38,7 +38,13 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
-## provider-better-auth (next release): two-factor step-up hardening (advisory GHSA-38wx-69j6-cgm7)
+## plugin 0.14.0 / migrate 0.8.0 / provider-better-auth 0.11.0 / provider-authjs 0.7.0 (one minor across every package)
+
+**Upgrade impact:** no database schema change; push and migrations have
+nothing to do on SQLite, Postgres or MongoDB (the users collection gains
+only an `afterRead` hook). The steps per package are below.
+
+### provider-better-auth: two-factor step-up hardening (advisory GHSA-38wx-69j6-cgm7)
 
 **Upgrade impact:** no schema change. The step-up counter reuses the
 `failedVerificationCount` / `lockedUntil` columns Better Auth 1.7's
@@ -76,7 +82,7 @@ do on SQLite, Postgres or MongoDB. Behaviour changes:
   authenticator on an account that never enrolled and then sign in
   with it.
 
-## migrate 0.8.0 (manifests bound to their database; GHSA-crrr-3cg7-f6jw)
+### migrate: manifests bound to their database (advisory GHSA-crrr-3cg7-f6jw)
 
 **Upgrade impact:** no collection schema change; push and migrations
 have nothing to do on any adapter. The kit now writes two kinds of
@@ -141,7 +147,7 @@ If its table was never created, run your Payload migrations first.
 - **Refused runs exit 1.** `from-payload-auth` and `adopt-prelink`
   print `<command> failed: …` and exit 1 when a manifest is refused.
 
-## Unreleased: provider-better-auth (issue #113)
+### provider-better-auth: session tokens, logout cookie domain, adopt mode (issue #113)
 
 **Upgrade impact:** no schema change. Push and migrations have nothing to
 do on SQLite, Postgres or MongoDB. The operator steps are below.
@@ -174,7 +180,7 @@ do on SQLite, Postgres or MongoDB. The operator steps are below.
   cookies until they expired. No step needed. With a dynamic `baseURL`,
   set `crossSubDomainCookies.domain` explicitly.
 
-## plugin, next release (GHSA-mjvh-7vmj-pg2p: account controls at authentication)
+### plugin: account controls at authentication (advisory GHSA-mjvh-7vmj-pg2p)
 
 **Upgrade impact:** no schema change. The users collection gains one
 `afterRead` hook and no field, so push and migrations have nothing to
@@ -256,6 +262,32 @@ checks are below.
   no stored value is dropped (and logged) instead of reaching
   `req.user.roles` raw. Wiring through `authLink()` always maps every
   configured role, so this changes nothing for it.
+
+### provider-authjs: builder `session` callbacks (issue #113)
+
+Only apps that supply their own Auth.js `session` callback on the
+database strategy are affected. The response is now scanned at every
+depth: `sessionToken` keys and any string containing the live session
+token are removed (array items that match are dropped), and the result
+goes out in JSON form (`Date`s become ISO strings, as the client already
+received them). A callback that returns a cyclic object fails with
+`SESSION_SHAPE_INVALID`. Apps without a custom callback, and the JWT
+strategy, are unaffected.
+
+### Adopt mode: local strategy and MFA provenance (issue #113)
+
+- provider-better-auth 0.11.0 injects an unknowable password into each
+  create of an adopted users collection whose Payload local strategy is
+  on, so sign-up and anonymous sign-in work. The doctor's
+  `adopt-local-strategy-on` is now a warning. Turn the local strategy
+  off unless break-glass operator accounts need it.
+- Every adopted model is validated on the first adapter operation, so
+  a missing or mis-mapped field now fails fast at boot. Previously it
+  could go unnoticed until that model was used.
+- An adopted session collection without an `authenticationMethod`
+  field records no MFA provenance, so `requireMfaForRoles` stays
+  withheld (fail closed). Add `{ name: 'authenticationMethod', type:
+'text' }` to it if you use MFA-gated roles.
 
 ## plugin 0.13.0 / migrate 0.7.0 / provider-better-auth 0.10.0 / provider-authjs 0.6.0 (one minor across every package)
 
