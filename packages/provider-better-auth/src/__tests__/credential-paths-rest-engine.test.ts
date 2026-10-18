@@ -135,7 +135,7 @@ describe('rows 3–7 and 22: local credentials on a BA-linked document', () => {
   it('row 22: the pre-link local JWT is dead after the BA link', async () => {
     expect(await h.meId({ cookie: preLinkJwt })).toBeNull()
     const write = await h.rest('POST', '/pages', { cookie: preLinkJwt, body: { title: 'nope' } })
-    expect([401, 403]).toContain(write.status)
+    expect(write.status).toBe(403)
     expect(await h.readsDoc({ cookie: preLinkJwt }, id)).toBe(false)
   })
 
@@ -266,7 +266,7 @@ describe('row 10: useAPIKey on an unlinked document', () => {
       authorization,
       body: { email: 'hijacked@ba-rest.test' },
     })
-    expect([403, 404]).toContain(hijack.status)
+    expect(hijack.status).toBe(403)
     expect((await h.hostDoc(other.id)).email).toBe('api-key-other@ba-rest.test')
   })
 })
@@ -609,10 +609,10 @@ describe('row 27: users writes by other signed-in BA users', () => {
       cookie: alice.cookie,
       body: { email: 'hijacked@ba-rest.test' },
     })
-    expect([403, 404]).toContain(other.status)
+    expect(other.status).toBe(403)
     expect((await h.hostDoc(bob.id)).email).toBe('row27-bob@ba-rest.test')
     const removed = await h.rest('DELETE', `/users/${bob.id}`, { cookie: alice.cookie })
-    expect([403, 404]).toContain(removed.status)
+    expect(removed.status).toBe(403)
     expect((await h.hostDoc(bob.id)).id).toBeDefined()
     const unlock = await h.rest('POST', '/users/unlock', {
       cookie: alice.cookie,
@@ -627,8 +627,10 @@ describe('row 27: users writes by other signed-in BA users', () => {
       cookie: carol.cookie,
       body: { roles: ['admin'] },
     })
+    // Payload field access strips the governed field and the rest of
+    // the write succeeds: 200, with the role unchanged.
+    expect(escalate.status).toBe(200)
     expect((await h.hostDoc(carol.id)).roles).toEqual(['user'])
-    expect([200, 403]).toContain(escalate.status)
     const admin = await h.linkedUser('row27-admin@ba-rest.test', { roles: ['admin'] })
     const managed = await h.rest('PATCH', `/users/${carol.id}`, {
       cookie: admin.cookie,
@@ -642,6 +644,6 @@ describe('row 27: users writes by other signed-in BA users', () => {
     const dave = await h.linkedUser('row27-dave@ba-rest.test')
     await h.suspend(dave.id)
     const own = await h.rest('PATCH', `/users/${dave.id}`, { cookie: dave.cookie, body: {} })
-    expect([401, 403]).toContain(own.status)
+    expect(own.status).toBe(403)
   })
 })

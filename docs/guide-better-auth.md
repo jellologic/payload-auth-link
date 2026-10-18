@@ -146,10 +146,16 @@ drift test asserts parity against the real getter, option for
 option). A mismatch fails closed — everyone bounces to
 sign-in — never open. Logout expires every registered name with
 its live attributes (`Secure`, `Domain`), so keep this call in
-sync with `options`. Deployments using `crossSubDomainCookies`
-should sign out through Better Auth's own sign-out for full
-cookie clearing — the plugin still revokes server-side, so any
-surviving cookie is dead.
+sync with `options`. `crossSubDomainCookies` is mirrored too:
+the clearing writes carry the same `Domain` Better Auth wrote
+(`crossSubDomainCookies.domain`, else the `baseURL` hostname), as
+do chunks, multi-session cookies and the `__Secure-` / plain
+counterparts. A clearing write without that `Domain` would miss the
+cookie, and the browser would keep the cookie-cache `session_data`
+that Better Auth's own `/get-session` keeps answering from until it
+expires. One residual: a dynamic `baseURL` (`allowedHosts`) without
+an explicit `crossSubDomainCookies.domain` resolves the domain per
+request inside Better Auth — set the domain explicitly there.
 
 **Production needs a canonical https `baseURL`.** Secure-cookie
 names follow one rule shared by every provider: an explicit
@@ -160,6 +166,49 @@ anchoring agree — without it, production falls back to
 `NODE_ENV` detection.
 
 ## Sessions and revocation
+
+### Session tokens stay out of page JavaScript
+
+The session cookie is `HttpOnly` so script can never read it. Better
+Auth's own HTTP JSON hands the same token back, though: `/get-session`
+returns `session.token`, `/list-sessions` the token of every live
+session, and sign-in / sign-up bodies the new `token`. With Better
+Auth's `bearer()` plugin installed, that raw token is a working
+`Authorization: Bearer` credential, so a single XSS could lift a
+session from every device.
+
+The engine therefore installs a redaction plugin by default
+(security-model row 28). For HTTP requests it removes
+`session.token` from `/get-session`, `token` from every
+`/list-sessions` entry (each keeps its `id`), and the freshly minted
+session token from any response body that echoes it. Server-side
+`auth.api.*` calls are untouched — trusted code keeps the full shape.
+
+- **Revoking one device** with the Better Auth client: pass the
+  listed `id` where Better Auth expects the token —
+  `authClient.revokeSession({ token: session.id })`. The engine
+  resolves an `id` to its token server-side; Better Auth still
+  checks that the session belongs to the caller. A raw token works
+  as before.
+- **Token hand-off protocols are left alone**: the multi-session
+  plugin (`/multi-session/*` switches and revokes by token) and the
+  one-time-token plugin (`/one-time-token/*`). Installing them hands
+  tokens to the page by design.
+- **Opting out**: the engine option `exposeSessionTokens: true`
+  restores Better Auth's raw responses, for a client that truly
+  needs the token from a body (a native app, say). Pair it with
+  `bearer({ requireSignature: true })`, which refuses raw tokens as
+  Bearer credentials.
+- **Wiring warning**: when `bearer()` without `requireSignature` meets
+  a surface that exposes raw tokens (`exposeSessionTokens: true`, or
+  the multi-session plugin), the engine logs a warning through the
+  `logger` you pass it.
+
+The `bearer()` plugin's own `set-auth-token` response header is its
+documented delivery channel and is unaffected: a deployment that
+installs `bearer()` chooses to hand the signed token to client code.
+
+### Revocation
 
 Database sessions: the port reads via `auth.api.getSession` (no
 hand-rolled anything) and revokes via the internal adapter's

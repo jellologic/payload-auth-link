@@ -128,21 +128,35 @@ describe('createBetterAuthEngine', () => {
     expect(seen).toHaveLength(2)
   })
 
-  it('passes the builder plugin list through by reference plus the provenance plugin', () => {
+  it('passes the builder plugin list through by reference plus the engine plugins', () => {
     const marker = magicLink({ sendMagicLink: () => Promise.resolve() })
     const engine = createBetterAuthEngine({ getPayload, options: { plugins: [marker] } })
-    // Same references in, same references out, plus exactly ONE
-    // engine-owned plugin (session provenance, no endpoints).
-    expect(engine.auth.options.plugins).toHaveLength(2)
+    // Same references in, same references out, plus the engine-owned
+    // plugins (session provenance and token redaction, no endpoints).
+    const ids = (engine.auth.options.plugins as readonly { id?: string }[] | undefined)?.map(
+      (plugin) => plugin.id
+    )
     expect(engine.auth.options.plugins?.[0]).toBe(marker)
-    const appended = (engine.auth.options.plugins as readonly { id?: string }[] | undefined)?.[1]
-    expect(appended?.id).toBe('payload-auth-link-session-provenance')
+    expect(ids).toEqual([
+      'magic-link',
+      'payload-auth-link-session-provenance',
+      'payload-auth-link-session-token-redaction',
+    ])
   })
 
-  it('gives an absent plugin list exactly the provenance plugin', () => {
+  it('gives an absent plugin list exactly the engine plugins', () => {
     const engine = createBetterAuthEngine({ getPayload, options: {} })
-    expect(engine.auth.options.plugins).toHaveLength(1)
-    expect(engine.auth.options.plugins?.[0]?.id).toBe('payload-auth-link-session-provenance')
+    expect(engine.auth.options.plugins?.map((plugin) => plugin.id)).toEqual([
+      'payload-auth-link-session-provenance',
+      'payload-auth-link-session-token-redaction',
+    ])
+  })
+
+  it('exposeSessionTokens: true leaves the redaction plugin out (issue #113)', () => {
+    const engine = createBetterAuthEngine({ getPayload, exposeSessionTokens: true, options: {} })
+    expect(engine.auth.options.plugins?.map((plugin) => plugin.id)).toEqual([
+      'payload-auth-link-session-provenance',
+    ])
   })
 
   it('declares impersonation only when the admin plugin is in the plugin list (PORT-2)', () => {

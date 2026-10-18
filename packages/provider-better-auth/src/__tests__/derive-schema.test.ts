@@ -135,6 +135,25 @@ describe('mergeDeclarations', () => {
     expect(merged.customFields.user?.some((field) => field.name === 'role')).toBe(true)
   })
 
+  it('a hand-declared model wins over the derived one, the rest still derive', () => {
+    const builderModel = {
+      model: 'organization',
+      fields: [{ name: 'name', type: 'text' as const, required: true }],
+    }
+    const merged = mergeDeclarations(
+      {
+        options: { baseURL: ORIGIN, secret: 'x'.repeat(32), plugins: [organization()] },
+        customModels: [builderModel],
+        autoDeclare: true,
+      },
+      true
+    )
+    const organizationModels = merged.customModels.filter((entry) => entry.model === 'organization')
+    expect(organizationModels).toEqual([builderModel])
+    expect(organizationModels[0]).not.toBe(builderModel)
+    expect(merged.customModels.map((entry) => entry.model)).toContain('member')
+  })
+
   it('without autoDeclare, only the builder declarations are served (copied)', () => {
     const builderModel = {
       model: 'twoFactor',

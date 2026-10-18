@@ -603,30 +603,29 @@ export function createPayloadDatabaseAdapter(
    * adapter instance.
    */
   /**
-   * Local-strategy detection for adopted AUTH collections (see
-   * {@link ModelPlan.injectPasswordOnCreate}). Runs with host
-   * validation, once.
+   * Local-strategy detection for one adopted AUTH collection (see
+   * {@link ModelPlan.injectPasswordOnCreate}). Evaluated on EVERY
+   * create of an adopted model, never memoized from the first adapter
+   * call: that call may have planned other models only (a session or
+   * verification read), and a once-only mark then left the users model
+   * without the injected password — Payload refused every later
+   * sign-up with 422 "password" (issue #113).
    */
-  const markLocalStrategyCollections = (payload: Payload): void => {
-    for (const plan of plans.values()) {
-      if (!plan.adopted) {
-        continue
-      }
-      const collection = payload.collections[plan.slug]
-      const auth: unknown = collection?.config?.auth
-      const localOn =
-        auth === true ||
-        (typeof auth === 'object' &&
-          auth !== null &&
-          !Array.isArray(auth) &&
-          (auth as { disableLocalStrategy?: unknown }).disableLocalStrategy !== true)
-      plan.injectPasswordOnCreate = localOn
+  const markLocalStrategy = (payload: Payload, plan: ModelPlan): void => {
+    if (!plan.adopted) {
+      return
     }
+    const auth: unknown = payload.collections[plan.slug]?.config?.auth
+    plan.injectPasswordOnCreate =
+      auth === true ||
+      (typeof auth === 'object' &&
+        auth !== null &&
+        !Array.isArray(auth) &&
+        (auth as { disableLocalStrategy?: unknown }).disableLocalStrategy !== true)
   }
   let hostValidation: Promise<void> | undefined
   const runHostValidation = (payload: Payload, baFields: ValidatedSchema['baFields']): void => {
     {
-      markLocalStrategyCollections(payload)
       const hostCache = new Map<string, Map<string, string>>()
       const hostFieldTypes = (slug: string): Map<string, string> => {
         const cached = hostCache.get(slug)
@@ -901,6 +900,7 @@ export function createPayloadDatabaseAdapter(
           const plan = planOf(key)
           try {
             const payload = await payloadOf()
+            markLocalStrategy(payload, plan)
             const doc: unknown = await payload.create({
               collection: plan.slug,
               data: toPayloadData(data, plan, { forCreate: true, idCoerce: idCoerceFor(key) }),
