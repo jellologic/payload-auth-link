@@ -53,11 +53,14 @@ through untouched.
   keep in sync and no ordering that strands users.
 - **Guarded two-factor step-up.** With `twoFactor()` installed, a
   second factor verified on an existing session shares the sign-in
-  lockout (`twoFactor({ accountLockout })`), the verification that
-  enrols the first factor proves nothing for its own session, and an
-  emailed OTP proves MFA only after a `password` / `passkey` sign-in.
-  Set `twoFactorOtpChannelIndependent: true` on the engine when your
-  `otpOptions.sendOTP` delivers outside the email inbox (SMS). See
+  lockout (`twoFactor({ accountLockout })`, reserved before the code
+  is checked, so concurrent attempts cannot outrun it), a factor
+  enrolled or re-issued after a session was created never proves MFA
+  for that session, an enrolled factor is read, re-issued or removed
+  only from an MFA-proven session, and an emailed OTP is not MFA
+  proof. Set `twoFactorOtpChannelIndependent: true` on the engine
+  when your `otpOptions.sendOTP` delivers outside the email inbox
+  (SMS). See
   [Two-factor and MFA policy](guide-capabilities.md#two-factor-and-mfa-policy-cap-6).
 
 ## Pass-through philosophy
@@ -187,9 +190,12 @@ session from every device.
 
 The engine therefore installs a redaction plugin by default
 (security-model row 28). For HTTP requests it removes
-`session.token` from `/get-session`, `token` from every
-`/list-sessions` entry (each keeps its `id`), and the freshly minted
-session token from any response body that echoes it. Server-side
+`token` from every session-shaped object in any JSON body (the
+`/get-session` session, every `/list-sessions` and
+`/admin/list-user-sessions` entry — each keeps its `id`), and the
+session token from every `{ token, user }` body (sign-in, sign-up,
+and the `/two-factor/verify-*` answers, which echo the PRESENTED
+session's token on a step-up). Server-side
 `auth.api.*` calls are untouched — trusted code keeps the full shape.
 
 - **Revoking one device** with the Better Auth client: pass the

@@ -281,7 +281,9 @@ describe('CAP-2 email OTP (Better Auth)', () => {
     const refused = await engine.auth.handler(
       authRequest('/sign-in/email-otp', { method: 'POST', body: { email, otp: wrong } })
     )
-    expect(refused.status).not.toBe(200)
+    expect(refused.status).toBe(400)
+    expect(((await refused.json()) as { code?: unknown }).code).toBe('INVALID_OTP')
+    expect(cookieHeaderFrom(refused)).not.toContain('better-auth.session_token=')
     const accepted = await engine.auth.handler(
       authRequest('/sign-in/email-otp', { method: 'POST', body: { email, otp: sent.otp } })
     )
@@ -313,14 +315,16 @@ describe('CAP-2/CAP-18 OTP attempt cap (Better Auth native)', () => {
       const refused = await engine.auth.handler(
         authRequest('/sign-in/email-otp', { method: 'POST', body: { email, otp: wrong } })
       )
-      expect(refused.status).not.toBe(200)
+      expect(refused.status).toBe(400)
+      expect(cookieHeaderFrom(refused)).not.toContain('better-auth.session_token=')
     }
     // BA counts attempts per identifier (default cap 3): past the
     // cap even the genuine code is dead (TOO_MANY_ATTEMPTS).
     const burned = await engine.auth.handler(
       authRequest('/sign-in/email-otp', { method: 'POST', body: { email, otp: sent.otp } })
     )
-    expect(burned.status).not.toBe(200)
+    expect(burned.status).toBe(403)
+    expect(((await burned.json()) as { code?: unknown }).code).toBe('TOO_MANY_ATTEMPTS')
     expect(cookieHeaderFrom(burned)).not.toContain('better-auth.session_token=')
   })
 })

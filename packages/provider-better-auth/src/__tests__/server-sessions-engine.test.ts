@@ -520,7 +520,7 @@ describe('real-engine server sessions', () => {
         cookie: mintedCookie,
       })
     )
-    expect([400, 401]).toContain(wrong.status)
+    expect(wrong.status).toBe(401)
 
     const after = await engine.provider.getSession(new Headers({ cookie: mintedCookie }))
     if (after.isErr() || after.value === null) {
@@ -574,10 +574,12 @@ describe('real-engine server sessions', () => {
 
   describe('step-up: a correct second factor on an EXISTING session (#110)', () => {
     /**
-     * An enrolled user holding a live PASSWORD session that is not the
-     * enrollment session: sign in, start enrollment, sign in AGAIN
-     * while 2FA is not yet enabled (a plain password session), then
-     * finish enrollment from the first session (BA rotates that one).
+     * An enrolled user holding a live PASSWORD session created AFTER
+     * the enrolment (a session that existed while the factor was
+     * enrolled can never be stepped up with it, GHSA-xgx5-2cj5-x548):
+     * enrol from a first session, complete one TOTP sign-in that
+     * trusts the device, then sign in with the password alone — the
+     * trusted device skips Better Auth's challenge.
      */
     async function enrolledWithPasswordSession(prefix: string): Promise<{
       secret: string
@@ -602,13 +604,31 @@ describe('real-engine server sessions', () => {
       )
       expect(enabled.status).toBe(200)
       const secret = await totpSecretOf(enabled)
-      const second = await engine.auth.handler(
+      const enrolled = await verifyTotp(secret, enrollCookie)
+      expect(enrolled.status, `enroll: ${await enrolled.text()}`).toBe(200)
+      const challenge = await engine.auth.handler(
         authRequest('/sign-in/email', { method: 'POST', body: signInBody })
+      )
+      expect(challenge.status).toBe(200)
+      const trusted = await engine.auth.handler(
+        authRequest('/two-factor/verify-totp', {
+          method: 'POST',
+          body: { code: totpNow(secret), trustDevice: true },
+          cookie: responseCookieHeader(challenge),
+        })
+      )
+      expect(trusted.status).toBe(200)
+      const trustCookie = responseCookieHeader(trusted)
+        .split('; ')
+        .find((pair) => pair.includes('trust_device='))
+      if (trustCookie === undefined) {
+        throw new Error('no trust-device cookie set')
+      }
+      const second = await engine.auth.handler(
+        authRequest('/sign-in/email', { method: 'POST', body: signInBody, cookie: trustCookie })
       )
       expect(second.status).toBe(200)
       const passwordCookie = cookieOf(second)
-      const enrolled = await verifyTotp(secret, enrollCookie)
-      expect(enrolled.status, `enroll: ${await enrolled.text()}`).toBe(200)
       const before = await assuranceOf(passwordCookie)
       expect(before.methods).toEqual(['password'])
       expect(before.mfa).toBe(false)
@@ -701,7 +721,7 @@ describe('real-engine server sessions', () => {
           cookie: passwordCookie,
         })
       )
-      expect([400, 401]).toContain(wrong.status)
+      expect(wrong.status).toBe(401)
       const after = await assuranceOf(passwordCookie)
       expect(after.methods).toEqual(['password'])
       expect(after.mfa).toBe(false)

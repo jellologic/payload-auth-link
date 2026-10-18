@@ -3,34 +3,41 @@ import type { BetterAuthPlugin } from 'better-auth'
 import { createAuthMiddleware } from 'better-auth/api'
 
 /**
- * Session-token redaction (issue #113, security-model row 28).
+ * Session-token redaction (issue #113, issue #116, security-model row 28).
  *
  * Better Auth's own HTTP endpoints hand the RAW session token to page
  * JavaScript: `/get-session` (`session.token`), `/list-sessions` (the
- * token of EVERY live session of the user) and the session-minting
- * endpoints' bodies (`/sign-in/email` → `{ token }`, …). The session
- * cookie itself is `HttpOnly` precisely so script cannot read it; a
- * JSON copy of the same credential undoes that. With BA's `bearer()`
- * plugin installed (without `requireSignature`), the raw token is a
- * working `Authorization: Bearer` credential — one XSS away from a
- * stolen session on every device.
+ * token of EVERY live session of the user), `/admin/list-user-sessions`,
+ * the session-minting endpoints' bodies (`/sign-in/email` → `{ token }`,
+ * …) and the second-factor verifications (`/two-factor/verify-*` →
+ * `{ token, user }`, the presented session's token on a step-up). The
+ * session cookie itself is `HttpOnly` precisely so script cannot read
+ * it; a JSON copy of the same credential undoes that. With BA's
+ * `bearer()` plugin installed (without `requireSignature`), the raw
+ * token is a working `Authorization: Bearer` credential — one XSS away
+ * from a stolen session on every device.
  *
  * The engine installs this plugin by default (`exposeSessionTokens`
  * opts out). For HTTP requests only — server-side `auth.api.*` calls
  * run in trusted code and keep the full shape (the port's own
- * `getSession` reads `session.token`) — its after-hook removes:
+ * `getSession` reads `session.token`) — its after-hook is default-deny:
+ * it removes `token` from
  *
- * - `session.token` from `/get-session`;
- * - `token` from every `/list-sessions` entry (each keeps its `id`);
- * - on every other path, a top-level `token` or `session.token` EQUAL
- *   to the session token the response just minted
- *   (`ctx.context.newSession`) — so a value that merely shares the key
- *   name (the `jwt` plugin's `/token`, a one-time token, …) is never
- *   touched.
+ * - every session-shaped object anywhere in the JSON body (a record
+ *   carrying a string `token` next to a session field — `userId`,
+ *   `expiresAt`, `ipAddress`, `userAgent` — or found under a `session`
+ *   key),
+ * - every `/list-sessions` entry (each keeps its `id`),
+ * - a top-level body that pairs a string `token` with a `user` record
+ *   (the session-minting and second-factor bodies),
+ * - and any top-level `token` EQUAL to the session token the response
+ *   just minted (`ctx.context.newSession`).
  *
- * Token hand-off protocols are left alone by design:
- * `/multi-session/*` (switching and revoking device sessions takes the
- * token) and `/one-time-token/*` (the exchange returns the session).
+ * A value that merely shares the key name (the `jwt` plugin's `/token`,
+ * a one-time token, …) is never touched. Token hand-off protocols are
+ * left alone by design: `/multi-session/*` (switching and revoking
+ * device sessions takes the token) and `/one-time-token/*` (the
+ * exchange returns the session).
  *
  * `/revoke-session` takes a session token; with the tokens redacted
  * from `/list-sessions`, its before-hook also accepts the listed
@@ -42,6 +49,12 @@ export const sessionTokenRedactionPluginId = 'payload-auth-link-session-token-re
 
 /** Paths whose JSON hands a session token over on purpose. */
 const handoffPrefixes: readonly string[] = ['/multi-session/', '/one-time-token/']
+
+/** Fields that mark a record as a Better Auth session row. */
+const sessionFields: readonly string[] = ['userId', 'expiresAt', 'ipAddress', 'userAgent']
+
+/** How deep the walk descends (BA bodies nest a few levels at most). */
+const maxDepth = 8
 
 function withoutToken(row: Record<string, unknown>): Record<string, unknown> {
   const rest = { ...row }
@@ -55,6 +68,51 @@ function tokenOf(session: unknown): string | null {
   }
   const token = session.session.token
   return typeof token === 'string' && token !== '' ? token : null
+}
+
+/** A record that looks like a session row (or sits under a `session` key). */
+function isSessionShaped(row: Record<string, unknown>, underSessionKey: boolean): boolean {
+  return (
+    typeof row.token === 'string' &&
+    (underSessionKey || sessionFields.some((field) => field in row))
+  )
+}
+
+/**
+ * Strip `token` from every session-shaped object below `value`.
+ * Returns the same reference when nothing changed.
+ */
+function redactDeep(value: unknown, underSessionKey: boolean, depth: number): unknown {
+  if (depth > maxDepth) {
+    return value
+  }
+  if (Array.isArray(value)) {
+    let changed = false
+    const entries = (value as unknown[]).map((entry) => {
+      const next = redactDeep(entry, underSessionKey, depth + 1)
+      changed ||= next !== entry
+      return next
+    })
+    return changed ? entries : value
+  }
+  if (!isRecord(value) || value instanceof Date || value instanceof Response) {
+    return value
+  }
+  let changed = false
+  let body: Record<string, unknown> = value
+  if (isSessionShaped(value, underSessionKey)) {
+    body = withoutToken(value)
+    changed = true
+  }
+  for (const [key, entry] of Object.entries(body)) {
+    const next = redactDeep(entry, key === 'session' || key === 'sessions', depth + 1)
+    if (next !== entry) {
+      body = changed ? body : { ...body }
+      body[key] = next
+      changed = true
+    }
+  }
+  return changed ? body : value
 }
 
 /**
@@ -71,39 +129,18 @@ export function redactSessionTokens(
   if (path === undefined || handoffPrefixes.some((prefix) => path.startsWith(prefix))) {
     return undefined
   }
-  if (path === '/list-sessions') {
-    if (!Array.isArray(returned)) {
-      return undefined
-    }
-    const entries: unknown[] = returned
-    if (!entries.some((entry) => isRecord(entry) && 'token' in entry)) {
-      return undefined
-    }
-    return entries.map((entry) => (isRecord(entry) ? withoutToken(entry) : entry))
-  }
-  if (!isRecord(returned)) {
+  if (returned instanceof Response) {
     return undefined
   }
-  if (path === '/get-session') {
-    return isRecord(returned.session) && 'token' in returned.session
-      ? { ...returned, session: withoutToken(returned.session) }
-      : undefined
+  // `/list-sessions` entries are session rows whatever fields they carry.
+  let body = redactDeep(returned, path === '/list-sessions', 0)
+  if (isRecord(body) && !Array.isArray(body) && typeof body.token === 'string') {
+    const minted = tokenOf(newSession)
+    if (isRecord(body.user) || (minted !== null && body.token === minted)) {
+      body = withoutToken(body)
+    }
   }
-  const minted = tokenOf(newSession)
-  if (minted === null) {
-    return undefined
-  }
-  let changed = false
-  let body: Record<string, unknown> = returned
-  if (body.token === minted) {
-    body = withoutToken(body)
-    changed = true
-  }
-  if (isRecord(body.session) && body.session.token === minted) {
-    body = { ...body, session: withoutToken(body.session) }
-    changed = true
-  }
-  return changed ? body : undefined
+  return body === returned ? undefined : body
 }
 
 /** The hook-context fields this plugin reads (Better Auth 1.7). */
