@@ -1,7 +1,8 @@
 import type { Payload } from 'payload'
-import { assertCreatedRowsScoped, finalizeMarkerState, targetSlugsOf } from './guards.js'
+import { openRun } from './binding.js'
+import { targetSlugsOf } from './guards.js'
 import { capturedKeys, captureBefore } from './host-writes.js'
-import { authenticateManifest, signManifest } from './manifest-mac.js'
+import { signManifest } from './manifest-mac.js'
 import type { FieldWrite, ImportManifest, Unmappable } from './types.js'
 
 /**
@@ -20,9 +21,14 @@ import type { FieldWrite, ImportManifest, Unmappable } from './types.js'
  *
  * - ONE `better-auth` identity per user, `providerUserId` = the
  *   document id (other providers' identity rows are kept);
- * - `linkable: true` + `linkableEmail: <email>` for users whose
+ * - with `grantLinkableFromVerified` (`--grant-linkable-from-verified`)
+ *   only: `linkable: true` + `linkableEmail: <email>` for users whose
  *   verified-email field (`emailVerified` on payload-auth layouts) is
- *   `true` — grant-only, never revoked.
+ *   `true` — grant-only, never revoked. Off by default: that flag is a
+ *   mirror that can be stale for an address changed after it was
+ *   verified, and the proof lets ANOTHER provider's sign-in for the
+ *   address link to the document (the GHSA-v6mr outcome). The
+ *   better-auth identity resolves every user without it.
  *
  * Dry run by default. `--apply` records every prior value in a manifest
  * (first capture wins, sealed, mode 0600) so `rollback --manifest`
@@ -42,8 +48,18 @@ export type PrelinkOptions = {
   readonly emailField?: string | undefined
   readonly now?: () => Date
   readonly log?: (message: string) => void
-  /** Resume from a pre-0.6.0 manifest that has no MAC (`--allow-unsigned-manifest`). */
+  /**
+   * Accept an unsigned or 0.6.0 manifest (`--allow-unsigned-manifest`) —
+   * for the dry run only: such a manifest is never resumed by `--apply`.
+   */
   readonly allowUnsignedManifest?: boolean | undefined
+  /** Resume a signed 0.7.0 manifest that names no database (`--allow-unbound-manifest`). */
+  readonly allowUnboundManifest?: boolean | undefined
+  /**
+   * Grant the linking proof from the verified-email field
+   * (`--grant-linkable-from-verified`). Off by default — see above.
+   */
+  readonly grantLinkableFromVerified?: boolean | undefined
 }
 
 export type PrelinkResult = {
@@ -56,6 +72,11 @@ export type PrelinkResult = {
   readonly proofGranted: number
   /** Users without a verified email: identity only, no linking proof. */
   readonly unverified: number
+  /**
+   * Verified documents NOT granted the proof because
+   * `grantLinkableFromVerified` is off (they still get the identity).
+   */
+  readonly proofWithheld: number
   readonly unmappable: readonly Unmappable[]
   readonly fieldWrites: number
 }
@@ -80,24 +101,21 @@ export async function prelinkUsers(options: PrelinkOptions): Promise<PrelinkResu
   const usersSlug = options.usersSlug ?? 'users'
   const verifiedField = options.verifiedField ?? 'emailVerified'
   const emailField = options.emailField ?? 'email'
-  if (options.manifest !== null) {
-    // Resuming re-signs the old entries: verify them first.
-    const trust = authenticateManifest(payload.secret, options.manifest, {
-      allowUnsigned: options.allowUnsignedManifest,
-    })
-    // A pre-link creates no rows: never re-sign a manifest that lists some.
-    assertCreatedRowsScoped({ ...options.manifest, kind: 'adopt-prelink' }, targetSlugsOf())
-    if (
-      apply &&
-      (options.manifest.finalized ||
-        (await finalizeMarkerState(payload, options.manifest, {
-          anyOfKind: trust !== 'signed',
-        })) === 'finalized')
-    ) {
-      throw new Error('the pre-link is finalized; nothing to pre-link')
-    }
-  }
-  const fieldWrites: FieldWrite[] = [...(options.manifest?.fieldWrites ?? [])]
+  // Resuming re-signs the old entries: only a signed manifest of THIS
+  // database's open pre-link run is resumed (GHSA-crrr-3cg7-f6jw).
+  const { carried, binding } = await openRun({
+    payload,
+    manifest: options.manifest,
+    kind: 'adopt-prelink',
+    apply,
+    slugs: targetSlugsOf(),
+    now,
+    log,
+    allowUnsignedManifest: options.allowUnsignedManifest,
+    allowUnboundManifest: options.allowUnboundManifest,
+  })
+  const grantLinkable = options.grantLinkableFromVerified === true
+  const fieldWrites: FieldWrite[] = [...(carried?.fieldWrites ?? [])]
   const captured = capturedKeys(fieldWrites)
 
   type Planned = {
@@ -112,6 +130,7 @@ export async function prelinkUsers(options: PrelinkOptions): Promise<PrelinkResu
   let users = 0
   let alreadyLinked = 0
   let unverified = 0
+  let proofWithheld = 0
 
   // Plan the WHOLE collection before any write: a conflicting identity
   // anywhere aborts the run with nothing written.
@@ -153,7 +172,11 @@ export async function prelinkUsers(options: PrelinkOptions): Promise<PrelinkResu
         unverified += 1
       }
       const writeIdentity = own.length !== 1
-      const grantProof = verified && (doc['linkable'] !== true || doc['linkableEmail'] !== email)
+      const wantsProof = verified && (doc['linkable'] !== true || doc['linkableEmail'] !== email)
+      if (wantsProof && !grantLinkable) {
+        proofWithheld += 1
+      }
+      const grantProof = grantLinkable && wantsProof
       if (!writeIdentity) {
         alreadyLinked += 1
       }
@@ -182,13 +205,14 @@ export async function prelinkUsers(options: PrelinkOptions): Promise<PrelinkResu
       alreadyLinked,
       proofGranted: 0,
       unverified,
+      proofWithheld,
       unmappable,
       fieldWrites: 0,
     }
   }
 
   let fieldWriteCount = 0
-  if (apply) {
+  if (apply && binding !== null) {
     for (const row of planned) {
       const { newlyCaptured } = await captureBefore({
         payload,
@@ -223,14 +247,16 @@ export async function prelinkUsers(options: PrelinkOptions): Promise<PrelinkResu
       await payload.update({ collection: usersSlug, id: row.id, data, overrideAccess: true })
     }
     const manifest: ImportManifest = signManifest(payload.secret, {
-      version: 3,
+      version: 4,
       kind: 'adopt-prelink',
-      createdAt: options.manifest?.createdAt ?? now().toISOString(),
+      createdAt: binding.createdAt,
+      databaseId: binding.databaseId,
+      runId: binding.runId,
       sourceDatabase: '(adopt mode: the target app database)',
       options: { sessions: 'carry' },
       created: [],
       fieldWrites,
-      finalized: options.manifest?.finalized ?? false,
+      finalized: false,
       sourceCounts: {},
       totals: { user: users, linked, proofGranted },
     })
@@ -243,6 +269,7 @@ export async function prelinkUsers(options: PrelinkOptions): Promise<PrelinkResu
     alreadyLinked,
     proofGranted,
     unverified,
+    proofWithheld,
     unmappable,
     fieldWrites: fieldWriteCount,
   }

@@ -1,16 +1,19 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { writePrivateFile } from '../private-file.js'
 import type { Payload } from 'payload'
+import { boundRun, plaintextWrites, startRun, type RunBinding } from './binding.js'
 import {
   assertCreatedRowsScoped,
+  assertNoFinalizeMarker,
   baIdMismatch,
-  finalizeMarkerState,
+  expectedBaId,
   hostRolesField,
   recordFinalizeMarker,
+  recordRun,
   targetSlugsOf,
 } from './guards.js'
 import { restoreCaptured } from './host-writes.js'
-import { authenticateManifest, signManifest } from './manifest-mac.js'
+import { authenticateManifest, isBound, signManifest } from './manifest-mac.js'
 import {
   defaultTargetSlugs,
   type CreatedRow,
@@ -49,8 +52,8 @@ export function readManifest(path: string): ImportManifest | null {
     typeof parsed === 'object' && parsed !== null
       ? (parsed as { version?: unknown }).version
       : undefined
-  if (version !== 1 && version !== 2 && version !== 3) {
-    throw new Error(`manifest at ${path} is not a version-1/2/3 import manifest`)
+  if (version !== 1 && version !== 2 && version !== 3 && version !== 4) {
+    throw new Error(`manifest at ${path} is not a version-1/2/3/4 import manifest`)
   }
   return parsed as ImportManifest
 }
@@ -74,6 +77,16 @@ export type VerifyResult = {
   readonly issues: readonly VerifyIssue[]
   readonly checks: readonly { readonly name: string; readonly passed: boolean }[]
 }
+
+/**
+ * `verify` checks an IMPORT: source rows against the `ba-*` copies the
+ * importer keyed by `baId`. An adopt-mode app (issue #113) copies
+ * nothing — its Better Auth models ARE the payload-auth tables — so
+ * there is nothing for it to compare. Say so, instead of the misleading
+ * "declares none of the target collections" / "baId cannot be queried".
+ */
+export const verifyAdoptUnsupported =
+  'verify checks an IMPORT (the ba-* copies keyed by baId), and this config serves Better Auth in ADOPT mode: nothing was copied, so there is nothing for verify to compare. Verify an adopt cutover with the checksum procedure in docs/migrating-from-payload-auth.md ("Verifying an adopt cutover"), and adopt-prelink with its dry run (it reports every user as already linked)'
 
 /**
  * Verify (issues #50, #68, #69): fail closed on the source layout
@@ -107,6 +120,19 @@ export async function verifyImport(options: {
   const sessions = options.sessions ?? 'carry'
   const issues: VerifyIssue[] = []
   const checks: { name: string; passed: boolean }[] = []
+  // Adopt mode (issue #113): the user target carries no baId — nothing
+  // was imported, so nothing is compared.
+  const userTarget = payload.collections[String(slugs['user'])]
+  if (
+    userTarget === undefined ||
+    !userTarget.config.flattenedFields.some((field) => field.name === 'baId')
+  ) {
+    return {
+      ok: false,
+      issues: [{ code: 'verify-adopt-unsupported', detail: verifyAdoptUnsupported }],
+      checks,
+    }
+  }
   const check = (name: string, passed: boolean, detail?: string): void => {
     checks.push({ name, passed })
     if (!passed && detail !== undefined) {
@@ -517,16 +543,29 @@ export type RollbackOptions = {
   /**
    * Accept a manifest without a full signature (`--allow-unsigned-manifest`):
    * a pre-0.6.0 manifest without a MAC, or a 0.6.0 manifest whose MAC
-   * does not cover `finalized`.
+   * does not cover `finalized`. The operator vouches that nobody edited
+   * it and that it was written against THIS database.
    */
   readonly allowUnsignedManifest?: boolean | undefined
   /**
    * Let a rollback driven by an UNSIGNED (pre-0.6.0) manifest delete the
-   * rows it lists and restore plaintext (version-1) values
-   * (`--allow-unsigned-deletes`). Without it, an unsigned manifest may
-   * only restore sealed field values.
+   * rows it lists (`--allow-unsigned-deletes`). Without it, an unsigned
+   * manifest may only restore sealed field values.
    */
   readonly allowUnsignedDeletes?: boolean | undefined
+  /**
+   * Restore version-1 PLAINTEXT prior values (`--allow-plaintext-restore`,
+   * GHSA-crrr-3cg7-f6jw). Nothing vouches for a value stored in the
+   * clear — not even a signature an older kit added when it resumed the
+   * manifest — so the operator reviews them and opts in separately.
+   */
+  readonly allowPlaintextRestore?: boolean | undefined
+  /**
+   * Accept a fully signed manifest written by migrate 0.7.0 or earlier,
+   * which names no database (`--allow-unbound-manifest`): the operator
+   * vouches it was written against THIS database.
+   */
+  readonly allowUnboundManifest?: boolean | undefined
 }
 
 /**
@@ -536,21 +575,28 @@ export type RollbackOptions = {
  * never modified.
  *
  * Before anything is written, rollback refuses: a finalized manifest,
- * or a migration the DATABASE records as finalized (the marker
- * `finalize` writes — a manifest file alone cannot reopen it); a
- * manifest that fails its signature; created rows outside the import's
- * own target collections (signed or not), or whose row no longer
- * carries the importer's deterministic `baId`; and any delete or
- * plaintext restore driven by an unsigned manifest without
- * `allowUnsignedDeletes`. A row already absent is fine (the goal is
+ * or a database that records ANY finalized migration (the marker
+ * `finalize` writes — whatever kind the manifest claims; GHSA-crrr);
+ * a key-value store it cannot read (fail closed); a manifest that
+ * fails its signature; a version-4 manifest naming another database,
+ * or a run this database does not hold open; a 0.7.0 manifest (no
+ * database binding) without `allowUnboundManifest`; created rows
+ * outside the import's own target collections (signed or not), or
+ * whose row no longer carries the importer's deterministic `baId`;
+ * any delete driven by an unsigned manifest without
+ * `allowUnsignedDeletes`; and any plaintext prior value without
+ * `allowPlaintextRestore`. A row already absent is fine (the goal is
  * "absent"); a delete that FAILS (a foreign key, a hook, a permission)
  * aborts the rollback with the rows named, before any field is
  * restored or the manifest reset — so it can be re-run once fixed.
+ * Success records the run as rolled back in the database, so no copy
+ * of this manifest drives a second rollback.
  */
 export async function rollbackImport(
   options: RollbackOptions
 ): Promise<{ deleted: number; restored: number }> {
   const { payload, manifest, log = () => {} } = options
+  const now = options.now ?? (() => new Date())
   if (manifest.finalized) {
     // The point of no return: after `finalize`, the manifest's rows are
     // the migration's history, not a TODO to undo.
@@ -563,31 +609,52 @@ export async function rollbackImport(
   })
   if (trust === 'signed-legacy' && options.allowUnsignedManifest !== true) {
     throw new Error(
-      "the manifest was signed by migrate 0.6.0, whose signature does not cover the 'finalized' flag. If you are sure this migration was never finalized and nobody has edited the manifest, re-run with --allow-unsigned-manifest; the rollback re-signs what it leaves behind"
+      "the manifest was signed by migrate 0.6.0, whose signature does not cover the 'finalized' flag. If you are sure this migration was never finalized and nobody has edited the manifest, re-run with --allow-unsigned-manifest"
     )
   }
-  // The database's own record of `finalize`, independent of the file.
-  // A manifest whose `createdAt` is not covered by a full signature is
-  // checked against every finalized migration of its kind.
-  const marker = await finalizeMarkerState(payload, manifest, { anyOfKind: trust !== 'signed' })
-  if (marker === 'finalized') {
+  // The database's own record of `finalize`, independent of the file —
+  // ANY finalized migration on this database, and an unreadable store
+  // refuses too (GHSA-crrr-3cg7-f6jw).
+  await assertNoFinalizeMarker(payload, 'rollback')
+  // The database's record of THIS manifest: its database and its run.
+  let binding: RunBinding | null = null
+  if (isBound(manifest)) {
+    const run = await boundRun(payload, manifest, 'rollback')
+    if (run.state === 'finalized') {
+      throw new Error(
+        'the database records this migration as finalized; rollback is no longer possible (the manifest file does not override that)'
+      )
+    }
+    if (run.state === 'rolled-back') {
+      if (manifest.created.length === 0 && manifest.fieldWrites.length === 0) {
+        log('rollback: the run was already rolled back; nothing to do')
+        return { deleted: 0, restored: 0 }
+      }
+      throw new Error(
+        'the database records this run as rolled back: this manifest is a stale copy, and replaying it would restore values captured before later changes. Nothing was changed'
+      )
+    }
+    binding = { databaseId: manifest.databaseId, runId: manifest.runId, createdAt: run.createdAt }
+  } else if (trust === 'signed' && options.allowUnboundManifest !== true) {
     throw new Error(
-      'the database records this migration as finalized; rollback is no longer possible (the manifest file does not override that)'
-    )
-  }
-  if (marker === 'unavailable') {
-    log(
-      "rollback: Payload's key-value store is unavailable, so the database finalize marker could not be checked; relying on the manifest's own flag"
+      'the manifest was written by migrate 0.7.0 or earlier and names no database, so it cannot prove it belongs to THIS one (a rehearsal clone sharing PAYLOAD_SECRET would accept it). If it was written against this database, re-run with --allow-unbound-manifest; nothing was changed'
     )
   }
   assertCreatedRowsScoped(manifest, targetSlugsOf(options.slugs))
-  if (trust === 'unsigned' && options.allowUnsignedDeletes !== true) {
-    const plaintext = manifest.fieldWrites.filter((write) => write.before !== undefined).length
-    if (manifest.created.length > 0 || plaintext > 0) {
-      throw new Error(
-        `the manifest is unsigned: --allow-unsigned-manifest lets it restore sealed field values only, and it lists ${manifest.created.length} row(s) to delete and ${plaintext} plaintext value(s) to restore. Review the manifest's created rows, then re-run with --allow-unsigned-deletes as well — nothing was changed`
-      )
-    }
+  const plaintext = plaintextWrites(manifest)
+  if (
+    trust === 'unsigned' &&
+    options.allowUnsignedDeletes !== true &&
+    manifest.created.length > 0
+  ) {
+    throw new Error(
+      `the manifest is unsigned: --allow-unsigned-manifest lets it restore sealed field values only, and it lists ${manifest.created.length} row(s) to delete. Review the manifest's created rows, then re-run with --allow-unsigned-deletes as well — nothing was changed`
+    )
+  }
+  if (plaintext > 0 && options.allowPlaintextRestore !== true) {
+    throw new Error(
+      `the manifest holds ${plaintext} plaintext prior value(s) (written by a pre-0.6.0 kit), which nothing vouches for. Review them, then re-run with --allow-plaintext-restore — nothing was changed`
+    )
   }
 
   // Pre-flight every created row BEFORE the first delete: a present row
@@ -602,6 +669,16 @@ export async function rollbackImport(
       absent += 1
     } else if (baIdMismatch(row, doc)) {
       foreign.push(`${row.collection}#${String(row.id)} (${row.sourceKey})`)
+    } else if (trust === 'unsigned' && !(await importedUserProvenance(payload, row))) {
+      // An imported user's baId is the source id with NO prefix, so on
+      // its own it cannot tell an imported ba-users row from a live
+      // one. The importer's users are the host's own documents (the
+      // source layout's user id IS the host id): an unsigned manifest
+      // may delete a ba-users row only when that host document exists
+      // (GHSA-crrr-3cg7-f6jw). Signed manifests' rows are the app's own.
+      foreign.push(
+        `${row.collection}#${String(row.id)} (${row.sourceKey}: no host document with that id)`
+      )
     } else {
       present.push(row)
     }
@@ -644,19 +721,62 @@ export async function rollbackImport(
   // document, `updatedAt` included — see host-writes.ts for why.
   const restored = await restoreCaptured(payload, manifest, {
     rolesField: hostRolesField(payload),
+    allowPlaintext: options.allowPlaintextRestore === true,
   })
+  // The run is closed in the DATABASE: no copy of this manifest drives
+  // a second rollback, and the next --apply starts a fresh run. An
+  // unbound manifest closes a run minted for the record.
+  const kind = manifest.kind ?? 'import'
+  const closed: RunBinding =
+    binding ?? (await startRun(payload, kind, manifest.createdAt, 'rollback'))
+  await recordRun(
+    payload,
+    closed.runId,
+    { kind, createdAt: closed.createdAt, state: 'rolled-back' },
+    'rollback'
+  )
   if (options.manifestPath !== undefined) {
     const reset: ImportManifest = signManifest(payload.secret, {
-      ...manifest,
+      version: 4,
+      kind,
+      createdAt: closed.createdAt,
+      databaseId: closed.databaseId,
+      runId: closed.runId,
+      sourceDatabase: manifest.sourceDatabase,
+      options: manifest.options,
       created: [],
       fieldWrites: [],
+      finalized: false,
+      sourceCounts: manifest.sourceCounts,
       totals: {},
-      rolledBackAt: (options.now ?? (() => new Date()))().toISOString(),
+      rolledBackAt: now().toISOString(),
     })
     writeManifest(reset, options.manifestPath)
   }
   log(`rollback: ${deleted} row(s) deleted, ${restored} field value(s) restored`)
   return { deleted, restored }
+}
+
+/**
+ * Whether a created `user:` row is provably an imported user: the host
+ * `users` document with the source id exists. Rows of every other
+ * model carry a model prefix in their `baId`, which live Better Auth
+ * rows never have.
+ */
+async function importedUserProvenance(payload: Payload, row: CreatedRow): Promise<boolean> {
+  const expected = expectedBaId(row.sourceKey)
+  if (expected === null || expected.model !== 'user') {
+    return true
+  }
+  const hostId = /^\d+$/.test(expected.baId) ? Number(expected.baId) : expected.baId
+  const host: unknown = await payload.findByID({
+    collection: 'users',
+    id: hostId,
+    depth: 0,
+    overrideAccess: true,
+    disableErrors: true,
+  })
+  return host !== null && host !== undefined
 }
 
 /** The created row as stored, or `null` when it does not exist. */
@@ -679,7 +799,7 @@ function listSome(items: readonly string[], separator: string): string {
 export type FinalizeOptions = {
   readonly payload: Payload
   readonly manifest: ImportManifest
-  /** Where the finalized, re-signed manifest is written. */
+  /** Where the finalized manifest is written. */
   readonly path: string
   readonly now?: (() => Date) | undefined
   /** Accept a manifest without a full signature (`--allow-unsigned-manifest`). */
@@ -690,22 +810,43 @@ export type FinalizeOptions = {
  * Finalize (issue #50): the point of no return. Records a one-way
  * marker in the target database (Payload's key-value store) that every
  * later rollback checks independently of the file, then marks the
- * manifest `finalized` and re-signs it — the signature covers the flag.
- * Idempotent: finalizing a finalized manifest re-records the marker and
- * upgrades its signature.
+ * manifest `finalized`. A signed manifest is re-signed (the signature
+ * covers the flag); a version-4 manifest must name THIS database and a
+ * run it does not record as rolled back, and its run is recorded as
+ * finalized. An unsigned or 0.6.0 manifest is never re-signed
+ * (GHSA-crrr-3cg7-f6jw): its flag is set, and the database marker is
+ * what every later command trusts. Idempotent: finalizing a finalized
+ * manifest re-records the marker.
  */
 export async function finalizeManifest(options: FinalizeOptions): Promise<ImportManifest> {
   const { payload, manifest } = options
-  authenticateManifest(payload.secret, manifest, { allowUnsigned: options.allowUnsignedManifest })
+  const trust = authenticateManifest(payload.secret, manifest, {
+    allowUnsigned: options.allowUnsignedManifest,
+  })
+  const kind = manifest.kind ?? 'import'
+  if (isBound(manifest)) {
+    const run = await boundRun(payload, manifest, 'finalize')
+    if (run.state === 'rolled-back') {
+      throw new Error(
+        'the database records this run as rolled back; there is nothing to finalize (run --apply for a new run first)'
+      )
+    }
+  }
   const finalizedAt = manifest.finalizedAt ?? (options.now ?? (() => new Date()))().toISOString()
   // The database marker first: a finalize that cannot record it fails
   // with the manifest unchanged.
   await recordFinalizeMarker(payload, manifest, finalizedAt)
-  const finalized: ImportManifest = signManifest(payload.secret, {
-    ...manifest,
-    finalized: true,
-    finalizedAt,
-  })
+  if (isBound(manifest)) {
+    await recordRun(
+      payload,
+      manifest.runId,
+      { kind, createdAt: manifest.createdAt, state: 'finalized' },
+      'finalize'
+    )
+  }
+  const flagged: ImportManifest = { ...manifest, finalized: true, finalizedAt }
+  const finalized: ImportManifest =
+    trust === 'signed' ? signManifest(payload.secret, flagged) : flagged
   writeManifest(finalized, options.path)
   return finalized
 }

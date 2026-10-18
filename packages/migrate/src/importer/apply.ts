@@ -1,8 +1,9 @@
 import { isRecord } from '@payload-auth-link/core'
 import type { Payload } from 'payload'
-import { assertCreatedRowsScoped, finalizeMarkerState, hostRolesField } from './guards.js'
+import { openRun } from './binding.js'
+import { hostRolesField } from './guards.js'
 import { capturedKeys, captureBefore } from './host-writes.js'
-import { authenticateManifest, signManifest } from './manifest-mac.js'
+import { signManifest } from './manifest-mac.js'
 import {
   readFlatRows,
   openSource,
@@ -38,9 +39,10 @@ import {
  *   `ba-users` collection declares the field. A banned or anonymous
  *   source user whose state the target cannot hold is UNMAPPABLE — the
  *   run aborts before writing; a banned user never imports unbanned.
- * - `linkable` + `linkableEmail` are granted from VERIFIED emails only
- *   (grant-only: an existing proof is never revoked); unverified users
- *   are reported by the plan, never linked.
+ * - `linkable` + `linkableEmail` are granted only with
+ *   `grantLinkableFromVerified`, and then from VERIFIED emails only
+ *   (grant-only: an existing proof is never revoked). Every imported
+ *   user resolves through their pre-linked identity without it.
  * - Sessions default to `carry` so nobody is logged out: the carried
  *   rows keep their tokens, and with the same `advanced.cookiePrefix`
  *   the existing cookies keep working.
@@ -72,8 +74,26 @@ export type ApplyOptions = {
   /** Injectable clock for deterministic `linkedAt` stamps. */
   readonly now?: () => Date
   readonly log?: (message: string) => void
-  /** Resume from a pre-0.6.0 manifest that has no MAC (`--allow-unsigned-manifest`). */
+  /**
+   * Accept an unsigned or 0.6.0 manifest (`--allow-unsigned-manifest`) —
+   * for the dry run only: such a manifest is never resumed by `--apply`
+   * (GHSA-crrr-3cg7-f6jw); roll it back or finalize it.
+   */
   readonly allowUnsignedManifest?: boolean | undefined
+  /**
+   * Resume a fully signed manifest written by migrate 0.7.0 or earlier,
+   * which names no database (`--allow-unbound-manifest`): the operator
+   * vouches it was written against THIS database. The resume binds it.
+   */
+  readonly allowUnboundManifest?: boolean | undefined
+  /**
+   * Grant the linking proof (`linkable` + `linkableEmail`) from the
+   * source `emailVerified` flag (`--grant-linkable-from-verified`).
+   * Off by default: that flag can be stale for an address changed
+   * after it was verified, and the proof lets ANOTHER provider's
+   * sign-in for the address link to the document (GHSA-v6mr).
+   */
+  readonly grantLinkableFromVerified?: boolean | undefined
 }
 
 const slugsOf = (overrides?: Readonly<Record<string, string>>): TargetSlugMap => ({
@@ -302,30 +322,26 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
   } = options
   const slugs = slugsOf(options.slugs)
   const sourceTables: ResolvedSourceTables = resolveSourceTables(options.sourceTables)
-  if (options.manifest !== null) {
-    // Resuming merges the old entries and re-signs them: never launder
-    // an edited manifest into a signed one, never sign created rows
-    // outside the import's own targets, and never resume a migration
-    // the database records as finalized.
-    const trust = authenticateManifest(payload.secret, options.manifest, {
-      allowUnsigned: options.allowUnsignedManifest,
-    })
-    assertCreatedRowsScoped(options.manifest, slugs)
-    const finalized =
-      options.manifest.finalized ||
-      (apply &&
-        (await finalizeMarkerState(payload, options.manifest, {
-          anyOfKind: trust !== 'signed',
-        })) === 'finalized')
-    if (apply && finalized) {
-      throw new Error(
-        'the migration is finalized; a finalized manifest is not resumed — keep it as the record, and pass a different --manifest for a new run'
-      )
-    }
-  }
+  // Resuming merges the old entries and re-signs them: never launder
+  // an unsigned or edited manifest into a signed one, never sign
+  // created rows outside the import's own targets, and never resume a
+  // run from another database or one this database closed
+  // (GHSA-crrr-3cg7-f6jw). A run the database rolled back starts fresh.
+  const { carried, binding } = await openRun({
+    payload,
+    manifest: options.manifest,
+    kind: 'import',
+    apply,
+    slugs,
+    now,
+    log,
+    allowUnsignedManifest: options.allowUnsignedManifest,
+    allowUnboundManifest: options.allowUnboundManifest,
+  })
+  const grantLinkable = options.grantLinkableFromVerified === true
   const rolesField = hostRolesField(payload)
-  const created: CreatedRow[] = [...(options.manifest?.created ?? [])]
-  const fieldWrites: FieldWrite[] = [...(options.manifest?.fieldWrites ?? [])]
+  const created: CreatedRow[] = [...(carried?.created ?? [])]
+  const fieldWrites: FieldWrite[] = [...(carried?.fieldWrites ?? [])]
   // First capture wins (issue #88): fields captured by an earlier pass
   // keep their pre-import value.
   const captured = capturedKeys(fieldWrites)
@@ -425,9 +441,12 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
             writes[rolesField] = user.roles
           }
           if (
+            grantLinkable &&
             user.emailVerified &&
             (current?.['linkable'] !== true || current['linkableEmail'] !== user.email)
           ) {
+            // Opt-in (--grant-linkable-from-verified): the source flag
+            // can be stale for an address changed after verification.
             // Grant-only: the proof is bound to the address (both
             // fields), and an existing proof is never revoked here.
             writes.linkable = true
@@ -809,18 +828,21 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
     log(
       `plan: ${planRows.length} row group(s), ${createdCount} created, ${skippedCount} skipped, ${fieldWriteCount} field value(s) captured`
     )
-    if (apply) {
+    if (apply && binding !== null) {
       // The manifest is the run's contract: merge this pass onto any
-      // resumed run's rows and write it back (issue #50).
+      // resumed run's rows and write it back (issue #50), bound to this
+      // database and run (GHSA-crrr-3cg7-f6jw).
       const manifest: ImportManifest = signManifest(payload.secret, {
-        version: 3,
+        version: 4,
         kind: 'import',
-        createdAt: options.manifest?.createdAt ?? now().toISOString(),
+        createdAt: binding.createdAt,
+        databaseId: binding.databaseId,
+        runId: binding.runId,
         sourceDatabase: options.sourceDatabase,
         options: { sessions },
         created,
         fieldWrites,
-        finalized: options.manifest?.finalized ?? false,
+        finalized: false,
         sourceCounts: options.sourceCounts,
         totals,
       })

@@ -243,6 +243,11 @@ describe.skipIf(!canReachPostgres)(
   }
 )
 
+/** Never reached: narrows a nullable manifest read inside an assertion. */
+function unsignedNever(): never {
+  throw new Error('the manifest file is missing')
+}
+
 describe.skipIf(!canReachPostgres)(
   'from-payload-auth: runnable, reversible importer (issue #50)',
   () => {
@@ -386,6 +391,8 @@ describe.skipIf(!canReachPostgres)(
         sessions: 'carry',
         manifestPath,
         loadPayload: () => Promise.resolve(payload),
+        // The proof is opt-in (GHSA-mjvh follow-up); this run opts in.
+        grantLinkableFromVerified: true,
       })
       expect(outcome.exitCode).toBe(0)
       expect(outcome.result?.created ?? 0).toBeGreaterThan(10)
@@ -424,7 +431,7 @@ describe.skipIf(!canReachPostgres)(
       })
       const hashes = new Set(accounts.docs.map((doc) => String(doc.password)))
       expect(hashes.has(String((sourceHash.rows[0] as { password: string }).password))).toBe(true)
-      // The linkable proof comes from VERIFIED emails only.
+      // With the opt-in, the linkable proof comes from VERIFIED emails only.
       const users = await payload.find({ collection: 'ba-users', depth: 0, overrideAccess: true })
       const bob = users.docs.find((doc) => doc.email === 'bob@example.com')
       const alice = users.docs.find((doc) => doc.email === 'alice@example.com')
@@ -466,7 +473,7 @@ describe.skipIf(!canReachPostgres)(
       if (manifest === null) {
         throw new Error('unreachable')
       }
-      expect(manifest.version).toBe(3)
+      expect(manifest.version).toBe(4)
       const host = await payload.find({ collection: 'users', depth: 0, overrideAccess: true })
       const victim = host.docs[0]
       if (victim === undefined) {
@@ -484,7 +491,13 @@ describe.skipIf(!canReachPostgres)(
       }
       await expect(rollbackImport({ payload, manifest: edited })).rejects.toThrow(/integrity check/)
       // A stripped MAC is no way around it either.
-      const unsigned = { ...edited, mac: undefined, version: 2 as const }
+      const unsigned = {
+        ...edited,
+        mac: undefined,
+        version: 2 as const,
+        databaseId: undefined,
+        runId: undefined,
+      }
       await expect(rollbackImport({ payload, manifest: unsigned })).rejects.toThrow(
         /allow-unsigned-manifest/
       )
@@ -518,6 +531,8 @@ describe.skipIf(!canReachPostgres)(
         ...manifest,
         version: 2 as const,
         mac: undefined,
+        databaseId: undefined,
+        runId: undefined,
         created: [...manifest.created, { collection: 'jwks', id: victim.id, sourceKey: 'jwks:1' }],
       }
       await expect(
@@ -532,7 +547,13 @@ describe.skipIf(!canReachPostgres)(
       await expect(
         rollbackImport({
           payload,
-          manifest: { ...manifest, version: 2 as const, mac: undefined },
+          manifest: {
+            ...manifest,
+            version: 2 as const,
+            mac: undefined,
+            databaseId: undefined,
+            runId: undefined,
+          },
           allowUnsignedManifest: true,
         })
       ).rejects.toThrow(/--allow-unsigned-deletes/)
@@ -590,6 +611,13 @@ describe.skipIf(!canReachPostgres)(
     })
 
     test('re-apply and finalize close the run', async () => {
+      // The file still holds the rolled-back run's manifest (the
+      // rollback above ran without a path to reset): the database
+      // records that run as rolled back, so the re-apply starts FRESH.
+      const stale = readManifest(manifestPath)
+      await expect(rollbackImport({ payload, manifest: stale ?? unsignedNever() })).rejects.toThrow(
+        /stale copy/
+      )
       const outcome = await runFromPayloadAuth({
         configPath: 'unused',
         databaseUrl: connectionString,
@@ -601,6 +629,20 @@ describe.skipIf(!canReachPostgres)(
       expect(outcome.exitCode).toBe(0)
       const manifest = readManifest(manifestPath)
       expect(manifest?.finalized).toBe(false)
+      expect(manifest?.runId).toBeDefined()
+      expect(manifest?.runId).not.toBe(stale?.runId)
+      expect(manifest?.databaseId).toBe(stale?.databaseId)
+      // Without --grant-linkable-from-verified no proof is granted
+      // (GHSA-mjvh follow-up): alice is verified on the source, yet her
+      // document gets the identity only.
+      const alice = await payload.find({
+        collection: 'users',
+        where: { email: { equals: 'alice@example.com' } },
+        depth: 0,
+        overrideAccess: true,
+      })
+      expect(alice.docs[0]?.linkable).toBe(false)
+      expect(alice.docs[0]?.identities).toHaveLength(1)
       if (manifest === null) {
         throw new Error('unreachable')
       }
@@ -634,13 +676,20 @@ describe.skipIf(!canReachPostgres)(
         finalizedAt: undefined,
       })
       await expect(rollbackImport({ payload, manifest: preFinalize })).rejects.toThrow(
-        /database records this migration as finalized/
+        /database records a finalized migration/
       )
       // Downgraded to an unsigned version with every opt-in: still refused.
       await expect(
         rollbackImport({
           payload,
-          manifest: { ...preFinalize, version: 2, mac: undefined, createdAt: 'forged' },
+          manifest: {
+            ...preFinalize,
+            version: 2,
+            mac: undefined,
+            databaseId: undefined,
+            runId: undefined,
+            createdAt: 'forged',
+          },
           allowUnsignedManifest: true,
           allowUnsignedDeletes: true,
         })

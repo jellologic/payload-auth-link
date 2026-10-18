@@ -67,6 +67,20 @@ describe.skipIf(!canLoadFixture)('doctor: in-process fixture report (exact block
     expect(byId.get('organization')).toBe('auto-declarable')
     expect(byId.get('magic-link')).toBe('auto-declarable')
     expect(report.users?.roleField?.nonCanonical).toEqual(['frontPlugin'])
+    // The source layout, read off payload-auth's own collections (#113):
+    // the fixture keeps the default tables, so no --source-map is needed.
+    expect(report.sourceMap).toEqual({
+      users: 'users',
+      accounts: 'accounts',
+      sessions: 'sessions',
+      verifications: 'verifications',
+      api_keys: 'api_keys',
+      jwks: 'jwks',
+      organizations: 'organizations',
+      members: 'members',
+      invitations: 'invitations',
+      users_role: 'users_role',
+    })
     const kinds = new Map(report.source.map((finding) => [finding.kind, finding]))
     expect(kinds.get('ba-internals')?.files).toEqual(['lib/api-key-bridge.ts'])
     expect(kinds.get('req-user-field')?.fields.toSorted()).toEqual(['activeOrganization', 'name'])

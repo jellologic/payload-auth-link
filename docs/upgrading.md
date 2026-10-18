@@ -38,6 +38,7 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
+<<<<<<< HEAD
 ## provider-better-auth (next release): two-factor step-up hardening (advisory GHSA-38wx-69j6-cgm7)
 
 **Upgrade impact:** no schema change. The step-up counter reuses the
@@ -75,6 +76,72 @@ do on SQLite, Postgres or MongoDB. Behaviour changes:
   password, so a password-only attacker can still enrol their own
   authenticator on an account that never enrolled and then sign in
   with it.
+=======
+## migrate 0.8.0 (manifests bound to their database; GHSA-crrr-3cg7-f6jw)
+
+**Upgrade impact:** no collection schema change; push and migrations
+have nothing to do on any adapter. The kit now writes two kinds of
+records into Payload's key-value store (`payload-kv`; `payload_kv` on
+SQL adapters) — this database's migration id and one record per run —
+and REQUIRES that store for `--apply`, `adopt-prelink --apply`,
+`rollback`, and `finalize` (it already required it for `finalize`).
+If its table was never created, run your Payload migrations first.
+
+**migrate**
+
+- **Manifests are bound to their database and run (version 4).** The
+  first `--apply` stores a random database id in `payload-kv`, and
+  every run a random nonce; both are signed into the manifest. A
+  manifest from another database (a rehearsal clone sharing
+  `PAYLOAD_SECRET`), a run the database has no record of, or a copy of
+  a manifest from before a rollback is refused before anything is
+  written. Never roll back with a manifest from another environment or
+  another run. A 0.7.x kit cannot read a version-4 manifest: do not
+  downgrade the kit mid-migration.
+- **Unsigned manifests are terminal.** A pre-0.6.0 (version 1/2) or
+  0.6.0 manifest is never resumed by `--apply` / `adopt-prelink` and
+  never re-signed: roll it back (`--allow-unsigned-manifest`) or
+  finalize it, then start a new run with a new `--manifest`.
+- **Plaintext prior values need their own flag.** A version-1
+  manifest's plaintext values — including inside a manifest an older
+  kit resumed and signed — are restored only with
+  `--allow-plaintext-restore`, after you review them. A manifest
+  holding any is never resumed.
+- **0.7.0 manifests** (signed, no database binding) need
+  `--allow-unbound-manifest` for `rollback` and for a resumed
+  `--apply` / `adopt-prelink`; a resume binds them to the database it
+  runs against.
+  - Operator step, mid-migration on 0.7.0: run the 0.8.0 `rollback` or
+    `--apply` against the SAME database the manifest was written
+    against, with `--allow-unbound-manifest`. If you are not sure which
+    database wrote it, do not pass the flag.
+- **`rollback` refuses on ANY finalize marker** in the database (an
+  import's or a pre-link's, whatever the manifest claims), and when the
+  key-value store cannot be read (it used to log and trust the
+  manifest's flag). An unsigned manifest may delete a `ba-users` row
+  only when the host `users` document with that id exists.
+- **The linking proof is opt-in.** `from-payload-auth --apply` and
+  `adopt-prelink --apply` no longer grant `linkable` / `linkableEmail`
+  from `emailVerified` by default — the flag can be stale for an
+  address changed after it was verified, and the proof lets another
+  provider's sign-in for the address link to the document
+  (GHSA-v6mr). Every user still resolves through the pre-linked
+  `better-auth` identity.
+  - Operator step: to keep the old behaviour, review `emailVerified`
+    first (no address changed since it was verified), then pass
+    `--grant-linkable-from-verified`. Proofs granted by earlier runs
+    are not revoked; re-check them as for `_verified` (plugin 0.13.0, below).
+- **`verify` in adopt mode** now says it has nothing to compare and
+  points to the checksum procedure ("Verifying an adopt cutover" in
+  the migration guide), instead of failing on missing target
+  collections or `baId`.
+- **The doctor derives the source layout** from the loaded
+  payload-auth config (custom slugs need no `--source-map` there) and
+  prints it as a `--source-map` value for the other commands
+  (`sourceMap` in `--json`).
+- **Refused runs exit 1.** `from-payload-auth` and `adopt-prelink`
+  print `<command> failed: …` and exit 1 when a manifest is refused.
+>>>>>>> worktree-agent-ac1b42588150376f1
 
 ## plugin 0.13.0 / migrate 0.7.0 / provider-better-auth 0.10.0 / provider-authjs 0.6.0 (one minor across every package)
 

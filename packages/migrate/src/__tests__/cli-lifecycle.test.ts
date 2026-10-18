@@ -17,6 +17,7 @@
  *   them aborts the run); row `created_at` carries;
  * - `verify` tolerates sessions created after cutover.
  */
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -27,6 +28,7 @@ import { cliMain } from '../cli.js'
 import { introspectDatabase } from '../doctor/database.js'
 import { pluginStateUnmappable } from '../importer/apply.js'
 import type { SourceUser } from '../importer/source.js'
+import { signManifest } from '../importer/manifest-mac.js'
 import type { ImportManifest } from '../importer/types.js'
 
 const harnessPath = fileURLToPath(
@@ -59,6 +61,15 @@ const basicConfig = fileURLToPath(
 const adminConfig = fileURLToPath(
   new URL('../__fixtures__/import-target/admin.config.ts', import.meta.url)
 )
+/** The same app (same secret) against a second, rehearsal database. */
+const rehearsalConfig = fileURLToPath(
+  new URL('../__fixtures__/import-target/rehearsal.config.ts', import.meta.url)
+)
+/** `payload.secret` of the fixture app: Payload derives it from the config secret. */
+const appSecret = createHash('sha256')
+  .update('cli-lifecycle-secret-cli-lifecycle!')
+  .digest('hex')
+  .slice(0, 32)
 
 const canReachPostgres = await (async () => {
   try {
@@ -141,12 +152,19 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
     manifestPath = join(tmpdir(), `pal-cli-${Date.now()}.json`)
     client = harness.fixtureClient(database)
     await client.connect()
-    await client.query(adoptSchemaSql)
-    await client.query(targetSchemaSql)
-    // The Better Auth admin + anonymous plugin columns: on the source
-    // (payload-auth installed admin()) and on the target ba-* tables
-    // (push stays off on the payload-auth layout).
-    await client.query(`
+    await prepareTarget(client)
+  }, 240_000)
+
+  /**
+   * The additive target schema, plus the Better Auth admin + anonymous
+   * plugin columns: on the source (payload-auth installed admin()) and
+   * on the target ba-* tables (push stays off on the payload-auth
+   * layout).
+   */
+  async function prepareTarget(on: Client): Promise<void> {
+    await on.query(adoptSchemaSql)
+    await on.query(targetSchemaSql)
+    await on.query(`
       ALTER TABLE users ADD COLUMN banned boolean DEFAULT false;
       ALTER TABLE users ADD COLUMN ban_reason varchar;
       ALTER TABLE users ADD COLUMN ban_expires timestamptz;
@@ -160,7 +178,7 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
       ALTER TABLE ba_users ADD COLUMN IF NOT EXISTS is_anonymous boolean;
       ALTER TABLE ba_sessions ADD COLUMN IF NOT EXISTS impersonated_by varchar;
     `)
-  }, 240_000)
+  }
 
   afterAll(async () => {
     await client.end()
@@ -274,9 +292,38 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
     const raw = readFileSync(manifestPath, 'utf8')
     expect(raw).not.toMatch(/@example\.com/)
     const manifest = readManifestFile()
-    expect(manifest.version).toBe(3)
+    expect(manifest.version).toBe(4)
     expect(manifest.mac).toMatch(/^v2\./)
+    // Bound to THIS database and run (GHSA-crrr-3cg7-f6jw).
+    const ids = await query<{ data: { id: string } }>(
+      "SELECT data FROM payload_kv WHERE key = 'payload-auth-link/migrate/database-id'"
+    )
+    expect(manifest.databaseId).toBe(ids[0]?.data.id)
+    const runs = await query<{ data: { state: string } }>(
+      'SELECT data FROM payload_kv WHERE key = $1',
+      [`payload-auth-link/migrate/runs/${String(manifest.runId)}`]
+    )
+    expect(runs[0]?.data.state).toBe('open')
     expect(manifest.totals['user']).toBe(4)
+
+    // Timestamps (issue #113): ba_users.updated_at carries the SOURCE
+    // value, and the first apply bumps the host users' updated_at
+    // (rollback restores it — asserted below).
+    const beforeById = new Map(
+      (before.users as { id: number; updated_at: Date }[]).map((row) => [row.id, row.updated_at])
+    )
+    const baStamps = await query<{ ba_id: string; updated_at: Date }>(
+      'SELECT ba_id, updated_at FROM ba_users'
+    )
+    for (const row of baStamps) {
+      expect(row.updated_at, `ba_users ${row.ba_id}`).toEqual(beforeById.get(Number(row.ba_id)))
+    }
+    const hostStamps = await query<{ id: number; updated_at: Date }>(
+      'SELECT id, updated_at FROM users ORDER BY id'
+    )
+    expect(
+      hostStamps.some((row) => row.updated_at.getTime() !== beforeById.get(row.id)?.getTime())
+    ).toBe(true)
     expect(manifest.fieldWrites.every((write) => write.sealedBefore !== undefined)).toBe(true)
   })
 
@@ -330,10 +377,254 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
     }
   })
 
+  // --- GHSA-crrr-3cg7-f6jw: an edited manifest must not alter the database ---
+
+  test('GHSA-crrr case 1: an edited UNSIGNED manifest is never resumed or re-signed, and cannot delete a live user', async () => {
+    const signed = readFileSync(manifestPath, 'utf8')
+    const manifest = readManifestFile()
+    // A sign-up after cutover: a LIVE ba-users row with Better Auth's own id.
+    const live = await query<{ id: number }>(
+      `INSERT INTO ba_users (ba_id, email, name, email_verified)
+       VALUES ('live-ba-user-0001', 'live@example.com', 'Live', true) RETURNING id`
+    )
+    const liveId = live[0]?.id
+    const roleBefore = await query(
+      'SELECT parent_id, value FROM users_role ORDER BY parent_id, "order"'
+    )
+    const baBefore = await query('SELECT count(*)::int AS n FROM ba_users')
+    // The advisory's edit: an unsigned v1 manifest that lists the live
+    // row as created and sets users#3's role back to ["admin"] in plaintext.
+    const edited = {
+      version: 1,
+      createdAt: manifest.createdAt,
+      sourceDatabase: manifest.sourceDatabase,
+      options: manifest.options,
+      created: [
+        ...manifest.created,
+        { collection: 'ba-users', id: liveId, sourceKey: 'user:live-ba-user-0001' },
+      ],
+      fieldWrites: [{ collection: 'users', id: 3, field: 'role', before: '["admin"]' }],
+      finalized: false,
+      sourceCounts: manifest.sourceCounts,
+      totals: manifest.totals,
+    }
+    const editedText = JSON.stringify(edited)
+    try {
+      writeFileSync(manifestPath, editedText)
+      // 0.7.0 accepted this, re-signed it as v3 and exited 0.
+      const resumed = await run([
+        'from-payload-auth',
+        '--config',
+        adminConfig,
+        '--database-url',
+        url,
+        '--apply',
+        '--manifest',
+        manifestPath,
+        '--allow-unsigned-manifest',
+        '--allow-unbound-manifest',
+      ])
+      expect(resumed.code).toBe(1)
+      expect(resumed.err).toContain('never resumed or re-signed')
+      expect(readFileSync(manifestPath, 'utf8')).toBe(editedText)
+      // Rollback: deletes need their own flag, plaintext values another.
+      const noDeletes = await run([
+        'rollback',
+        '--config',
+        adminConfig,
+        '--manifest',
+        manifestPath,
+        '--allow-unsigned-manifest',
+      ])
+      expect(noDeletes.code).toBe(1)
+      expect(noDeletes.err).toContain('--allow-unsigned-deletes')
+      const noPlaintext = await run([
+        'rollback',
+        '--config',
+        adminConfig,
+        '--manifest',
+        manifestPath,
+        '--allow-unsigned-manifest',
+        '--allow-unsigned-deletes',
+      ])
+      expect(noPlaintext.code).toBe(1)
+      expect(noPlaintext.err).toContain('--allow-plaintext-restore')
+      // Every flag: the live row is still not provably an imported user.
+      const everything = await run([
+        'rollback',
+        '--config',
+        adminConfig,
+        '--manifest',
+        manifestPath,
+        '--allow-unsigned-manifest',
+        '--allow-unsigned-deletes',
+        '--allow-plaintext-restore',
+      ])
+      expect(everything.code).toBe(1)
+      expect(everything.err).toContain('no host document with that id')
+      expect(await query('SELECT count(*)::int AS n FROM ba_users')).toEqual(baBefore)
+      expect(await query('SELECT id FROM ba_users WHERE id = $1', [liveId])).toHaveLength(1)
+      expect(
+        await query('SELECT parent_id, value FROM users_role ORDER BY parent_id, "order"')
+      ).toEqual(roleBefore)
+      await expectNoLingeringConnections()
+    } finally {
+      writeFileSync(manifestPath, signed, { mode: 0o600 })
+      await client.query('DELETE FROM ba_users WHERE id = $1', [liveId])
+    }
+  })
+
+  test('GHSA-crrr case 3: a signed manifest from ANOTHER database (same secret) changes nothing there', async () => {
+    const db1Manifest = readFileSync(manifestPath, 'utf8')
+    // A rehearsal database: same app, same PAYLOAD_SECRET, its own run.
+    const other = await harness.loadFixtureDump('pal_cli_db2')
+    const target = harness.targetFromEnv(other)
+    const otherUrl = `postgres://${target.user}:${target.password}@${target.host}:${target.port}/${other}`
+    const otherClient = harness.fixtureClient(other)
+    await otherClient.connect()
+    const otherManifest = join(tmpdir(), `pal-cli-db2-${Date.now()}.json`)
+    const replay = join(tmpdir(), `pal-cli-replay-${Date.now()}.json`)
+    try {
+      await prepareTarget(otherClient)
+      process.env.PAL_MIGRATE_REHEARSAL_URL = otherUrl
+      const applied = await run([
+        'from-payload-auth',
+        '--config',
+        rehearsalConfig,
+        '--database-url',
+        otherUrl,
+        '--apply',
+        '--manifest',
+        otherManifest,
+      ])
+      expect(applied.code, applied.err).toBe(0)
+      const snapshot = async (): Promise<unknown[]> => [
+        (await otherClient.query('SELECT * FROM users ORDER BY id')).rows,
+        (await otherClient.query('SELECT count(*)::int AS n FROM ba_users')).rows,
+        (await otherClient.query('SELECT * FROM users_identities ORDER BY _parent_id, _order'))
+          .rows,
+      ]
+      const before2 = await snapshot()
+      writeFileSync(replay, db1Manifest, { mode: 0o600 })
+      for (const argv of [
+        ['rollback', '--config', rehearsalConfig, '--manifest', replay],
+        [
+          'from-payload-auth',
+          '--config',
+          rehearsalConfig,
+          '--database-url',
+          otherUrl,
+          '--apply',
+          '--manifest',
+          replay,
+        ],
+        ['finalize', '--config', rehearsalConfig, '--manifest', replay],
+      ]) {
+        const refused = await run(argv)
+        expect(refused.code, argv[0]).toBe(1)
+        expect(refused.err, argv[0]).toContain('different database')
+      }
+      // Finalized, the rehearsal database refuses it for that reason too.
+      const finalized = await run([
+        'finalize',
+        '--config',
+        rehearsalConfig,
+        '--manifest',
+        otherManifest,
+      ])
+      expect(finalized.code, finalized.err).toBe(0)
+      const afterFinalize = await run([
+        'rollback',
+        '--config',
+        rehearsalConfig,
+        '--manifest',
+        replay,
+      ])
+      expect(afterFinalize.code).toBe(1)
+      expect(await snapshot()).toEqual(before2)
+      expect(readFileSync(replay, 'utf8')).toBe(db1Manifest)
+    } finally {
+      await otherClient.end()
+      rmSync(otherManifest, { force: true })
+      rmSync(replay, { force: true })
+      await harness.dropDatabase(other)
+    }
+    await expectNoLingeringConnections()
+  })
+
+  test('a 0.7.0 manifest (signed, no database binding) needs --allow-unbound-manifest', async () => {
+    const signed = readFileSync(manifestPath, 'utf8')
+    const manifest = readManifestFile()
+    // What migrate 0.7.0 wrote: version 3, the same MAC scheme, no binding.
+    const legacy = signManifest(appSecret, {
+      ...manifest,
+      version: 3,
+      databaseId: undefined,
+      runId: undefined,
+    })
+    expect(legacy.version).toBe(3)
+    const baBefore = await query('SELECT count(*)::int AS n FROM ba_users')
+    try {
+      writeFileSync(manifestPath, JSON.stringify(legacy))
+      const refused = await run(['rollback', '--config', adminConfig, '--manifest', manifestPath])
+      expect(refused.code).toBe(1)
+      expect(refused.err).toContain('--allow-unbound-manifest')
+      expect(await query('SELECT count(*)::int AS n FROM ba_users')).toEqual(baBefore)
+    } finally {
+      writeFileSync(manifestPath, signed, { mode: 0o600 })
+    }
+  })
+
+  test('an unreadable key-value store fails closed: nothing is deleted on the word of the file', async () => {
+    const signed = readFileSync(manifestPath, 'utf8')
+    const manifest = readManifestFile()
+    const baBefore = await query('SELECT count(*)::int AS n FROM ba_users')
+    await client.query('ALTER TABLE payload_kv RENAME TO payload_kv_hidden')
+    try {
+      // Signed, or unsigned with every opt-in: both refused.
+      const genuine = await run(['rollback', '--config', adminConfig, '--manifest', manifestPath])
+      expect(genuine.code).toBe(1)
+      expect(genuine.err).toContain('key-value store')
+      writeFileSync(
+        manifestPath,
+        JSON.stringify({
+          ...manifest,
+          version: 2,
+          mac: undefined,
+          databaseId: undefined,
+          runId: undefined,
+        })
+      )
+      const unsigned = await run([
+        'rollback',
+        '--config',
+        adminConfig,
+        '--manifest',
+        manifestPath,
+        '--allow-unsigned-manifest',
+        '--allow-unsigned-deletes',
+        '--allow-plaintext-restore',
+      ])
+      expect(unsigned.code).toBe(1)
+      expect(unsigned.err).toContain('key-value store')
+      expect(await query('SELECT count(*)::int AS n FROM ba_users')).toEqual(baBefore)
+      await expectNoLingeringConnections()
+    } finally {
+      await client.query('ALTER TABLE payload_kv_hidden RENAME TO payload_kv')
+      writeFileSync(manifestPath, signed, { mode: 0o600 })
+    }
+  })
+
   test('rollback with an unsigned manifest deletes nothing without --allow-unsigned-deletes', async () => {
     const signed = readFileSync(manifestPath, 'utf8')
     const manifest = readManifestFile()
-    const downgraded = { ...manifest, version: 2, mac: undefined }
+    const downgraded = {
+      ...manifest,
+      version: 2,
+      mac: undefined,
+      databaseId: undefined,
+      runId: undefined,
+    }
     writeFileSync(manifestPath, JSON.stringify(downgraded))
     try {
       const baBefore = await query<{ n: number }>('SELECT count(*)::int AS n FROM ba_users')
@@ -402,6 +693,7 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
   })
 
   test('rollback after two applies restores the host users exactly and resets the manifest', async () => {
+    const preRollback = readFileSync(manifestPath, 'utf8')
     const result = await run(['rollback', '--config', adminConfig, '--manifest', manifestPath])
     expect(result.code, result.err).toBe(0)
     expect(result.out).toMatch(/rollback: \d+ row\(s\) deleted, \d+ field value\(s\) restored/)
@@ -433,6 +725,19 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
     expect(reset.created).toEqual([])
     expect(reset.fieldWrites).toEqual([])
     expect(reset.rolledBackAt).toBeDefined()
+
+    // The database closed the run: a copy of the pre-rollback manifest
+    // (signed, same database) can never replay its captured values.
+    const resetText = readFileSync(manifestPath, 'utf8')
+    try {
+      writeFileSync(manifestPath, preRollback)
+      const replayed = await run(['rollback', '--config', adminConfig, '--manifest', manifestPath])
+      expect(replayed.code).toBe(1)
+      expect(replayed.err).toContain('stale copy')
+      expect((await hostSnapshot()).users).toEqual(before.users)
+    } finally {
+      writeFileSync(manifestPath, resetText, { mode: 0o600 })
+    }
   })
 
   test('re-apply after rollback starts fresh; finalize prints and terminates', async () => {
@@ -483,12 +788,67 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
       writeFileSync(manifestPath, preFinalize)
       const stale = await run(['rollback', '--config', adminConfig, '--manifest', manifestPath])
       expect(stale.code).toBe(1)
-      expect(stale.err).toContain('database records this migration as finalized')
+      expect(stale.err).toContain('database records a finalized migration')
       await expectNoLingeringConnections()
     } finally {
       writeFileSync(manifestPath, finalizedText, { mode: 0o600 })
     }
     expect(await query('SELECT count(*)::int AS n FROM ba_users')).toEqual(baBefore)
+  })
+
+  test('GHSA-crrr case 2: on a finalized database, an unsigned manifest claiming adopt-prelink restores nothing', async () => {
+    const sealed = readManifestFile()
+    const hostBefore = await hostSnapshot()
+    const disguised = join(tmpdir(), `pal-cli-disguised-${Date.now()}.json`)
+    try {
+      writeFileSync(
+        disguised,
+        JSON.stringify({
+          version: 2,
+          kind: 'adopt-prelink',
+          createdAt: '2020-01-01T00:00:00.000Z',
+          sourceDatabase: sealed.sourceDatabase,
+          options: sealed.options,
+          created: [],
+          // The import's own sealed captures: genuine values, wrong run.
+          fieldWrites: sealed.fieldWrites,
+          finalized: false,
+          sourceCounts: {},
+          totals: {},
+        })
+      )
+      const refused = await run([
+        'rollback',
+        '--config',
+        adminConfig,
+        '--manifest',
+        disguised,
+        '--allow-unsigned-manifest',
+      ])
+      expect(refused.code).toBe(1)
+      expect(refused.err).toContain('records a finalized migration')
+      expect(await hostSnapshot()).toEqual(hostBefore)
+      await expectNoLingeringConnections()
+    } finally {
+      rmSync(disguised, { force: true })
+    }
+  })
+
+  test('verify on an adopt-mode config says so instead of a misleading failure (#113)', async () => {
+    const adopt = await run([
+      'verify',
+      '--config',
+      adminConfig,
+      '--database-url',
+      url,
+      '--slugs',
+      JSON.stringify({ user: 'users' }),
+    ])
+    expect(adopt.code).toBe(1)
+    expect(adopt.err).toContain('ADOPT mode')
+    expect(adopt.err).toContain('Verifying an adopt cutover')
+    expect(adopt.err).not.toContain('baId cannot be queried')
+    await expectNoLingeringConnections()
   })
 })
 

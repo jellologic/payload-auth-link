@@ -13,6 +13,14 @@ import type { ImportManifest } from './types.js'
  * arbitrary fields, nor reopen a finalized migration — and a re-run
  * never re-signs an edited file.
  *
+ * Binding (GHSA-crrr-3cg7-f6jw): a signature proves WHO wrote the file,
+ * not WHERE it belongs — a rehearsal database cloned from production
+ * shares its secret. A version-4 manifest therefore also carries the
+ * target database's id and its run's nonce, both inside the MAC, which
+ * `binding.ts` checks against the database's own record. Unsigned and
+ * 0.6.0 manifests are never re-signed: they are terminal (rollback or
+ * finalize only).
+ *
  * Two MAC schemes exist:
  *
  * - `v2.` covers EVERY field, `finalized` included: `finalize` boots
@@ -21,7 +29,7 @@ import type { ImportManifest } from './types.js'
  *   then loaded no Payload instance. Such a manifest still verifies —
  *   its rows and field writes are covered — but its `finalized` flag
  *   is not, so it authenticates as `signed-legacy` and destructive
- *   callers gate on that. The next write re-signs it under `v2.`.
+ *   callers gate on that. It is never re-signed (see Binding).
  */
 
 const macPrefix = 'v2.'
@@ -61,9 +69,37 @@ function macOf(secret: string, manifest: ImportManifest, scheme: MacScheme): str
   return `${scheme === 'v1' ? legacyMacPrefix : macPrefix}${digest.toString('base64url')}`
 }
 
-/** Stamp `manifest` as version 3 and sign every field under the app's secret. */
+/** A version-4 manifest: signed AND bound to its database and run. */
+export type BoundManifest = ImportManifest & {
+  readonly version: 4
+  readonly databaseId: string
+  readonly runId: string
+}
+
+/** Whether the manifest carries its (signed) database and run binding. */
+export function isBound(manifest: ImportManifest): manifest is BoundManifest {
+  return (
+    manifest.version === 4 &&
+    typeof manifest.databaseId === 'string' &&
+    manifest.databaseId !== '' &&
+    typeof manifest.runId === 'string' &&
+    manifest.runId !== ''
+  )
+}
+
+/**
+ * Sign every field under the app's secret. A manifest that names its
+ * database and run is stamped version 4 (GHSA-crrr-3cg7-f6jw); one
+ * without (only `finalize` of a 0.7.0 manifest writes that) stays
+ * version 3.
+ */
 export function signManifest(secret: string, manifest: ImportManifest): ImportManifest {
-  const unsigned: ImportManifest = { ...manifest, version: 3, mac: undefined }
+  const bound =
+    typeof manifest.databaseId === 'string' &&
+    manifest.databaseId !== '' &&
+    typeof manifest.runId === 'string' &&
+    manifest.runId !== ''
+  const unsigned: ImportManifest = { ...manifest, version: bound ? 4 : 3, mac: undefined }
   return { ...unsigned, mac: macOf(secret, unsigned, 'v2') }
 }
 
@@ -99,6 +135,19 @@ export function authenticateManifest(
   manifest: ImportManifest,
   options: { readonly allowUnsigned?: boolean | undefined } = {}
 ): ManifestTrust {
+  if (manifest.version === 4) {
+    const mac = typeof manifest.mac === 'string' ? manifest.mac : ''
+    if (
+      isBound(manifest) &&
+      mac.startsWith(macPrefix) &&
+      macMatches(macOf(secret, manifest, 'v2'), mac)
+    ) {
+      return 'signed'
+    }
+    throw new Error(
+      'the manifest failed its integrity check: it was edited, or written by an app with a different PAYLOAD_SECRET. Refusing to use it — run against the same app that wrote it, with the manifest it wrote'
+    )
+  }
   if (manifest.version === 3) {
     const mac = typeof manifest.mac === 'string' ? manifest.mac : ''
     if (mac.startsWith(macPrefix) && macMatches(macOf(secret, manifest, 'v2'), mac)) {
@@ -113,7 +162,17 @@ export function authenticateManifest(
   }
   if (options.allowUnsigned !== true) {
     throw new Error(
-      `the manifest is version ${String(manifest.version)} (written before 0.6.0) and carries no integrity check. If you are sure nobody has edited it, re-run with --allow-unsigned-manifest; the next write signs it`
+      `the manifest is version ${String(manifest.version)} (written before 0.6.0) and carries no integrity check. If you are sure nobody has edited it and it was written against THIS database, re-run with --allow-unsigned-manifest; it can then be rolled back or finalized, never resumed or re-signed`
+    )
+  }
+  if (manifest.databaseId !== undefined || manifest.runId !== undefined) {
+    throw new Error(
+      `the version-${String(manifest.version)} manifest names a database or run, which only a signed version-4 manifest does (edited manifest?); refusing to use it`
+    )
+  }
+  if (manifest.version === 1 && manifest.kind !== undefined && manifest.kind !== 'import') {
+    throw new Error(
+      `the version-1 manifest claims kind '${String(manifest.kind)}', but version 1 only ever recorded imports (edited manifest?); refusing to use it`
     )
   }
   if (manifest.version === 2 && manifest.fieldWrites.some((write) => write.before !== undefined)) {
