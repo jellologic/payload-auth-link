@@ -77,24 +77,37 @@ Commands:
   from-payload-auth --config ./src/payload.config.ts [--apply] [--sessions=carry|drop]
                     [--manifest ./payload-auth-link-migration.json] [--database-url URL] [--json]
                     [--source-map '{"accounts":"user_accounts","sessions":"user_sessions"}']
+                    [--grant-linkable-from-verified]  (grant the linking proof
+                    from the source emailVerified flag; off by default — the
+                    flag can be stale for a changed address)
   verify            --config ./src/payload.config.ts [--database-url URL] [--json]
                     [--source-map '{"accounts":"user_accounts","sessions":"user_sessions"}']
+                    (import mode only; adopt mode has nothing to compare —
+                    see "Verifying an adopt cutover" in the migration guide)
   rollback          --config ./src/payload.config.ts [--manifest ...] [--slugs JSON]
                     [--allow-unsigned-manifest]  (a manifest without a full
                     signature: pre-0.6.0, or 0.6.0's which leaves 'finalized'
-                    unsigned; also accepted by from-payload-auth /
-                    adopt-prelink / finalize when resuming)
+                    unsigned. Such a manifest is terminal: rollback or
+                    finalize only, never resumed or re-signed)
                     [--allow-unsigned-deletes]  (with an UNSIGNED manifest,
-                    also delete its created rows and restore plaintext
-                    values; without it an unsigned rollback deletes nothing)
+                    also delete its created rows; without it an unsigned
+                    rollback deletes nothing)
+                    [--allow-plaintext-restore]  (restore a pre-0.6.0
+                    manifest's plaintext prior values, after reviewing them)
+                    [--allow-unbound-manifest]  (a signed manifest from
+                    migrate <= 0.7.0, which names no database: you vouch it
+                    was written against THIS database; also accepted by
+                    from-payload-auth / adopt-prelink when resuming)
   finalize          --config ./src/payload.config.ts [--manifest ...]
                     (records the finalize in the app's database and
                     re-signs the manifest; rollback is refused afterwards)
   adopt-prelink     --config ./src/payload.config.ts [--apply] [--json]
                     [--manifest ./payload-auth-link-prelink.json]
                     [--users-slug users] [--verified-field emailVerified]
-                    (adopt mode: one better-auth identity per user, plus the
-                    linking proof for verified emails; undo with
+                    [--grant-linkable-from-verified]
+                    (adopt mode: one better-auth identity per user; with
+                    --grant-linkable-from-verified also the linking proof
+                    for verified emails. Undo with
                     rollback --manifest ./payload-auth-link-prelink.json)
 
   --source-map renames source models to your layout's tables (custom
@@ -122,8 +135,11 @@ Commands:
   otherwise. It holds ids and sealed values only (no emails in the
   clear; sealed with the app's PAYLOAD_SECRET, so rollback must run
   against the same app) and is written with mode 0600. It is signed
-  with the same secret: rollback, finalize, and a resumed --apply
-  refuse an edited manifest. Delete it once
+  with the same secret and bound to the database it was written
+  against (an id kept in that database's payload-kv) and to its run:
+  rollback, finalize, and a resumed --apply refuse an edited manifest,
+  and one from another environment or another run. Never roll back
+  with a manifest from another environment or run. Delete it once
   the migration is finalized and your soak window has passed.
 
   codemod rewrites the three named payload-auth call-site patterns
@@ -216,6 +232,12 @@ function formatReport(report: DoctorReport): string {
     for (const orphan of report.database.orphans) {
       lines.push(`  ORPHANS ${orphan.kind}: ${orphan.count}`)
     }
+  }
+  if (report.sourceMap !== undefined) {
+    lines.push('')
+    lines.push('== source layout (derived from the payload-auth config) ==')
+    lines.push(`  --source-map '${JSON.stringify(report.sourceMap)}'`)
+    lines.push('  (pass it to from-payload-auth, verify, and export)')
   }
   lines.push('')
   lines.push('== behaviour changes that will bite (0.7.0) ==')
@@ -443,18 +465,29 @@ async function main(
     if (command === 'adopt-prelink') {
       const usersSlug = flags.get('users-slug')
       const verifiedField = flags.get('verified-field')
-      const result = await runAdoptPrelink({
-        configPath: new URL(configFlag, `file://${process.cwd()}/`).pathname,
-        apply: flags.get('apply') === true,
-        json,
-        log,
-        ...(typeof flags.get('manifest') === 'string'
-          ? { manifestPath: flags.get('manifest') as string }
-          : {}),
-        ...(typeof usersSlug === 'string' ? { usersSlug } : {}),
-        ...(typeof verifiedField === 'string' ? { verifiedField } : {}),
-        allowUnsignedManifest: flags.get('allow-unsigned-manifest') === true,
-      })
+      let result: Awaited<ReturnType<typeof runAdoptPrelink>>
+      try {
+        result = await runAdoptPrelink({
+          configPath: new URL(configFlag, `file://${process.cwd()}/`).pathname,
+          apply: flags.get('apply') === true,
+          json,
+          log,
+          ...(typeof flags.get('manifest') === 'string'
+            ? { manifestPath: flags.get('manifest') as string }
+            : {}),
+          ...(typeof usersSlug === 'string' ? { usersSlug } : {}),
+          ...(typeof verifiedField === 'string' ? { verifiedField } : {}),
+          allowUnsignedManifest: flags.get('allow-unsigned-manifest') === true,
+          allowUnboundManifest: flags.get('allow-unbound-manifest') === true,
+          grantLinkableFromVerified: flags.get('grant-linkable-from-verified') === true,
+        })
+      } catch (error) {
+        // A refused run (an edited or foreign manifest) exits 1, named.
+        err.write(
+          `adopt-prelink failed: ${error instanceof Error ? error.message : String(error)}\n`
+        )
+        return 1
+      }
       if (json) {
         out.write(`${JSON.stringify(result, null, 2)}\n`)
       }
@@ -488,9 +521,21 @@ async function main(
       log,
       allowUnsignedManifest: flags.get('allow-unsigned-manifest') === true,
       allowUnsignedDeletes: flags.get('allow-unsigned-deletes') === true,
+      allowPlaintextRestore: flags.get('allow-plaintext-restore') === true,
+      allowUnboundManifest: flags.get('allow-unbound-manifest') === true,
+      grantLinkableFromVerified: flags.get('grant-linkable-from-verified') === true,
     }
     if (command === 'from-payload-auth') {
-      const outcome = await runFromPayloadAuth(importOptions)
+      let outcome: Awaited<ReturnType<typeof runFromPayloadAuth>>
+      try {
+        outcome = await runFromPayloadAuth(importOptions)
+      } catch (error) {
+        // A refused run (an edited or foreign manifest) exits 1, named.
+        err.write(
+          `from-payload-auth failed: ${error instanceof Error ? error.message : String(error)}\n`
+        )
+        return 1
+      }
       if (json) {
         out.write(
           `${JSON.stringify(
@@ -518,7 +563,13 @@ async function main(
       return 0
     }
     if (command === 'verify') {
-      const result = await runVerify(importOptions)
+      let result: Awaited<ReturnType<typeof runVerify>>
+      try {
+        result = await runVerify(importOptions)
+      } catch (error) {
+        err.write(`verify failed: ${error instanceof Error ? error.message : String(error)}\n`)
+        return 1
+      }
       if (json) {
         out.write(`${JSON.stringify(result, null, 2)}\n`)
       }

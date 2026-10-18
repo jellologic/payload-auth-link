@@ -497,9 +497,23 @@ describe.skipIf(!canReachPostgres)(
       })
       expect(result.users).toBe(4)
       expect(result.linked).toBe(4)
-      // alice + carol are verified; bob + dave get the identity only.
-      expect(result.proofGranted).toBe(2)
+      // alice + carol are verified, but the proof is NOT granted from
+      // the emailVerified mirror by default (GHSA-mjvh follow-up): it
+      // can be stale for an address changed after verification.
+      expect(result.proofGranted).toBe(0)
+      expect(result.proofWithheld).toBe(2)
       expect(result.unverified).toBe(2)
+      expect(lines.join('\n')).toContain('--grant-linkable-from-verified')
+      // With the explicit opt-in, the two verified users get it.
+      const optedIn = await runAdoptPrelink({
+        configPath: 'unused',
+        apply: false,
+        manifestPath: prelinkManifest,
+        grantLinkableFromVerified: true,
+        loadPayload: () => Promise.resolve(payload),
+      })
+      expect(optedIn.proofGranted).toBe(2)
+      expect(optedIn.proofWithheld).toBe(0)
       expect(lines.join('\n')).toContain('dry run: nothing was written')
       expect(existsSync(prelinkManifest)).toBe(false)
       expect((await rawUsers()).identities).toEqual(identitiesBefore)
@@ -510,6 +524,7 @@ describe.skipIf(!canReachPostgres)(
         configPath: 'unused',
         apply: true,
         manifestPath: prelinkManifest,
+        grantLinkableFromVerified: true,
         loadPayload: () => Promise.resolve(payload),
       })
       expect(result.linked).toBe(4)

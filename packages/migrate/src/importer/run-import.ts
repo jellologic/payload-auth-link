@@ -8,6 +8,7 @@ import {
   finalizeManifest,
   readManifest,
   rollbackImport,
+  verifyAdoptUnsupported,
   verifyImport,
   type VerifyResult,
 } from './lifecycle.js'
@@ -68,10 +69,25 @@ export type ImportCommandOptions = {
   readonly allowUnsignedManifest?: boolean | undefined
   /**
    * `rollback` only (`--allow-unsigned-deletes`): let an UNSIGNED
-   * manifest delete its created rows and restore plaintext values.
-   * Without it, `--allow-unsigned-manifest` never deletes anything.
+   * manifest delete its created rows. Without it,
+   * `--allow-unsigned-manifest` never deletes anything.
    */
   readonly allowUnsignedDeletes?: boolean | undefined
+  /**
+   * `rollback` only (`--allow-plaintext-restore`): restore a pre-0.6.0
+   * manifest's PLAINTEXT prior values after reviewing them.
+   */
+  readonly allowPlaintextRestore?: boolean | undefined
+  /**
+   * Accept a fully signed manifest written by migrate 0.7.0 or earlier,
+   * which names no database (`--allow-unbound-manifest`).
+   */
+  readonly allowUnboundManifest?: boolean | undefined
+  /**
+   * `from-payload-auth` only (`--grant-linkable-from-verified`): grant
+   * the linking proof from the source `emailVerified` flag.
+   */
+  readonly grantLinkableFromVerified?: boolean | undefined
 }
 
 const log_ = (options: Pick<ImportCommandOptions, 'log'>): ((message: string) => void) =>
@@ -111,6 +127,33 @@ function configCollectionSlugs(config: unknown): readonly string[] {
     }
   }
   return slugs
+}
+
+/** Whether the config's user TARGET collection declares the importer's `baId` key. */
+function declaresBaId(config: unknown, userSlug: string): boolean {
+  if (!isRecord(config) || !Array.isArray(config['collections'])) {
+    return false
+  }
+  for (const entry of config['collections']) {
+    if (isRecord(entry) && entry['slug'] === userSlug && Array.isArray(entry['fields'])) {
+      return (entry['fields'] as unknown[]).some(
+        (field) => isRecord(field) && field['name'] === 'baId'
+      )
+    }
+  }
+  return false
+}
+
+/** Whether the config installs payload-auth-link (its plugin entry carries the slug). */
+function installsAuthLink(config: unknown): boolean {
+  return (
+    isRecord(config) &&
+    Array.isArray(config['plugins']) &&
+    (config['plugins'] as unknown[]).some(
+      (plugin) =>
+        typeof plugin === 'function' && (plugin as { slug?: unknown }).slug === 'payload-auth-link'
+    )
+  )
 }
 
 /**
@@ -419,13 +462,17 @@ export async function runFromPayloadAuth(options: ImportCommandOptions): Promise
       sourceTables,
       log,
       allowUnsignedManifest: options.allowUnsignedManifest,
+      allowUnboundManifest: options.allowUnboundManifest,
+      grantLinkableFromVerified: options.grantLinkableFromVerified,
     })
   )
   const plan: ImportPlan = {
     ...result.plan,
     warnings: [
       ...result.plan.warnings,
-      `${unverified.length} unverified user(s) will NOT be granted the linkable proof`,
+      options.grantLinkableFromVerified === true
+        ? `${unverified.length} unverified user(s) will NOT be granted the linkable proof`
+        : 'no user is granted the linkable proof (pass --grant-linkable-from-verified to grant it from the source emailVerified flag, after checking it is current); every user still resolves through the pre-linked identity',
     ],
   }
 
@@ -461,6 +508,13 @@ export async function runFromPayloadAuth(options: ImportCommandOptions): Promise
 export async function runVerify(options: ImportCommandOptions): Promise<VerifyResult> {
   const log = log_(options)
 
+  // Adopt mode first (issue #113): verify has nothing to compare there.
+  if (options.loadPayload === undefined) {
+    const { config } = await loadConfigModule(options.configPath)
+    if (installsAuthLink(config) && !declaresBaId(config, slugsOf(options).user)) {
+      throw new Error(verifyAdoptUnsupported)
+    }
+  }
   // The config pre-flight runs first (issue #75), then the probe
   // (issue #68): a missing mapped table fails the check with a
   // blocker — before any Payload boot or read.
@@ -531,6 +585,8 @@ export async function runRollback(
         slugs: slugsOf(options),
         allowUnsignedManifest: options.allowUnsignedManifest,
         allowUnsignedDeletes: options.allowUnsignedDeletes,
+        allowPlaintextRestore: options.allowPlaintextRestore,
+        allowUnboundManifest: options.allowUnboundManifest,
       }),
     requireTargets
   )
@@ -584,7 +640,15 @@ export async function runFinalize(options: FinalizeCommandOptions): Promise<Impo
 /** Options for `adopt-prelink` (issue #88). */
 export type PrelinkCommandOptions = Pick<
   ImportCommandOptions,
-  'configPath' | 'apply' | 'manifestPath' | 'json' | 'log' | 'loadPayload' | 'allowUnsignedManifest'
+  | 'configPath'
+  | 'apply'
+  | 'manifestPath'
+  | 'json'
+  | 'log'
+  | 'loadPayload'
+  | 'allowUnsignedManifest'
+  | 'allowUnboundManifest'
+  | 'grantLinkableFromVerified'
 > & {
   readonly usersSlug?: string | undefined
   readonly verifiedField?: string | undefined
@@ -627,6 +691,8 @@ export async function runAdoptPrelink(options: PrelinkCommandOptions): Promise<P
         verifiedField: options.verifiedField,
         log,
         allowUnsignedManifest: options.allowUnsignedManifest,
+        allowUnboundManifest: options.allowUnboundManifest,
+        grantLinkableFromVerified: options.grantLinkableFromVerified,
       }),
     false
   )
@@ -634,6 +700,11 @@ export async function runAdoptPrelink(options: PrelinkCommandOptions): Promise<P
     log(
       `  users ${result.users}: ${result.linked} to link, ${result.alreadyLinked} already linked, ${result.proofGranted} verified-email proof grant(s), ${result.unverified} unverified (identity only)`
     )
+    if (result.proofWithheld > 0) {
+      log(
+        `  ${result.proofWithheld} verified user(s) get the identity only: the linking proof is not granted from the '${options.verifiedField ?? 'emailVerified'}' mirror by default (it can be stale for a changed address). Pass --grant-linkable-from-verified after checking it is current`
+      )
+    }
     for (const row of result.unmappable) {
       log(`  X ${row.model} #${row.key}: ${row.reason}`)
     }

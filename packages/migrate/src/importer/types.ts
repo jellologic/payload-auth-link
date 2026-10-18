@@ -11,6 +11,14 @@
  *
  * Integrity: a version-3 manifest is signed (`mac`), and rollback,
  * finalize, or a resumed run refuses one that does not verify.
+ *
+ * Binding (GHSA-crrr-3cg7-f6jw): a version-4 manifest also names the
+ * DATABASE it was written against (`databaseId`, a random id the kit
+ * stores in that database's key-value store on the first `--apply`)
+ * and its RUN (`runId`, a per-run nonce the database records as open,
+ * rolled back, or finalized). Both sit inside the signature, and every
+ * command checks them against the database before it writes, so a
+ * manifest from another environment or another run is refused.
  */
 export type CreatedRow = {
   /** Target collection slug. */
@@ -43,7 +51,7 @@ export type FieldWrite = {
 export type ManifestKind = 'import' | 'adopt-prelink'
 
 export type ImportManifest = {
-  readonly version: 1 | 2 | 3
+  readonly version: 1 | 2 | 3 | 4
   /** The producing command; absent on version-1 manifests (imports). */
   readonly kind?: ManifestKind | undefined
   readonly createdAt: string
@@ -62,6 +70,18 @@ export type ImportManifest = {
   readonly rolledBackAt?: string | undefined
   /** When `finalize` ran (recorded alongside the database marker). */
   readonly finalizedAt?: string | undefined
+  /**
+   * Version 4: the id of the database this manifest belongs to (stored
+   * in that database's Payload key-value store on the first `--apply`).
+   * Absent on manifests written by migrate 0.7.0 and earlier.
+   */
+  readonly databaseId?: string | undefined
+  /**
+   * Version 4: this run's random nonce. The database records each run's
+   * state (open, rolled back, finalized); a manifest whose run the
+   * database does not hold as open is never resumed or rolled back.
+   */
+  readonly runId?: string | undefined
   /**
    * Version 3: HMAC over the whole manifest, keyed from the target
    * app's Payload secret. `v2.` MACs cover every field; 0.6.0's `v1.`
