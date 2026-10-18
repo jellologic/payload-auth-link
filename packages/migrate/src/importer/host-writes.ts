@@ -16,7 +16,9 @@ import type { FieldWrite, ImportManifest } from './types.js'
  * email addresses) are sealed with AES-256-GCM under a key derived
  * from the target app's Payload `secret`; the manifest stores no value
  * in the clear. Rollback needs the same secret — it boots the same
- * app.
+ * app. Each value is bound (GCM associated data) to its entry AND to
+ * the database id and run nonce of the manifest that captured it
+ * (GHSA-xw9m-ph95-84rx), so it opens in no other manifest.
  *
  * Restore: rollback writes the captured values back through the
  * DATABASE ADAPTER (`payload.db.updateOne`), not the Local API
@@ -29,52 +31,131 @@ import type { FieldWrite, ImportManifest } from './types.js'
  * `users_role` with new row ids; their values and order are intact).
  */
 
-const sealPrefix = 'v1.'
+/** Seals written by migrate 0.5–0.8.0: bound to the entry only. */
+const legacySealPrefix = 'v1.'
+/** Seals written since 0.8.1: bound to the entry AND its database and run. */
+const boundSealPrefix = 'v2.'
+
+type SealScheme = 'v1' | 'v2'
 
 const writeKey = (collection: string, id: string | number, field: string): string =>
   `${collection}\u0000${String(id)}\u0000${field}`
 
-function keyFor(secret: string): Buffer {
+function keyFor(secret: string, scheme: SealScheme): Buffer {
   return createHash('sha256')
-    .update('payload-auth-link/migrate/manifest-seal/v1\u0000')
+    .update(`payload-auth-link/migrate/manifest-seal/${scheme}\u0000`)
     .update(secret)
     .digest()
 }
 
 /**
- * Seal one JSON-serialized value under the app's Payload secret. The
- * entry it belongs to (`collection\0id\0field`) is bound as GCM
- * associated data, so a sealed value cannot be moved onto another
- * entry of the manifest.
+ * The run a sealed value belongs to (GHSA-xw9m-ph95-84rx): the
+ * database id and run nonce of the version-4 manifest that captured
+ * it.
  */
-export function sealValue(secret: string, plaintext: string, entry: string): string {
-  const iv = randomBytes(12)
-  const cipher = createCipheriv('aes-256-gcm', keyFor(secret), iv)
-  cipher.setAAD(Buffer.from(entry, 'utf8'))
-  const body = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
-  const tag = cipher.getAuthTag()
-  return `${sealPrefix}${Buffer.concat([iv, tag, body]).toString('base64url')}`
+export type SealScope = {
+  readonly databaseId: string
+  readonly runId: string
 }
 
-/** Open a sealed value; throws when the secret is not the sealing one. */
-export function unsealValue(secret: string, sealed: string, entry: string): string {
-  if (!sealed.startsWith(sealPrefix)) {
-    throw new Error('manifest value is not a sealed v1 value')
+const boundAad = (scope: SealScope, entry: string): string =>
+  `${scope.databaseId}\u0000${scope.runId}\u0000${entry}`
+
+function seal(secret: string, scheme: SealScheme, plaintext: string, aad: string): string {
+  const iv = randomBytes(12)
+  const cipher = createCipheriv('aes-256-gcm', keyFor(secret, scheme), iv)
+  cipher.setAAD(Buffer.from(aad, 'utf8'))
+  const body = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
+  const tag = cipher.getAuthTag()
+  const prefix = scheme === 'v1' ? legacySealPrefix : boundSealPrefix
+  return `${prefix}${Buffer.concat([iv, tag, body]).toString('base64url')}`
+}
+
+/**
+ * Seal one JSON-serialized value under the app's Payload secret. The
+ * entry it belongs to (`collection\0id\0field`) AND the run that
+ * captured it (database id + run nonce) are bound as GCM associated
+ * data (GHSA-xw9m-ph95-84rx), so a sealed value can be moved neither
+ * onto another entry nor into another manifest — not even an unsigned
+ * one, which names no run and therefore opens no such value.
+ */
+export function sealValue(
+  secret: string,
+  plaintext: string,
+  entry: string,
+  scope: SealScope
+): string {
+  return seal(secret, 'v2', plaintext, boundAad(scope, entry))
+}
+
+/**
+ * Seal a value the way migrate 0.5–0.8.0 did (entry-bound only). The
+ * kit never writes these any more; kept so the legacy read path stays
+ * tested.
+ */
+export function sealLegacyValue(secret: string, plaintext: string, entry: string): string {
+  return seal(secret, 'v1', plaintext, entry)
+}
+
+/**
+ * Open a sealed value. A run-bound (`v2.`) value opens only for the
+ * run that sealed it: `scope` is the database id and run nonce of the
+ * (signed, database-checked) manifest it was read from, `null` for a
+ * manifest that names none. An entry-bound (`v1.`) value from an older
+ * kit opens on its entry alone — the caller has already decided the
+ * manifest may be used (it is signed, or it is an unsigned pre-0.6.0
+ * manifest on a database that never ran 0.8.0 or later). Throws when
+ * the secret, the entry, or the run is not the sealing one.
+ */
+export function unsealValue(
+  secret: string,
+  sealed: string,
+  entry: string,
+  scope: SealScope | null
+): string {
+  let scheme: SealScheme
+  let aad: string
+  if (sealed.startsWith(boundSealPrefix)) {
+    if (scope === null) {
+      throw new Error(
+        'cannot open the manifest: it holds a value sealed for a specific database and run, and the manifest names none (a value copied out of a version-4 manifest?) — refusing to restore it'
+      )
+    }
+    scheme = 'v2'
+    aad = boundAad(scope, entry)
+  } else if (sealed.startsWith(legacySealPrefix)) {
+    scheme = 'v1'
+    aad = entry
+  } else {
+    throw new Error('manifest value is not a sealed value this kit wrote')
   }
-  const raw = Buffer.from(sealed.slice(sealPrefix.length), 'base64url')
+  const prefixLength = scheme === 'v1' ? legacySealPrefix.length : boundSealPrefix.length
+  const raw = Buffer.from(sealed.slice(prefixLength), 'base64url')
   const iv = raw.subarray(0, 12)
   const tag = raw.subarray(12, 28)
   const body = raw.subarray(28)
-  const decipher = createDecipheriv('aes-256-gcm', keyFor(secret), iv)
+  const decipher = createDecipheriv('aes-256-gcm', keyFor(secret, scheme), iv)
   decipher.setAuthTag(tag)
-  decipher.setAAD(Buffer.from(entry, 'utf8'))
+  decipher.setAAD(Buffer.from(aad, 'utf8'))
   try {
     return Buffer.concat([decipher.update(body), decipher.final()]).toString('utf8')
   } catch {
     throw new Error(
-      'cannot open the manifest: a value was sealed with a different PAYLOAD_SECRET or for a different entry (edited manifest) — run rollback against the same app (same secret) that ran the import, with the manifest it wrote'
+      'cannot open the manifest: a value was sealed with a different PAYLOAD_SECRET, for a different entry, or for a different database or run (edited manifest) — run rollback against the same app (same secret) that ran the import, with the manifest it wrote'
     )
   }
+}
+
+/** The run scope a manifest's sealed values are opened under. */
+export function sealScopeOf(
+  manifest: Pick<ImportManifest, 'databaseId' | 'runId'>
+): SealScope | null {
+  return typeof manifest.databaseId === 'string' &&
+    manifest.databaseId !== '' &&
+    typeof manifest.runId === 'string' &&
+    manifest.runId !== ''
+    ? { databaseId: manifest.databaseId, runId: manifest.runId }
+    : null
 }
 
 /**
@@ -108,7 +189,11 @@ export function priorValue(
   secret: string,
   write: FieldWrite,
   restorable: ReadonlySet<string> = restorableFields,
-  options: { readonly allowPlaintext?: boolean | undefined } = {}
+  options: {
+    readonly allowPlaintext?: boolean | undefined
+    /** The manifest's run (see {@link sealScopeOf}); `null` when it names none. */
+    readonly scope?: SealScope | null | undefined
+  } = {}
 ): unknown {
   if (!restorable.has(write.field)) {
     throw new Error(
@@ -117,7 +202,12 @@ export function priorValue(
   }
   if (write.sealedBefore !== undefined) {
     return JSON.parse(
-      unsealValue(secret, write.sealedBefore, writeKey(write.collection, write.id, write.field))
+      unsealValue(
+        secret,
+        write.sealedBefore,
+        writeKey(write.collection, write.id, write.field),
+        options.scope ?? null
+      )
     ) as unknown
   }
   // Version-1 manifests stored the value in the clear.
@@ -149,8 +239,15 @@ export async function captureBefore(options: {
   readonly fields: readonly string[]
   readonly captured: Set<string>
   readonly into: FieldWrite[]
-}): Promise<{ readonly present: ReadonlySet<string>; readonly newlyCaptured: number }> {
-  const { payload, collection, id, fields, captured, into } = options
+  /** The run the values are sealed for (GHSA-xw9m-ph95-84rx). */
+  readonly scope: SealScope
+}): Promise<{
+  readonly present: ReadonlySet<string>
+  readonly newlyCaptured: number
+  /** The document as read before the write. */
+  readonly before: Readonly<Record<string, unknown>> | undefined
+}> {
+  const { payload, collection, id, fields, captured, into, scope } = options
   const doc: unknown = await payload.findByID({
     collection,
     id,
@@ -177,11 +274,111 @@ export async function captureBefore(options: {
       collection,
       id,
       field,
-      sealedBefore: sealValue(payload.secret, JSON.stringify(record[field] ?? null), key),
+      sealedBefore: sealValue(payload.secret, JSON.stringify(record[field] ?? null), key, scope),
     })
     newlyCaptured += 1
   }
-  return { present, newlyCaptured }
+  return { present, newlyCaptured, before: record }
+}
+
+/** A database transaction id, as `payload.db.beginTransaction` returns it. */
+export type TransactionId = string | number
+
+/** The adapter's transaction API, reached structurally (absent on some adapters). */
+type TransactionApi = {
+  readonly beginTransaction: () => Promise<TransactionId | null>
+  readonly commitTransaction: (id: TransactionId) => Promise<void>
+  readonly rollbackTransaction: (id: TransactionId) => Promise<void>
+}
+
+function transactionApi(payload: Payload): TransactionApi | null {
+  const db: unknown = (payload as { db?: unknown }).db
+  if (
+    typeof db === 'object' &&
+    db !== null &&
+    typeof (db as Record<string, unknown>)['beginTransaction'] === 'function' &&
+    typeof (db as Record<string, unknown>)['commitTransaction'] === 'function' &&
+    typeof (db as Record<string, unknown>)['rollbackTransaction'] === 'function'
+  ) {
+    return db as unknown as TransactionApi
+  }
+  return null
+}
+
+/**
+ * Run `work` inside ONE database transaction when the adapter provides
+ * one (Postgres, SQLite; MongoDB on a replica set): it commits when
+ * `work` resolves and rolls back when it throws, so a failed step
+ * leaves nothing half-applied. `work` receives the transaction id
+ * (`null` when the adapter has none — then each write commits on its
+ * own, and the caller documents how a re-run completes the work).
+ *
+ * Every Local API call inside must pass `req: { transactionID }` (a
+ * FRESH object per call) and stop at its first failure: Payload rolls
+ * the shared transaction back as soon as one operation throws.
+ */
+export async function inTransaction<T>(
+  payload: Payload,
+  work: (transactionID: TransactionId | null) => Promise<T>
+): Promise<T> {
+  const api = transactionApi(payload)
+  const id = api === null ? null : await api.beginTransaction()
+  if (api === null || id === null) {
+    return work(null)
+  }
+  let result: T
+  try {
+    result = await work(id)
+  } catch (error) {
+    await api.rollbackTransaction(id)
+    throw error
+  }
+  await api.commitTransaction(id)
+  return result
+}
+
+/** A Local API / adapter `req` carrying the transaction, or nothing. */
+export function transactionReq(
+  transactionID: TransactionId | null
+): { readonly req: { transactionID: TransactionId } } | Record<string, never> {
+  return transactionID === null ? {} : { req: { transactionID } }
+}
+
+/**
+ * Write host fields through the Local API (hooks, validation, array
+ * row ids) WITHOUT moving the document's `updatedAt` (issue #116):
+ * Payload's update operation always stamps a fresh `updatedAt`, so the
+ * captured value is written back through the adapter right after, in
+ * the same transaction. Hosts and caches that key on `updated_at`
+ * see the document as unchanged by the migration tooling.
+ */
+export async function updateKeepingTimestamp(
+  payload: Payload,
+  options: {
+    readonly collection: string
+    readonly id: string | number
+    readonly data: Record<string, unknown>
+    readonly updatedAt: unknown
+  }
+): Promise<void> {
+  await inTransaction(payload, async (transactionID) => {
+    await payload.update({
+      collection: options.collection,
+      id: options.id,
+      data: options.data,
+      overrideAccess: true,
+      ...transactionReq(transactionID),
+    })
+    if (typeof options.updatedAt === 'string' && options.updatedAt !== '') {
+      await payload.db.updateOne({
+        collection: options.collection,
+        id: options.id,
+        data: { updatedAt: options.updatedAt },
+        returning: false,
+        ...transactionReq(transactionID),
+      })
+    }
+  })
 }
 
 /**
@@ -191,23 +388,30 @@ export async function captureBefore(options: {
  */
 export async function restoreCaptured(
   payload: Payload,
-  manifest: Pick<ImportManifest, 'fieldWrites'>,
+  manifest: Pick<ImportManifest, 'fieldWrites' | 'databaseId' | 'runId'>,
   options: {
     readonly rolesField?: string | undefined
     /** Restore version-1 plaintext values (`--allow-plaintext-restore`). */
     readonly allowPlaintext?: boolean | undefined
+    /** The rollback's transaction (see {@link inTransaction}). */
+    readonly transactionID?: TransactionId | null | undefined
   } = {}
 ): Promise<number> {
   const restorable = restorableFieldsFor(options.rolesField ?? 'roles')
+  const scope = sealScopeOf(manifest)
+  const transaction = () => transactionReq(options.transactionID ?? null)
   const byDoc = new Map<
     string,
     { collection: string; id: string | number; data: Record<string, unknown> }
   >()
+  // Every value is opened BEFORE the first write: a value that does
+  // not open refuses the whole restore with nothing written.
   for (const write of manifest.fieldWrites) {
     const key = `${write.collection}\u0000${String(write.id)}`
     const entry = byDoc.get(key) ?? { collection: write.collection, id: write.id, data: {} }
     entry.data[write.field] = priorValue(payload.secret, write, restorable, {
       allowPlaintext: options.allowPlaintext,
+      scope,
     })
     byDoc.set(key, entry)
   }
@@ -241,6 +445,7 @@ export async function restoreCaptured(
         id: entry.id,
         data: childRows,
         overrideAccess: true,
+        ...transaction(),
       })
     }
     // Column fields — `updatedAt` LAST-WRITTEN, exactly as captured —
@@ -252,6 +457,7 @@ export async function restoreCaptured(
         id: entry.id,
         data: columns,
         returning: false,
+        ...transaction(),
       })
     }
     restored += Object.keys(entry.data).length

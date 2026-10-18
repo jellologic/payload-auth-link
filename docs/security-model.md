@@ -201,6 +201,24 @@ Other files live in the same `__tests__` directory as their engine.
   enrolled (check `twoFactorEnabled` on the provider user first), or
   enrol them through a channel you trust (in person, a verified
   recovery flow), never to a password-only account.
+- **Migration manifests drive `overrideAccess` writes** (the
+  `@payload-auth-link/migrate` rollback restores roles, identities and
+  the linking proof). A manifest is signed, bound to its database and
+  run, and every captured value is sealed FOR that run (the database
+  id and run nonce are AES-GCM associated data), so a value copied
+  into another manifest opens nowhere. An unsigned (pre-0.6.0)
+  manifest is refused on any database that has run migrate 0.8.0 or
+  later, for rollback and finalize alike (GHSA-xw9m-ph95-84rx).
+  Residual: a database CLONED after its first `--apply` carries the
+  original's migration record. On Postgres a clone in another cluster
+  or under another database name is detected from the server itself
+  (`system_identifier` + `current_database()`); a physical copy of the
+  whole cluster (disk snapshot, promoted replica), and any clone on
+  SQLite or MongoDB, is detected only when each environment states
+  its own `--environment-id` from before its first `--apply`. Values
+  sealed by migrate 0.8.0 and earlier are bound to their entry only;
+  they open only inside a manifest the kit signed, or an unsigned one
+  on a database that never ran 0.8.
 
 ## Single-host deployments: `__Host-` session cookies
 

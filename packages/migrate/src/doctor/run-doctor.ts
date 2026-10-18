@@ -50,9 +50,9 @@ export type DoctorOptions = {
 }
 
 /**
- * Behaviour changes in payload-auth-link 0.7.0 that a payload-auth app
- * feels on day one. Static by nature; kept next to the doctor so the
- * report is one artifact.
+ * Behaviour changes since payload-auth-link 0.7.0 that a payload-auth
+ * app feels on day one. Static by nature; kept next to the doctor so
+ * the report is one artifact.
  */
 export const behaviourChanges: readonly BehaviourChange[] = [
   {
@@ -187,6 +187,36 @@ function collectionFieldNames(config: unknown, slug: string): Set<string> | null
   return names
 }
 
+/**
+ * Session collections an ADOPT-mode engine serves Better Auth sessions
+ * from (issue #116) that declare no `authenticationMethod` field: the
+ * engine records each session's MFA provenance there, and without it
+ * `requireMfaForRoles` withholds MFA-gated roles (fail closed). Found
+ * by payload-auth's own model stamp (`custom.betterAuthModelKey`), or
+ * — on a target config — by shape (`token` + `expiresAt` + a user
+ * reference). The engine's own `ba-sessions` declares the field.
+ */
+export function sessionCollectionsWithoutAuthMethod(config: unknown): string[] {
+  if (!isRecord(config) || !Array.isArray(config.collections)) {
+    return []
+  }
+  const missing: string[] = []
+  for (const collection of config.collections) {
+    if (!isRecord(collection) || typeof collection.slug !== 'string') {
+      continue
+    }
+    const names = collectionFieldNames(config, collection.slug) ?? new Set<string>()
+    const stamped =
+      isRecord(collection.custom) && collection.custom['betterAuthModelKey'] === 'session'
+    const shaped =
+      names.has('token') && names.has('expiresAt') && (names.has('user') || names.has('userId'))
+    if ((stamped || shaped) && !names.has('authenticationMethod')) {
+      missing.push(collection.slug)
+    }
+  }
+  return missing
+}
+
 /** Default config loader: a dynamic import of the TS/JS config module. */
 async function defaultLoadModule(path: string): Promise<unknown> {
   const mod: unknown = await import(pathToFileURL(path).href)
@@ -240,7 +270,10 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   }
 
   const plugin = configLoaded ? findPayloadAuthPlugin(config) : null
-  if (configLoaded && plugin === null) {
+  // A TARGET config (payload-auth-link installed) carries no payload-auth
+  // by design: nothing to warn about (issue #116).
+  const isTargetConfig = configLoaded && authLinkPluginOptions(config) !== null
+  if (configLoaded && plugin === null && !isTargetConfig) {
     warnings.push({
       code: 'payload-auth-not-detected',
       detail:
@@ -319,6 +352,17 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
       { adoptTarget }
     )
     users = finding
+    // Adopt mode serves sessions from the payload-auth session
+    // collection, which must gain `authenticationMethod` (issue #116).
+    if (adoptTarget || plugin !== null) {
+      const sessions = sessionCollectionsWithoutAuthMethod(config)
+      if (sessions.length > 0) {
+        warnings.push({
+          code: 'adopt-session-no-authentication-method',
+          detail: `${adoptTarget ? 'the adopted' : 'in adopt mode, the'} session collection${sessions.length === 1 ? '' : 's'} ${sessions.map((slug) => `'${slug}'`).join(', ')} declare${sessions.length === 1 ? 's' : ''} no 'authenticationMethod' field: Better Auth then records no MFA provenance for its sessions, and requireMfaForRoles withholds MFA-gated roles (fail closed). Add { name: 'authenticationMethod', type: 'text' } (and its column) before the cutover — docs/migrating-from-payload-auth.md, "MFA provenance on an adopted session collection"`,
+        })
+      }
+    }
     for (const issue of userIssues) {
       if (
         issue.code === 'injected-field-collision' ||
@@ -361,7 +405,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
       if (found.unverifiedUsers !== null && found.unverifiedUsers > 0) {
         warnings.push({
           code: 'unverified-users',
-          detail: `${found.unverifiedUsers} user(s) have emailVerified = false: they import without the verified-email linking proof, but each is still pre-linked to their document through the imported identity — they resolve on their next provider sign-in once they verify (issue #69); no operator action is required`,
+          detail: `${found.unverifiedUsers} user(s) have emailVerified = false. No user receives the verified-email linking proof by default — the importer and adopt-prelink grant it only with --grant-linkable-from-verified, and even then never to these users — but every user is still pre-linked to their document through the better-auth identity, so each resolves on their next sign-in (issue #69); no operator action is required`,
         })
       }
       // Fail closed on the source layout (issue #68): a mapped model

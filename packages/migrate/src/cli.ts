@@ -82,13 +82,16 @@ Commands:
                     flag can be stale for a changed address)
   verify            --config ./src/payload.config.ts [--database-url URL] [--json]
                     [--source-map '{"accounts":"user_accounts","sessions":"user_sessions"}']
-                    (import mode only; adopt mode has nothing to compare —
-                    see "Verifying an adopt cutover" in the migration guide)
+                    (import mode: source rows against their ba-* copies;
+                    adopt mode: the live tables — every user served and
+                    pre-linked, references intact, content checksums to
+                    compare across the deploy)
   rollback          --config ./src/payload.config.ts [--manifest ...] [--slugs JSON]
                     [--allow-unsigned-manifest]  (a manifest without a full
                     signature: pre-0.6.0, or 0.6.0's which leaves 'finalized'
                     unsigned. Such a manifest is terminal: rollback or
-                    finalize only, never resumed or re-signed)
+                    finalize only, never resumed or re-signed; a pre-0.6.0
+                    one only on a database that never ran migrate >= 0.8.0)
                     [--allow-unsigned-deletes]  (with an UNSIGNED manifest,
                     also delete its created rows; without it an unsigned
                     rollback deletes nothing)
@@ -109,6 +112,21 @@ Commands:
                     --grant-linkable-from-verified also the linking proof
                     for verified emails. Undo with
                     rollback --manifest ./payload-auth-link-prelink.json)
+
+  Environment identity (from-payload-auth / adopt-prelink --apply,
+  rollback, finalize):
+                    [--environment-id NAME]  (or PAYLOAD_AUTH_LINK_ENVIRONMENT_ID:
+                    this environment's name, recorded with the database's
+                    migration id when a run starts. Once recorded, every
+                    command must state the same name — a clone of
+                    production run as "staging" refuses production's runs)
+                    [--database-moved]  (the database's migration record no
+                    longer matches it, and this IS the original database,
+                    restored into another cluster or renamed: continue its
+                    runs and re-record it)
+                    [--new-database-identity]  (the record no longer matches
+                    because this database is a CLONE: give it its own
+                    migration id; the original's manifests are refused here)
 
   --source-map renames source models to your layout's tables (custom
   slugs like user_accounts/user_sessions); a null value records a
@@ -139,8 +157,14 @@ Commands:
   against (an id kept in that database's payload-kv) and to its run:
   rollback, finalize, and a resumed --apply refuse an edited manifest,
   and one from another environment or another run. Never roll back
-  with a manifest from another environment or run. Delete it once
-  the migration is finalized and your soak window has passed.
+  with a manifest from another environment or run. A database cloned
+  after its first --apply carries the original's id: Postgres clones
+  in another cluster or under another name are detected, and
+  --environment-id detects the rest — set it in every environment
+  before the first --apply. An unsigned (pre-0.6.0) manifest is
+  refused on any database that has run migrate 0.8.0 or later. Only
+  one run may be open at a time. Delete the manifest once the
+  migration is finalized and your soak window has passed.
 
   codemod rewrites the three named payload-auth call-site patterns
   (getPayloadAuth, payload.betterAuth.api.getSession, toNextJsHandler)
@@ -240,7 +264,7 @@ function formatReport(report: DoctorReport): string {
     lines.push('  (pass it to from-payload-auth, verify, and export)')
   }
   lines.push('')
-  lines.push('== behaviour changes that will bite (0.7.0) ==')
+  lines.push('== behaviour changes that will bite (payload-auth-link 0.7.0 and later) ==')
   for (const change of report.behaviourChanges) {
     lines.push(`  * ${change.title}: ${change.detail}`)
   }
@@ -437,6 +461,22 @@ async function main(
       err.write(`${command} requires --config <path to payload.config.ts>\n`)
       return 3
     }
+    // How this environment identifies itself (GHSA-xw9m-ph95-84rx):
+    // --environment-id, else PAYLOAD_AUTH_LINK_ENVIRONMENT_ID.
+    const environmentFlag = flags.get('environment-id')
+    if (environmentFlag === true) {
+      err.write('--environment-id requires a value (e.g. --environment-id production)\n')
+      return 3
+    }
+    const environmentId =
+      typeof environmentFlag === 'string' && environmentFlag !== ''
+        ? environmentFlag
+        : process.env.PAYLOAD_AUTH_LINK_ENVIRONMENT_ID
+    const identityOptions = {
+      ...(environmentId === undefined || environmentId === '' ? {} : { environmentId }),
+      databaseMoved: flags.get('database-moved') === true,
+      newDatabaseIdentity: flags.get('new-database-identity') === true,
+    }
     // finalize --config ... [--manifest ...]: boots the target app to
     // sign the finalized manifest and record the database marker.
     if (command === 'finalize') {
@@ -452,9 +492,10 @@ async function main(
             ? { slugsJson: flags.get('slugs') as string }
             : {}),
           allowUnsignedManifest: flags.get('allow-unsigned-manifest') === true,
+          ...identityOptions,
         })
       } catch (error) {
-        err.write(`finalize failed: ${error instanceof Error ? error.message : String(error)}\n`)
+        err.write(`finalize failed:${error instanceof Error ? error.message : String(error)}\n`)
         return 1
       }
       if (json) {
@@ -480,6 +521,7 @@ async function main(
           allowUnsignedManifest: flags.get('allow-unsigned-manifest') === true,
           allowUnboundManifest: flags.get('allow-unbound-manifest') === true,
           grantLinkableFromVerified: flags.get('grant-linkable-from-verified') === true,
+          ...identityOptions,
         })
       } catch (error) {
         // A refused run (an edited or foreign manifest) exits 1, named.
@@ -524,6 +566,7 @@ async function main(
       allowPlaintextRestore: flags.get('allow-plaintext-restore') === true,
       allowUnboundManifest: flags.get('allow-unbound-manifest') === true,
       grantLinkableFromVerified: flags.get('grant-linkable-from-verified') === true,
+      ...identityOptions,
     }
     if (command === 'from-payload-auth') {
       let outcome: Awaited<ReturnType<typeof runFromPayloadAuth>>

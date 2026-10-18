@@ -262,6 +262,103 @@ describe('doctor: the source layout from the payload-auth config (#113)', () => 
   })
 })
 
+describe('doctor on a TARGET config (issue #116)', () => {
+  const authLinkEntry = Object.assign(() => ({}), {
+    slug: 'payload-auth-link',
+    options: { rolesField: 'role' },
+  })
+  const fixturePath = new URL('../__fixtures__/doctor-fixture/payload.config.ts', import.meta.url)
+    .pathname
+
+  test('no payload-auth-not-detected warning; an adopted session collection without authenticationMethod warns', async () => {
+    const srcDir = mkdtempSync(join(tmpdir(), 'doctor-target-'))
+    try {
+      const report = await runDoctor({
+        configPath: fixturePath,
+        srcDir,
+        databaseUrl: '',
+        loadModule: () =>
+          Promise.resolve({
+            plugins: [authLinkEntry],
+            collections: [
+              {
+                slug: 'users',
+                auth: { disableLocalStrategy: true },
+                fields: [
+                  { name: 'email', type: 'email' },
+                  { name: 'role', type: 'select', hasMany: true, options: ['user'] },
+                ],
+              },
+              {
+                slug: 'sessions',
+                fields: [
+                  { name: 'user', type: 'relationship', relationTo: 'users' },
+                  { name: 'token', type: 'text' },
+                  { name: 'expiresAt', type: 'date' },
+                ],
+              },
+            ],
+          }),
+      })
+      const codes = report.warnings.map((issue) => issue.code)
+      expect(codes).not.toContain('payload-auth-not-detected')
+      expect(codes).toContain('adopt-session-no-authentication-method')
+      expect(
+        report.warnings.find((issue) => issue.code === 'adopt-session-no-authentication-method')
+          ?.detail
+      ).toContain("the adopted session collection 'sessions' declares no 'authenticationMethod'")
+    } finally {
+      rmSync(srcDir, { recursive: true, force: true })
+    }
+  })
+
+  test('a session collection that declares the field, or none at all, does not warn', async () => {
+    const { sessionCollectionsWithoutAuthMethod } = await import('../doctor/run-doctor.js')
+    const session = (extra: readonly Record<string, unknown>[]): Record<string, unknown> => ({
+      slug: 'sessions',
+      fields: [
+        { name: 'userId', type: 'text' },
+        { name: 'token', type: 'text' },
+        { name: 'expiresAt', type: 'date' },
+        ...extra,
+      ],
+    })
+    expect(sessionCollectionsWithoutAuthMethod({ collections: [session([])] })).toEqual([
+      'sessions',
+    ])
+    expect(
+      sessionCollectionsWithoutAuthMethod({
+        collections: [session([{ name: 'authenticationMethod', type: 'text' }])],
+      })
+    ).toEqual([])
+    // payload-auth's own stamp finds it whatever its fields.
+    expect(
+      sessionCollectionsWithoutAuthMethod({
+        collections: [
+          { slug: 'user-sessions', custom: { betterAuthModelKey: 'session' }, fields: [] },
+        ],
+      })
+    ).toEqual(['user-sessions'])
+    expect(sessionCollectionsWithoutAuthMethod({ collections: [{ slug: 'posts' }] })).toEqual([])
+    expect(sessionCollectionsWithoutAuthMethod(null)).toEqual([])
+  })
+
+  test('a config with neither payload-auth nor payload-auth-link still warns it found none', async () => {
+    const srcDir = mkdtempSync(join(tmpdir(), 'doctor-neither-'))
+    try {
+      const report = await runDoctor({
+        configPath: fixturePath,
+        srcDir,
+        databaseUrl: '',
+        loadModule: () => Promise.resolve({ collections: [] }),
+      })
+      expect(report.warnings.map((issue) => issue.code)).toContain('payload-auth-not-detected')
+    } finally {
+      rmSync(srcDir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('doctor robustness (issue #71)', () => {
   test('an unloadable config is a blocker, not a crash — the static scans still report', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'doctor-unloadable-'))

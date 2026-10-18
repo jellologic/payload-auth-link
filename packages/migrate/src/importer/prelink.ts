@@ -1,7 +1,7 @@
 import type { Payload } from 'payload'
-import { openRun } from './binding.js'
-import { targetSlugsOf } from './guards.js'
-import { capturedKeys, captureBefore } from './host-writes.js'
+import { closeAbortedPass, openRun, recordRunEntries } from './binding.js'
+import { targetSlugsOf, type IdentityCheck } from './guards.js'
+import { capturedKeys, captureBefore, updateKeepingTimestamp } from './host-writes.js'
 import { signManifest } from './manifest-mac.js'
 import type { FieldWrite, ImportManifest, Unmappable } from './types.js'
 
@@ -32,7 +32,10 @@ import type { FieldWrite, ImportManifest, Unmappable } from './types.js'
  *
  * Dry run by default. `--apply` records every prior value in a manifest
  * (first capture wins, sealed, mode 0600) so `rollback --manifest`
- * restores the documents exactly, `updatedAt` included.
+ * restores the documents exactly, `updatedAt` included. The write
+ * itself keeps each document's `updatedAt` (issue #116); the Local
+ * API's full-document write does re-create hasMany child rows (such as
+ * `users_role`) with new surrogate row ids — values and order intact.
  */
 
 export type PrelinkOptions = {
@@ -60,6 +63,8 @@ export type PrelinkOptions = {
    * (`--grant-linkable-from-verified`). Off by default — see above.
    */
   readonly grantLinkableFromVerified?: boolean | undefined
+  /** How this environment identifies itself (GHSA-xw9m-ph95-84rx). */
+  readonly identity?: IdentityCheck | undefined
 }
 
 export type PrelinkResult = {
@@ -113,6 +118,7 @@ export async function prelinkUsers(options: PrelinkOptions): Promise<PrelinkResu
     log,
     allowUnsignedManifest: options.allowUnsignedManifest,
     allowUnboundManifest: options.allowUnboundManifest,
+    identity: options.identity,
   })
   const grantLinkable = options.grantLinkableFromVerified === true
   const fieldWrites: FieldWrite[] = [...(carried?.fieldWrites ?? [])]
@@ -199,6 +205,11 @@ export async function prelinkUsers(options: PrelinkOptions): Promise<PrelinkResu
   const proofGranted = planned.filter((row) => row.grantProof).length
   if (unmappable.length > 0) {
     log(`ABORT: ${unmappable.length} unmappable user(s); nothing was written`)
+    // Nothing was written: an aborted fresh run is closed, a resumed
+    // one keeps what it carried (issue #116).
+    if (apply && binding !== null) {
+      await closeAbortedPass(payload, 'adopt-prelink', binding, carried, 'adopt-prelink --apply')
+    }
     return {
       users,
       linked: 0,
@@ -213,55 +224,87 @@ export async function prelinkUsers(options: PrelinkOptions): Promise<PrelinkResu
 
   let fieldWriteCount = 0
   if (apply && binding !== null) {
-    for (const row of planned) {
-      const { newlyCaptured } = await captureBefore({
-        payload,
-        collection: usersSlug,
-        id: row.id,
-        fields: ['identities', 'linkable', 'linkableEmail'],
-        captured,
-        into: fieldWrites,
+    const persist = async (): Promise<void> => {
+      const manifest: ImportManifest = signManifest(payload.secret, {
+        version: 4,
+        kind: 'adopt-prelink',
+        createdAt: binding.createdAt,
+        databaseId: binding.databaseId,
+        runId: binding.runId,
+        sourceDatabase: '(adopt mode: the target app database)',
+        options: { sessions: 'carry' },
+        created: [],
+        fieldWrites,
+        finalized: false,
+        sourceCounts: {},
+        totals: { user: users, linked, proofGranted },
       })
-      fieldWriteCount += newlyCaptured
-      const data: Record<string, unknown> = {}
-      if (row.writeIdentity) {
-        data.identities = [
-          ...row.keep.map((identity) => ({
-            providerId: identity.providerId,
-            providerUserId: identity.providerUserId,
-            email: identity.email,
-            linkedAt: identity.linkedAt,
-          })),
-          {
-            providerId: 'better-auth',
-            providerUserId: String(row.id),
-            email: row.email,
-            linkedAt: now().toISOString(),
-          },
-        ]
-      }
-      if (row.grantProof) {
-        data.linkable = true
-        data.linkableEmail = row.email
-      }
-      await payload.update({ collection: usersSlug, id: row.id, data, overrideAccess: true })
+      const { writeManifest } = await import('./lifecycle.js')
+      writeManifest(manifest, options.manifestPath)
+      await recordRunEntries(
+        payload,
+        'adopt-prelink',
+        binding,
+        fieldWrites.length,
+        'adopt-prelink --apply'
+      )
     }
-    const manifest: ImportManifest = signManifest(payload.secret, {
-      version: 4,
-      kind: 'adopt-prelink',
-      createdAt: binding.createdAt,
-      databaseId: binding.databaseId,
-      runId: binding.runId,
-      sourceDatabase: '(adopt mode: the target app database)',
-      options: { sessions: 'carry' },
-      created: [],
-      fieldWrites,
-      finalized: false,
-      sourceCounts: {},
-      totals: { user: users, linked, proofGranted },
-    })
-    const { writeManifest } = await import('./lifecycle.js')
-    writeManifest(manifest, options.manifestPath)
+    try {
+      for (const row of planned) {
+        const { newlyCaptured, before } = await captureBefore({
+          payload,
+          collection: usersSlug,
+          id: row.id,
+          fields: ['identities', 'linkable', 'linkableEmail'],
+          captured,
+          into: fieldWrites,
+          scope: binding,
+        })
+        fieldWriteCount += newlyCaptured
+        const data: Record<string, unknown> = {}
+        if (row.writeIdentity) {
+          data.identities = [
+            ...row.keep.map((identity) => ({
+              providerId: identity.providerId,
+              providerUserId: identity.providerUserId,
+              email: identity.email,
+              linkedAt: identity.linkedAt,
+            })),
+            {
+              providerId: 'better-auth',
+              providerUserId: String(row.id),
+              email: row.email,
+              linkedAt: now().toISOString(),
+            },
+          ]
+        }
+        if (row.grantProof) {
+          data.linkable = true
+          data.linkableEmail = row.email
+        }
+        // The pre-link is bookkeeping, not a user edit (issue #116):
+        // the document keeps its updatedAt.
+        await updateKeepingTimestamp(payload, {
+          collection: usersSlug,
+          id: row.id,
+          data,
+          updatedAt: before?.['updatedAt'],
+        })
+      }
+    } catch (error) {
+      // Record what was written before the failure, so the run can be
+      // resumed or rolled back (issue #116).
+      try {
+        await persist()
+      } catch (persistError) {
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)} — and the manifest could not be written afterwards (${persistError instanceof Error ? persistError.message : String(persistError)})`,
+          { cause: persistError }
+        )
+      }
+      throw error
+    }
+    await persist()
   }
   return {
     users,

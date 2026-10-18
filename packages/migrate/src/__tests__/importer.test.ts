@@ -535,6 +535,8 @@ describe.skipIf(!canReachPostgres)(
         runId: undefined,
         created: [...manifest.created, { collection: 'jwks', id: victim.id, sourceKey: 'jwks:1' }],
       }
+      // This database ran 0.8: no unsigned manifest is accepted at all
+      // (GHSA-xw9m-ph95-84rx).
       await expect(
         rollbackImport({
           payload,
@@ -542,21 +544,59 @@ describe.skipIf(!canReachPostgres)(
           allowUnsignedManifest: true,
           allowUnsignedDeletes: true,
         })
-      ).rejects.toThrow(/outside the import's target collections/)
-      // --allow-unsigned-manifest alone never deletes, even in-scope rows.
-      await expect(
-        rollbackImport({
-          payload,
-          manifest: {
-            ...manifest,
-            version: 2 as const,
-            mac: undefined,
-            databaseId: undefined,
-            runId: undefined,
-          },
-          allowUnsignedManifest: true,
-        })
-      ).rejects.toThrow(/--allow-unsigned-deletes/)
+      ).rejects.toThrow(/has run migrate 0\.8\.0 or later/)
+      // Where unsigned manifests are still accepted (a database that
+      // never ran 0.8 — simulated by hiding its id), the guards below
+      // hold on their own.
+      const idKey = 'payload-auth-link/migrate/database-id'
+      const idRecord = await payload.kv.get(idKey)
+      if (idRecord === null) {
+        throw new Error('the apply recorded no database id')
+      }
+      await payload.kv.delete(idKey)
+      try {
+        await expect(
+          rollbackImport({
+            payload,
+            manifest: downgraded,
+            allowUnsignedManifest: true,
+            allowUnsignedDeletes: true,
+          })
+        ).rejects.toThrow(/outside the import's target collections/)
+        // --allow-unsigned-manifest alone never deletes, even in-scope rows.
+        await expect(
+          rollbackImport({
+            payload,
+            manifest: {
+              ...manifest,
+              version: 2 as const,
+              mac: undefined,
+              databaseId: undefined,
+              runId: undefined,
+            },
+            allowUnsignedManifest: true,
+          })
+        ).rejects.toThrow(/--allow-unsigned-deletes/)
+        // With every opt-in, the run-bound values copied out of the
+        // signed manifest still open for no other manifest.
+        await expect(
+          rollbackImport({
+            payload,
+            manifest: {
+              ...manifest,
+              version: 2 as const,
+              mac: undefined,
+              databaseId: undefined,
+              runId: undefined,
+              created: [],
+            },
+            allowUnsignedManifest: true,
+            allowUnsignedDeletes: true,
+          })
+        ).rejects.toThrow(/manifest names none/)
+      } finally {
+        await payload.kv.set(idKey, idRecord)
+      }
       const still = await payload.findByID({
         collection: 'jwks',
         id: victim.id,

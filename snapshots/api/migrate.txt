@@ -138,9 +138,9 @@ export type DoctorOptions = {
     readonly loadModule?: ((path: string) => Promise<unknown>) | undefined;
 };
 /**
- * Behaviour changes in payload-auth-link 0.7.0 that a payload-auth app
- * feels on day one. Static by nature; kept next to the doctor so the
- * report is one artifact.
+ * Behaviour changes since payload-auth-link 0.7.0 that a payload-auth
+ * app feels on day one. Static by nature; kept next to the doctor so
+ * the report is one artifact.
  */
 export declare const behaviourChanges: readonly BehaviourChange[];
 /**
@@ -164,6 +164,16 @@ export declare function betterAuthPluginIds(pluginOptions: Record<string, unknow
 export declare function usersSlugOf(pluginOptions: Record<string, unknown>): string;
 /** Collection slugs of the built config. */
 export declare function collectionSlugs(config: unknown): string[];
+/**
+ * Session collections an ADOPT-mode engine serves Better Auth sessions
+ * from (issue #116) that declare no `authenticationMethod` field: the
+ * engine records each session's MFA provenance there, and without it
+ * `requireMfaForRoles` withholds MFA-gated roles (fail closed). Found
+ * by payload-auth's own model stamp (`custom.betterAuthModelKey`), or
+ * — on a target config — by shape (`token` + `expiresAt` + a user
+ * reference). The engine's own `ba-sessions` declares the field.
+ */
+export declare function sessionCollectionsWithoutAuthMethod(config: unknown): string[];
 export declare function runDoctor(options: DoctorOptions): Promise<DoctorReport>;
 
 // ===== doctor/source-layout.d.ts =====
@@ -435,6 +445,7 @@ export declare function verifyRoundTrip(options: {
 
 // ===== importer/apply.d.ts =====
 import type { Payload } from 'payload';
+import { type IdentityCheck } from './guards.js';
 import { type SourceUser } from './source.js';
 import { type ImportManifest, type ImportResult, type PlanRow, type Unmappable } from './types.js';
 /**
@@ -505,6 +516,12 @@ export type ApplyOptions = {
      * sign-in for the address link to the document (GHSA-v6mr).
      */
     readonly grantLinkableFromVerified?: boolean | undefined;
+    /**
+     * How this environment identifies itself (`--environment-id`,
+     * `--database-moved`, `--new-database-identity`;
+     * GHSA-xw9m-ph95-84rx).
+     */
+    readonly identity?: IdentityCheck | undefined;
 };
 /**
  * Plugin user state the target must be able to hold (issue #88),
@@ -519,7 +536,7 @@ export declare function summarizePlanRows(rows: readonly PlanRow[]): PlanRow[];
 
 // ===== importer/binding.d.ts =====
 import type { Payload } from 'payload';
-import { type RunRecord } from './guards.js';
+import { type IdentityCheck, type RunRecord } from './guards.js';
 import type { ImportManifest, ManifestKind, TargetSlugMap } from './types.js';
 /**
  * Manifest ↔ database binding (GHSA-crrr-3cg7-f6jw).
@@ -535,7 +552,14 @@ import type { ImportManifest, ManifestKind, TargetSlugMap } from './types.js';
  * - one record per run (a random nonce, also signed into the manifest):
  *   open, rolled back, or finalized. Only an OPEN run is resumed or
  *   rolled back, so a stale copy of a rolled-back run's manifest
- *   changes nothing.
+ *   changes nothing. At most ONE run is open at a time (issue #116):
+ *   two open runs would each hold rows the other's rollback or finalize
+ *   cannot see.
+ *
+ * The database id alone does not tell a database from its clone (a
+ * copy taken after the first `--apply` carries the same record), so the
+ * record also keeps a server fingerprint (Postgres) and the operator's
+ * environment id — see `databaseIdentity` (GHSA-xw9m-ph95-84rx).
  *
  * Unsigned manifests (pre-0.6.0) and 0.6.0 manifests whose signature
  * does not cover `finalized` are TERMINAL: they may be rolled back or
@@ -558,9 +582,38 @@ export declare function plaintextWrites(manifest: Pick<ImportManifest, 'fieldWri
 export declare function boundRun(payload: Payload, manifest: ImportManifest & {
     readonly databaseId: string;
     readonly runId: string;
-}, action: string): Promise<RunRecord>;
-/** Mint a new run on this database (creating its id on first use). */
-export declare function startRun(payload: Payload, kind: ManifestKind, createdAt: string, action: string): Promise<RunBinding>;
+}, action: string, identity?: IdentityCheck): Promise<RunRecord>;
+/**
+ * Mint a new run on this database (creating its id on first use).
+ * `exclusive` (every run a pass WRITES under): refuse while another
+ * open run may hold rows (issue #116) — a second one would hold rows
+ * the first one's rollback or finalize cannot see. A run minted only
+ * to record a rollback of an unbound manifest is not exclusive.
+ */
+export declare function startRun(payload: Payload, kind: ManifestKind, createdAt: string, action: string, options: {
+    readonly exclusive: boolean;
+    readonly identity?: IdentityCheck | undefined;
+}): Promise<RunBinding>;
+/**
+ * Record how many entries the run's manifest now holds (issue #116),
+ * right after the manifest is written: an open run known to hold none
+ * never blocks a `finalize`.
+ */
+export declare function recordRunEntries(payload: Payload, kind: ManifestKind, binding: RunBinding, entries: number, action: string): Promise<void>;
+/**
+ * A pass that aborted before writing anything (issue #116): a FRESH
+ * run is closed — it holds nothing and has no manifest, so leaving it
+ * open would only clutter the database's record — while a resumed run
+ * stays open with the entries it carried.
+ */
+export declare function closeAbortedPass(payload: Payload, kind: ManifestKind, binding: RunBinding, carried: ImportManifest | null, action: string): Promise<void>;
+/**
+ * Refuse a `finalize` while ANOTHER open run may hold rows (issue
+ * #116): the finalize marker blocks every later rollback on this
+ * database, so finalizing an empty run would strand the rows of the
+ * run that holds them.
+ */
+export declare function assertNoOtherRowBearingRun(payload: Payload, databaseId: string, runId: string | null, action: string): Promise<void>;
 /** What an `--apply` pass builds on. */
 export type OpenedRun = {
     /** The earlier manifest whose entries this pass merges, or `null` (a fresh run). */
@@ -583,7 +636,10 @@ export type OpenedRun = {
  *   database does not hold open. A run the database records as rolled
  *   back starts FRESH: the manifest's entries are not carried;
  * - a 0.7.0 (unbound) manifest without `allowUnboundManifest`, or on a
- *   database that records a finalized migration.
+ *   database that records a finalized migration;
+ * - a FRESH run while another run is open (issue #116);
+ * - a database whose migration record was copied from another one
+ *   (GHSA-xw9m-ph95-84rx; see `databaseIdentity`).
  *
  * A dry run only authenticates the manifest.
  */
@@ -597,6 +653,8 @@ export declare function openRun(options: {
     readonly log: (message: string) => void;
     readonly allowUnsignedManifest?: boolean | undefined;
     readonly allowUnboundManifest?: boolean | undefined;
+    /** How this environment identifies itself (clone detection). */
+    readonly identity?: IdentityCheck | undefined;
 }): Promise<OpenedRun>;
 
 // ===== importer/guards.d.ts =====
@@ -655,21 +713,94 @@ export type RunRecord = {
     readonly kind: ManifestKind;
     readonly createdAt: string;
     readonly state: RunState;
+    /**
+     * The database id the run was started under (migrate 0.8.1+). A run
+     * record copied into a clone that has since taken its own identity
+     * names the original's id, and is not this database's run.
+     */
+    readonly databaseId?: string | undefined;
+    /**
+     * How many entries (created rows + captured field values) the run's
+     * manifest held when it was last written (migrate 0.8.1+, issue
+     * #116). `undefined`: not known — an in-flight run, one that died
+     * before writing its manifest, or one recorded by 0.8.0 — and treated
+     * as holding rows.
+     */
+    readonly entries?: number | undefined;
 };
+/**
+ * How the operator identifies the environment a command runs in
+ * (GHSA-xw9m-ph95-84rx: a database cloned after its first `--apply`
+ * carries the original's migration id).
+ */
+export type IdentityCheck = {
+    /**
+     * The operator's name for this environment (`--environment-id`, or
+     * `PAYLOAD_AUTH_LINK_ENVIRONMENT_ID`). Recorded with the database id
+     * when a run starts; once recorded, every manifest-driven command
+     * must state the same value — a clone of production run as
+     * `staging` is refused instead of continuing production's runs.
+     */
+    readonly environmentId?: string | undefined;
+    /**
+     * `--database-moved`: this database IS the one that recorded its
+     * migration id — restored into another cluster, or renamed — and
+     * continues its runs. Re-records the fingerprint and environment id.
+     */
+    readonly databaseMoved?: boolean | undefined;
+    /**
+     * `--new-database-identity`: this database is a CLONE and must not
+     * continue the original's runs. Mints a fresh migration id, so every
+     * manifest written against the original is refused here as "another
+     * database".
+     */
+    readonly newDatabaseIdentity?: boolean | undefined;
+};
+/**
+ * What the database server itself says about WHICH database this is,
+ * independent of any row a clone copies (GHSA-xw9m-ph95-84rx). On
+ * Postgres: the cluster's `system_identifier` plus `current_database()`
+ * — a dump restored into another cluster, or a `CREATE DATABASE …
+ * TEMPLATE` copy, differs; a PHYSICAL copy of the cluster (a disk
+ * snapshot, a promoted replica) keeps both and is not detected. SQLite
+ * and MongoDB expose nothing comparable: `null` (the operator's
+ * `--environment-id` is the check there). A query the server refuses
+ * also yields `null` — this is a best-effort detector layered on the
+ * database id, never the only guard.
+ */
+export declare function databaseFingerprint(payload: Payload): Promise<string | null>;
 /**
  * This database's migration identity: a random id the kit stores in
  * the database's own key-value store, so a manifest names the database
  * it was written against. `create` mints one when none exists (the
  * first `--apply`); otherwise a missing id is `null`. Fails closed.
+ *
+ * Clone detection (GHSA-xw9m-ph95-84rx): the record also keeps the
+ * server's {@link databaseFingerprint} and the operator's environment
+ * id. A stored id whose fingerprint or environment no longer matches
+ * belongs to the database it was COPIED from — refused unless the
+ * operator says which case it is (`databaseMoved` /
+ * `newDatabaseIdentity`). A record that predates either value gains it
+ * when a run starts (`create`).
  */
 export declare function databaseIdentity(payload: Payload, options: {
     readonly create: boolean;
     readonly action: string;
+    readonly check?: IdentityCheck | undefined;
 }): Promise<string | null>;
 /** A fresh, unguessable run nonce. */
 export declare function newRunId(): string;
 /** The database's record of one run, or `null` when it holds none. Fails closed. */
 export declare function readRun(payload: Payload, runId: string, action: string): Promise<RunRecord | null>;
+/**
+ * Every run this database records as OPEN (issue #116), except runs a
+ * clone copied from another identity. Fails closed.
+ */
+export declare function openRuns(payload: Payload, databaseId: string, action: string): Promise<readonly (RunRecord & {
+    readonly runId: string;
+})[]>;
+/** Whether an open run may hold rows (an unknown count is assumed to). */
+export declare function holdsEntries(run: Pick<RunRecord, 'entries'>): boolean;
 /** Record one run's state in the database. Throws when it cannot. */
 export declare function recordRun(payload: Payload, runId: string, record: RunRecord, action: string): Promise<void>;
 /**
@@ -684,14 +815,42 @@ export declare function hostRolesField(payload: Payload): string;
 import type { Payload } from 'payload';
 import type { FieldWrite, ImportManifest } from './types.js';
 /**
- * Seal one JSON-serialized value under the app's Payload secret. The
- * entry it belongs to (`collection\0id\0field`) is bound as GCM
- * associated data, so a sealed value cannot be moved onto another
- * entry of the manifest.
+ * The run a sealed value belongs to (GHSA-xw9m-ph95-84rx): the
+ * database id and run nonce of the version-4 manifest that captured
+ * it.
  */
-export declare function sealValue(secret: string, plaintext: string, entry: string): string;
-/** Open a sealed value; throws when the secret is not the sealing one. */
-export declare function unsealValue(secret: string, sealed: string, entry: string): string;
+export type SealScope = {
+    readonly databaseId: string;
+    readonly runId: string;
+};
+/**
+ * Seal one JSON-serialized value under the app's Payload secret. The
+ * entry it belongs to (`collection\0id\0field`) AND the run that
+ * captured it (database id + run nonce) are bound as GCM associated
+ * data (GHSA-xw9m-ph95-84rx), so a sealed value can be moved neither
+ * onto another entry nor into another manifest — not even an unsigned
+ * one, which names no run and therefore opens no such value.
+ */
+export declare function sealValue(secret: string, plaintext: string, entry: string, scope: SealScope): string;
+/**
+ * Seal a value the way migrate 0.5–0.8.0 did (entry-bound only). The
+ * kit never writes these any more; kept so the legacy read path stays
+ * tested.
+ */
+export declare function sealLegacyValue(secret: string, plaintext: string, entry: string): string;
+/**
+ * Open a sealed value. A run-bound (`v2.`) value opens only for the
+ * run that sealed it: `scope` is the database id and run nonce of the
+ * (signed, database-checked) manifest it was read from, `null` for a
+ * manifest that names none. An entry-bound (`v1.`) value from an older
+ * kit opens on its entry alone — the caller has already decided the
+ * manifest may be used (it is signed, or it is an unsigned pre-0.6.0
+ * manifest on a database that never ran 0.8.0 or later). Throws when
+ * the secret, the entry, or the run is not the sealing one.
+ */
+export declare function unsealValue(secret: string, sealed: string, entry: string, scope: SealScope | null): string;
+/** The run scope a manifest's sealed values are opened under. */
+export declare function sealScopeOf(manifest: Pick<ImportManifest, 'databaseId' | 'runId'>): SealScope | null;
 /**
  * The only host fields the kit ever writes (importer and
  * `adopt-prelink`), plus the `updatedAt` it captures alongside them.
@@ -711,6 +870,8 @@ export declare function restorableFieldsFor(rolesField: string): ReadonlySet<str
  */
 export declare function priorValue(secret: string, write: FieldWrite, restorable?: ReadonlySet<string>, options?: {
     readonly allowPlaintext?: boolean | undefined;
+    /** The manifest's run (see {@link sealScopeOf}); `null` when it names none. */
+    readonly scope?: SealScope | null | undefined;
 }): unknown;
 /** Keys of the field writes a manifest already holds (first capture wins). */
 export declare function capturedKeys(writes: readonly FieldWrite[]): Set<string>;
@@ -727,23 +888,65 @@ export declare function captureBefore(options: {
     readonly fields: readonly string[];
     readonly captured: Set<string>;
     readonly into: FieldWrite[];
+    /** The run the values are sealed for (GHSA-xw9m-ph95-84rx). */
+    readonly scope: SealScope;
 }): Promise<{
     readonly present: ReadonlySet<string>;
     readonly newlyCaptured: number;
+    /** The document as read before the write. */
+    readonly before: Readonly<Record<string, unknown>> | undefined;
 }>;
+/** A database transaction id, as `payload.db.beginTransaction` returns it. */
+export type TransactionId = string | number;
+/**
+ * Run `work` inside ONE database transaction when the adapter provides
+ * one (Postgres, SQLite; MongoDB on a replica set): it commits when
+ * `work` resolves and rolls back when it throws, so a failed step
+ * leaves nothing half-applied. `work` receives the transaction id
+ * (`null` when the adapter has none — then each write commits on its
+ * own, and the caller documents how a re-run completes the work).
+ *
+ * Every Local API call inside must pass `req: { transactionID }` (a
+ * FRESH object per call) and stop at its first failure: Payload rolls
+ * the shared transaction back as soon as one operation throws.
+ */
+export declare function inTransaction<T>(payload: Payload, work: (transactionID: TransactionId | null) => Promise<T>): Promise<T>;
+/** A Local API / adapter `req` carrying the transaction, or nothing. */
+export declare function transactionReq(transactionID: TransactionId | null): {
+    readonly req: {
+        transactionID: TransactionId;
+    };
+} | Record<string, never>;
+/**
+ * Write host fields through the Local API (hooks, validation, array
+ * row ids) WITHOUT moving the document's `updatedAt` (issue #116):
+ * Payload's update operation always stamps a fresh `updatedAt`, so the
+ * captured value is written back through the adapter right after, in
+ * the same transaction. Hosts and caches that key on `updated_at`
+ * see the document as unchanged by the migration tooling.
+ */
+export declare function updateKeepingTimestamp(payload: Payload, options: {
+    readonly collection: string;
+    readonly id: string | number;
+    readonly data: Record<string, unknown>;
+    readonly updatedAt: unknown;
+}): Promise<void>;
 /**
  * Restore every captured field, one adapter write per document so
  * `updatedAt` lands exactly as captured. Returns the number of field
  * values restored.
  */
-export declare function restoreCaptured(payload: Payload, manifest: Pick<ImportManifest, 'fieldWrites'>, options?: {
+export declare function restoreCaptured(payload: Payload, manifest: Pick<ImportManifest, 'fieldWrites' | 'databaseId' | 'runId'>, options?: {
     readonly rolesField?: string | undefined;
     /** Restore version-1 plaintext values (`--allow-plaintext-restore`). */
     readonly allowPlaintext?: boolean | undefined;
+    /** The rollback's transaction (see {@link inTransaction}). */
+    readonly transactionID?: TransactionId | null | undefined;
 }): Promise<number>;
 
 // ===== importer/lifecycle.d.ts =====
 import type { Payload } from 'payload';
+import { type IdentityCheck } from './guards.js';
 import { type ImportManifest } from './types.js';
 /**
  * Manifest lifecycle (issue #50): `verify` checks both sides, `rollback`
@@ -782,14 +985,6 @@ export type VerifyResult = {
     }[];
 };
 /**
- * `verify` checks an IMPORT: source rows against the `ba-*` copies the
- * importer keyed by `baId`. An adopt-mode app (issue #113) copies
- * nothing — its Better Auth models ARE the payload-auth tables — so
- * there is nothing for it to compare. Say so, instead of the misleading
- * "declares none of the target collections" / "baId cannot be queried".
- */
-export declare const verifyAdoptUnsupported = "verify checks an IMPORT (the ba-* copies keyed by baId), and this config serves Better Auth in ADOPT mode: nothing was copied, so there is nothing for verify to compare. Verify an adopt cutover with the checksum procedure in docs/migrating-from-payload-auth.md (\"Verifying an adopt cutover\"), and adopt-prelink with its dry run (it reports every user as already linked)";
-/**
  * Verify (issues #50, #68, #69): fail closed on the source layout
  * (the probe runs first), per-model counts match EXACTLY (zero never
  * skips; every mapped model is either counted or explicitly
@@ -799,7 +994,8 @@ export declare const verifyAdoptUnsupported = "verify checks an IMPORT (the ba-*
  * its user, every API key carries its hash with a resolvable owner,
  * and every member/invitation references an existing org and user.
  * Exits non-zero on any mismatch (the caller maps `ok` to the exit
- * code).
+ * code). An ADOPT-mode config (no `baId` on the user target) runs the
+ * adopt checks instead (issue #116; see `verify-adopt.ts`).
  */
 export declare function verifyImport(options: {
     readonly payload: Payload;
@@ -853,6 +1049,8 @@ export type RollbackOptions = {
      * vouches it was written against THIS database.
      */
     readonly allowUnboundManifest?: boolean | undefined;
+    /** How this environment identifies itself (GHSA-xw9m-ph95-84rx). */
+    readonly identity?: IdentityCheck | undefined;
 };
 /**
  * Rollback (issue #50): delete the created rows in reverse order and
@@ -864,7 +1062,10 @@ export type RollbackOptions = {
  * or a database that records ANY finalized migration (the marker
  * `finalize` writes — whatever kind the manifest claims; GHSA-crrr);
  * a key-value store it cannot read (fail closed); a manifest that
- * fails its signature; a version-4 manifest naming another database,
+ * fails its signature; an UNSIGNED manifest on a database that holds a
+ * migration id (GHSA-xw9m-ph95-84rx); a database whose migration
+ * record was copied from another one; a captured value sealed for
+ * another run; a version-4 manifest naming another database,
  * or a run this database does not hold open; a 0.7.0 manifest (no
  * database binding) without `allowUnboundManifest`; created rows
  * outside the import's own target collections (signed or not), or
@@ -875,6 +1076,8 @@ export type RollbackOptions = {
  * "absent"); a delete that FAILS (a foreign key, a hook, a permission)
  * aborts the rollback with the rows named, before any field is
  * restored or the manifest reset — so it can be re-run once fixed.
+ * Deletes and restores share one database transaction where the
+ * adapter offers one, so a failed rollback changes nothing.
  * Success records the run as rolled back in the database, so no copy
  * of this manifest drives a second rollback.
  */
@@ -891,6 +1094,8 @@ export type FinalizeOptions = {
     readonly now?: (() => Date) | undefined;
     /** Accept a manifest without a full signature (`--allow-unsigned-manifest`). */
     readonly allowUnsignedManifest?: boolean | undefined;
+    /** How this environment identifies itself (GHSA-xw9m-ph95-84rx). */
+    readonly identity?: IdentityCheck | undefined;
 };
 /**
  * Finalize (issue #50): the point of no return. Records a one-way
@@ -903,6 +1108,11 @@ export type FinalizeOptions = {
  * (GHSA-crrr-3cg7-f6jw): its flag is set, and the database marker is
  * what every later command trusts. Idempotent: finalizing a finalized
  * manifest re-records the marker.
+ *
+ * Refused (GHSA-xw9m-ph95-84rx, issue #116): an UNSIGNED manifest on a
+ * database that holds a migration id — a forged one would otherwise
+ * write the marker and block every rollback for good — and any
+ * finalize while ANOTHER open run may still hold rows.
  */
 export declare function finalizeManifest(options: FinalizeOptions): Promise<ImportManifest>;
 
@@ -949,6 +1159,7 @@ export declare function authenticateManifest(secret: string, manifest: ImportMan
 
 // ===== importer/prelink.d.ts =====
 import type { Payload } from 'payload';
+import { type IdentityCheck } from './guards.js';
 import type { ImportManifest, Unmappable } from './types.js';
 /**
  * The adopt-mode pre-link (issues #49, #88): `migrate adopt-prelink`.
@@ -977,7 +1188,10 @@ import type { ImportManifest, Unmappable } from './types.js';
  *
  * Dry run by default. `--apply` records every prior value in a manifest
  * (first capture wins, sealed, mode 0600) so `rollback --manifest`
- * restores the documents exactly, `updatedAt` included.
+ * restores the documents exactly, `updatedAt` included. The write
+ * itself keeps each document's `updatedAt` (issue #116); the Local
+ * API's full-document write does re-create hasMany child rows (such as
+ * `users_role`) with new surrogate row ids — values and order intact.
  */
 export type PrelinkOptions = {
     readonly payload: Payload;
@@ -1004,6 +1218,8 @@ export type PrelinkOptions = {
      * (`--grant-linkable-from-verified`). Off by default — see above.
      */
     readonly grantLinkableFromVerified?: boolean | undefined;
+    /** How this environment identifies itself (GHSA-xw9m-ph95-84rx). */
+    readonly identity?: IdentityCheck | undefined;
 };
 export type PrelinkResult = {
     readonly users: number;
@@ -1083,6 +1299,18 @@ export type ImportCommandOptions = {
      * the linking proof from the source `emailVerified` flag.
      */
     readonly grantLinkableFromVerified?: boolean | undefined;
+    /**
+     * This environment's name (`--environment-id`, or
+     * `PAYLOAD_AUTH_LINK_ENVIRONMENT_ID`; GHSA-xw9m-ph95-84rx). Recorded
+     * when a run starts; once recorded, every manifest-driven command on
+     * the database must state the same name, so a clone run under another
+     * name refuses the original's runs.
+     */
+    readonly environmentId?: string | undefined;
+    /** `--database-moved`: this database IS the original, moved or renamed. */
+    readonly databaseMoved?: boolean | undefined;
+    /** `--new-database-identity`: this database is a clone; give it its own id. */
+    readonly newDatabaseIdentity?: boolean | undefined;
 };
 /** The `from-payload-auth` command: dry-run plan, or `--apply` + manifest. */
 export declare function runFromPayloadAuth(options: ImportCommandOptions): Promise<{
@@ -1099,7 +1327,7 @@ export declare function runRollback(options: ImportCommandOptions): Promise<{
     restored: number;
 }>;
 /** Options for `finalize`: the target app (for the secret and the database marker). */
-export type FinalizeCommandOptions = Pick<ImportCommandOptions, 'configPath' | 'manifestPath' | 'log' | 'loadPayload' | 'allowUnsignedManifest' | 'slugsJson'>;
+export type FinalizeCommandOptions = Pick<ImportCommandOptions, 'configPath' | 'manifestPath' | 'log' | 'loadPayload' | 'allowUnsignedManifest' | 'slugsJson' | 'environmentId' | 'databaseMoved' | 'newDatabaseIdentity'>;
 /**
  * The `finalize` command: boots the target app (like `rollback`), records
  * the one-way finalize marker in its database, and re-signs the manifest
@@ -1107,7 +1335,7 @@ export type FinalizeCommandOptions = Pick<ImportCommandOptions, 'configPath' | '
  */
 export declare function runFinalize(options: FinalizeCommandOptions): Promise<ImportManifest>;
 /** Options for `adopt-prelink` (issue #88). */
-export type PrelinkCommandOptions = Pick<ImportCommandOptions, 'configPath' | 'apply' | 'manifestPath' | 'json' | 'log' | 'loadPayload' | 'allowUnsignedManifest' | 'allowUnboundManifest' | 'grantLinkableFromVerified'> & {
+export type PrelinkCommandOptions = Pick<ImportCommandOptions, 'configPath' | 'apply' | 'manifestPath' | 'json' | 'log' | 'loadPayload' | 'allowUnsignedManifest' | 'allowUnboundManifest' | 'grantLinkableFromVerified' | 'environmentId' | 'databaseMoved' | 'newDatabaseIdentity'> & {
     readonly usersSlug?: string | undefined;
     readonly verifiedField?: string | undefined;
 };
@@ -1191,6 +1419,8 @@ export interface SourceClient {
     end(): Promise<void>;
 }
 export declare function openSource(connectionString: string): Promise<SourceClient>;
+/** The columns one table actually has (customized layouts drop columns). */
+export declare function columnsOf(client: SourceClient, table: string): Promise<Set<string>>;
 /**
  * Fail-closed probe (issue #68): every mapped model's table must
  * exist (a `null` mapping records "not installed" and is skipped),
@@ -1395,6 +1625,19 @@ export type TargetModel = 'user' | 'session' | 'account' | 'verification' | 'api
 export type TargetSlugMap = Record<TargetModel, string> & Record<string, string>;
 /** Default target slugs; must match the app's engine wiring. */
 export declare const defaultTargetSlugs: TargetSlugMap;
+
+// ===== importer/verify-adopt.d.ts =====
+import type { Payload } from 'payload';
+import type { VerifyResult } from './lifecycle.js';
+import type { ResolvedSourceTables } from './types.js';
+/** The users collection an adopt-mode app serves Better Auth from. */
+export declare function adoptUsersSlug(payload: Payload, preferred: string): string;
+export declare function verifyAdopt(options: {
+    readonly payload: Payload;
+    readonly sourceConnectionString: string;
+    readonly sourceTables: ResolvedSourceTables;
+    readonly usersSlug: string;
+}): Promise<VerifyResult>;
 
 // ===== index.d.ts =====
 /**

@@ -105,7 +105,7 @@ export async function openSource(connectionString: string): Promise<SourceClient
 }
 
 /** The columns one table actually has (customized layouts drop columns). */
-async function columnsOf(client: SourceClient, table: string): Promise<Set<string>> {
+export async function columnsOf(client: SourceClient, table: string): Promise<Set<string>> {
   const result = await client.query(
     `SELECT column_name FROM information_schema.columns
      WHERE table_schema = 'public' AND table_name = $1`,

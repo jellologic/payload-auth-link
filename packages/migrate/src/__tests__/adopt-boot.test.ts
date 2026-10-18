@@ -25,7 +25,7 @@ import { Client } from 'pg'
 import { buildConfig, getPayload, type CollectionConfig, type Payload } from 'payload'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 import { fileURLToPath } from 'node:url'
-import { runAdoptPrelink, runRollback } from '../importer/run-import.js'
+import { runAdoptPrelink, runRollback, runVerify } from '../importer/run-import.js'
 
 // Runtime-computed specifier: the typecheck project never reaches into
 // fixtures/ (the fixture app owns its dependency tree).
@@ -222,6 +222,7 @@ describe.skipIf(!canReachPostgres)(
   'adopt mode: the payload-auth fixture boots with zero row moves',
   () => {
     let database: string
+    let databaseUrl = ''
     let payload: Payload
     let latePayload: Payload | undefined
     const before: Record<string, number> = {}
@@ -288,6 +289,7 @@ describe.skipIf(!canReachPostgres)(
       database = await harness.loadFixtureDump('pal_adopt')
       const target = harness.targetFromEnv(database)
       const connectionString = `postgres://${target.user}:${target.password}@${target.host}:${target.port}/${database}`
+      databaseUrl = connectionString
       // Row-count baseline BEFORE boot — the no-moves assertion compares
       // against it.
       const client = harness.fixtureClient(database)
@@ -519,6 +521,35 @@ describe.skipIf(!canReachPostgres)(
       expect((await rawUsers()).identities).toEqual(identitiesBefore)
     })
 
+    const verifyAdopt = (): ReturnType<typeof runVerify> =>
+      runVerify({
+        configPath: 'unused',
+        databaseUrl,
+        apply: false,
+        sessions: 'carry',
+        loadPayload: () => Promise.resolve(payload),
+      })
+
+    test('verify in adopt mode: the live tables check out, and un-pre-linked users fail it (#116)', async () => {
+      const result = await verifyAdopt()
+      const names = result.checks.map((entry) => entry.name)
+      expect(names).toContain('the app serves every user row')
+      expect(names).toContain(
+        'every account, member, invitation, and API key references an existing row'
+      )
+      expect(names).toContain('every credential account carries its hash')
+      expect(names.some((name) => name.startsWith('checksum accounts (info): '))).toBe(true)
+      expect(names.some((name) => name.startsWith('live sessions in sessions (info): '))).toBe(true)
+      // Before adopt-prelink, nobody resolves through a better-auth identity.
+      expect(result.ok).toBe(false)
+      expect(result.issues.map((issue) => issue.detail).join(' ')).toContain(
+        '4 user(s) carry no better-auth identity (run adopt-prelink --apply'
+      )
+      expect(result.checks.filter((entry) => !entry.passed).map((entry) => entry.name)).toEqual([
+        'every user resolves through one better-auth identity (the document id)',
+      ])
+    })
+
     test('adopt-prelink --apply links every user; a Payload session resolves the ORIGINAL document', async () => {
       const result = await runAdoptPrelink({
         configPath: 'unused',
@@ -530,6 +561,19 @@ describe.skipIf(!canReachPostgres)(
       expect(result.linked).toBe(4)
       expect(statSync(prelinkManifest).mode & 0o777).toBe(0o600)
       expect(readFileSync(prelinkManifest, 'utf8')).not.toMatch(/@example\.com/)
+      // The pre-link is bookkeeping: no document's updated_at moves (#116).
+      const stamps = (rows: unknown[]): unknown[] =>
+        (rows as { id: number; updated_at: Date }[]).map((row) => [row.id, row.updated_at])
+      expect(stamps((await rawUsers()).users)).toEqual(stamps(usersBefore))
+      // Every captured value is sealed for this run (GHSA-xw9m-ph95-84rx).
+      const written = JSON.parse(readFileSync(prelinkManifest, 'utf8')) as {
+        fieldWrites: { sealedBefore?: string }[]
+      }
+      expect(written.fieldWrites.every((write) => write.sealedBefore?.startsWith('v2.'))).toBe(true)
+      // verify now passes: every user resolves through their own identity.
+      const verified = await verifyAdopt()
+      expect(verified.issues).toEqual([])
+      expect(verified.ok).toBe(true)
       const carol = (
         await payload.find({
           collection: 'users',

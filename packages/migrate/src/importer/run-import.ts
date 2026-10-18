@@ -1,6 +1,7 @@
 import { isRecord } from '@payload-auth-link/core'
 import { pathToFileURL } from 'node:url'
 import { applyImport, summarizePlanRows } from './apply.js'
+import type { IdentityCheck } from './guards.js'
 import { prelinkUsers, type PrelinkResult } from './prelink.js'
 import {
   defaultManifestPath,
@@ -8,7 +9,6 @@ import {
   finalizeManifest,
   readManifest,
   rollbackImport,
-  verifyAdoptUnsupported,
   verifyImport,
   type VerifyResult,
 } from './lifecycle.js'
@@ -88,6 +88,29 @@ export type ImportCommandOptions = {
    * the linking proof from the source `emailVerified` flag.
    */
   readonly grantLinkableFromVerified?: boolean | undefined
+  /**
+   * This environment's name (`--environment-id`, or
+   * `PAYLOAD_AUTH_LINK_ENVIRONMENT_ID`; GHSA-xw9m-ph95-84rx). Recorded
+   * when a run starts; once recorded, every manifest-driven command on
+   * the database must state the same name, so a clone run under another
+   * name refuses the original's runs.
+   */
+  readonly environmentId?: string | undefined
+  /** `--database-moved`: this database IS the original, moved or renamed. */
+  readonly databaseMoved?: boolean | undefined
+  /** `--new-database-identity`: this database is a clone; give it its own id. */
+  readonly newDatabaseIdentity?: boolean | undefined
+}
+
+/** The identity check the command's options describe. */
+function identityOf(
+  options: Pick<ImportCommandOptions, 'environmentId' | 'databaseMoved' | 'newDatabaseIdentity'>
+): IdentityCheck {
+  return {
+    environmentId: options.environmentId,
+    databaseMoved: options.databaseMoved,
+    newDatabaseIdentity: options.newDatabaseIdentity,
+  }
 }
 
 const log_ = (options: Pick<ImportCommandOptions, 'log'>): ((message: string) => void) =>
@@ -464,6 +487,7 @@ export async function runFromPayloadAuth(options: ImportCommandOptions): Promise
       allowUnsignedManifest: options.allowUnsignedManifest,
       allowUnboundManifest: options.allowUnboundManifest,
       grantLinkableFromVerified: options.grantLinkableFromVerified,
+      identity: identityOf(options),
     })
   )
   const plan: ImportPlan = {
@@ -508,17 +532,19 @@ export async function runFromPayloadAuth(options: ImportCommandOptions): Promise
 export async function runVerify(options: ImportCommandOptions): Promise<VerifyResult> {
   const log = log_(options)
 
-  // Adopt mode first (issue #113): verify has nothing to compare there.
+  // Adopt mode (issues #113, #116): nothing was copied, so there are no
+  // ba-* targets to require; the adopt checks run on the live tables.
+  let adopt = false
   if (options.loadPayload === undefined) {
     const { config } = await loadConfigModule(options.configPath)
-    if (installsAuthLink(config) && !declaresBaId(config, slugsOf(options).user)) {
-      throw new Error(verifyAdoptUnsupported)
-    }
+    adopt = installsAuthLink(config) && !declaresBaId(config, slugsOf(options).user)
   }
   // The config pre-flight runs first (issue #75), then the probe
   // (issue #68): a missing mapped table fails the check with a
   // blocker — before any Payload boot or read.
-  await preFlightTargets(options)
+  if (!adopt) {
+    await preFlightTargets(options)
+  }
   const probeIssues = await probeOrFail(options, log)
   if (probeIssues.length > 0) {
     const result: VerifyResult = {
@@ -537,15 +563,21 @@ export async function runVerify(options: ImportCommandOptions): Promise<VerifyRe
     return result
   }
 
-  const result = await withTargetPayload(options, (payload) =>
-    verifyImport({
-      payload,
-      sourceConnectionString: options.databaseUrl,
-      slugs: slugsOf(options),
-      sourceTables: sourceTablesOf(options),
-      sessions: options.sessions,
-    })
+  const result = await withTargetPayload(
+    options,
+    (payload) =>
+      verifyImport({
+        payload,
+        sourceConnectionString: options.databaseUrl,
+        slugs: slugsOf(options),
+        sourceTables: sourceTablesOf(options),
+        sessions: options.sessions,
+      }),
+    !adopt
   )
+  if (adopt && !options.json) {
+    log('verify: ADOPT mode — checking the live tables Better Auth serves (nothing was copied)')
+  }
   if (!options.json) {
     for (const check of result.checks) {
       log(`  ${check.passed ? 'ok ' : 'FAIL'} ${check.name}`)
@@ -587,6 +619,7 @@ export async function runRollback(
         allowUnsignedDeletes: options.allowUnsignedDeletes,
         allowPlaintextRestore: options.allowPlaintextRestore,
         allowUnboundManifest: options.allowUnboundManifest,
+        identity: identityOf(options),
       }),
     requireTargets
   )
@@ -595,7 +628,15 @@ export async function runRollback(
 /** Options for `finalize`: the target app (for the secret and the database marker). */
 export type FinalizeCommandOptions = Pick<
   ImportCommandOptions,
-  'configPath' | 'manifestPath' | 'log' | 'loadPayload' | 'allowUnsignedManifest' | 'slugsJson'
+  | 'configPath'
+  | 'manifestPath'
+  | 'log'
+  | 'loadPayload'
+  | 'allowUnsignedManifest'
+  | 'slugsJson'
+  | 'environmentId'
+  | 'databaseMoved'
+  | 'newDatabaseIdentity'
 >
 
 /**
@@ -626,6 +667,7 @@ export async function runFinalize(options: FinalizeCommandOptions): Promise<Impo
         manifest,
         path: manifestPath,
         allowUnsignedManifest: options.allowUnsignedManifest,
+        identity: identityOf(options),
       }),
     manifest.kind !== 'adopt-prelink'
   )
@@ -649,6 +691,9 @@ export type PrelinkCommandOptions = Pick<
   | 'allowUnsignedManifest'
   | 'allowUnboundManifest'
   | 'grantLinkableFromVerified'
+  | 'environmentId'
+  | 'databaseMoved'
+  | 'newDatabaseIdentity'
 > & {
   readonly usersSlug?: string | undefined
   readonly verifiedField?: string | undefined
@@ -693,6 +738,7 @@ export async function runAdoptPrelink(options: PrelinkCommandOptions): Promise<P
         allowUnsignedManifest: options.allowUnsignedManifest,
         allowUnboundManifest: options.allowUnboundManifest,
         grantLinkableFromVerified: options.grantLinkableFromVerified,
+        identity: identityOf(options),
       }),
     false
   )
