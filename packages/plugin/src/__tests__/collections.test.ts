@@ -343,6 +343,88 @@ describe('applyUsersCollection', () => {
     })
   })
 
+  it('names the collided field, with the identities-specific remediation', () => {
+    const { options, strategy } = wired()
+    const collide = (name: string) => () =>
+      applyUsersCollection([{ slug: 'users', fields: [{ name, type: 'text' }] }], options, strategy)
+    expect(collide('identities')).toThrow(
+      "users collection 'users' already has a 'identities' field; rename it or point the collection map elsewhere (the identities array is engine-managed and cannot be adopted)"
+    )
+    expect(collide('suspendedUntil')).toThrow(
+      "users collection 'users' already has a 'suspendedUntil' field; rename it or point the collection map elsewhere"
+    )
+  })
+
+  it("keeps an adopted roles select's own defaultValue", () => {
+    const { options, strategy } = wired()
+    const result = applyUsersCollection(
+      [
+        {
+          slug: 'users',
+          fields: [
+            {
+              name: 'roles',
+              type: 'select',
+              hasMany: true,
+              options: ['admin', 'user'],
+              defaultValue: ['admin'],
+            },
+          ],
+        },
+      ],
+      options,
+      strategy
+    )
+    const roles = result[0]?.fields.find((field) => fieldName(field) === 'roles')
+    expect(roles && 'defaultValue' in roles ? roles.defaultValue : undefined).toEqual(['admin'])
+  })
+
+  it('validates the phone field as E.164 (CAP-9), allowing it to be cleared', () => {
+    const { options, strategy } = wired()
+    const users = applyUsersCollection([], options, strategy)[0]
+    const phone = users?.fields.find((field) => fieldName(field) === 'phone')
+    const validate =
+      phone !== undefined && 'validate' in phone && typeof phone.validate === 'function'
+        ? (phone.validate as (value: unknown) => true | string)
+        : undefined
+    expect(validate).toBeDefined()
+    expect(validate?.('+14155550132')).toBe(true)
+    expect(validate?.('')).toBe(true)
+    expect(validate?.(null)).toBe(true)
+    expect(typeof validate?.('555-0132')).toBe('string')
+  })
+
+  describe('host-declared access on the users collection', () => {
+    // A user from another auth collection: the account-control belt
+    // passes it straight to the wrapped decision.
+    const req = { user: { id: 'o1', collection: 'admins', email: 'o1@test.dev' }, context: {} }
+    type AccessFn = (args: { req: typeof req }) => unknown
+
+    function accessOf(access: CollectionConfig['access']): Record<string, AccessFn | undefined> {
+      const { options, strategy } = wired()
+      const users = applyUsersCollection(
+        [{ slug: 'users', fields: [], ...(access === undefined ? {} : { access }) }],
+        options,
+        strategy
+      )[0]
+      return (users?.access ?? {}) as Record<string, AccessFn | undefined>
+    }
+
+    it('keeps host delete / readVersions decisions behind the belt', async () => {
+      const access = accessOf({ delete: () => true, readVersions: () => true })
+      await expect(access.delete?.({ req })).resolves.toBe(true)
+      await expect(access.readVersions?.({ req })).resolves.toBe(true)
+    })
+
+    it('fills defaults that refuse a user without a roles array (fail closed)', async () => {
+      const access = accessOf(undefined)
+      await expect(access.delete?.({ req })).resolves.toBe(false)
+      await expect(access.readVersions?.({ req })).resolves.toBe(false)
+      // Not a manager: read is constrained to the user's own document.
+      await expect(access.read?.({ req })).resolves.toEqual({ email: { equals: 'o1@test.dev' } })
+    })
+  })
+
   it('never mutates its input', () => {
     const { options, strategy } = wired()
     const existing: CollectionConfig = { slug: 'users', fields: [] }

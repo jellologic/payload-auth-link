@@ -266,7 +266,11 @@ session collection without that field still boots (a missing OPTIONAL
 Better Auth field is tolerated; a missing required one fails fast), but
 records no provenance, so MFA-gated roles stay withheld (fail closed). Add a
 `{ name: 'authenticationMethod', type: 'text' }` field to the adopted
-session collection if you use `requireMfaForRoles`.
+session collection (and its column, e.g.
+`ALTER TABLE sessions ADD COLUMN authentication_method varchar`) if you
+use `requireMfaForRoles`. The doctor warns
+(`adopt-session-no-authentication-method`) on a session collection
+without it — on the payload-auth config, and on an adopt-mode target.
 
 ### Pre-link the users: `adopt-prelink`
 
@@ -313,6 +317,18 @@ with nothing written. The manifest follows the importer's rules
 (below). After `--apply`, verified and unverified users alike resolve
 to their ORIGINAL document on their next sign-in.
 
+What the pre-link changes on each document it links: the `identities`
+rows (and, with the opt-in, `linkable` / `linkableEmail`) — nothing
+else. Since migrate 0.9.0 the document's `updated_at` is kept (the
+write puts the captured value back in the same transaction). One side
+effect remains: the write goes through Payload's Local API, whose
+full-document upsert re-creates hasMany child rows — the `users_role`
+rows behind payload-auth's `role` select get new surrogate `id`s, with
+the same `(parent_id, order, value)`. Nothing references those ids; if
+you diff the table across the pre-link, diff those three columns.
+`rollback --manifest` restores every captured field, `updated_at`
+included.
+
 `finalize --config ./src/payload.config.ts --manifest
 ./payload-auth-link-prelink.json` closes the pre-link the same way it
 closes an import: rollback is refused afterwards. In adopt mode there
@@ -340,11 +356,29 @@ are untouched".
 
 ### Verifying an adopt cutover
 
-`verify` checks an IMPORT (source rows against their `ba-*` copies)
-and says so when pointed at an adopt-mode config: adopt copies nothing,
-so there is nothing for it to compare. Verify an adopt cutover with
-checksums of the tables Better Auth now serves, taken right before the
-deploy and right after the boot — before traffic, which writes them:
+Adopt copies nothing, so `verify` pointed at an adopt-mode config
+(migrate 0.9.0+) checks the live tables Better Auth now serves instead
+of comparing copies:
+
+```sh
+bunx @payload-auth-link/migrate verify --config ./src/payload.config.ts \
+  --database-url $DATABASE_URL
+```
+
+- the app serves every user row (the users collection's count equals
+  the table's);
+- every user resolves through EXACTLY ONE `better-auth` identity keyed
+  by their document id — it fails, naming the count, until
+  `adopt-prelink --apply` has run;
+- every account, member, invitation and API key references an
+  existing row, and every credential account carries its hash;
+- content checksums of `accounts`, `users`, `api_keys` and `jwks`, and
+  the live-session count (info lines, never failing).
+
+Run it right before the deploy and right after the boot — before
+traffic, which writes those tables — and compare the checksum lines:
+they must match exactly; the live-session count may only drop by
+sessions that expired in between. The same checksums by hand:
 
 ```sql
 -- Credentials and identities: must be byte-identical across the deploy.
@@ -474,11 +508,54 @@ the signature, and every command checks them first:
   from before the rollback is refused as stale, and the next `--apply`
   starts a fresh run;
 - every check fails closed: a key-value store that cannot be read
-  refuses the command instead of trusting the file.
+  refuses the command instead of trusting the file;
+- every captured value is sealed FOR its run (since 0.9.0; the
+  database id and run nonce are part of the AES-GCM associated data),
+  so a value copied into another manifest — another run's, or an
+  unsigned one — does not open (GHSA-xw9m-ph95-84rx);
+- only ONE run is open at a time (issue #116): a fresh `--apply` (or
+  `adopt-prelink --apply`) is refused while another run may hold rows
+  — resume it with its manifest, roll it back, or finalize it first —
+  and `finalize` is refused while ANOTHER open run may hold rows (its
+  marker would block that run's rollback for good). A pass that fails
+  part-way still writes the manifest of what it did, so its run can
+  be resumed or rolled back.
 
 **Never roll back with a manifest from another environment or another
-run.** A database cloned AFTER its first `--apply` carries the same
-id; treat each clone's manifests as belonging to it alone.
+run.**
+
+**Clones (GHSA-xw9m-ph95-84rx).** A database cloned AFTER its first
+`--apply` (a rehearsal restored from a production backup) carries the
+original's `payload-kv` — the same database id, the same open runs —
+so the id alone cannot tell them apart. The kit therefore records two
+more things with the id, and refuses every manifest-driven command
+("this database's migration record … does not belong to it") when
+either no longer matches:
+
+- **on Postgres, automatically:** a fingerprint of the server's
+  `system_identifier` and `current_database()`. A dump restored into
+  another cluster, or a copy under another database name, is detected.
+  A PHYSICAL copy of the whole cluster (a disk snapshot restored as
+  is, a promoted replica) keeps both and is NOT detected;
+- **on every adapter, when you state it:** `--environment-id <name>`
+  (or `PAYLOAD_AUTH_LINK_ENVIRONMENT_ID`). It is recorded when a run
+  starts; from then on every `--apply`, `rollback` and `finalize` on
+  that database must state the same name. Give each environment its
+  own name BEFORE its first `--apply` — that is what detects a clone
+  on SQLite and MongoDB, and a snapshot clone on Postgres.
+
+A database first applied by 0.8.0 gains both values at its next run
+start; a clone taken before that shares them with the original and is
+not detected. When a mismatch is reported, say which case it is:
+
+- **the database is a CLONE:** `--new-database-identity` gives it its
+  own migration id. Every manifest written against the original is
+  then refused there as "another database"; start the clone's own runs
+  with `--apply` (on a clone that already holds the original's
+  imported rows, restore it from a pre-migration backup instead);
+- **it IS the original**, restored into another cluster or renamed:
+  `--database-moved` continues its runs and re-records the
+  fingerprint (and the `--environment-id` you state).
 
 Independently of the signature:
 
@@ -521,6 +598,11 @@ Manifests from older kits:
   add `--allow-unsigned-deletes`; to restore a version-1 manifest's
   PLAINTEXT prior values, review them and add
   `--allow-plaintext-restore`. The scoping rules above still apply.
+  Since 0.9.0 such a manifest is refused outright — rollback AND
+  finalize, whatever the flags — on a database that has run migrate
+  0.8.0 or later (it holds a migration database id): every manifest
+  written there since is signed and bound, so an unsigned one is a
+  downgrade, not a leftover (GHSA-xw9m-ph95-84rx).
 - **Version 3 from migrate 0.6.0** is signed, but that signature did
   not cover `finalized`. It is terminal too (`rollback` with
   `--allow-unsigned-manifest`, or `finalize`).
@@ -530,9 +612,28 @@ Manifests from older kits:
   database; a resume then binds it (version 4). A manifest holding
   plaintext values (a version-1 manifest an older kit resumed) is
   never resumed; roll it back with `--allow-plaintext-restore`.
+- **Version 4 from migrate 0.8.0** seals its values for their entry
+  only. It keeps working: those values open inside the signed, bound
+  manifest that carries them; values captured since 0.9.0 are sealed
+  for their run.
 
 Keep it until you have run `finalize` AND your soak window has passed
 (rollback needs it); then delete it.
+
+### A run whose manifest is lost
+
+A fresh run is refused while another run may hold rows, and the
+refusal names that run's id. Resume or roll it back with its manifest.
+If the manifest is gone (an `--apply` killed before it could write
+one), the kit cannot roll its rows back: restore the database from the
+backup you took before the run, or remove what it wrote by hand, then
+close the run record yourself (Postgres shown; `payload_kv.data` is
+JSON on every SQL adapter):
+
+```sql
+UPDATE payload_kv SET data = jsonb_set(data, '{state}', '"rolled-back"')
+ WHERE key = 'payload-auth-link/migrate/runs/<run id from the error>';
+```
 
 ### What rollback restores, exactly
 
@@ -546,10 +647,16 @@ starts a fresh run instead of building on stale entries.
 
 A row that is already gone is fine — the goal is "absent". A delete
 that FAILS (a foreign key from one of your tables, a hook, a
-permission) is an error: rollback names each row it could not delete
+permission) is an error: rollback names the row it could not delete
 and why, exits non-zero, restores no field value, and keeps the
-manifest as it was. Fix the cause and re-run `rollback`; the rows it
-already deleted then count as absent.
+manifest as it was. Since 0.9.0 the deletes and restores run in ONE
+database transaction where the adapter offers one (Postgres, SQLite;
+MongoDB on a replica set): the rows deleted before the failure come
+back with it, and the database is exactly as before. On an adapter
+without transactions (a standalone MongoDB), the rows already deleted
+stay deleted; fix the cause and re-run `rollback`, which completes it
+— those rows then count as absent, and restoring a captured value
+again is idempotent.
 
 One thing it cannot restore: the forward Local API write re-creates
 hasMany child rows (the `users_role` table behind a `role` select)
@@ -617,7 +724,7 @@ sessions Better Auth already cleaned up) as information, never as a
 failure. The other models keep EXACT counts, so new sign-ups after
 go-live make `verify` report more `ba-users` than the source: run it
 right after the copy, before you open traffic. In adopt mode there is
-no copy; `verify` says so and points to
+no copy; `verify` runs the adopt checks instead — see
 [Verifying an adopt cutover](#verifying-an-adopt-cutover).
 
 ### Email verification after the import

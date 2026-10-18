@@ -26,21 +26,21 @@ Each cell is lines / functions / branches / statements.
 | `core/src/use-cases/ensure-linked-user.ts`            | 95 / 95 / 95 / 95 | at target |
 | `plugin/src/access.ts`                                | 95 / 95 / 95 / 95 | at target |
 | `plugin/src/audit.ts`                                 | 95 / 95 / 95 / 95 | at target |
-| `plugin/src/collections.ts`                           | 95 / 95 / 88 / 95 | see below |
+| `plugin/src/collections.ts`                           | 95 / 95 / 91 / 95 | see below |
 | `plugin/src/compat-shim.ts`                           | 95 / 95 / 95 / 95 | at target |
 | `plugin/src/credential-gate.ts`                       | 95 / 95 / 95 / 95 | at target |
-| `plugin/src/endpoints.ts`                             | 95 / 95 / 91 / 95 | see below |
+| `plugin/src/endpoints.ts`                             | 95 / 95 / 95 / 95 | see below |
 | `plugin/src/hooks.ts`                                 | 95 / 95 / 95 / 95 | at target |
-| `plugin/src/lifecycle.ts`                             | 95 / 95 / 94 / 95 | see below |
+| `plugin/src/lifecycle.ts`                             | 95 / 95 / 95 / 95 | at target |
 | `plugin/src/organizations.ts`                         | 95 / 95 / 95 / 95 | see below |
 | `plugin/src/repository.ts`                            | 95 / 95 / 95 / 95 | at target |
-| `plugin/src/server.ts`                                | 95 / 95 / 94 / 95 | see below |
+| `plugin/src/server.ts`                                | 95 / 95 / 95 / 95 | see below |
 | `plugin/src/session.ts`                               | 95 / 95 / 95 / 95 | see below |
 | `plugin/src/strategy.ts`                              | 95 / 95 / 95 / 95 | see below |
 | `plugin/src/verified-email.ts`                        | 95 / 95 / 95 / 95 | at target |
 | `provider-authjs/src/adapter.ts`                      | 95 / 95 / 95 / 95 | see below |
 | `provider-authjs/src/callbacks.ts`                    | 95 / 95 / 95 / 95 | at target |
-| `provider-authjs/src/engine.ts`                       | 95 / 95 / 93 / 95 | see below |
+| `provider-authjs/src/engine.ts`                       | 95 / 95 / 95 / 95 | at target |
 | `provider-authjs/src/port.ts`                         | 95 / 95 / 95 / 95 | at target |
 | `provider-better-auth/src/adapter.ts`                 | 95 / 95 / 95 / 95 | see below |
 | `provider-better-auth/src/cookies.ts`                 | 95 / 95 / 95 / 95 | at target |
@@ -79,13 +79,23 @@ here and referred to by name below.
 
 ## Per file
 
-### `plugin/src/collections.ts` (branches 88.91%)
+### `plugin/src/collections.ts` (branches 91.68%)
 
-- Lines 45 and 85: role narrowing on a user without a `roles` array,
-  and a host-supplied access function in a slot the belt wraps
-  (untyped-input narrowing).
-- Lines 297, 800, 804 and 808: `suspensionActive`/`suspendRevokeHook`
-  arms for a non-record document (untyped-input narrowing).
+Unit tests now pin the field-collision messages (identities-specific
+and generic), the adopted roles select's own `defaultValue`, the phone
+field's E.164 `validate`, host-declared `delete`/`readVersions` access
+behind the belt, the fail-closed defaults for a user without a `roles`
+array, and the suspend-revoke hook skipping a provider without
+`revokeUserSessions` or a non-record document.
+
+- Line 236: `linkableMarkerHook` for an operation that is neither
+  `create` nor `update`. Payload runs `beforeChange` for those two only.
+- Line 800: `assertNever` on the account decision (exhaustive switch).
+- Lines 887 and 896–897: the belt's fallback for an unfilled
+  `update`/`delete`/`unlock` slot. Both call sites pass the access
+  through `withDefaultUserAccess` first, which fills every slot, so
+  the fallback cannot run. It stays as a fail-safe if a future caller
+  skips the defaults.
 - The re-entrant account-status read is pinned by a unit test
   (`collections-fail-closed.test.ts`); the engine never reaches it,
   because the status read runs on its own request.
@@ -93,35 +103,24 @@ here and referred to by name below.
   resolves no user at authentication (`credential-gate.ts`), so the
   operation-layer provider-owned refusals are reached by the unit
   tests and Local API calls handed such a user, not by REST walks.
-- Lines 744 and 748: the phone field's `validate`. This is the CAP-9
-  phone path, which has its own suite in the provider packages.
-- Lines 826 and 1016–1021: registry miss in the suspend-revoke hook,
-  and the field-collision message for the identities field. The
-  generic collision is tested; the identities-specific wording is not.
-- The remaining `cond-expr#1` arms (271, 330, 369, 407, 470, 529, 550,
-  551, 688, 690, 942–971 and 1042) are `?? default` and
-  `isRecord(...) ? ... : undefined` narrowing on documents Payload has
-  already validated.
+- Lines 728–780: `reqUser: 'document'` arms for a local session
+  without a `context` record, without `findByID`, or whose user lacks
+  `email`/`roles` (Payload always supplies them).
+- The remaining arms (84, 247, 351, 425, 449, 534, 571, 641, 927, 929,
+  1047, 1060, 1085, 1185, 1188, 1226 and 1297) are `?? default` and
+  `isRecord(...) ? ... : undefined` narrowing on documents and config
+  Payload has already validated, or a `roleValues` lookup on a
+  configured role (every configured role has a value).
 
-### `plugin/src/endpoints.ts` (branches 89.83%)
+### `plugin/src/endpoints.ts` (branches 98.68%)
 
-- Lines 32, 79 and 115: registry miss.
-- Line 46: `presentedLogoutCookieNames` with no request headers. The
-  logout endpoint always has headers.
-- Line 162: a provider with no `guest` hook, on the anonymous path.
-- Line 181: `?? fallback` on an error cause.
+Measured 100 / 100 / 98.68 / 100. The registry-miss arms (a provider
+id the registry lists but no longer resolves) and a cookie name two
+providers share are pinned by `endpoints.test.ts`. The one uncovered
+arm:
 
-Another change is editing this file at the same time (cookie expiry).
-Re-measure after it lands.
-
-### `plugin/src/lifecycle.ts` (branches 94.73%)
-
-`integration-lifecycle.test.ts` drives the `onInit` subscription on
-real Payload: the verified-email sync, application failure, a failed
-linked-user lookup, and a throwing handler (Error and non-Error
-causes), each logged and never thrown into the provider.
-
-- Line 65: registry miss.
+- Line 254: `?? fallback` on a user-reload error with no `cause`. The
+  repository always wraps the storage failure as the cause.
 
 ### `plugin/src/organizations.ts` (branches 99.05%)
 
@@ -144,30 +143,32 @@ three uncovered arms are:
   falls back to `owner`/`admin`/`member` when `orgRoles` is empty, so
   the list is never empty at runtime.
 
-### `plugin/src/server.ts` (branches 94.64%)
+### `plugin/src/server.ts` (branches 98.46%)
 
-- Lines 186, 201 and 352: registry miss (`firstProviderWith`,
-  `allProvidersWith`, `revokeSession`).
-- Line 230: `wired.roleValues[role] ?? role` on a role that has no
+Measured 99.4 / 100 / 98.46 / 99.4. Registry misses on every provider
+walk (`firstProviderWith`, `allProvidersWith`, `revokeSession`) are
+pinned by `server-failures.test.ts`. The uncovered arms:
+
+- Line 288: `wired.roleValues[role] ?? role` on a role that has no
   stored value under `projectRolesAs: 'stored'`. Roles are canonical
   and every configured role has a value.
-- Line 440: `sessionCookie` re-checking `capable[0]` after the length
+- Line 526: `sessionCookie` re-checking `capable[0]` after the length
   check. This is unreachable; the check is there for
   `noUncheckedIndexedAccess`.
 
 Every fail-loud branch (revoke, revoke-all, verifyApiKey, mint and
-list refusals) is covered by `server-failures.test.ts`.
+list refusals) and the `verifyApiKey` owner gate (GHSA-j68x: no linked
+user, suspended, store error) are covered by `server-failures.test.ts`.
 
-### `plugin/src/session.ts` (branches 96.69%)
+### `plugin/src/session.ts` (branches 98.34%)
 
 The SSO domain gate for an email-less session (the claim reaches the
 guard as `null`, never as the deprecated `email` alias) is tested in
-`session.test.ts`.
+`session.test.ts`, as is the per-request verify memo's cache hit
+(`requestVerifiedSession`).
 
-- Lines 105 and 132: registry miss.
-- Line 205: the per-request verify memo on a request whose `context`
-  is not a record. Payload always supplies a context object.
-- Line 396: the `email` log field on the provisioning-refused path for
+- Line 155: registry miss in the stale-cookie warning walk.
+- Line 443: the `email` log field on the provisioning-refused path for
   a session with no email claim. That path needs a `UserExistsError`
   from `create`, and only an email-carrying session creates.
 
@@ -202,20 +203,6 @@ real engine in `session-shape-engine.test.ts`. The remaining arms are
 `input.user ?? {}` and `image === undefined` in the allowlisted
 session (Auth.js always passes a user, with `image`), and a sign-in
 `user` without an `id` in the jwt callback (lines 159, 163, 304).
-
-### `provider-authjs/src/engine.ts` (branches 93.68%)
-
-The engine wires its own adapter through `createWiredAuthJsAdapter`,
-whose type makes `updateUser` required, so the former "adapter without
-`updateUser`" checks are gone rather than untested.
-
-- Line 427: `readSession` when Auth.js answers the session endpoint
-  with a non-OK status. Auth.js answers 200 (with `null`) for every
-  session miss.
-- Lines 139, 160, 399, 402 and 474: `String(error)` for a non-Error
-  factory throw, `?? '<unknown provider id>'`, the cookie-option `?? {}`
-  spreads, and a non-object bulk result. These are untyped-input
-  narrowing.
 
 ### `provider-better-auth/src/engine.ts` (branches 96.5%)
 

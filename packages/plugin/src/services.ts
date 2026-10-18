@@ -9,7 +9,7 @@ import {
 import type { Payload } from 'payload'
 import { composeAuditLogger } from './audit.js'
 import type { WiredOptions } from './options.js'
-import { createPayloadUserRepository } from './repository.js'
+import { createPayloadUserRepository, type PayloadUserRepositoryDeps } from './repository.js'
 import { createSessionService, type PluginSessionService } from './session.js'
 
 /**
@@ -18,7 +18,7 @@ import { createSessionService, type PluginSessionService } from './session.js'
  * per call, so role changes apply to the very next request.
  */
 export function createServices(wired: WiredOptions, payload: Payload) {
-  const users = createPayloadUserRepository({
+  const repositoryDeps: PayloadUserRepositoryDeps = {
     payload,
     map: wired.config.map,
     defaultRole: wired.config.defaultRole,
@@ -34,7 +34,8 @@ export function createServices(wired: WiredOptions, payload: Payload) {
     roleValues: wired.roleValues,
     roleValuesReverse: wired.roleValuesReverse,
     keepLocalCredentialsOnLink: wired.allowLocalCredentialsForLinkedDocs,
-  })
+  }
+  const users = createPayloadUserRepository(repositoryDeps)
   const orgs = wired.organizations
   const sessions: PluginSessionService = createSessionService({
     users,
@@ -49,6 +50,9 @@ export function createServices(wired: WiredOptions, payload: Payload) {
       logger:
         wired.onAudit === null ? wired.logger : composeAuditLogger(wired.logger, wired.onAudit),
       collection: wired.config.map.usersCollection,
+      // Issue #116: the writes an impersonated verification performs
+      // are observed at the repository, so only real writes audit.
+      observedUsers: (onWrite) => createPayloadUserRepository({ ...repositoryDeps, onWrite }),
     },
     // CAP-15: only wired when SSO providers are registered. The
     // checker resolves the email domain against every Payload

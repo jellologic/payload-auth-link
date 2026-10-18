@@ -6,6 +6,9 @@
  * - Verifying an impersonated session whose target has no users
  *   document yet links/provisions one; that write used to surface
  *   only as the `impersonated session used` log line.
+ * - An impersonated verification that re-syncs an already-linked
+ *   target's email writes too (`setEmail`, issue #116); concurrent
+ *   first touches record only the one request that wrote.
  * - `GET /auth-link/organizations` stays allowed while impersonating
  *   but used to leave no audit record.
  *
@@ -137,6 +140,76 @@ describe('impersonated verification that links the target (#113 item 9)', () => 
     ).toBe(200)
     expect(await idOf('plain@audit.test')).not.toBeNull()
     expect(audited.filter((event) => event.message === 'impersonated operation')).toEqual([])
+  })
+})
+
+describe('impersonated verification that re-syncs a linked target (#116 item 3)', () => {
+  it('records the email re-sync write on onAudit as setEmail, once', async () => {
+    // The target signs in on their own first: linked, nothing audited.
+    expect(
+      (await call('/auth-link/session', session('stub-resync', 'before@audit.test'))).status
+    ).toBe(200)
+    const targetId = await idOf('before@audit.test')
+    expect(targetId).not.toBeNull()
+    expect(audited.filter((event) => event.message === 'impersonated operation')).toEqual([])
+    // The provider now reports a new verified address while an
+    // operator impersonates the target: verification writes it.
+    const cookie = session('stub-resync', 'after@audit.test', 'stub-operator')
+    expect((await call('/auth-link/session', cookie)).status).toBe(200)
+    expect(await idOf('before@audit.test')).toBeNull()
+    expect(await idOf('after@audit.test')).toBe(targetId)
+    expect(records('setEmail')).toEqual([
+      {
+        message: 'impersonated operation',
+        fields: {
+          actorProviderUserId: 'stub-operator',
+          actorKind: 'payload-user',
+          actorUserId: operatorId,
+          targetUserId: targetId,
+          operation: 'setEmail',
+          collection: 'users',
+          id: targetId,
+        },
+      },
+    ])
+    // Already in sync: the next impersonated request writes nothing.
+    expect(records('linkIdentity')).toEqual([])
+    audited.length = 0
+    expect((await call('/auth-link/session', cookie)).status).toBe(200)
+    expect(audited.filter((event) => event.message === 'impersonated operation')).toEqual([])
+  })
+})
+
+describe('concurrent impersonated first touches (#116 item 4)', () => {
+  it('record exactly one linkIdentity — by the request that wrote', async () => {
+    const cookie = session('stub-race', 'race@audit.test', 'stub-operator')
+    expect(await idOf('race@audit.test')).toBeNull()
+    const responses = await Promise.all(
+      Array.from({ length: 5 }, () => call('/auth-link/session', cookie))
+    )
+    expect(responses.map((response) => response.status)).toEqual([200, 200, 200, 200, 200])
+    const found = await payload.find({
+      collection: 'users',
+      where: { email: { equals: 'race@audit.test' } },
+      overrideAccess: true,
+      depth: 0,
+    })
+    expect(found.totalDocs).toBe(1)
+    const targetId = String(found.docs[0]?.id)
+    expect(records('linkIdentity')).toEqual([
+      {
+        message: 'impersonated operation',
+        fields: {
+          actorProviderUserId: 'stub-operator',
+          actorKind: 'payload-user',
+          actorUserId: operatorId,
+          targetUserId: targetId,
+          operation: 'linkIdentity',
+          collection: 'users',
+          id: targetId,
+        },
+      },
+    ])
   })
 })
 

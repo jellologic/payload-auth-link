@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext } from '@playwright/test'
+import { RETRY_ON_RESET } from './helpers.js'
 
 /**
  * Row 17 of docs/security-model.md: the plugin's session endpoint
@@ -21,7 +22,7 @@ async function signUpVerified(request: APIRequestContext, email: string): Promis
   expect(signup.ok()).toBe(true)
   const stamped = await request.post('/api/dev-auto-verify', { data: { email } })
   expect(stamped.ok()).toBe(true)
-  const session = await request.get('/api/auth-link/session')
+  const session = await request.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(session.ok()).toBe(true)
   const body = (await session.json()) as { user: { email: string } }
   expect(body.user.email).toBe(email)
@@ -45,7 +46,7 @@ test('DELETE /api/auth-link/session without CSRF proof is 403 and the session su
   expect(crossSite.status()).toBe(403)
 
   // Neither refused request touched the session.
-  const alive = await api.get('/api/auth-link/session')
+  const alive = await api.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(alive.status()).toBe(200)
   const body = (await alive.json()) as { user: { email: string } }
   expect(body.user.email).toBe(email)
@@ -55,6 +56,6 @@ test('DELETE /api/auth-link/session without CSRF proof is 403 and the session su
     headers: { 'x-auth-link-csrf': '1' },
   })
   expect(signedOut.ok()).toBe(true)
-  const after = await api.get('/api/auth-link/session')
+  const after = await api.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(after.status()).toBe(401)
 })

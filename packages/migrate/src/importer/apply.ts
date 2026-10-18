@@ -1,8 +1,8 @@
 import { isRecord } from '@payload-auth-link/core'
 import type { Payload } from 'payload'
-import { openRun } from './binding.js'
-import { hostRolesField } from './guards.js'
-import { capturedKeys, captureBefore } from './host-writes.js'
+import { closeAbortedPass, openRun, recordRunEntries } from './binding.js'
+import { hostRolesField, type IdentityCheck } from './guards.js'
+import { capturedKeys, captureBefore, type SealScope } from './host-writes.js'
 import { signManifest } from './manifest-mac.js'
 import {
   readFlatRows,
@@ -94,6 +94,12 @@ export type ApplyOptions = {
    * sign-in for the address link to the document (GHSA-v6mr).
    */
   readonly grantLinkableFromVerified?: boolean | undefined
+  /**
+   * How this environment identifies itself (`--environment-id`,
+   * `--database-moved`, `--new-database-identity`;
+   * GHSA-xw9m-ph95-84rx).
+   */
+  readonly identity?: IdentityCheck | undefined
 }
 
 const slugsOf = (overrides?: Readonly<Record<string, string>>): TargetSlugMap => ({
@@ -337,6 +343,7 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
     log,
     allowUnsignedManifest: options.allowUnsignedManifest,
     allowUnboundManifest: options.allowUnboundManifest,
+    identity: options.identity,
   })
   const grantLinkable = options.grantLinkableFromVerified === true
   const rolesField = hostRolesField(payload)
@@ -358,6 +365,49 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
     planRows.push(row)
   }
 
+  /** The run every value this pass captures is sealed for. */
+  const sealScope = (): SealScope => {
+    if (binding === null) {
+      throw new Error('from-payload-auth --apply: no run is open for this pass')
+    }
+    return binding
+  }
+
+  /**
+   * The manifest is the run's contract: merge this pass onto any
+   * resumed run's rows and write it back (issue #50), bound to this
+   * database and run (GHSA-crrr-3cg7-f6jw), then record how many
+   * entries it holds (issue #116).
+   */
+  const persist = async (): Promise<void> => {
+    if (!apply || binding === null) {
+      return
+    }
+    const manifest: ImportManifest = signManifest(payload.secret, {
+      version: 4,
+      kind: 'import',
+      createdAt: binding.createdAt,
+      databaseId: binding.databaseId,
+      runId: binding.runId,
+      sourceDatabase: options.sourceDatabase,
+      options: { sessions },
+      created,
+      fieldWrites,
+      finalized: false,
+      sourceCounts: options.sourceCounts,
+      totals,
+    })
+    const { writeManifest } = await import('./lifecycle.js')
+    writeManifest(manifest, options.manifestPath)
+    await recordRunEntries(
+      payload,
+      'import',
+      binding,
+      created.length + fieldWrites.length,
+      'from-payload-auth --apply'
+    )
+  }
+
   const client = await openSource(sourceConnectionString)
   try {
     const users = await readSourceUsers(client, sourceTables)
@@ -371,6 +421,11 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
       log(
         `ABORT: ${blocked.length} user(s) carry state the target cannot hold; nothing was written`
       )
+      // Nothing was written: an aborted fresh run is closed, a resumed
+      // one keeps what it carried (issue #116).
+      if (apply && binding !== null) {
+        await closeAbortedPass(payload, 'import', binding, carried, 'from-payload-auth --apply')
+      }
       return {
         created: 0,
         skipped: 0,
@@ -462,6 +517,7 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
               fields: ['identities', rolesField, 'linkable', 'linkableEmail'],
               captured,
               into: fieldWrites,
+              scope: sealScope(),
             })
             fieldWriteCount += newlyCaptured
             await payload.update({
@@ -828,27 +884,7 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
     log(
       `plan: ${planRows.length} row group(s), ${createdCount} created, ${skippedCount} skipped, ${fieldWriteCount} field value(s) captured`
     )
-    if (apply && binding !== null) {
-      // The manifest is the run's contract: merge this pass onto any
-      // resumed run's rows and write it back (issue #50), bound to this
-      // database and run (GHSA-crrr-3cg7-f6jw).
-      const manifest: ImportManifest = signManifest(payload.secret, {
-        version: 4,
-        kind: 'import',
-        createdAt: binding.createdAt,
-        databaseId: binding.databaseId,
-        runId: binding.runId,
-        sourceDatabase: options.sourceDatabase,
-        options: { sessions },
-        created,
-        fieldWrites,
-        finalized: false,
-        sourceCounts: options.sourceCounts,
-        totals,
-      })
-      const { writeManifest } = await import('./lifecycle.js')
-      writeManifest(manifest, options.manifestPath)
-    }
+    await persist()
     const plan: ImportPlan = {
       rows: planRows,
       unmappable,
@@ -861,6 +897,20 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
       fieldWrites: fieldWriteCount,
       plan,
     }
+  } catch (error) {
+    // A pass that fails part-way still records what it wrote (issue
+    // #116): the rows it created and the values it captured go into the
+    // manifest, so the run can be resumed or rolled back — instead of
+    // leaving untracked rows behind an open run nobody can close.
+    try {
+      await persist()
+    } catch (persistError) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)} — and the manifest could not be written afterwards (${persistError instanceof Error ? persistError.message : String(persistError)}); the rows this pass created are not recorded`,
+        { cause: persistError }
+      )
+    }
+    throw error
   } finally {
     await client.end()
   }

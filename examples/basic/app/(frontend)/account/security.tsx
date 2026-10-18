@@ -46,11 +46,9 @@ export function AccountSecurity() {
   const verifyTwoFactor = (event: FormEvent): void => {
     event.preventDefault()
     void run(async () => {
-      // Verify THROUGH the app's step-up route, not Better Auth's
-      // client directly: the route re-verifies the code server-side and
-      // — only on success — mints a session with the vouched MFA proof,
-      // so the session RECORDS the method (enrollment alone proves
-      // nothing).
+      // Verify THROUGH the app's step-up route: it re-verifies the code
+      // with Better Auth server-side and reports whether the provider
+      // counted it as MFA proof for this session.
       const verify = await fetch('/api/step-up', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -60,9 +58,15 @@ export function AccountSecurity() {
         setError('That code did not verify')
         return
       }
-      // The response carries the minted session cookie: the CURRENT
-      // session is already the recorded-method one — no reload needed.
-      setStatus('Two-factor authentication is on.')
+      const result = (await verify.json().catch(() => null)) as { mfa?: unknown } | null
+      // Confirming an enrollment proves nothing for THIS session (the
+      // provider decides): MFA-gated access opens after the next sign-in
+      // with the factor.
+      setStatus(
+        result?.mfa === true
+          ? 'Two-factor authentication is on.'
+          : 'Two-factor authentication is on. Sign in again with it to open MFA-protected pages.'
+      )
     })
   }
 

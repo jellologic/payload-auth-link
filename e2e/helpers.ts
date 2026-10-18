@@ -7,6 +7,24 @@ import {
 } from '@playwright/test'
 
 /**
+ * Request option for IDEMPOTENT `APIRequestContext` calls (`page.request`,
+ * `request`): retry once, and only on a socket reset. This is
+ * Playwright's own `maxRetries`, which retries `ECONNRESET` alone (after
+ * a 250ms backoff) and surfaces every other error and every HTTP status
+ * unchanged, so an assertion still sees the server's real answer.
+ *
+ * Why: the API request context pools sockets in a keep-alive agent with
+ * no idle timeout, while the dev servers (Next, Vite) close idle sockets
+ * after Node's `keepAliveTimeout`. A request written to a pooled socket
+ * just as the server closes it fails `apiRequestContext…: read
+ * ECONNRESET` before any HTTP exchange; seen in WebKit-project runs on a
+ * loaded host (issue #116), where long browser steps leave the pooled
+ * socket idle at exactly that boundary. Never pass it on a
+ * non-idempotent write: a reset mid-response would replay it.
+ */
+export const RETRY_ON_RESET = { maxRetries: 1 } as const
+
+/**
  * Navigate to one of our own pages and wait for first hydration (the
  * `HydratedMarker` in each example layout sets
  * `html[data-hydrated]`). SSR HTML accepts clicks before React
@@ -222,7 +240,7 @@ export async function signUpVerified(
   }
   const stamped = await request.post('/api/dev-auto-verify', { data: { email } })
   expect(stamped.ok()).toBe(true)
-  const session = await request.get('/api/auth-link/session')
+  const session = await request.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(session.ok()).toBe(true)
   const body = (await session.json()) as { user: { id: string | number; email: string } }
   expect(body.user.email).toBe(email)

@@ -151,6 +151,13 @@ describe('translateWhereClause', () => {
     }
   })
 
+  it('refuses an operator it does not know (a newer Better Auth must fail loud)', () => {
+    const unknown = { ...clause({ field: 'name', value: 'x' }), operator: 'regex' }
+    expect(() => translateWhereClause([unknown as unknown as CleanedWhere])).toThrow(
+      'Unreachable case: regex'
+    )
+  })
+
   it('throws on case-insensitive non-equality', () => {
     expect(() =>
       translateWhereClause([clause({ field: 'email', operator: 'ne', mode: 'insensitive' })])

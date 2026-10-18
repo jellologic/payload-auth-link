@@ -4,16 +4,19 @@ import { getPayload } from 'payload'
 import configPromise from '@payload-config'
 
 /**
- * Step-up verification (the recorded-method integration pattern):
- * verifies a TOTP code through Better Auth itself — carrying the
- * request's own cookies, so the vouch is only as good as that check —
- * and, on success, mints a fresh session with the server-vouched MFA
- * proof (`createSessionFor({ mfaProof: true })`). The session then
- * records the method and MFA-gated access opens.
+ * Two-factor verification for the account page: verifies a TOTP code
+ * through Better Auth itself (carrying the request's own cookies) and
+ * hands the browser the session Better Auth rotated to. Whether that
+ * session is MFA-proven is the PROVIDER's call, never this route's:
+ * provider-better-auth relabels a step-up only with a factor enrolled
+ * BEFORE the session began, so confirming an enrollment (or any code
+ * the session itself just revealed) proves nothing — the user signs in
+ * again with the factor to unlock MFA-gated access.
  *
- * MFA-gated apps need exactly this shape: enrollment alone proves
- * nothing; the server records the method only after IT verified the
- * challenge.
+ * Do not mint `createSessionFor(…, { mfaProof: true })` after a verify
+ * like this one: a successful verify-totp is also how enrollment
+ * completes, so the mint would turn a password-only self-enrollment
+ * into MFA proof.
  */
 export async function POST(request: Request): Promise<Response> {
   const body = (await request.json().catch(() => null)) as { code?: unknown } | null
@@ -41,29 +44,23 @@ export async function POST(request: Request): Promise<Response> {
   }
   // TOTP verification ROTATES the session: the live token is on the
   // verify response's Set-Cookie, not in the request's.
-  const rotated = verify.headers
-    .getSetCookie()
-    .map((entry) => entry.split(';')[0])
-    .join('; ')
+  const setCookies = verify.headers.getSetCookie()
+  const rotated = setCookies.map((entry) => entry.split(';')[0]).join('; ')
   const payload = await getPayload({ config: configPromise })
-  const server = authLinkServer(payload)
-  const session = await server.getSession(new Headers({ cookie: rotated || cookie }))
+  const session = await authLinkServer(payload).getSession(
+    new Headers({ cookie: rotated || cookie })
+  )
   if (session === null) {
     return NextResponse.json({ error: 'no live session' }, { status: 401 })
   }
-  // Payload ids are strings (Mongo, UUIDs) or numbers (SQL serials);
-  // anything else is not a user this route can mint for.
-  const userId = session.id
-  if (typeof userId !== 'string' && typeof userId !== 'number') {
-    return NextResponse.json({ error: 'no live session' }, { status: 401 })
-  }
-  const minted = await server.createSessionFor(userId, {
-    reason: 'step-up',
-    mfaProof: true,
-  })
-  const response = NextResponse.json({ ok: true })
-  if (minted.setCookie !== undefined) {
-    response.headers.append('set-cookie', minted.setCookie)
+  const assurance = session.assurance
+  const mfa =
+    typeof assurance === 'object' && assurance !== null && 'mfa' in assurance
+      ? assurance.mfa === true
+      : false
+  const response = NextResponse.json({ ok: true, mfa })
+  for (const entry of setCookies) {
+    response.headers.append('set-cookie', entry)
   }
   return response
 }

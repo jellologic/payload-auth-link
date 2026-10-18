@@ -51,34 +51,51 @@ included, after all hooks you defined. It also fires from the plugin's
 organization endpoints: when they refuse a request because the caller
 is impersonating, and for the organization list
 (`GET /auth-link/organizations`, allowed while impersonating). And it
-fires when verifying an impersonated session links the target's
-provider identity to a users document, or provisions one
-(`operation: 'linkIdentity'`) — a write no collection hook sees
-under the impersonation. It is emitted only while an operator is
-impersonating the request's user. Plain requests return before any
-logging.
+fires for every users-document write that verifying an impersonated
+session performs — writes no collection hook sees under the
+impersonation: linking the target's provider identity to a document
+or provisioning one (`operation: 'linkIdentity'`), and re-syncing an
+already-linked target's email or phone from the provider
+(`operation: 'setEmail'` / `'setPhone'`). Each write is recorded
+once, by the request that performed it: concurrent first touches
+that lose the provisioning race, and requests that find the target
+already in sync, record nothing. It is emitted only while an
+operator is impersonating the request's user. Plain requests return
+before any logging.
 
 Because the hook runs `beforeOperation`, attempts that are later
 denied are audited too. For example, a role change that is blocked
 while impersonating still produces an event.
 
-| Field                 | When present                                          | Value                                                                                      |
-| --------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `actorKind`           | always                                                | `'payload-user'`, `'provider-only'`, or `'malformed-actor'`                                |
-| `actorProviderUserId` | actor parsed                                          | operator's provider user id                                                                |
-| `actorUserId`         | `actorKind: 'payload-user'`                           | operator's Payload user id (string)                                                        |
-| `targetUserId`        | `req.user` has an id                                  | impersonated user's Payload id (string)                                                    |
-| `operation`           | always                                                | Payload's operation name (`read`, `update`, `delete`, …), endpoint verb, or `linkIdentity` |
-| `collection`          | collection hook, `linkIdentity`                       | collection slug                                                                            |
-| `global`              | global hook                                           | global slug                                                                                |
-| `endpoint`            | organization endpoint                                 | `/auth-link/organizations`, `/auth-link/organizations/invite`, `…/accept`                  |
-| `denied`              | organization endpoint refusal                         | `true` (the endpoint answered 403); absent on the allowed list read                        |
-| `id`                  | the operation args name a document id; `linkIdentity` | document id (string)                                                                       |
+| Field                 | When present                                              | Value                                                                                                                |
+| --------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `actorKind`           | always                                                    | `'payload-user'`, `'provider-only'`, or `'malformed-actor'`                                                          |
+| `actorProviderUserId` | actor parsed                                              | operator's provider user id                                                                                          |
+| `actorUserId`         | `actorKind: 'payload-user'`                               | operator's Payload user id (string)                                                                                  |
+| `targetUserId`        | `req.user` has an id                                      | impersonated user's Payload id (string)                                                                              |
+| `operation`           | always                                                    | Payload's operation name (`read`, `update`, `delete`, …), endpoint verb, or `linkIdentity` / `setEmail` / `setPhone` |
+| `collection`          | collection hook, verification write                       | collection slug                                                                                                      |
+| `global`              | global hook                                               | global slug                                                                                                          |
+| `endpoint`            | organization endpoint                                     | `/auth-link/organizations`, `/auth-link/organizations/invite`, `…/accept`                                            |
+| `denied`              | organization endpoint refusal                             | `true` (the endpoint answered 403); absent on the allowed list read                                                  |
+| `id`                  | the operation args name a document id; verification write | document id (string)                                                                                                 |
 
 The fields carry ids only. Tokens, emails and document data are never
 included. If the request carries an impersonation marker that cannot
 be parsed, the plugin still audits it (fail-closed), with
 `actorKind: 'malformed-actor'` and no made-up attribution.
+
+**Outside the audit: Better Auth's own endpoints.** Requests an
+impersonating operator sends straight to the provider — Better
+Auth's `/api/auth/*` routes such as `/revoke-sessions`,
+`/update-user` or `/list-sessions` — never pass through Payload's
+operations or the plugin's endpoints, so the plugin records nothing
+for them. Better Auth handles them as the impersonated user (an
+`/update-user` that changes the name or image, a `/revoke-sessions`
+that signs the user out everywhere). Audit them at the provider:
+Better Auth's `hooks.after` / `databaseHooks` see the session's
+`impersonatedBy`. An email change that comes back through
+verification is the exception: it is the `setEmail` write above.
 
 For the organization endpoints, `operation` is `read`
 (`GET /auth-link/organizations`), `create`

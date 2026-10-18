@@ -45,7 +45,7 @@ describe('redactSessionTokens (issue #113)', () => {
     expect(redactSessionTokens('/list-sessions', { not: 'an array' }, null)).toBeUndefined()
   })
 
-  it('strips only the token the response minted from other bodies', () => {
+  it('strips the minted token and every session-shaped token from other bodies', () => {
     expect(
       redactSessionTokens('/sign-in/email', { token: 'tok-new', user: { id: 'u' } }, minted)
     ).toEqual({ user: { id: 'u' } })
@@ -59,15 +59,61 @@ describe('redactSessionTokens (issue #113)', () => {
     expect(
       redactSessionTokens('/x', { token: 'tok-new', session: { token: 'tok-new' } }, minted)
     ).toEqual({ session: {} })
+    // Default-deny (issue #116): a session's token goes whatever minted it.
+    expect(redactSessionTokens('/x', { session: { token: 'other' } }, minted)).toEqual({
+      session: {},
+    })
     // A value that only shares the key name (jwt `/token`, …) stays.
     expect(redactSessionTokens('/token', { token: 'a.jwt.value' }, minted)).toBeUndefined()
-    expect(redactSessionTokens('/x', { session: { token: 'other' } }, minted)).toBeUndefined()
-    // No minted session, nothing to compare against.
+    expect(redactSessionTokens('/token', { token: 'a.jwt.value' }, null)).toBeUndefined()
+    // No minted session and no `user`: nothing marks the token a session's.
     expect(redactSessionTokens('/sign-in/email', { token: 'tok-new' }, null)).toBeUndefined()
     expect(
       redactSessionTokens('/sign-in/email', { token: 'tok-new' }, { session: { token: '' } })
     ).toBeUndefined()
     expect(redactSessionTokens('/sign-in/email', 'text', minted)).toBeUndefined()
+    expect(redactSessionTokens('/sign-in/email', new Response('{}'), minted)).toBeUndefined()
+  })
+
+  it('strips the token of a second-factor body (step-up returns the PRESENTED token)', () => {
+    // `/two-factor/verify-*` answers `{ token, user }` with the token of
+    // the session it stepped up — not a newly minted one (issue #116).
+    for (const path of [
+      '/two-factor/verify-totp',
+      '/two-factor/verify-otp',
+      '/two-factor/verify-backup-code',
+    ]) {
+      expect(redactSessionTokens(path, { token: 'presented', user: { id: 'u' } }, null)).toEqual({
+        user: { id: 'u' },
+      })
+    }
+  })
+
+  it('strips token from session rows nested anywhere (admin listings, impersonation)', () => {
+    const row = { id: 's1', token: 't1', userId: 'u', expiresAt: 'x' }
+    expect(
+      redactSessionTokens('/admin/list-user-sessions', { sessions: [row, { id: 's2' }] }, null)
+    ).toEqual({ sessions: [{ id: 's1', userId: 'u', expiresAt: 'x' }, { id: 's2' }] })
+    expect(redactSessionTokens('/admin/whatever', [{ nested: { list: [row] } }], null)).toEqual([
+      { nested: { list: [{ id: 's1', userId: 'u', expiresAt: 'x' }] } },
+    ])
+    expect(
+      redactSessionTokens('/admin/impersonate-user', { session: row, user: { id: 'u' } }, null)
+    ).toEqual({ session: { id: 's1', userId: 'u', expiresAt: 'x' }, user: { id: 'u' } })
+    // A session row nesting another session row loses both tokens.
+    expect(
+      redactSessionTokens('/x', { token: 't', userId: 'u', session: { token: 'n' } }, null)
+    ).toEqual({ userId: 'u', session: {} })
+    // Unchanged bodies keep their identity (no re-serialization).
+    expect(
+      redactSessionTokens('/x', { a: [1, 'two', null], at: new Date(0), deep: { ok: true } }, null)
+    ).toBeUndefined()
+    // A pathological depth stops the walk instead of recursing forever.
+    let deep: Record<string, unknown> = { token: 't', userId: 'u' }
+    for (let level = 0; level < 20; level += 1) {
+      deep = { next: deep }
+    }
+    expect(redactSessionTokens('/x', deep, null)).toBeUndefined()
   })
 })
 

@@ -97,6 +97,16 @@ function live(): Payload {
   return payload
 }
 
+/** Pages with this title, read past access control: proves a refused write wrote nothing. */
+async function pagesTitled(title: string): Promise<number> {
+  const { totalDocs } = await live().count({
+    collection: 'pages',
+    where: { title: { equals: title } },
+    overrideAccess: true,
+  })
+  return totalDocs
+}
+
 class Jar {
   private pairs = new Map<string, string>()
 
@@ -477,8 +487,11 @@ describe('row 1: the auth-link session cookie (real Auth.js)', () => {
     expect((await pluginSession(await signIn('suspended-cookie@authjs-paths.test'))).status).toBe(
       401
     )
-    const attempt = await rest('POST', '/pages', { cookie, body: { title: 'nope' } })
-    expect([401, 403]).toContain(attempt.status)
+    // The dead cookie authenticates nothing, so the request is anonymous:
+    // Payload's default create access refuses it with 403 (never 401).
+    const attempt = await rest('POST', '/pages', { cookie, body: { title: 'suspended-write' } })
+    expect(attempt.status).toBe(403)
+    expect(await pagesTitled('suspended-write')).toBe(0)
     await suspend(id, null)
     expect(await hostIdOf(await signIn('suspended-cookie@authjs-paths.test'))).toBe(id)
   })
@@ -526,8 +539,13 @@ describe('rows 3–7 and 22: local credentials on an Auth.js-linked document', (
 
   it('row 22: the pre-link local JWT is dead after the Auth.js link', async () => {
     expect(await meId({ cookie: preLinkJwt })).toBeNull()
-    const write = await rest('POST', '/pages', { cookie: preLinkJwt, body: { title: 'nope' } })
-    expect([401, 403]).toContain(write.status)
+    // Anonymous after the link: default create access answers 403.
+    const write = await rest('POST', '/pages', {
+      cookie: preLinkJwt,
+      body: { title: 'pre-link-jwt-write' },
+    })
+    expect(write.status).toBe(403)
+    expect(await pagesTitled('pre-link-jwt-write')).toBe(0)
   })
 
   it('row 3: local login is refused (403) on the linked document; an operator keeps it', async () => {
@@ -1047,10 +1065,12 @@ describe('row 27: users writes by other signed-in Auth.js users', () => {
       cookie: alice.cookie,
       body: { email: 'hijacked@authjs-paths.test' },
     })
-    expect([403, 404]).toContain(other.status)
+    // Users update access is a where-constraint (own document); Payload
+    // answers a by-id miss under a where policy with 403, not 404.
+    expect(other.status).toBe(403)
     expect((await hostDoc(bob.id)).email).toBe('row27-bob@authjs-paths.test')
     const removed = await rest('DELETE', `/users/${bob.id}`, { cookie: alice.cookie })
-    expect([403, 404]).toContain(removed.status)
+    expect(removed.status).toBe(403)
     expect((await hostDoc(bob.id)).id).toBeDefined()
   })
 })

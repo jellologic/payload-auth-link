@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { gotoOwn, signUpVerified } from './helpers.js'
+import { gotoOwn, RETRY_ON_RESET, signUpVerified } from './helpers.js'
 
 /**
  * Legacy payload-auth session coexistence (issue #51), wired in both
@@ -34,7 +34,7 @@ test('a legacy payload-auth session cookie keeps the user signed in inside the w
     // Same signed token, legacy name only (what a payload-auth site's
     // visitors still carry after the switch).
     await legacy.addCookies([{ name: legacyCookieName, value: current.value, url: origin }])
-    const resolved = await legacy.request.get('/api/auth-link/session')
+    const resolved = await legacy.request.get('/api/auth-link/session', RETRY_ON_RESET)
     expect(resolved.status()).toBe(200)
     const body = (await resolved.json()) as { user: { id: string; email: string } }
     expect(body.user.email).toBe(email)
@@ -48,7 +48,7 @@ test('a legacy payload-auth session cookie keeps the user signed in inside the w
 
     // A forged legacy value is not a session.
     await forged.addCookies([{ name: legacyCookieName, value: 'forged.value', url: origin }])
-    const refused = await forged.request.get('/api/auth-link/session')
+    const refused = await forged.request.get('/api/auth-link/session', RETRY_ON_RESET)
     expect(refused.status()).toBe(401)
   } finally {
     await Promise.all([signup.close(), legacy.close(), forged.close()])

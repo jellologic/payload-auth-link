@@ -51,24 +51,40 @@ signed manifest — see
 
 - `rollback` deletes only rows in the import's own target collections
   that still carry the importer's `baId`; a failed delete exits
-  non-zero with the rows named and the manifest kept.
+  non-zero with the rows named and the manifest kept. Deletes and
+  restores share one database transaction where the adapter has one
+  (Postgres, SQLite; MongoDB on a replica set), so a failed rollback
+  changes nothing.
 - `finalize --config …` records the finalize in the app's database
   (Payload's `payload-kv` store) and re-signs the manifest; rollback
-  is refused afterwards, whatever the file says.
+  is refused afterwards, whatever the file says. It is refused while
+  another open run may still hold rows.
 - The manifest is bound to its database and run (an id and a nonce
-  kept in the app's `payload-kv`, signed into the file): a manifest
-  from another environment or another run, or one from before a
-  rollback, is refused. Never roll back with a manifest from another
-  environment or run.
+  kept in the app's `payload-kv`, signed into the file), and every
+  captured value is sealed for that run: a manifest from another
+  environment or another run, or one from before a rollback, is
+  refused, and its values open nowhere else. Only one run is open at
+  a time.
+- A database cloned after its first `--apply` carries the original's
+  id. Postgres clones in another cluster or under another name are
+  detected from the server; set `--environment-id` (or
+  `PAYLOAD_AUTH_LINK_ENVIRONMENT_ID`) in every environment before the
+  first `--apply` to detect the rest. `--new-database-identity` gives
+  a detected clone its own id; `--database-moved` accepts the original
+  after a move.
 - `--allow-unsigned-manifest` accepts a pre-0.6.0 or 0.6.0 manifest
   for `rollback` / `finalize` only (never resumed or re-signed) and
   never deletes; add `--allow-unsigned-deletes` after reviewing its
   created rows, and `--allow-plaintext-restore` for its plaintext
-  values. A signed 0.7.0 manifest needs `--allow-unbound-manifest`.
+  values. A pre-0.6.0 (unsigned) manifest is refused outright on a
+  database that has run migrate 0.8.0 or later. A signed 0.7.0
+  manifest needs `--allow-unbound-manifest`.
 - The linking proof (`linkable`) is granted only with
   `--grant-linkable-from-verified` (importer and `adopt-prelink`).
-- `verify` checks an import; in adopt mode it says so and points to
-  the checksum procedure.
+- `verify` checks an import (source rows against their copies), or in
+  adopt mode the live tables: every user served and pre-linked,
+  references intact, plus content checksums to compare across the
+  deploy.
 - `export --source-map …` exports a renamed layout; a mapped table
   that is missing exits 1.
 

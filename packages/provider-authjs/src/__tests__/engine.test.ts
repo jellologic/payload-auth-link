@@ -166,6 +166,25 @@ describe('engine risky linking validation (CAP-12)', () => {
     ).not.toThrow()
     expect(warn).not.toHaveBeenCalled()
   })
+
+  it('still reports a dangerous provider that has no id, by placeholder', () => {
+    const anonymous = {
+      name: 'Anonymous',
+      type: 'oidc',
+      allowDangerousEmailAccountLinking: true,
+    } as unknown as AuthConfig['providers'][number]
+    const { logger, warn } = spyLogger()
+    createAuthJsEngine(baseInput({ logger, options: { providers: [anonymous], secret: SECRET } }))
+    expect(warn).toHaveBeenCalledTimes(1)
+    const [message, fields] = warn.mock.calls[0] as [string, Record<string, unknown>]
+    expect(message).toContain('"<unknown provider id>"')
+    expect(fields).toMatchObject({ providerId: '<unknown provider id>' })
+    expect(() =>
+      createAuthJsEngine(
+        baseInput({ strictLinking: true, options: { providers: [anonymous], secret: SECRET } })
+      )
+    ).toThrow('"<unknown provider id>"')
+  })
 })
 
 describe('engine fail-fasts', () => {
@@ -304,6 +323,17 @@ describe('engine fail-fasts', () => {
       createAuthJsEngine(baseInput({ options: { providers: [exploding], secret: SECRET } }))
     ).toThrow('provider factory threw')
   })
+
+  it('names a non-Error factory throw instead of dropping it', () => {
+    const exploding = (() => {
+      // A factory may throw anything; the wiring error must still say what.
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw 'factory exploded'
+    }) as unknown as AuthConfig['providers'][number]
+    expect(() =>
+      createAuthJsEngine(baseInput({ options: { providers: [exploding], secret: SECRET } }))
+    ).toThrow(/provider factory threw.*factory exploded/)
+  })
 })
 
 describe('engine composition', () => {
@@ -423,6 +453,52 @@ describe('engine composition', () => {
     expect(secure.sessionCookieNames[0]).toBe('__Secure-authjs.session-token')
   })
 
+  it('flows a custom session cookie name and its attributes to the port', () => {
+    const engine = createAuthJsEngine(
+      baseInput({
+        chunkSlots: 1,
+        options: {
+          providers: [],
+          secret: SECRET,
+          cookies: {
+            sessionToken: {
+              name: 'app.sid',
+              options: { domain: 'app.test', path: '/auth', secure: true, partitioned: true },
+            },
+          },
+        },
+      })
+    )
+    expect(engine.sessionCookieNames).toEqual(['app.sid', 'app.sid.0'])
+    expect(engine.provider.sessionCookieNames).toEqual(['app.sid', 'app.sid.0'])
+    // Logout must overwrite the cookie with the attributes it was set
+    // with, or the browser keeps the original (different domain/path).
+    const clear = engine.provider.sessionCookieClearOptions
+    expect(clear?.('app.sid.0')).toEqual({
+      secure: true,
+      domain: 'app.test',
+      path: '/auth',
+      partitioned: true,
+    })
+    expect(clear?.('authjs.session-token')).toBeUndefined()
+  })
+
+  it('keeps the default name when only cookie attributes are customized', () => {
+    const engine = createAuthJsEngine(
+      baseInput({
+        options: {
+          providers: [],
+          secret: SECRET,
+          cookies: { sessionToken: { options: { domain: 'app.test' } } },
+        },
+      })
+    )
+    expect(engine.sessionCookieNames[0]).toBe('authjs.session-token')
+    expect(engine.provider.sessionCookieClearOptions?.('authjs.session-token')).toMatchObject({
+      domain: 'app.test',
+    })
+  })
+
   it('fails fast at wiring on a malformed baseURL', () => {
     for (const baseURL of ['nope', 'ftp://files.example.com', '/relative/path']) {
       expect(() => createAuthJsEngine(baseInput({ baseURL }))).toThrow(InvalidConfigError)
@@ -465,6 +541,28 @@ describe('engine session api', () => {
     if (result.isOk()) {
       expect(result.value).toBeNull()
     }
+  })
+})
+
+describe('engine session api: non-OK Auth.js answers', () => {
+  it('reads a session Auth.js refuses to serve as anonymous, not as an error', async () => {
+    // `trustHost: false` makes raw core answer every request with a 500
+    // configuration error (`UntrustedHost`); the read must not parse
+    // that error body as a session.
+    const error = vi.fn()
+    const engine = createAuthJsEngine(
+      baseInput({
+        options: { providers: [], secret: SECRET, trustHost: false, logger: { error } },
+      })
+    )
+    const result = await engine.provider.getSession(
+      new Headers({ cookie: 'authjs.session-token=t', host: 'app.test' })
+    )
+    expect(result.isOk()).toBe(true)
+    if (result.isOk()) {
+      expect(result.value).toBeNull()
+    }
+    expect(error).toHaveBeenCalled()
   })
 })
 
@@ -517,5 +615,41 @@ describe('engine revocation', () => {
     const result = await engine.provider.revokeSession('no-such-token')
     expect(result.isErr()).toBe(true)
     expect(remove).not.toHaveBeenCalled()
+  })
+
+  it('revokes every database session for a user, verified by a recount', async () => {
+    // A bulk delete result that is not an object carries no per-row
+    // errors to inspect; the recount alone decides.
+    const remove = vi.fn(() => Promise.resolve(null))
+    const count = vi.fn(() => Promise.resolve({ totalDocs: 0 }))
+    const payload = { delete: remove, count } as unknown as Payload
+    const engine = createAuthJsEngine(baseInput({ getPayload: () => Promise.resolve(payload) }))
+    const result = await engine.provider.revokeUserSessions?.('au-1')
+    expect(result?.isOk()).toBe(true)
+    expect(remove).toHaveBeenCalledWith({
+      collection: 'aj-sessions',
+      where: { userId: { equals: 'au-1' } },
+      overrideAccess: true,
+    })
+    expect(count).toHaveBeenCalledTimes(1)
+  })
+
+  it('fails revoke-all when rows survive the bulk delete', async () => {
+    const remove = vi.fn(() => Promise.resolve(null))
+    const count = vi.fn(() => Promise.resolve({ totalDocs: 2 }))
+    const payload = { delete: remove, count } as unknown as Payload
+    const engine = createAuthJsEngine(baseInput({ getPayload: () => Promise.resolve(payload) }))
+    const result = await engine.provider.revokeUserSessions?.('au-1')
+    expect(result?.isErr()).toBe(true)
+    if (result?.isErr()) {
+      expect(result.error.message).toContain('revokeUserSessions')
+    }
+  })
+
+  it('omits revoke-all for jwt deployments', () => {
+    const engine = createAuthJsEngine(
+      baseInput({ options: { providers: [], secret: SECRET, session: { strategy: 'jwt' } } })
+    )
+    expect(engine.provider.revokeUserSessions).toBeUndefined()
   })
 })

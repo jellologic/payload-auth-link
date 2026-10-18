@@ -188,13 +188,18 @@ describe('credentials flow', () => {
   })
 
   it('rejects a duplicate signup', async () => {
+    const users = await countDocs('ba-users')
     const response = await engine.auth.handler(
       authRequest('/sign-up/email', {
         method: 'POST',
         body: { name: 'Ada Again', email: 'ada@test.dev', password: 'correct-horse-battery' },
       })
     )
-    expect(response.status).toBeGreaterThanOrEqual(400)
+    expect(response.status).toBe(422)
+    expect(((await response.json()) as { code?: unknown }).code).toBe(
+      'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL'
+    )
+    expect(await countDocs('ba-users')).toBe(users)
   })
 })
 

@@ -1,10 +1,14 @@
-import { createAuthMiddleware, getSessionFromCtx, isAPIError } from 'better-auth/api'
+import { APIError, createAuthMiddleware, getSessionFromCtx, isAPIError } from 'better-auth/api'
 import type { BetterAuthPlugin } from 'better-auth'
 import { nullLogger, type AuthMethod, type LoggerPort } from '@payload-auth-link/core'
 import {
-  accountStepUp,
+  assessFactorManagement,
   assessSecondFactorRequest,
+  createSerializer,
+  markFactorIssued,
   outcomeOf,
+  settleSecondFactor,
+  type FactorManagementAssessment,
   type StepUpAssessment,
 } from './step-up.js'
 
@@ -78,6 +82,41 @@ function tokenFromSetCookies(entries: readonly string[], name: string): string |
 /** Whether the path proves a second factor ON the presented session. */
 function isSecondFactorPath(path: string | undefined): boolean {
   return path !== undefined && path.startsWith('/two-factor/verify')
+}
+
+/**
+ * Better Auth routes that issue, reveal, rotate or remove the user's
+ * second factor (GHSA-xgx5-2cj5-x548). `/two-factor/view-backup-codes`
+ * is server-only in Better Auth 1.7 and never reaches HTTP.
+ */
+const FACTOR_MANAGEMENT_PATHS: readonly string[] = [
+  '/two-factor/enable',
+  '/two-factor/get-totp-uri',
+  '/two-factor/generate-backup-codes',
+  '/two-factor/disable',
+]
+
+/** Management routes whose success hands out (or turns on) second-factor material. */
+const FACTOR_ISSUING_PATHS: readonly string[] = [
+  '/two-factor/enable',
+  '/two-factor/get-totp-uri',
+  '/two-factor/generate-backup-codes',
+]
+
+function isFactorManagementPath(path: string | undefined): boolean {
+  return path !== undefined && FACTOR_MANAGEMENT_PATHS.includes(path)
+}
+
+function isFactorIssuingPath(path: string | undefined): boolean {
+  return path !== undefined && FACTOR_ISSUING_PATHS.includes(path)
+}
+
+/** Whether the endpoint's returned value is a success (a 200 body). */
+function succeeded(returned: unknown): boolean {
+  if (returned === null || returned === undefined || isAPIError(returned)) {
+    return false
+  }
+  return !(returned instanceof Response && returned.status !== 200)
 }
 
 /** The Better Auth 1.7 after-hook context fields this plugin reads. */
@@ -156,16 +195,44 @@ const ASSESSMENT_KEY = 'payloadAuthLinkSecondFactor'
  */
 const issuedAssessments = new WeakSet<StepUpAssessment>()
 
-function assessmentOf(ctx: unknown): StepUpAssessment | null {
-  if (typeof ctx !== 'object' || ctx === null || !(ASSESSMENT_KEY in ctx)) {
+/** The key a factor-management assessment rides on (see {@link ASSESSMENT_KEY}). */
+const MANAGEMENT_KEY = 'payloadAuthLinkFactorManagement'
+
+/** Factor-management assessments this module issued (honoured by identity). */
+const issuedManagement = new WeakSet<FactorManagementAssessment>()
+
+function contextValue(ctx: unknown, key: string): object | null {
+  if (typeof ctx !== 'object' || ctx === null || !(key in ctx)) {
     return null
   }
-  const value: unknown = (ctx as Record<string, unknown>)[ASSESSMENT_KEY]
-  return typeof value === 'object' &&
-    value !== null &&
-    issuedAssessments.has(value as StepUpAssessment)
+  const value: unknown = (ctx as Record<string, unknown>)[key]
+  return typeof value === 'object' && value !== null ? value : null
+}
+
+function assessmentOf(ctx: unknown): StepUpAssessment | null {
+  const value = contextValue(ctx, ASSESSMENT_KEY)
+  return value !== null && issuedAssessments.has(value as StepUpAssessment)
     ? (value as StepUpAssessment)
     : null
+}
+
+function managementOf(ctx: unknown): FactorManagementAssessment | null {
+  const value = contextValue(ctx, MANAGEMENT_KEY)
+  return value !== null && issuedManagement.has(value as FactorManagementAssessment)
+    ? (value as FactorManagementAssessment)
+    : null
+}
+
+/**
+ * The refusal for a factor-management request on a session without
+ * MFA proof, when the user already holds an MFA-grade factor.
+ */
+function mfaSessionRequired(): APIError {
+  return APIError.from('FORBIDDEN', {
+    code: 'TWO_FACTOR_SESSION_REQUIRED',
+    message:
+      'Managing an enrolled second factor requires a session that completed two-factor verification. Sign in again with your second factor.',
+  })
 }
 
 /** Options for {@link createSessionProvenancePlugin}. */
@@ -181,7 +248,7 @@ export type SessionProvenanceOptions = {
 }
 
 /**
- * The engine's internal session-provenance plugin. Three jobs:
+ * The engine's internal session-provenance plugin. Four jobs:
  *
  * 1. **Schema** — one nullable, input-excluded field on Better Auth's
  *    session model: `authenticationMethod`, recording HOW the session
@@ -189,27 +256,40 @@ export type SessionProvenanceOptions = {
  * 2. **Recording** — `hooks.after` on the endpoints whose success
  *    creates (or finally proves) a session: password sign-in records
  *    `password`, the two-factor sign-in verification records
- *    `two-factor` on the session it issues, OAuth callbacks record
- *    `oauth`, and so on. The second factor's own endpoint is the only
- *    path that writes `two-factor`, and server-side mints write
- *    `server-mint`/`server-step-up` (port.ts).
- * 3. **Step-up guard (#110, GHSA-38wx-69j6-cgm7)** — a `hooks.before`
- *    on `/two-factor/verify*` assesses a verification presented on an
- *    EXISTING session (step-up.ts): it is refused while the account is
- *    locked, its wrong codes spend Better Auth's own per-user failure
- *    budget (shared with the sign-in path), and a correct one relabels
- *    the session `two-factor` only when
+ *    `two-factor` on the session it issues (`password` when the second
+ *    factor was an OTP over a channel not declared independent of the
+ *    inbox), OAuth callbacks record `oauth`, and so on. The second
+ *    factor's own endpoint is the only path that writes `two-factor`,
+ *    and server-side mints write `server-mint`/`server-step-up`
+ *    (port.ts).
+ * 3. **Step-up guard (#110, GHSA-38wx-69j6-cgm7, GHSA-xgx5-2cj5-x548)**
+ *    — a `hooks.before` on `/two-factor/verify*` assesses the request
+ *    (step-up.ts): the attempt is reserved against the user's failure
+ *    budget before any code is checked (refused while locked or once
+ *    the budget is spent, shared with the sign-in path; OTP-only users
+ *    get a budget too), and a correct code on an EXISTING session
+ *    relabels it `two-factor` only when
  *    - the factor was enrolled BEFORE this request (the verification
- *      that enrols the first factor — TOTP confirmation, a backup code
- *      of an unconfirmed enrolment, the OTP that turns 2FA on — proves
- *      nothing for the session that enrolled it; the session keeps its
- *      first-factor label),
- *    - for `/two-factor/verify-otp`, the OTP channel is independent of
- *      the session's first factor (by default it is not after a
- *      magic-link, email-OTP or OAuth sign-in, or an unrecorded one),
+ *      that enrols a factor proves nothing for the session that
+ *      enrolled it; the session keeps its first-factor label),
+ *    - no second-factor material was issued or revealed after the
+ *      session was created (enrolment, `/two-factor/get-totp-uri`,
+ *      `/two-factor/generate-backup-codes` — so a second verification
+ *      on the enrolment session is no proof either),
+ *    - for `/two-factor/verify-otp`, the OTP channel is declared
+ *      independent of the inbox,
  *    - and the signature-verified request cookie names the session BA
  *      resolved for the request (`ctx.context.session`), which is the
  *      session assessed. A failed verification relabels nothing.
+ * 4. **Factor-management gate (GHSA-xgx5-2cj5-x548)** — a
+ *    `hooks.before` on `/two-factor/enable`, `get-totp-uri`,
+ *    `generate-backup-codes` and `disable`: for a user who already
+ *    holds an MFA-grade factor, the calling session must itself carry
+ *    MFA provenance (`two-factor` / `server-step-up`), else the request
+ *    is refused with 403 `TWO_FACTOR_SESSION_REQUIRED` — a password
+ *    alone must not read the TOTP secret, mint backup codes, or swap
+ *    or remove the factor. Every issuing call marks the factor issued,
+ *    so no existing session can be stepped up with what it revealed.
  *
  * The server session API reads this per-session fact for its
  * assurance projection; enrollment flags are never consulted. Paths
@@ -224,6 +304,7 @@ export function createSessionProvenancePlugin(
   const stepUpOptions = {
     otpChannelIndependent: options.twoFactorOtpChannelIndependent === true,
     logger,
+    serialize: createSerializer(),
   }
   return {
     id: 'payload-auth-link-session-provenance',
@@ -252,22 +333,51 @@ export function createSessionProvenancePlugin(
                   return { context: { [ASSESSMENT_KEY]: assessment } }
                 }),
               },
+              {
+                matcher: (ctx) => isFactorManagementPath(ctx.path),
+                handler: createAuthMiddleware(async (ctx) => {
+                  const assessment = await assessFactorManagement(
+                    ctx,
+                    () => getSessionFromCtx(ctx, { disableRefresh: true }),
+                    stepUpOptions
+                  )
+                  if (assessment === null) {
+                    // No session: Better Auth's session middleware refuses.
+                    return
+                  }
+                  if (
+                    assessment.holdsMfaFactor &&
+                    !(MFA_METHODS as readonly (string | null)[]).includes(assessment.method)
+                  ) {
+                    logger.warn('better-auth two-factor management refused: no MFA session', {
+                      userId: assessment.userId,
+                      path: ctx.path,
+                    })
+                    throw mfaSessionRequired()
+                  }
+                  if (isFactorIssuingPath(ctx.path)) {
+                    await markFactorIssued(ctx, assessment.userId)
+                  }
+                  issuedManagement.add(assessment)
+                  return { context: { [MANAGEMENT_KEY]: assessment } }
+                }),
+              },
             ],
             after: [
               {
                 matcher: (ctx) => methodForPath(ctx.path) !== null,
                 handler: createAuthMiddleware(async (ctx) => {
-                  const method = methodForPath(ctx.path)
-                  if (method === null) {
+                  const pathMethod = methodForPath(ctx.path)
+                  if (pathMethod === null) {
                     return
                   }
                   const returned = (ctx.context as { returned?: unknown }).returned
                   const secondFactor = isSecondFactorPath(ctx.path)
                   const assessment = secondFactor ? assessmentOf(ctx) : null
-                  if (assessment?.kind === 'step-up') {
-                    // Spend (wrong code) or reset (success) the failure
-                    // budget Better Auth itself keeps only on sign-in.
-                    await accountStepUp(ctx, assessment, outcomeOf(returned), logger)
+                  if (assessment !== null) {
+                    // Settle the reserved attempt: reset on success, keep
+                    // a wrong guess, release anything else.
+                    await settleSecondFactor(ctx, assessment, outcomeOf(returned), stepUpOptions)
                   }
                   // Record ONLY successful requests. BA's after-hooks run
                   // even when the endpoint returned an error response, so
@@ -277,14 +387,14 @@ export function createSessionProvenancePlugin(
                   // responses and thrown APIErrors record nothing (a
                   // wrong 2FA code must never relabel the presented
                   // session).
-                  if (returned === null || returned === undefined) {
+                  if (!succeeded(returned)) {
                     return
                   }
-                  if (returned instanceof Response && returned.status !== 200) {
-                    return
-                  }
-                  if (isAPIError(returned)) {
-                    return
+                  if (assessment?.kind === 'step-up' && assessment.enrolment) {
+                    // The enrolment may have rotated the session: re-mark
+                    // AFTER the rotation, so the rotated session (whose
+                    // token only this response carries) predates it.
+                    await markFactorIssued(ctx, assessment.userId)
                   }
                   const hook = ctx as unknown as ProvenanceHookContext
                   const name = hook.context.authCookies?.sessionToken?.name
@@ -305,6 +415,7 @@ export function createSessionProvenancePlugin(
                     hook.context.responseHeaders?.getSetCookie?.() ?? [],
                     name
                   )
+                  let method = pathMethod
                   let token: string | null
                   if (!secondFactor) {
                     // Other methods only ever create a session; with no
@@ -317,12 +428,16 @@ export function createSessionProvenancePlugin(
                   } else if (assessment.kind === 'sign-in') {
                     // The challenge path issues a fresh session. If BA
                     // nevertheless authenticated a presented session,
-                    // this was not the sign-in that was assessed.
+                    // this was not the sign-in that was assessed. An OTP
+                    // over a channel not declared independent of the
+                    // inbox is not a second factor: the session keeps
+                    // the password label of the sign-in it completes.
+                    method = assessment.provesMfa ? pathMethod : 'password'
                     token =
                       resolvedSessionToken(hook.context.session) === null ? (issued ?? null) : null
                   } else if (!assessment.provesMfa || issued === null) {
-                    // An enrolment, an inbox-bound OTP after an inbox
-                    // sign-in, or a session that just went away.
+                    // An enrolment, a factor newer than the session, an
+                    // inbox-bound OTP, or a session that just went away.
                     token = null
                   } else {
                     // A step-up of exactly the session it authenticated
@@ -339,6 +454,19 @@ export function createSessionProvenancePlugin(
                     return
                   }
                   await updateSession(token, { authenticationMethod: method })
+                }),
+              },
+              {
+                matcher: (ctx) => isFactorIssuingPath(ctx.path),
+                handler: createAuthMiddleware(async (ctx) => {
+                  const assessment = managementOf(ctx)
+                  const returned = (ctx.context as { returned?: unknown }).returned
+                  if (assessment === null || !succeeded(returned)) {
+                    return
+                  }
+                  // `/two-factor/enable` may rotate the session (OTP
+                  // method, skipVerificationOnEnable): re-mark after it.
+                  await markFactorIssued(ctx, assessment.userId)
                 }),
               },
             ],

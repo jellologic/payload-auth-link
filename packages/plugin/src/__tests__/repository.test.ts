@@ -14,7 +14,7 @@ import {
 import { ValidationError, type Payload } from 'payload'
 import { describe, expect, it, vi } from 'vitest'
 import { wireOptions } from '../options.js'
-import { createPayloadUserRepository } from '../repository.js'
+import { createPayloadUserRepository, type UserDocumentWrite } from '../repository.js'
 import { createStubProvider } from './stub-provider.js'
 
 function email(raw: string): Email {
@@ -58,7 +58,11 @@ type PayloadStub = {
   update?: (args: unknown) => Promise<unknown>
 }
 
-function repository(stub: PayloadStub, logger?: LoggerPort): UserRepository {
+function repository(
+  stub: PayloadStub,
+  logger?: LoggerPort,
+  onWrite?: (write: UserDocumentWrite) => void
+): UserRepository {
   const wired = wireOptions({
     baseUrl: 'http://auth-link.test',
     roles: ['user', 'admin'],
@@ -79,6 +83,7 @@ function repository(stub: PayloadStub, logger?: LoggerPort): UserRepository {
     clock: wired.clock,
     ids: wired.ids,
     depth: wired.depth,
+    onWrite,
   })
 }
 
@@ -548,6 +553,49 @@ describe('payload user repository phone (CAP-9)', () => {
         phone
       )) ?? { isErr: () => false }
     )
+  })
+})
+
+describe('payload user repository write observer (issue #116)', () => {
+  it('reports each performed write once, and never a no-op, a lost race, or a failure', async () => {
+    const writes: UserDocumentWrite[] = []
+    const observe = (stub: PayloadStub) =>
+      repository(stub, undefined, (write) => {
+        writes.push(write)
+      })
+    const newUser = { email: email('linked@test.dev'), roles: [parseRole('user')._unsafeUnwrap()] }
+    // Performed writes.
+    await observe({ create: () => Promise.resolve(doc) }).create(newUser)
+    await observe({ find: found([doc]), update: () => Promise.resolve(linkedDoc) }).linkIdentity(
+      userId,
+      ref
+    )
+    await observe({
+      find: found([doc]),
+      update: () => Promise.resolve({ ...doc, email: 'next@test.dev' }),
+    }).setEmail(userId, email('next@test.dev'))
+    let call = 0
+    const phoneFind = () => {
+      call += 1
+      return Promise.resolve({ docs: call === 1 ? [doc] : [] })
+    }
+    await observe({ find: phoneFind, update: () => Promise.resolve(doc) }).setPhone?.(
+      userId,
+      parsePhoneNumber('+14155550132')._unsafeUnwrap()
+    )
+    expect(writes).toEqual([
+      { operation: 'create', userId: 'user-1' },
+      { operation: 'linkIdentity', userId: 'user-1' },
+      { operation: 'setEmail', userId: 'user-1' },
+      { operation: 'setPhone', userId: 'user-1' },
+    ])
+    writes.length = 0
+    // No-ops, a lost create race, and a failed write report nothing.
+    await observe({ create: uniqueEmailViolation }).create(newUser)
+    await observe({ find: found([linkedDoc]), update: down }).linkIdentity(userId, ref)
+    await observe({ find: found([doc]), update: down }).setEmail(userId, email('linked@test.dev'))
+    await observe({ find: found([doc]), update: down }).setEmail(userId, email('next@test.dev'))
+    expect(writes).toEqual([])
   })
 })
 

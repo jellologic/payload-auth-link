@@ -1,5 +1,5 @@
 import { isRecord } from '@payload-auth-link/core'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import type { Payload } from 'payload'
 import {
   defaultTargetSlugs,
@@ -260,39 +260,243 @@ export type RunRecord = {
   readonly kind: ManifestKind
   readonly createdAt: string
   readonly state: RunState
+  /**
+   * The database id the run was started under (migrate 0.9.0+). A run
+   * record copied into a clone that has since taken its own identity
+   * names the original's id, and is not this database's run.
+   */
+  readonly databaseId?: string | undefined
+  /**
+   * How many entries (created rows + captured field values) the run's
+   * manifest held when it was last written (migrate 0.9.0+, issue
+   * #116). `undefined`: not known — an in-flight run, one that died
+   * before writing its manifest, or one recorded by 0.8.0 — and treated
+   * as holding rows.
+   */
+  readonly entries?: number | undefined
 }
 
 const isRunState = (value: unknown): value is RunState =>
   value === 'open' || value === 'rolled-back' || value === 'finalized'
 
 /**
+ * How the operator identifies the environment a command runs in
+ * (GHSA-xw9m-ph95-84rx: a database cloned after its first `--apply`
+ * carries the original's migration id).
+ */
+export type IdentityCheck = {
+  /**
+   * The operator's name for this environment (`--environment-id`, or
+   * `PAYLOAD_AUTH_LINK_ENVIRONMENT_ID`). Recorded with the database id
+   * when a run starts; once recorded, every manifest-driven command
+   * must state the same value — a clone of production run as
+   * `staging` is refused instead of continuing production's runs.
+   */
+  readonly environmentId?: string | undefined
+  /**
+   * `--database-moved`: this database IS the one that recorded its
+   * migration id — restored into another cluster, or renamed — and
+   * continues its runs. Re-records the fingerprint and environment id.
+   */
+  readonly databaseMoved?: boolean | undefined
+  /**
+   * `--new-database-identity`: this database is a CLONE and must not
+   * continue the original's runs. Mints a fresh migration id, so every
+   * manifest written against the original is refused here as "another
+   * database".
+   */
+  readonly newDatabaseIdentity?: boolean | undefined
+}
+
+/** The database-id record as stored. */
+type DatabaseRecord = {
+  readonly id: string
+  readonly createdAt: string
+  readonly fingerprint?: string | undefined
+  readonly environmentId?: string | undefined
+}
+
+function databaseRecordOf(stored: unknown): DatabaseRecord | null {
+  if (!isRecord(stored) || typeof stored['id'] !== 'string' || stored['id'] === '') {
+    return null
+  }
+  const fingerprint = stored['fingerprint']
+  const environmentId = stored['environmentId']
+  return {
+    id: stored['id'],
+    createdAt: typeof stored['createdAt'] === 'string' ? stored['createdAt'] : '',
+    ...(typeof fingerprint === 'string' && fingerprint !== '' ? { fingerprint } : {}),
+    ...(typeof environmentId === 'string' && environmentId !== '' ? { environmentId } : {}),
+  }
+}
+
+/** A query-capable pool, reached structurally (`@payloadcms/db-postgres`'s `pg` pool). */
+type QueryPool = {
+  readonly query: (sql: string) => Promise<{ readonly rows: readonly unknown[] }>
+}
+
+/**
+ * What the database server itself says about WHICH database this is,
+ * independent of any row a clone copies (GHSA-xw9m-ph95-84rx). On
+ * Postgres: the cluster's `system_identifier` plus `current_database()`
+ * — a dump restored into another cluster, or a `CREATE DATABASE …
+ * TEMPLATE` copy, differs; a PHYSICAL copy of the cluster (a disk
+ * snapshot, a promoted replica) keeps both and is not detected. SQLite
+ * and MongoDB expose nothing comparable: `null` (the operator's
+ * `--environment-id` is the check there). A query the server refuses
+ * also yields `null` — this is a best-effort detector layered on the
+ * database id, never the only guard.
+ */
+export async function databaseFingerprint(payload: Payload): Promise<string | null> {
+  const db: unknown = (payload as { db?: unknown }).db
+  const pool = isRecord(db) ? db['pool'] : undefined
+  if (!isRecord(pool) || typeof pool['query'] !== 'function') {
+    return null
+  }
+  let rows: readonly unknown[]
+  try {
+    const result = await (pool as unknown as QueryPool).query(
+      'SELECT system_identifier::text AS sid, current_database() AS db FROM pg_control_system()'
+    )
+    rows = result.rows
+  } catch {
+    return null
+  }
+  const row = rows[0]
+  if (!isRecord(row) || typeof row['sid'] !== 'string' || typeof row['db'] !== 'string') {
+    return null
+  }
+  return createHash('sha256')
+    .update(`postgres\u0000${row['sid']}\u0000${row['db']}`)
+    .digest('hex')
+    .slice(0, 32)
+}
+
+/**
  * This database's migration identity: a random id the kit stores in
  * the database's own key-value store, so a manifest names the database
  * it was written against. `create` mints one when none exists (the
  * first `--apply`); otherwise a missing id is `null`. Fails closed.
+ *
+ * Clone detection (GHSA-xw9m-ph95-84rx): the record also keeps the
+ * server's {@link databaseFingerprint} and the operator's environment
+ * id. A stored id whose fingerprint or environment no longer matches
+ * belongs to the database it was COPIED from — refused unless the
+ * operator says which case it is (`databaseMoved` /
+ * `newDatabaseIdentity`). A record that predates either value gains it
+ * when a run starts (`create`).
  */
 export async function databaseIdentity(
   payload: Payload,
-  options: { readonly create: boolean; readonly action: string }
+  options: {
+    readonly create: boolean
+    readonly action: string
+    readonly check?: IdentityCheck | undefined
+  }
 ): Promise<string | null> {
-  const kv = requireStore(payload, options.action)
-  const stored = await storeCall(options.action, () => kv.get(databaseIdKey))
-  if (isRecord(stored) && typeof stored['id'] === 'string' && stored['id'] !== '') {
-    return stored['id']
+  const { action } = options
+  const check = options.check ?? {}
+  if (check.databaseMoved === true && check.newDatabaseIdentity === true) {
+    throw new Error(
+      `${action}: --database-moved and --new-database-identity contradict each other — pass the one that describes this database`
+    )
   }
-  if (!options.create) {
-    return null
+  const kv = requireStore(payload, action)
+  const stored = databaseRecordOf(await storeCall(action, () => kv.get(databaseIdKey)))
+  const fingerprint = await databaseFingerprint(payload)
+  const environmentId =
+    check.environmentId !== undefined && check.environmentId !== ''
+      ? check.environmentId
+      : undefined
+  const mint = async (): Promise<string> => {
+    const id = randomBytes(16).toString('hex')
+    await storeCall(action, () =>
+      kv.set(databaseIdKey, {
+        id,
+        createdAt: new Date().toISOString(),
+        ...(fingerprint === null ? {} : { fingerprint }),
+        ...(environmentId === undefined ? {} : { environmentId }),
+      })
+    )
+    return id
   }
-  const id = randomBytes(16).toString('hex')
-  await storeCall(options.action, () =>
-    kv.set(databaseIdKey, { id, createdAt: new Date().toISOString() })
-  )
-  return id
+  if (stored === null) {
+    return options.create ? mint() : null
+  }
+  const mismatches: string[] = []
+  if (
+    stored.fingerprint !== undefined &&
+    fingerprint !== null &&
+    stored.fingerprint !== fingerprint
+  ) {
+    mismatches.push(
+      'the database server reports a different database than the one that recorded it (another cluster, or another database name)'
+    )
+  }
+  if (stored.environmentId !== undefined && stored.environmentId !== environmentId) {
+    mismatches.push(
+      environmentId === undefined
+        ? `it was recorded in environment '${stored.environmentId}', and this command states none (pass --environment-id or set PAYLOAD_AUTH_LINK_ENVIRONMENT_ID)`
+        : `it was recorded in environment '${stored.environmentId}', and this command runs as '${environmentId}'`
+    )
+  }
+  if (check.newDatabaseIdentity === true) {
+    if (mismatches.length === 0) {
+      throw new Error(
+        `${action}: --new-database-identity found nothing to re-identify — this database's migration record matches it (no copy detected). A clone is detected by the Postgres server fingerprint, or by --environment-id when each environment states its own; nothing was changed`
+      )
+    }
+    return mint()
+  }
+  if (mismatches.length > 0) {
+    if (check.databaseMoved !== true) {
+      throw new Error(
+        `${action}: this database's migration record (payload-kv) does not belong to it — ${mismatches.join('; ')}. A database cloned after its first --apply carries the original's record and must not continue the original's runs. Nothing was changed. If this database is a CLONE, give it its own identity with --new-database-identity (the original's manifests are then refused here); if it IS the original, moved into another cluster or renamed, re-run with --database-moved`
+      )
+    }
+  }
+  // A record that predates a value gains it when a run starts; a moved
+  // database re-records both.
+  const record = options.create || check.databaseMoved === true
+  const wantsFingerprint = fingerprint !== null && stored.fingerprint !== fingerprint
+  const wantsEnvironment = environmentId !== undefined && stored.environmentId !== environmentId
+  if (record && (wantsFingerprint || wantsEnvironment)) {
+    await storeCall(action, () =>
+      kv.set(databaseIdKey, {
+        ...stored,
+        ...(fingerprint === null ? {} : { fingerprint }),
+        ...(environmentId === undefined ? {} : { environmentId }),
+      })
+    )
+  }
+  return stored.id
 }
 
 /** A fresh, unguessable run nonce. */
 export function newRunId(): string {
   return randomBytes(16).toString('hex')
+}
+
+function runRecordOf(stored: unknown): RunRecord | null {
+  if (
+    !isRecord(stored) ||
+    !isRunState(stored['state']) ||
+    (stored['kind'] !== 'import' && stored['kind'] !== 'adopt-prelink') ||
+    typeof stored['createdAt'] !== 'string'
+  ) {
+    return null
+  }
+  const databaseId = stored['databaseId']
+  const entries = stored['entries']
+  return {
+    kind: stored['kind'],
+    createdAt: stored['createdAt'],
+    state: stored['state'],
+    ...(typeof databaseId === 'string' && databaseId !== '' ? { databaseId } : {}),
+    ...(typeof entries === 'number' && Number.isSafeInteger(entries) && entries >= 0
+      ? { entries }
+      : {}),
+  }
 }
 
 /** The database's record of one run, or `null` when it holds none. Fails closed. */
@@ -302,16 +506,40 @@ export async function readRun(
   action: string
 ): Promise<RunRecord | null> {
   const kv = requireStore(payload, action)
-  const stored = await storeCall(action, () => kv.get(`${runKeyPrefix}${runId}`))
-  if (
-    !isRecord(stored) ||
-    !isRunState(stored['state']) ||
-    (stored['kind'] !== 'import' && stored['kind'] !== 'adopt-prelink') ||
-    typeof stored['createdAt'] !== 'string'
-  ) {
-    return null
+  return runRecordOf(await storeCall(action, () => kv.get(`${runKeyPrefix}${runId}`)))
+}
+
+/**
+ * Every run this database records as OPEN (issue #116), except runs a
+ * clone copied from another identity. Fails closed.
+ */
+export async function openRuns(
+  payload: Payload,
+  databaseId: string,
+  action: string
+): Promise<readonly (RunRecord & { readonly runId: string })[]> {
+  const kv = requireStore(payload, action)
+  const keys = await storeCall(action, () => kv.keys())
+  const open: (RunRecord & { readonly runId: string })[] = []
+  for (const key of keys) {
+    if (!key.startsWith(runKeyPrefix)) {
+      continue
+    }
+    const run = runRecordOf(await storeCall(action, () => kv.get(key)))
+    if (
+      run !== null &&
+      run.state === 'open' &&
+      (run.databaseId === undefined || run.databaseId === databaseId)
+    ) {
+      open.push({ ...run, runId: key.slice(runKeyPrefix.length) })
+    }
   }
-  return { kind: stored['kind'], createdAt: stored['createdAt'], state: stored['state'] }
+  return open
+}
+
+/** Whether an open run may hold rows (an unknown count is assumed to). */
+export function holdsEntries(run: Pick<RunRecord, 'entries'>): boolean {
+  return run.entries === undefined || run.entries > 0
 }
 
 /** Record one run's state in the database. Throws when it cannot. */

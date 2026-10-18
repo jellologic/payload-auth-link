@@ -394,25 +394,29 @@ export type BetterAuthEngineInput<TOptions extends Omit<BetterAuthOptions, 'data
     /**
      * Declare that the `twoFactor` plugin's OTP channel
      * (`otpOptions.sendOTP`) is independent of the user's email inbox —
-     * for example SMS — so a `/two-factor/verify-otp` step-up proves a
-     * second factor whatever the session's first factor was
-     * (GHSA-38wx-69j6-cgm7).
+     * for example SMS — so a `/two-factor/verify-otp` code proves a
+     * second factor, on the sign-in challenge and on a step-up
+     * (GHSA-38wx-69j6-cgm7, GHSA-xgx5-2cj5-x548).
      *
-     * Defaults to `false`: the OTP is assumed to reach the same inbox a
-     * magic link, an email OTP sign-in, or (through the IdP account) an
-     * OAuth sign-in already relies on, so an OTP step-up relabels a
-     * session `two-factor` only when its recorded first factor is
-     * `password` or `passkey` (or it is already MFA-proven). TOTP and
-     * backup-code step-ups are unaffected by this option.
+     * Defaults to `false`: the OTP is assumed to reach the same inbox
+     * that can reset the password, receive a magic link or an email OTP,
+     * or (through the IdP account) back an OAuth sign-in, so an emailed
+     * OTP is never MFA proof — a sign-in completed with it is labelled
+     * `password`, and an OTP step-up relabels nothing. It also decides
+     * whether an OTP-only enrolment counts as an MFA-grade factor whose
+     * management (`/two-factor/enable`, `disable`, …) requires an
+     * MFA-proven session. TOTP and backup-code verifications are
+     * unaffected by this option.
      */
     readonly twoFactorOtpChannelIndependent?: boolean | undefined;
     /**
      * Keep Better Auth's raw session tokens in its HTTP JSON responses
-     * (issue #113, security-model row 28). Defaults to `false`: the
-     * engine's redaction plugin removes `session.token` from
-     * `/get-session`, `token` from every `/list-sessions` entry, and the
-     * freshly minted session token from session-creating responses
-     * (`/sign-in/*`, `/sign-up/*`, …) — HTTP requests only; server-side
+     * (issues #113 and #116, security-model row 28). Defaults to `false`:
+     * the engine's redaction plugin is default-deny — it removes `token`
+     * from every session-shaped object in any JSON body (`/get-session`,
+     * every `/list-sessions` and `/admin/list-user-sessions` entry, …)
+     * and from session-minting and second-factor bodies (`/sign-in/*`,
+     * `/sign-up/*`, `/two-factor/verify-*`, …) — HTTP requests only; server-side
      * `auth.api.*` calls keep the full shape. `/revoke-session` then also
      * accepts the listed session `id` in its `token` field. The session
      * cookie stays `HttpOnly`; a JSON copy of it would hand page
@@ -1022,7 +1026,7 @@ export type SessionProvenanceOptions = {
     readonly logger?: LoggerPort | undefined;
 };
 /**
- * The engine's internal session-provenance plugin. Three jobs:
+ * The engine's internal session-provenance plugin. Four jobs:
  *
  * 1. **Schema** — one nullable, input-excluded field on Better Auth's
  *    session model: `authenticationMethod`, recording HOW the session
@@ -1030,27 +1034,40 @@ export type SessionProvenanceOptions = {
  * 2. **Recording** — `hooks.after` on the endpoints whose success
  *    creates (or finally proves) a session: password sign-in records
  *    `password`, the two-factor sign-in verification records
- *    `two-factor` on the session it issues, OAuth callbacks record
- *    `oauth`, and so on. The second factor's own endpoint is the only
- *    path that writes `two-factor`, and server-side mints write
- *    `server-mint`/`server-step-up` (port.ts).
- * 3. **Step-up guard (#110, GHSA-38wx-69j6-cgm7)** — a `hooks.before`
- *    on `/two-factor/verify*` assesses a verification presented on an
- *    EXISTING session (step-up.ts): it is refused while the account is
- *    locked, its wrong codes spend Better Auth's own per-user failure
- *    budget (shared with the sign-in path), and a correct one relabels
- *    the session `two-factor` only when
+ *    `two-factor` on the session it issues (`password` when the second
+ *    factor was an OTP over a channel not declared independent of the
+ *    inbox), OAuth callbacks record `oauth`, and so on. The second
+ *    factor's own endpoint is the only path that writes `two-factor`,
+ *    and server-side mints write `server-mint`/`server-step-up`
+ *    (port.ts).
+ * 3. **Step-up guard (#110, GHSA-38wx-69j6-cgm7, GHSA-xgx5-2cj5-x548)**
+ *    — a `hooks.before` on `/two-factor/verify*` assesses the request
+ *    (step-up.ts): the attempt is reserved against the user's failure
+ *    budget before any code is checked (refused while locked or once
+ *    the budget is spent, shared with the sign-in path; OTP-only users
+ *    get a budget too), and a correct code on an EXISTING session
+ *    relabels it `two-factor` only when
  *    - the factor was enrolled BEFORE this request (the verification
- *      that enrols the first factor — TOTP confirmation, a backup code
- *      of an unconfirmed enrolment, the OTP that turns 2FA on — proves
- *      nothing for the session that enrolled it; the session keeps its
- *      first-factor label),
- *    - for `/two-factor/verify-otp`, the OTP channel is independent of
- *      the session's first factor (by default it is not after a
- *      magic-link, email-OTP or OAuth sign-in, or an unrecorded one),
+ *      that enrols a factor proves nothing for the session that
+ *      enrolled it; the session keeps its first-factor label),
+ *    - no second-factor material was issued or revealed after the
+ *      session was created (enrolment, `/two-factor/get-totp-uri`,
+ *      `/two-factor/generate-backup-codes` — so a second verification
+ *      on the enrolment session is no proof either),
+ *    - for `/two-factor/verify-otp`, the OTP channel is declared
+ *      independent of the inbox,
  *    - and the signature-verified request cookie names the session BA
  *      resolved for the request (`ctx.context.session`), which is the
  *      session assessed. A failed verification relabels nothing.
+ * 4. **Factor-management gate (GHSA-xgx5-2cj5-x548)** — a
+ *    `hooks.before` on `/two-factor/enable`, `get-totp-uri`,
+ *    `generate-backup-codes` and `disable`: for a user who already
+ *    holds an MFA-grade factor, the calling session must itself carry
+ *    MFA provenance (`two-factor` / `server-step-up`), else the request
+ *    is refused with 403 `TWO_FACTOR_SESSION_REQUIRED` — a password
+ *    alone must not read the TOTP secret, mint backup codes, or swap
+ *    or remove the factor. Every issuing call marks the factor issued,
+ *    so no existing session can be stepped up with what it revealed.
  *
  * The server session API reads this per-session fact for its
  * assurance projection; enrollment flags are never consulted. Paths
@@ -1066,34 +1083,41 @@ export declare const sessionProvenancePlugin: BetterAuthPlugin;
 import { type LoggerPort } from '@payload-auth-link/core';
 import type { BetterAuthPlugin } from 'better-auth';
 /**
- * Session-token redaction (issue #113, security-model row 28).
+ * Session-token redaction (issue #113, issue #116, security-model row 28).
  *
  * Better Auth's own HTTP endpoints hand the RAW session token to page
  * JavaScript: `/get-session` (`session.token`), `/list-sessions` (the
- * token of EVERY live session of the user) and the session-minting
- * endpoints' bodies (`/sign-in/email` → `{ token }`, …). The session
- * cookie itself is `HttpOnly` precisely so script cannot read it; a
- * JSON copy of the same credential undoes that. With BA's `bearer()`
- * plugin installed (without `requireSignature`), the raw token is a
- * working `Authorization: Bearer` credential — one XSS away from a
- * stolen session on every device.
+ * token of EVERY live session of the user), `/admin/list-user-sessions`,
+ * the session-minting endpoints' bodies (`/sign-in/email` → `{ token }`,
+ * …) and the second-factor verifications (`/two-factor/verify-*` →
+ * `{ token, user }`, the presented session's token on a step-up). The
+ * session cookie itself is `HttpOnly` precisely so script cannot read
+ * it; a JSON copy of the same credential undoes that. With BA's
+ * `bearer()` plugin installed (without `requireSignature`), the raw
+ * token is a working `Authorization: Bearer` credential — one XSS away
+ * from a stolen session on every device.
  *
  * The engine installs this plugin by default (`exposeSessionTokens`
  * opts out). For HTTP requests only — server-side `auth.api.*` calls
  * run in trusted code and keep the full shape (the port's own
- * `getSession` reads `session.token`) — its after-hook removes:
+ * `getSession` reads `session.token`) — its after-hook is default-deny:
+ * it removes `token` from
  *
- * - `session.token` from `/get-session`;
- * - `token` from every `/list-sessions` entry (each keeps its `id`);
- * - on every other path, a top-level `token` or `session.token` EQUAL
- *   to the session token the response just minted
- *   (`ctx.context.newSession`) — so a value that merely shares the key
- *   name (the `jwt` plugin's `/token`, a one-time token, …) is never
- *   touched.
+ * - every session-shaped object anywhere in the JSON body (a record
+ *   carrying a string `token` next to a session field — `userId`,
+ *   `expiresAt`, `ipAddress`, `userAgent` — or found under a `session`
+ *   key),
+ * - every `/list-sessions` entry (each keeps its `id`),
+ * - a top-level body that pairs a string `token` with a `user` record
+ *   (the session-minting and second-factor bodies),
+ * - and any top-level `token` EQUAL to the session token the response
+ *   just minted (`ctx.context.newSession`).
  *
- * Token hand-off protocols are left alone by design:
- * `/multi-session/*` (switching and revoking device sessions takes the
- * token) and `/one-time-token/*` (the exchange returns the session).
+ * A value that merely shares the key name (the `jwt` plugin's `/token`,
+ * a one-time token, …) is never touched. Token hand-off protocols are
+ * left alone by design: `/multi-session/*` (switching and revoking
+ * device sessions takes the token) and `/one-time-token/*` (the
+ * exchange returns the session).
  *
  * `/revoke-session` takes a session token; with the tokens redacted
  * from `/list-sessions`, its before-hook also accepts the listed
@@ -1167,71 +1191,154 @@ export type LockoutConfig = {
     readonly durationMs: number;
 };
 /**
+ * A reserved slot in the user's failure budget.
+ *
+ * - `two-factor-row`: Better Auth's own counter on the user's
+ *   `twoFactor` row; `reserved` is the count this attempt brought it to.
+ * - `attempt-rows`: one `verification` row per counted attempt, for a
+ *   user without a `twoFactor` row (OTP-only enrolment); `attemptId` is
+ *   this attempt's row.
+ */
+export type FailureBudget = {
+    readonly kind: 'two-factor-row';
+    readonly twoFactorId: string;
+    readonly reserved: number;
+} | {
+    readonly kind: 'attempt-rows';
+    readonly identifier: string;
+    readonly attemptId: string;
+};
+/**
  * What the before-hook established about one second-factor request.
  *
  * - `sign-in`: no session was presented; Better Auth's challenge path
- *   runs (and does its own counting and locking).
+ *   runs (and counts users with a `twoFactor` row itself). `provesMfa`
+ *   is false for `/two-factor/verify-otp` unless the OTP channel is
+ *   declared independent of the inbox: an emailed OTP after a password
+ *   the same inbox can reset is not a second factor.
  * - `step-up`: a verification on the existing session `token`.
- *   `provesMfa` is true only when the factor was ALREADY enrolled
- *   before this request (a verification that enrols the first factor
- *   proves nothing for the session that enrolled it) and, for the OTP
- *   route, when the OTP channel is independent of the session's first
- *   factor. `twoFactorId` is the counter row, or `null` when the user
- *   has none (OTP-only enrolment — Better Auth keeps no counter for
- *   those on either path).
+ *   `provesMfa` is true only when the factor was enrolled before this
+ *   request (`enrolment` is false), no second-factor material was
+ *   issued or revealed after the session was created, and, for the OTP
+ *   route, the OTP channel is declared independent.
+ *
+ * `budget` is the attempt this request reserved (`null`: none — lockout
+ * disabled, or Better Auth counts this attempt itself).
  */
 export type StepUpAssessment = {
     readonly kind: 'sign-in';
+    readonly userId: string | null;
+    readonly provesMfa: boolean;
+    readonly budget: FailureBudget | null;
+    readonly lockout: LockoutConfig;
 } | {
     readonly kind: 'step-up';
     readonly token: string;
     readonly userId: string;
-    readonly twoFactorId: string | null;
     readonly provesMfa: boolean;
+    readonly enrolment: boolean;
+    readonly budget: FailureBudget | null;
     readonly lockout: LockoutConfig;
 };
+/**
+ * What the before-hook established about a request that manages the
+ * user's second factor (`/two-factor/enable`, `get-totp-uri`,
+ * `generate-backup-codes`, `disable`).
+ */
+export type FactorManagementAssessment = {
+    readonly userId: string;
+    /** The presented session's recorded method (`null`: none recorded). */
+    readonly method: string | null;
+    /**
+     * The user already holds a factor that proves MFA: two-factor is on
+     * AND a confirmed TOTP row exists or the OTP channel is declared
+     * independent. Only then can the factor be stolen by revealing or
+     * rotating it, so only then is an MFA-proven session required.
+     */
+    readonly holdsMfaFactor: boolean;
+};
+/** Runs `task` after every earlier task queued under the same key. */
+export type Serializer = <T>(key: string, task: () => Promise<T>) => Promise<T>;
+/**
+ * A per-key FIFO queue (in-process). Attempt reservations and budget
+ * writes for one user run one at a time, so Better Auth's
+ * compare-and-swap counter increment never contends with itself.
+ */
+export declare function createSerializer(): Serializer;
 /** Wiring for the step-up guard. */
 export type StepUpOptions = {
     /** See `BetterAuthEngineInput.twoFactorOtpChannelIndependent`. */
     readonly otpChannelIndependent: boolean;
     readonly logger: LoggerPort;
+    /** Serializes reservations and budget writes per user. */
+    readonly serialize: Serializer;
 };
+/** One Better Auth adapter call, as the guard sees it (query in, row(s) out). */
+export type AdapterOperation = (query: Record<string, unknown>) => Promise<unknown>;
 /** The Better Auth 1.7 hook-context fields this module reads. */
 export type StepUpHookContext = {
     readonly path?: string | undefined;
+    readonly getSignedCookie?: ((key: string, secret: string) => Promise<string | null | false>) | undefined;
     readonly context: {
         session?: unknown;
+        readonly secret?: unknown;
         readonly getPlugin?: ((id: string) => unknown) | undefined;
+        readonly createAuthCookie?: ((name: string) => unknown) | undefined;
         readonly internalAdapter?: {
             readonly findSession?: ((token: string) => Promise<unknown>) | undefined;
             readonly findUserById?: ((id: string) => Promise<unknown>) | undefined;
+            readonly findVerificationValue?: ((identifier: string) => Promise<unknown>) | undefined;
         };
         readonly adapter?: {
-            readonly findOne?: ((query: Record<string, unknown>) => Promise<unknown>) | undefined;
-            readonly incrementOne?: ((query: Record<string, unknown>) => Promise<unknown>) | undefined;
-            readonly update?: ((query: Record<string, unknown>) => Promise<unknown>) | undefined;
+            readonly findOne?: AdapterOperation | undefined;
+            readonly findMany?: AdapterOperation | undefined;
+            readonly count?: AdapterOperation | undefined;
+            readonly create?: AdapterOperation | undefined;
+            readonly incrementOne?: AdapterOperation | undefined;
+            readonly update?: AdapterOperation | undefined;
+            readonly delete?: AdapterOperation | undefined;
+            readonly deleteMany?: AdapterOperation | undefined;
         };
     };
 };
 /** BA's `resolveAccountLockoutConfig`, read from the installed `two-factor` plugin. */
 export declare function lockoutConfigOf(ctx: StepUpHookContext): LockoutConfig;
 /**
- * Assess one second-factor request BEFORE its endpoint runs. The
- * presented session is resolved through Better Auth's own
- * `getSessionFromCtx` (passed in as `resolveSession`, run with refresh
- * disabled and its cache restored afterwards so the endpoint resolves —
- * and refreshes — exactly as it would without this hook). For a
- * step-up, the state that decides it is read FRESH from storage, never
- * from the cookie cache: the session's recorded first factor, the
- * user's enrolment flag, and the `twoFactor` row.
+ * When the user's second-factor material was last issued or revealed
+ * (epoch ms), or `null` when no marker exists (an enrolment that
+ * predates this guard). An unreadable marker counts as newer than any
+ * session (fail closed).
+ */
+export declare function factorIssuedAt(ctx: StepUpHookContext, userId: string): Promise<number | null>;
+/**
+ * Record that the user's second-factor material was issued or revealed
+ * now (GHSA-xgx5-2cj5-x548): no session created before this moment can
+ * be relabelled `two-factor` by a step-up afterwards. The new marker is
+ * written before the old ones are removed, so a concurrent reader
+ * always sees one.
+ */
+export declare function markFactorIssued(ctx: StepUpHookContext, userId: string): Promise<void>;
+/**
+ * Assess one second-factor request BEFORE its endpoint runs, and
+ * reserve its attempt. For a step-up, the state that decides it is
+ * read FRESH from storage, never from the cookie cache: the session
+ * row (its creation time), the user's enrolment flag, the `twoFactor`
+ * row and the issuance marker.
  *
  * Throws Better Auth's own `ACCOUNT_TEMPORARILY_LOCKED` (429) while the
- * account is locked — the step-up is refused before any code is
- * checked, exactly like the sign-in path. An expired lock is cleared
- * the way Better Auth clears it (guarded, so a concurrent fresh lock
- * survives).
+ * account is locked or once the budget is spent — the request is
+ * refused before any code is checked, exactly like the sign-in path.
+ * A verification that would ENROL a factor marks the factor issued
+ * first, so no session that exists while it completes can later be
+ * relabelled by it.
  */
 export declare function assessSecondFactorRequest(ctx: StepUpHookContext, resolveSession: () => Promise<unknown>, options: StepUpOptions): Promise<StepUpAssessment>;
+/**
+ * Assess a request that manages the user's second factor, BEFORE its
+ * endpoint runs. Returns `null` when no session is presented (Better
+ * Auth's session middleware then refuses the request itself).
+ */
+export declare function assessFactorManagement(ctx: StepUpHookContext, resolveSession: () => Promise<unknown>, options: Pick<StepUpOptions, 'otpChannelIndependent'>): Promise<FactorManagementAssessment | null>;
 /** How a second-factor endpoint ended, as far as the counter cares. */
 export type SecondFactorOutcome = 'success' | 'failed-guess' | 'failed';
 /**
@@ -1242,14 +1349,13 @@ export type SecondFactorOutcome = 'success' | 'failed-guess' | 'failed';
  */
 export declare function outcomeOf(returned: unknown): SecondFactorOutcome;
 /**
- * Spend or reset the shared failure budget after a step-up, with
- * Better Auth's own write sequence: an atomic increment, then a guarded
- * lock once the budget is spent; a success clears both. A write that
- * fails is logged and swallowed — the request's own outcome stands.
+ * Settle the attempt the before-hook reserved: a success resets the
+ * budget (Better Auth counts consecutive failures only), a wrong guess
+ * keeps its reservation and locks the row once the budget is spent,
+ * and any other failure releases the reservation. A write that fails
+ * is logged and swallowed — the request's own outcome stands.
  */
-export declare function accountStepUp(ctx: StepUpHookContext, assessment: Extract<StepUpAssessment, {
-    kind: 'step-up';
-}>, outcome: SecondFactorOutcome, logger: LoggerPort): Promise<void>;
+export declare function settleSecondFactor(ctx: StepUpHookContext, assessment: StepUpAssessment, outcome: SecondFactorOutcome, options: Pick<StepUpOptions, 'logger' | 'serialize'>): Promise<void>;
 
 // ===== where.d.ts =====
 import type { Where } from 'payload';

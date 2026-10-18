@@ -3,9 +3,12 @@ import {
   assertCreatedRowsScoped,
   assertNoFinalizeMarker,
   databaseIdentity,
+  holdsEntries,
   newRunId,
+  openRuns,
   readRun,
   recordRun,
+  type IdentityCheck,
   type RunRecord,
 } from './guards.js'
 import { authenticateManifest, isBound, type ManifestTrust } from './manifest-mac.js'
@@ -25,7 +28,14 @@ import type { ImportManifest, ManifestKind, TargetSlugMap } from './types.js'
  * - one record per run (a random nonce, also signed into the manifest):
  *   open, rolled back, or finalized. Only an OPEN run is resumed or
  *   rolled back, so a stale copy of a rolled-back run's manifest
- *   changes nothing.
+ *   changes nothing. At most ONE run is open at a time (issue #116):
+ *   two open runs would each hold rows the other's rollback or finalize
+ *   cannot see.
+ *
+ * The database id alone does not tell a database from its clone (a
+ * copy taken after the first `--apply` carries the same record), so the
+ * record also keeps a server fingerprint (Postgres) and the operator's
+ * environment id — see `databaseIdentity` (GHSA-xw9m-ph95-84rx).
  *
  * Unsigned manifests (pre-0.6.0) and 0.6.0 manifests whose signature
  * does not cover `finalized` are TERMINAL: they may be rolled back or
@@ -56,14 +66,19 @@ export function plaintextWrites(manifest: Pick<ImportManifest, 'fieldWrites'>): 
 export async function boundRun(
   payload: Payload,
   manifest: ImportManifest & { readonly databaseId: string; readonly runId: string },
-  action: string
+  action: string,
+  identity?: IdentityCheck
 ): Promise<RunRecord> {
-  const databaseId = await databaseIdentity(payload, { create: false, action })
+  const databaseId = await databaseIdentity(payload, { create: false, action, check: identity })
   if (databaseId !== manifest.databaseId) {
     throw new Error(anotherDatabase)
   }
   const run = await readRun(payload, manifest.runId, action)
-  if (run === null || run.kind !== (manifest.kind ?? 'import')) {
+  if (
+    run === null ||
+    run.kind !== (manifest.kind ?? 'import') ||
+    (run.databaseId !== undefined && run.databaseId !== databaseId)
+  ) {
     throw new Error(
       `this database holds no record of the manifest's run — never resume or roll back with a manifest from another environment or another run; nothing was changed`
     )
@@ -71,20 +86,137 @@ export async function boundRun(
   return run
 }
 
-/** Mint a new run on this database (creating its id on first use). */
+/** A short description of open runs, for a refusal. */
+function describeRuns(runs: readonly (RunRecord & { readonly runId: string })[]): string {
+  return runs
+    .map(
+      (run) =>
+        `${run.kind} run ${run.runId} started ${run.createdAt}${run.entries === undefined ? '' : ` (${run.entries} manifest entr${run.entries === 1 ? 'y' : 'ies'})`}`
+    )
+    .join('; ')
+}
+
+/**
+ * Mint a new run on this database (creating its id on first use).
+ * `exclusive` (every run a pass WRITES under): refuse while another
+ * open run may hold rows (issue #116) — a second one would hold rows
+ * the first one's rollback or finalize cannot see. A run minted only
+ * to record a rollback of an unbound manifest is not exclusive.
+ */
 export async function startRun(
   payload: Payload,
   kind: ManifestKind,
   createdAt: string,
-  action: string
+  action: string,
+  options: { readonly exclusive: boolean; readonly identity?: IdentityCheck | undefined }
 ): Promise<RunBinding> {
-  const databaseId = await databaseIdentity(payload, { create: true, action })
+  const databaseId = await databaseIdentity(payload, {
+    create: true,
+    action,
+    check: options.identity,
+  })
   if (databaseId === null) {
     throw new Error(`${action}: could not record this database's migration id`)
   }
+  if (options.exclusive) {
+    // A run known to hold nothing (its pass aborted before writing)
+    // blocks nothing; one that may hold rows — or is still running —
+    // does.
+    const open = (await openRuns(payload, databaseId, action)).filter(holdsEntries)
+    if (open.length > 0) {
+      throw new Error(
+        `another migration run is still open on this database (${describeRuns(open)}): finish it first — resume it with its manifest (--manifest), roll it back, or finalize it. Two open runs would each hold rows the other's rollback or finalize cannot see. Nothing was written. If that run's manifest is lost, see "A run whose manifest is lost" in docs/migrating-from-payload-auth.md`
+      )
+    }
+  }
   const runId = newRunId()
-  await recordRun(payload, runId, { kind, createdAt, state: 'open' }, action)
+  await recordRun(payload, runId, { kind, createdAt, state: 'open', databaseId }, action)
   return { databaseId, runId, createdAt }
+}
+
+/**
+ * Record how many entries the run's manifest now holds (issue #116),
+ * right after the manifest is written: an open run known to hold none
+ * never blocks a `finalize`.
+ */
+export async function recordRunEntries(
+  payload: Payload,
+  kind: ManifestKind,
+  binding: RunBinding,
+  entries: number,
+  action: string
+): Promise<void> {
+  await recordRun(
+    payload,
+    binding.runId,
+    {
+      kind,
+      createdAt: binding.createdAt,
+      state: 'open',
+      databaseId: binding.databaseId,
+      entries,
+    },
+    action
+  )
+}
+
+/**
+ * A pass that aborted before writing anything (issue #116): a FRESH
+ * run is closed — it holds nothing and has no manifest, so leaving it
+ * open would only clutter the database's record — while a resumed run
+ * stays open with the entries it carried.
+ */
+export async function closeAbortedPass(
+  payload: Payload,
+  kind: ManifestKind,
+  binding: RunBinding,
+  carried: ImportManifest | null,
+  action: string
+): Promise<void> {
+  if (carried !== null) {
+    await recordRunEntries(
+      payload,
+      kind,
+      binding,
+      carried.created.length + carried.fieldWrites.length,
+      action
+    )
+    return
+  }
+  await recordRun(
+    payload,
+    binding.runId,
+    {
+      kind,
+      createdAt: binding.createdAt,
+      state: 'rolled-back',
+      databaseId: binding.databaseId,
+      entries: 0,
+    },
+    action
+  )
+}
+
+/**
+ * Refuse a `finalize` while ANOTHER open run may hold rows (issue
+ * #116): the finalize marker blocks every later rollback on this
+ * database, so finalizing an empty run would strand the rows of the
+ * run that holds them.
+ */
+export async function assertNoOtherRowBearingRun(
+  payload: Payload,
+  databaseId: string,
+  runId: string | null,
+  action: string
+): Promise<void> {
+  const others = (await openRuns(payload, databaseId, action)).filter(
+    (run) => run.runId !== runId && holdsEntries(run)
+  )
+  if (others.length > 0) {
+    throw new Error(
+      `another migration run is still open on this database and may hold rows (${describeRuns(others)}): finalizing would block its rollback for good. Finalize or roll back THAT run (with its manifest) first; nothing was changed`
+    )
+  }
 }
 
 /** What an `--apply` pass builds on. */
@@ -110,7 +242,10 @@ export type OpenedRun = {
  *   database does not hold open. A run the database records as rolled
  *   back starts FRESH: the manifest's entries are not carried;
  * - a 0.7.0 (unbound) manifest without `allowUnboundManifest`, or on a
- *   database that records a finalized migration.
+ *   database that records a finalized migration;
+ * - a FRESH run while another run is open (issue #116);
+ * - a database whose migration record was copied from another one
+ *   (GHSA-xw9m-ph95-84rx; see `databaseIdentity`).
  *
  * A dry run only authenticates the manifest.
  */
@@ -124,13 +259,17 @@ export async function openRun(options: {
   readonly log: (message: string) => void
   readonly allowUnsignedManifest?: boolean | undefined
   readonly allowUnboundManifest?: boolean | undefined
+  /** How this environment identifies itself (clone detection). */
+  readonly identity?: IdentityCheck | undefined
 }): Promise<OpenedRun> {
-  const { payload, manifest, kind, apply, log } = options
+  const { payload, manifest, kind, apply, log, identity } = options
   const action = kind === 'import' ? 'from-payload-auth --apply' : 'adopt-prelink --apply'
+  const fresh = (createdAt: string): Promise<RunBinding> =>
+    startRun(payload, kind, createdAt, action, { exclusive: true, identity })
   if (manifest === null) {
     return {
       carried: null,
-      binding: apply ? await startRun(payload, kind, options.now().toISOString(), action) : null,
+      binding: apply ? await fresh(options.now().toISOString()) : null,
     }
   }
   if ((manifest.kind ?? 'import') !== kind) {
@@ -166,7 +305,7 @@ export async function openRun(options: {
     options.slugs
   )
   if (isBound(manifest)) {
-    const run = await boundRun(payload, manifest, action)
+    const run = await boundRun(payload, manifest, action, identity)
     if (run.state === 'finalized') {
       throw new Error(
         kind === 'import'
@@ -178,10 +317,9 @@ export async function openRun(options: {
       log(
         'the manifest names a run this database records as rolled back: starting a fresh run (none of its entries are carried)'
       )
-      return {
-        carried: null,
-        binding: await startRun(payload, kind, options.now().toISOString(), action),
-      }
+      // A fresh run — refused while another run is open (issue #116:
+      // a stale manifest must not open a second run beside the live one).
+      return { carried: null, binding: await fresh(options.now().toISOString()) }
     }
     return {
       carried: manifest,
@@ -199,5 +337,5 @@ export async function openRun(options: {
     )
   }
   await assertNoFinalizeMarker(payload, action)
-  return { carried: manifest, binding: await startRun(payload, kind, manifest.createdAt, action) }
+  return { carried: manifest, binding: await fresh(manifest.createdAt) }
 }

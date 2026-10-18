@@ -67,6 +67,12 @@ describe.skipIf(!canReachPostgres)('doctor: database introspection', () => {
       })
       expect(report.database?.unverifiedUsers).toBe(2)
       expect(report.warnings.map((issue) => issue.code)).toContain('unverified-users')
+      // Since migrate 0.8.0 nobody gets the linking proof unasked (#116).
+      const unverified = report.warnings.find((issue) => issue.code === 'unverified-users')
+      expect(unverified?.detail).toContain('--grant-linkable-from-verified')
+      expect(unverified?.detail).toContain(
+        'No user receives the verified-email linking proof by default'
+      )
       // Orphans would be blockers; the fixture is clean.
       expect(report.blockers.map((issue) => issue.code)).not.toContain('orphan-rows')
     }

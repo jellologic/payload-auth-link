@@ -47,16 +47,11 @@ test('SSO admits a role-manager-verified domain and refuses every other', async 
       slug: `self-${Date.now()}`,
       verifiedDomains: [{ domain }],
     })
-    // Members may create organizations, but field access drops the
-    // verified domains they tried to set. (On Payload v4 a create by a
-    // provider-session user is refused outright — the known `createdBy`
-    // gap in e2e/README.md — which verifies nothing either.)
-    if (attempt.status === 201) {
-      const created = attempt.body as { doc?: { verifiedDomains?: unknown[] } } | null
-      expect(created?.doc?.verifiedDomains ?? []).toEqual([])
-    } else {
-      expect(attempt.status, JSON.stringify(attempt.body)).toBeGreaterThanOrEqual(400)
-    }
+    // Members may create organizations (201 on both Payload lines),
+    // but field access drops the verified domains they tried to set.
+    expect(attempt.status, JSON.stringify(attempt.body)).toBe(201)
+    const created = attempt.body as { doc?: { verifiedDomains?: unknown[] } } | null
+    expect(created?.doc?.verifiedDomains).toEqual([])
     await pageFetch(page, 'DELETE', '/api/auth-link/session')
     await page.context().clearCookies()
   })

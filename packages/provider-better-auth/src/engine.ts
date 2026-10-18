@@ -114,25 +114,29 @@ export type BetterAuthEngineInput<TOptions extends Omit<BetterAuthOptions, 'data
   /**
    * Declare that the `twoFactor` plugin's OTP channel
    * (`otpOptions.sendOTP`) is independent of the user's email inbox —
-   * for example SMS — so a `/two-factor/verify-otp` step-up proves a
-   * second factor whatever the session's first factor was
-   * (GHSA-38wx-69j6-cgm7).
+   * for example SMS — so a `/two-factor/verify-otp` code proves a
+   * second factor, on the sign-in challenge and on a step-up
+   * (GHSA-38wx-69j6-cgm7, GHSA-xgx5-2cj5-x548).
    *
-   * Defaults to `false`: the OTP is assumed to reach the same inbox a
-   * magic link, an email OTP sign-in, or (through the IdP account) an
-   * OAuth sign-in already relies on, so an OTP step-up relabels a
-   * session `two-factor` only when its recorded first factor is
-   * `password` or `passkey` (or it is already MFA-proven). TOTP and
-   * backup-code step-ups are unaffected by this option.
+   * Defaults to `false`: the OTP is assumed to reach the same inbox
+   * that can reset the password, receive a magic link or an email OTP,
+   * or (through the IdP account) back an OAuth sign-in, so an emailed
+   * OTP is never MFA proof — a sign-in completed with it is labelled
+   * `password`, and an OTP step-up relabels nothing. It also decides
+   * whether an OTP-only enrolment counts as an MFA-grade factor whose
+   * management (`/two-factor/enable`, `disable`, …) requires an
+   * MFA-proven session. TOTP and backup-code verifications are
+   * unaffected by this option.
    */
   readonly twoFactorOtpChannelIndependent?: boolean | undefined
   /**
    * Keep Better Auth's raw session tokens in its HTTP JSON responses
-   * (issue #113, security-model row 28). Defaults to `false`: the
-   * engine's redaction plugin removes `session.token` from
-   * `/get-session`, `token` from every `/list-sessions` entry, and the
-   * freshly minted session token from session-creating responses
-   * (`/sign-in/*`, `/sign-up/*`, …) — HTTP requests only; server-side
+   * (issues #113 and #116, security-model row 28). Defaults to `false`:
+   * the engine's redaction plugin is default-deny — it removes `token`
+   * from every session-shaped object in any JSON body (`/get-session`,
+   * every `/list-sessions` and `/admin/list-user-sessions` entry, …)
+   * and from session-minting and second-factor bodies (`/sign-in/*`,
+   * `/sign-up/*`, `/two-factor/verify-*`, …) — HTTP requests only; server-side
    * `auth.api.*` calls keep the full shape. `/revoke-session` then also
    * accepts the listed session `id` in its `token` field. The session
    * cookie stays `HttpOnly`; a JSON copy of it would hand page

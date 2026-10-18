@@ -1,5 +1,6 @@
 import { expect, test, type Browser, type Page } from '@playwright/test'
 import { adminContext } from './admin-session.js'
+import { RETRY_ON_RESET } from './helpers.js'
 
 /**
  * Local-strategy account controls (GHSA-f4hj): suspension is enforced
@@ -169,7 +170,7 @@ test('forgot/reset on a provider-linked document yields no usable password', asy
   })
   expect(signup.ok()).toBe(true)
   await api.post('/api/dev-auto-verify', { data: { email } })
-  const linked = await api.get('/api/auth-link/session')
+  const linked = await api.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(linked.ok()).toBe(true)
 
   // The self-service reset path is closed for provider-owned
@@ -180,9 +181,13 @@ test('forgot/reset on a provider-linked document yields no usable password', asy
   })
   expect(forgot.status()).toBe(403)
 
-  // Local sign-in is refused for the linked document outright.
+  // Local sign-in is refused for the linked document: it holds no
+  // local password anyone knows (the reset path above is closed), so a
+  // guess fails Payload's credential check with 401 before the
+  // provider-owned `beforeLogin` refusal (403, which needs the right
+  // password; covered by the engine suites) is ever reached.
   const local = await localSession(baseURL, browser, email, 'AnyGuessKnows-1')
-  expect(local.loginStatus).not.toBe(200)
+  expect(local.loginStatus).toBe(401)
   await local.close()
 })
 
