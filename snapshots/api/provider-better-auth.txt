@@ -238,11 +238,22 @@ export declare function getBetterAuthSessionCookieNames(options: BetterAuthCooki
  * Unknown names yield `undefined` so the caller falls back to
  * `expiringCookieOptions`.
  *
- * Limitation: `crossSubDomainCookies` derives the cookie domain from the
- * base URL inside BA; that derivation is not mirrored here, so
- * cross-subdomain deployments should sign out through BA's own sign-out
- * for full cookie clearing. Server-side revocation still applies, so any
- * surviving cookie is dead — the plugin fails closed on it.
+ * `crossSubDomainCookies` is mirrored like BA's `createCookieGetter`:
+ * when enabled, every cookie is written with `Domain` set to
+ * `crossSubDomainCookies.domain`, or the static `baseURL`'s hostname —
+ * underneath `defaultCookieAttributes` and per-cookie attributes, which
+ * still win. Without the matching `Domain` a clearing write misses the
+ * cookie, and the browser keeps the cookie-cache `session_data` that
+ * BA's own `/get-session` keeps answering from until it expires.
+ * Residual: a dynamic `baseURL` (`allowedHosts`) without an explicit
+ * `crossSubDomainCookies.domain` resolves the domain per request inside
+ * BA; it cannot be known here, so those deployments clear without a
+ * `Domain` (set `crossSubDomainCookies.domain` to close it).
+ *
+ * Also covered: the multi-session plugin's per-session cookies
+ * (`<session_token>_multi-<token>`, written with the session token's
+ * attributes) and the `__Secure-` / plain counterparts of every name
+ * (the same attributes, `Secure` forced on a `__Secure-` name).
  */
 export declare function getBetterAuthSessionCookieClearOptions(options: BetterAuthCookieOptions, environment?: SecureCookieEnvironment): (name: string) => CookieOptions | undefined;
 /**
@@ -396,6 +407,26 @@ export type BetterAuthEngineInput<TOptions extends Omit<BetterAuthOptions, 'data
      */
     readonly twoFactorOtpChannelIndependent?: boolean | undefined;
     /**
+     * Keep Better Auth's raw session tokens in its HTTP JSON responses
+     * (issue #113, security-model row 28). Defaults to `false`: the
+     * engine's redaction plugin removes `session.token` from
+     * `/get-session`, `token` from every `/list-sessions` entry, and the
+     * freshly minted session token from session-creating responses
+     * (`/sign-in/*`, `/sign-up/*`, …) — HTTP requests only; server-side
+     * `auth.api.*` calls keep the full shape. `/revoke-session` then also
+     * accepts the listed session `id` in its `token` field. The session
+     * cookie stays `HttpOnly`; a JSON copy of it would hand page
+     * JavaScript a credential that BA's `bearer()` plugin accepts as
+     * `Authorization: Bearer`.
+     *
+     * Set `true` only for a client that genuinely needs the raw token
+     * (e.g. a native app reading it from the sign-in body) — and then
+     * install `bearer({ requireSignature: true })` or accept the logged
+     * warning. `/multi-session/*` and `/one-time-token/*` hand tokens
+     * over by design and are never redacted.
+     */
+    readonly exposeSessionTokens?: boolean | undefined;
+    /**
      * The builder's Better Auth options, passed through verbatim except for
      * `database` (wired to Payload here, so it is omitted from this type),
      * `emailAndPassword` (see below), and
@@ -483,6 +514,7 @@ export declare function createBetterAuthEngine<TOptions extends Omit<BetterAuthO
     };
 }): {
     auth: import("better-auth").Auth<TOptions & {
+        plugins: TPlugins;
         database: import("better-auth/adapters").AdapterFactory<BetterAuthOptions>;
         emailAndPassword: {
             enabled: boolean;
@@ -694,7 +726,6 @@ export declare function createBetterAuthEngine<TOptions extends Omit<BetterAuthO
                 };
             };
         };
-        plugins?: TPlugins;
     }>;
     provider: IdentityProviderPort;
     collections: CollectionConfig[];
@@ -1030,6 +1061,102 @@ export type SessionProvenanceOptions = {
 export declare function createSessionProvenancePlugin(options?: SessionProvenanceOptions): BetterAuthPlugin;
 /** The plugin with its defaults (no independent OTP channel, silent logger). */
 export declare const sessionProvenancePlugin: BetterAuthPlugin;
+
+// ===== session-token-redaction.d.ts =====
+import { type LoggerPort } from '@payload-auth-link/core';
+import type { BetterAuthPlugin } from 'better-auth';
+/**
+ * Session-token redaction (issue #113, security-model row 28).
+ *
+ * Better Auth's own HTTP endpoints hand the RAW session token to page
+ * JavaScript: `/get-session` (`session.token`), `/list-sessions` (the
+ * token of EVERY live session of the user) and the session-minting
+ * endpoints' bodies (`/sign-in/email` → `{ token }`, …). The session
+ * cookie itself is `HttpOnly` precisely so script cannot read it; a
+ * JSON copy of the same credential undoes that. With BA's `bearer()`
+ * plugin installed (without `requireSignature`), the raw token is a
+ * working `Authorization: Bearer` credential — one XSS away from a
+ * stolen session on every device.
+ *
+ * The engine installs this plugin by default (`exposeSessionTokens`
+ * opts out). For HTTP requests only — server-side `auth.api.*` calls
+ * run in trusted code and keep the full shape (the port's own
+ * `getSession` reads `session.token`) — its after-hook removes:
+ *
+ * - `session.token` from `/get-session`;
+ * - `token` from every `/list-sessions` entry (each keeps its `id`);
+ * - on every other path, a top-level `token` or `session.token` EQUAL
+ *   to the session token the response just minted
+ *   (`ctx.context.newSession`) — so a value that merely shares the key
+ *   name (the `jwt` plugin's `/token`, a one-time token, …) is never
+ *   touched.
+ *
+ * Token hand-off protocols are left alone by design:
+ * `/multi-session/*` (switching and revoking device sessions takes the
+ * token) and `/one-time-token/*` (the exchange returns the session).
+ *
+ * `/revoke-session` takes a session token; with the tokens redacted
+ * from `/list-sessions`, its before-hook also accepts the listed
+ * session `id` (the same opaque handle the server API uses, issue
+ * #80) and resolves it to the token server-side. BA's endpoint still
+ * enforces that the session belongs to the caller.
+ */
+export declare const sessionTokenRedactionPluginId = "payload-auth-link-session-token-redaction";
+/**
+ * The redacted body for one HTTP response, or `undefined` when nothing
+ * needs to change. Pure — the hook below feeds it the endpoint path,
+ * the endpoint's returned value, and the session the response minted.
+ * Exported for the unit suite.
+ */
+export declare function redactSessionTokens(path: string | undefined, returned: unknown, newSession: unknown): unknown;
+/** The hook-context fields this plugin reads (Better Auth 1.7). */
+export type RedactionHookContext = {
+    readonly path?: string | undefined;
+    readonly request?: unknown;
+    readonly body?: unknown;
+    readonly context: {
+        readonly returned?: unknown;
+        readonly newSession?: unknown;
+        readonly adapter?: {
+            readonly findOne?: ((input: {
+                model: string;
+                where: {
+                    field: string;
+                    value: string;
+                }[];
+            }) => Promise<unknown>) | undefined;
+        };
+    };
+};
+/**
+ * `/revoke-session` body rewrite: a `token` that names a session ROW id
+ * becomes that row's token. A real token never matches a row id, so
+ * it passes through unchanged; an unknown value too (BA then answers
+ * as it always does). Exported for the unit suite.
+ */
+export declare function resolveRevokeHandle(ctx: RedactionHookContext): Promise<{
+    context: {
+        body: Record<string, unknown>;
+    };
+} | undefined>;
+/** The engine's session-token redaction plugin (see the module doc). */
+export declare const sessionTokenRedactionPlugin: BetterAuthPlugin;
+/** One plugin as the engine sees it in the builder's list. */
+type InstalledPlugin = {
+    readonly id: string;
+    readonly options?: unknown;
+};
+/**
+ * Wiring-time warning (issue #113): BA's `bearer()` plugin turns a raw
+ * session token into a working `Authorization: Bearer` credential
+ * unless `requireSignature` is set. Combined with a surface that hands
+ * raw tokens to page JavaScript — `exposeSessionTokens: true`, or the
+ * multi-session plugin's `/multi-session/list-device-sessions` — any
+ * script on the page can lift a bearer credential. Warn loudly through
+ * the logger; never `console.*`.
+ */
+export declare function reportSessionTokenExposure(plugins: readonly InstalledPlugin[], exposeSessionTokens: boolean, logger: LoggerPort): void;
+export {};
 
 // ===== step-up.d.ts =====
 import type { LoggerPort } from '@payload-auth-link/core';

@@ -56,18 +56,23 @@ function authRequest(path: string, body: unknown): Request {
   })
 }
 
-/** Sign up + verify + sign in; returns the session cookie pair. */
-async function signedIn(email: string): Promise<string> {
-  const signUp = await engine.auth.handler(
-    authRequest('/sign-up/email', { name: 'Gate', email, password: PASSWORD })
-  )
-  expect(signUp.status).toBe(200)
-  await live().update({
-    collection: 'ba-users',
-    where: { email: { equals: email } },
-    data: { emailVerified: true },
-    overrideAccess: true,
-  })
+/**
+ * Sign up + verify + sign in; returns the session cookie pair. With
+ * `existing`, the user already exists and this is one more device.
+ */
+async function signedIn(email: string, opts: { existing?: boolean } = {}): Promise<string> {
+  if (opts.existing !== true) {
+    const signUp = await engine.auth.handler(
+      authRequest('/sign-up/email', { name: 'Gate', email, password: PASSWORD })
+    )
+    expect(signUp.status).toBe(200)
+    await live().update({
+      collection: 'ba-users',
+      where: { email: { equals: email } },
+      data: { emailVerified: true },
+      overrideAccess: true,
+    })
+  }
   const signIn = await engine.auth.handler(
     authRequest('/sign-in/email', { email, password: PASSWORD })
   )
@@ -78,6 +83,31 @@ async function signedIn(email: string): Promise<string> {
     throw new Error('sign-in set no session cookie')
   }
   return entry.split(';')[0] ?? ''
+}
+
+/** BA's own user id (`baId`), which its session rows reference. */
+async function baUserId(email: string): Promise<string> {
+  const found = await live().find({
+    collection: 'ba-users',
+    where: { email: { equals: email } },
+    limit: 1,
+    overrideAccess: true,
+  })
+  const id: unknown = found.docs[0]?.baId
+  if (typeof id !== 'string') {
+    throw new Error(`no BA user ${email}`)
+  }
+  return id
+}
+
+/** Session rows the provider store holds for one BA user. */
+async function sessionRowCount(baId: string): Promise<number> {
+  const counted = await live().count({
+    collection: 'ba-sessions',
+    where: { userId: { equals: baId } },
+    overrideAccess: true,
+  })
+  return counted.totalDocs
 }
 
 async function pluginSession(cookie: string): Promise<Response> {
@@ -140,11 +170,23 @@ describe('server session gates on a real Better Auth engine', () => {
   it("row 19: revokeAllForUser kills one user's sessions and no one else's", async () => {
     const victim = await signedIn('gate-victim@test.dev')
     const bystander = await signedIn('gate-bystander@test.dev')
+    // A second victim device: revoke-ALL must take every row.
+    const victimDevice = await signedIn('gate-victim@test.dev', { existing: true })
     const victimId = await hostIdOf(victim)
     await hostIdOf(bystander)
+    const victimBa = await baUserId('gate-victim@test.dev')
+    const bystanderBa = await baUserId('gate-bystander@test.dev')
+    expect(await sessionRowCount(victimBa)).toBe(3)
+    const bystanderRows = await sessionRowCount(bystanderBa)
+    expect(bystanderRows).toBeGreaterThan(0)
     await authLinkServer(live()).revokeAllForUser(victimId)
     expect((await pluginSession(victim)).status).toBe(401)
+    expect((await pluginSession(victimDevice)).status).toBe(401)
     expect((await pluginSession(bystander)).status).toBe(200)
+    // The provider store, not just the session reads: every victim row
+    // is gone, every bystander row survives.
+    expect(await sessionRowCount(victimBa)).toBe(0)
+    expect(await sessionRowCount(bystanderBa)).toBe(bystanderRows)
   })
 
   it('row 19: revoking an unknown handle fails loudly', async () => {

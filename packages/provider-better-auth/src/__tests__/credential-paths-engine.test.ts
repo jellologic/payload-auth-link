@@ -347,7 +347,7 @@ describe("row 8: Payload's verify token is not linkable proof on its own (real B
 
   it('failure: a wrong verification token is refused and verifies nothing', async () => {
     const wrong = await rest('POST', '/users/verify/not-the-token')
-    expect(wrong.status).toBeGreaterThanOrEqual(400)
+    expect(wrong.status).toBe(403)
     expect((await hostDoc(docId))._verified).toBe(false)
   })
 

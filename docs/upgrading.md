@@ -141,6 +141,39 @@ If its table was never created, run your Payload migrations first.
 - **Refused runs exit 1.** `from-payload-auth` and `adopt-prelink`
   print `<command> failed: …` and exit 1 when a manifest is refused.
 
+## Unreleased: provider-better-auth (issue #113)
+
+**Upgrade impact:** no schema change. Push and migrations have nothing to
+do on SQLite, Postgres or MongoDB. The operator steps are below.
+
+- **Session tokens leave Better Auth's HTTP JSON.** `/get-session` no
+  longer returns `session.token`, `/list-sessions` entries no longer
+  carry `token`, and sign-in / sign-up (and other session-minting)
+  bodies drop the new session's `token`. Server-side `auth.api.*`
+  calls are unchanged. `/multi-session/*` and `/one-time-token/*` are
+  untouched.
+  - Operator step: client code that revokes one device with
+    `authClient.revokeSession({ token: session.token })` should pass
+    the listed id instead: `revokeSession({ token: session.id })`. The
+    engine resolves the id server-side.
+  - Operator step: a client that genuinely reads the raw token from a
+    response body (a native app) sets the engine option
+    `exposeSessionTokens: true`, ideally with
+    `bearer({ requireSignature: true })`. Pass the engine a `logger` to
+    see the new wiring warning when `bearer()` without
+    `requireSignature` meets a token-exposing surface.
+- **Adopt mode with Payload's local strategy on.** Better Auth sign-ups
+  into an adopted users collection that keeps Payload's local strategy
+  no longer fail with 422 "password" once other auth traffic has run
+  first: every user create now carries the unusable injected password.
+  No step needed.
+- **Logout under `crossSubDomainCookies`.** The plugin's logout now
+  clears every Better Auth cookie with the `Domain` Better Auth wrote
+  it with (`crossSubDomainCookies.domain`, else the `baseURL`
+  hostname); before, the browser kept the token and cookie-cache
+  cookies until they expired. No step needed. With a dynamic `baseURL`,
+  set `crossSubDomainCookies.domain` explicitly.
+
 ## plugin 0.13.0 / migrate 0.7.0 / provider-better-auth 0.10.0 / provider-authjs 0.6.0 (one minor across every package)
 
 **Upgrade impact:** no schema change. Push and migrations have nothing to

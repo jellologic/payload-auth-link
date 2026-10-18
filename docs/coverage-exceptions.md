@@ -20,36 +20,38 @@ those imports resolved to `dist`, and files reached only that way
 
 Each cell is lines / functions / branches / statements.
 
-| File                                             | Floor             | Notes     |
-| ------------------------------------------------ | ----------------- | --------- |
-| `core/src/cookies.ts`                            | 95 / 95 / 95 / 95 | at target |
-| `core/src/use-cases/ensure-linked-user.ts`       | 95 / 95 / 95 / 95 | at target |
-| `plugin/src/access.ts`                           | 95 / 95 / 95 / 95 | at target |
-| `plugin/src/audit.ts`                            | 95 / 91 / 88 / 95 | see below |
-| `plugin/src/collections.ts`                      | 95 / 95 / 86 / 95 | see below |
-| `plugin/src/compat-shim.ts`                      | 95 / 95 / 95 / 95 | at target |
-| `plugin/src/endpoints.ts`                        | 95 / 95 / 91 / 95 | see below |
-| `plugin/src/hooks.ts`                            | 95 / 95 / 95 / 95 | at target |
-| `plugin/src/lifecycle.ts`                        | 95 / 95 / 94 / 95 | see below |
-| `plugin/src/organizations.ts`                    | 95 / 95 / 95 / 95 | see below |
-| `plugin/src/repository.ts`                       | 95 / 95 / 95 / 95 | at target |
-| `plugin/src/server.ts`                           | 95 / 95 / 94 / 95 | see below |
-| `plugin/src/session.ts`                          | 95 / 95 / 95 / 95 | see below |
-| `plugin/src/strategy.ts`                         | 95 / 95 / 90 / 95 | see below |
-| `plugin/src/verified-email.ts`                   | 95 / 95 / 95 / 95 | at target |
-| `provider-authjs/src/adapter.ts`                 | 95 / 95 / 95 / 95 | see below |
-| `provider-authjs/src/callbacks.ts`               | 93 / 95 / 90 / 93 | see below |
-| `provider-authjs/src/engine.ts`                  | 95 / 95 / 91 / 95 | see below |
-| `provider-authjs/src/port.ts`                    | 95 / 95 / 95 / 95 | at target |
-| `provider-better-auth/src/adapter.ts`            | 80 / 91 / 73 / 81 | see below |
-| `provider-better-auth/src/cookies.ts`            | 95 / 95 / 89 / 95 | see below |
-| `provider-better-auth/src/engine.ts`             | 95 / 93 / 93 / 95 | see below |
-| `provider-better-auth/src/port.ts`               | 88 / 92 / 85 / 88 | see below |
-| `provider-better-auth/src/session-provenance.ts` | 95 / 95 / 95 / 95 | at target |
-| `provider-better-auth/src/step-up.ts`            | 95 / 95 / 95 / 95 | at target |
-| `provider-better-auth/src/where.ts`              | 95 / 95 / 95 / 95 | at target |
-| `web/src/authz.ts`                               | 95 / 95 / 95 / 95 | at target |
-| `web/src/verify.ts`                              | 95 / 95 / 95 / 95 | at target |
+| File                                                  | Floor             | Notes     |
+| ----------------------------------------------------- | ----------------- | --------- |
+| `core/src/cookies.ts`                                 | 95 / 95 / 95 / 95 | at target |
+| `core/src/use-cases/ensure-linked-user.ts`            | 95 / 95 / 95 / 95 | at target |
+| `plugin/src/access.ts`                                | 95 / 95 / 95 / 95 | at target |
+| `plugin/src/audit.ts`                                 | 95 / 91 / 88 / 95 | see below |
+| `plugin/src/collections.ts`                           | 95 / 95 / 86 / 95 | see below |
+| `plugin/src/compat-shim.ts`                           | 95 / 95 / 95 / 95 | at target |
+| `plugin/src/endpoints.ts`                             | 95 / 95 / 91 / 95 | see below |
+| `plugin/src/hooks.ts`                                 | 95 / 95 / 95 / 95 | at target |
+| `plugin/src/lifecycle.ts`                             | 95 / 95 / 94 / 95 | see below |
+| `plugin/src/organizations.ts`                         | 95 / 95 / 95 / 95 | see below |
+| `plugin/src/repository.ts`                            | 95 / 95 / 95 / 95 | at target |
+| `plugin/src/server.ts`                                | 95 / 95 / 94 / 95 | see below |
+| `plugin/src/session.ts`                               | 95 / 95 / 95 / 95 | see below |
+| `plugin/src/strategy.ts`                              | 95 / 95 / 90 / 95 | see below |
+| `plugin/src/verified-email.ts`                        | 95 / 95 / 95 / 95 | at target |
+| `provider-authjs/src/adapter.ts`                      | 95 / 95 / 95 / 95 | see below |
+| `provider-authjs/src/callbacks.ts`                    | 93 / 95 / 90 / 93 | see below |
+| `provider-authjs/src/engine.ts`                       | 95 / 95 / 91 / 95 | see below |
+| `provider-authjs/src/port.ts`                         | 95 / 95 / 95 / 95 | at target |
+| `provider-better-auth/src/adapter.ts`                 | 95 / 95 / 95 / 95 | see below |
+| `provider-better-auth/src/cookies.ts`                 | 95 / 95 / 95 / 95 | at target |
+| `provider-better-auth/src/engine.ts`                  | 95 / 95 / 95 / 95 | see below |
+| `provider-better-auth/src/events.ts`                  | 95 / 95 / 95 / 95 | at target |
+| `provider-better-auth/src/port.ts`                    | 95 / 95 / 95 / 95 | at target |
+| `provider-better-auth/src/session-provenance.ts`      | 95 / 95 / 95 / 95 | at target |
+| `provider-better-auth/src/session-token-redaction.ts` | 95 / 95 / 95 / 95 | at target |
+| `provider-better-auth/src/step-up.ts`                 | 95 / 95 / 95 / 95 | at target |
+| `provider-better-auth/src/where.ts`                   | 95 / 95 / 95 / 95 | at target |
+| `web/src/authz.ts`                                    | 95 / 95 / 95 / 95 | at target |
+| `web/src/verify.ts`                                   | 95 / 95 / 95 / 95 | at target |
 
 ## Recurring kinds of uncovered branch
 
@@ -219,66 +221,43 @@ reshaping the session callback. Re-measure after it lands.
   spreads, and a non-object bulk result. These are untyped-input
   narrowing.
 
-### `provider-better-auth/src/engine.ts` (branches 94.11%)
+### `provider-better-auth/src/engine.ts` (branches 96.5%)
 
 The `trustedProviders` check for `email-password` (safe only while
 `emailAndPassword.requireEmailVerification` stays on) and for social
 providers without an explicit `true` requirement is tested in
 `engine.test.ts`.
 
-- Line 338: `fields ?? []` on builder custom fields.
-- Line 495: `mergedPlugins === undefined`. The engine always appends
-  its provenance plugin, so the list is never empty.
+- `fields ?? []` on builder custom fields (a `Partial` record value
+  the builder declared as `undefined`).
 - Two `if#1` arms in the plugin-id and derived-model loops
   (untyped-input narrowing).
 
-### `provider-better-auth/src/adapter.ts` (73% branches)
+### `provider-better-auth/src/adapter.ts` (branches 96.2%)
 
-- Lines 607–685, the host-collection validation for adopted models
-  (`schemaMap`, issue #49): auth-collection detection, tabs and ui
-  walking, and missing-collection errors. The happy path is covered by
-  `integration-adopt.test.ts`. The error arms need host configs that
-  Payload itself would reject at `buildConfig`.
-- Lines 123–305, the `narrow*` helpers for Local API results: the
-  arms for "Payload returned a non-record / non-array". These are
-  untyped-input narrowing.
-- Lines 385–472, id-coercion arms for adopted models with numeric
-  Payload ids (`idStrategy: 'payload'`). The SQLite suite uses string
-  ids on the BA collections. Postgres and MongoDB run these arms in
-  the e2e matrix, which does not report coverage.
-- Lines 787–1131, `count`/`findMany` pagination fallbacks for
-  post-filtered reads when Payload returns an unpaginated result, and
-  `rethrowAsOperation` for non-Error causes.
-- The failure contract is pinned by `adapter-failures.test.ts`: bulk
-  partial failure, malformed bulk results, empty-where refusal, and
-  the post-filter with no exact match. Query semantics are pinned by
-  `adapter-differential.test.ts`.
+`adapter-unit.test.ts` drives the raw adapter without Better Auth's
+adapter factory (issue #113): schema validation, malformed Local API
+results, the empty-where `update` guard (the factory answers that case
+itself, so no engine suite can reach the adapter's own guard), joins,
+and adopted-model host validation. Still uncovered:
 
-### `provider-better-auth/src/cookies.ts` (branches 89.13%)
+- `planFor`'s unknown-slug throw: `resolveModel` refuses unknown
+  models first.
+- `asModelRow`'s throw: rows are always built by `toBaRow`.
+- Host validation: the per-slug cache hit (two adopted models on one
+  slug), a non-array `fields`, a non-string field `type`, and a model
+  with no validated field set (untyped-input narrowing).
+- `findOne`'s post-filter paging past a full 100-row page.
 
-- Line 105: the admin-session cookie name override from
-  `advanced.cookies.admin_session.name`.
-- Lines 162–175: the `?? defaults ?? secureDefault` attribute chain
-  for cookies with no per-cookie or default attributes, and a config
-  with no session-token entry.
-
-All of these are configuration permutations of Better Auth's
-`advanced` options rather than security branches. The secure-prefix
-and clearing behaviour is covered by `cookies.test.ts`.
-
-### `provider-better-auth/src/port.ts` (88.35% branches)
-
-- `narrowApiKeyVerification` (key-owner narrowing) is fully covered
-  by `api-key-narrowing.test.ts`: `referenceId` wins over `userId`,
-  missing, empty or non-string owners fail closed, and invalid
-  verifications narrow to `null`. The real-engine paths are in
-  `api-key-verify.test.ts` and `channel-api-key-engine.test.ts`.
-- Another change is editing this file, so the floor sits a little
-  below the measured 90.7 / 94.7 / 88.4 / 90.7.
-- Lines 561–689: legacy-cookie coexistence and multi-session
-  enumeration arms for malformed `$context` shapes, which are
-  untyped-input narrowing on Better Auth internals.
-- Lines 1022–1167: `createBetterAuthProviderFromUnknown` arms for
-  instances missing optional internal-adapter methods.
-  `port-failures.test.ts` covers the revoke and verify arms; the rest
-  are capability-probe fallbacks.
+Finding (issue #113): host validation for adopted models runs on the
+adapter's FIRST operation and validates only the models planned by
+then. `findOne` resolves Payload before planning its model, so when a
+`findOne` runs first (as in `integration-adopt.test.ts`) the adopted
+collections are never validated. The password injection for
+local-strategy auth collections used to ride that same pass and
+missed every later sign-up (422); it is now decided on each create
+(`integration-adopt-local-strategy.test.ts`). Validation itself is
+left as is: planning every `schemaMap` model up front would also
+refuse adopted session collections without the engine-owned
+`authenticationMethod` column, an upgrade-impacting change for the
+session-provenance owner to schedule.
