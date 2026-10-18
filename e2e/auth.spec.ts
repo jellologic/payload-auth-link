@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { adminContext } from './admin-session.js'
-import { gotoOwn, gotoSettled, toggleToSignUp } from './helpers.js'
+import { gotoOwn, gotoSettled, RETRY_ON_RESET, toggleToSignUp } from './helpers.js'
 
 const password = 'e2e-test-password-1'
 let counter = 0
@@ -31,7 +31,7 @@ test('sign-up provisions a Payload user, sign-out revokes, sign-in restores', as
   await expect(page.getByTestId('account-roles')).toContainText('user')
 
   // The plugin session endpoint serves the JIT-provisioned Payload user.
-  const session = await page.request.get('/api/auth-link/session')
+  const session = await page.request.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(session.ok()).toBe(true)
   const body = (await session.json()) as { user: { email: string; roles: string[] } }
   expect(body.user.email).toBe(email)
@@ -42,7 +42,7 @@ test('sign-up provisions a Payload user, sign-out revokes, sign-in restores', as
   await expect(page).toHaveURL(/\/$/)
   await gotoOwn(page, '/account')
   await expect(page).toHaveURL(/\/sign-in\?redirect=%2Faccount/)
-  const revoked = await page.request.get('/api/auth-link/session')
+  const revoked = await page.request.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(revoked.status()).toBe(401)
 
   // Sign back in with the same credentials.
@@ -117,7 +117,7 @@ test('non-admin users get a 404 on /admin-only, admins see the content', async (
   await expect(page.getByTestId('admin-denied')).toBeVisible()
 
   // Escalate to admin through the Payload API as the seeded local admin.
-  const session = await page.request.get('/api/auth-link/session')
+  const session = await page.request.get('/api/auth-link/session', RETRY_ON_RESET)
   const { user } = (await session.json()) as { user: { id: string | number } }
   // The shared run-level admin session (see admin-session.ts) lives in
   // its own context; concurrent admin logins would race.

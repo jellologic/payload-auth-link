@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { gotoOwn } from './helpers.js'
+import { gotoOwn, RETRY_ON_RESET } from './helpers.js'
 
 /**
  * Passwordless + guest flows (CAP-1/2/10) against the local dev
@@ -55,7 +55,7 @@ test('Better Auth magic link signs in and provisions the Payload user', async ({
   }
   await page.goto(mail.url)
   await expect(page.getByTestId('account-email')).toContainText(email, { timeout: 30_000 })
-  const session = await page.request.get('/api/auth-link/session')
+  const session = await page.request.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(session.ok()).toBe(true)
   // Replay: the same link must not mint a second session. Replay over
   // HTTP rather than a browser navigation: the spent link's error
@@ -65,7 +65,7 @@ test('Better Auth magic link signs in and provisions the Payload user', async ({
   // session cookie would still show up in the session check below.
   await page.context().clearCookies()
   await page.request.get(mail.url)
-  const replayed = await page.request.get('/api/auth-link/session')
+  const replayed = await page.request.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(replayed.status()).toBe(401)
 })
 
@@ -87,7 +87,7 @@ test('guest session reports a principal, then upgrades by signing in', async ({ 
   await gotoOwn(page, '/sign-in/passwordless')
   await page.getByRole('button', { name: /continue as guest/i }).click()
   await expect(page.getByTestId('guest-id')).toBeVisible({ timeout: 30_000 })
-  const session = await page.request.get('/api/auth-link/session')
+  const session = await page.request.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(session.ok()).toBe(true)
   const body = (await session.json()) as {
     user: unknown
@@ -104,7 +104,9 @@ test('guest session reports a principal, then upgrades by signing in', async ({ 
   await page.getByLabel(/password/i).fill('e2e-test-password-1')
   await page.getByRole('button', { name: /create account/i }).click()
   await expect(page.getByTestId('account-email')).toContainText(email, { timeout: 30_000 })
-  const upgraded = (await (await page.request.get('/api/auth-link/session')).json()) as {
+  const upgraded = (await (
+    await page.request.get('/api/auth-link/session', RETRY_ON_RESET)
+  ).json()) as {
     user: { email: string } | null
     guest?: unknown
   }

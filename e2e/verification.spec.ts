@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { RETRY_ON_RESET } from './helpers.js'
 
 /**
  * Verification enforcement (SEC-2): the plugin provisions and links
@@ -25,14 +26,14 @@ test('unverified provider sessions 401 until the email is verified', async ({ pa
   expect(signup.ok()).toBe(true)
 
   // Our gate: no provisioning from an unverified identity.
-  const denied = await api.get('/api/auth-link/session')
+  const denied = await api.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(denied.status()).toBe(401)
 
   // The builder verifies out-of-band (locally: the dev stamp route)
   // and the SAME session now links.
   const stamped = await api.post('/api/dev-auto-verify', { data: { email } })
   expect(stamped.ok()).toBe(true)
-  const linked = await api.get('/api/auth-link/session')
+  const linked = await api.get('/api/auth-link/session', RETRY_ON_RESET)
   expect(linked.ok()).toBe(true)
   const body = (await linked.json()) as { user: { email: string; roles: string[] } }
   expect(body.user.email).toBe(email)
