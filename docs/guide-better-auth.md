@@ -51,6 +51,14 @@ through untouched.
 - **No `databaseHooks` needed.** The plugin provisions Payload users
   lazily at session verification, so there is no signup hook to
   keep in sync and no ordering that strands users.
+- **Guarded two-factor step-up.** With `twoFactor()` installed, a
+  second factor verified on an existing session shares the sign-in
+  lockout (`twoFactor({ accountLockout })`), the verification that
+  enrols the first factor proves nothing for its own session, and an
+  emailed OTP proves MFA only after a `password` / `passkey` sign-in.
+  Set `twoFactorOtpChannelIndependent: true` on the engine when your
+  `otpOptions.sendOTP` delivers outside the email inbox (SMS). See
+  [Two-factor and MFA policy](guide-capabilities.md#two-factor-and-mfa-policy-cap-6).
 
 ## Pass-through philosophy
 

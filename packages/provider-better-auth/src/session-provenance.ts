@@ -1,6 +1,12 @@
-import { createAuthMiddleware, isAPIError } from 'better-auth/api'
+import { createAuthMiddleware, getSessionFromCtx, isAPIError } from 'better-auth/api'
 import type { BetterAuthPlugin } from 'better-auth'
-import type { AuthMethod } from '@payload-auth-link/core'
+import { nullLogger, type AuthMethod, type LoggerPort } from '@payload-auth-link/core'
+import {
+  accountStepUp,
+  assessSecondFactorRequest,
+  outcomeOf,
+  type StepUpAssessment,
+} from './step-up.js'
 
 /** The method value recorded on server-side mints (no 2FA challenge ran). */
 export const MINT_METHOD: AuthMethod = 'server-mint'
@@ -23,7 +29,8 @@ const METHOD_BY_PATH: readonly {
   { matches: (path) => path.startsWith('/two-factor/verify'), method: 'two-factor' },
   { matches: (path) => path === '/sign-in/email', method: 'password' },
   { matches: (path) => path === '/magic-link/verify', method: 'magic-link' },
-  { matches: (path) => path === '/email-otp/sign-in-email-otp', method: 'email-otp' },
+  // Better Auth 1.7's emailOTP sign-in route.
+  { matches: (path) => path === '/sign-in/email-otp', method: 'email-otp' },
   {
     matches: (path) => path.startsWith('/callback/') || path.startsWith('/oauth2/callback/'),
     method: 'oauth',
@@ -135,27 +142,74 @@ async function verifiedPresentedToken(
 }
 
 /**
- * The engine's internal session-provenance plugin. Two jobs:
+ * The key the before-hook's assessment rides on, from the before-hook
+ * to the after-hook of the SAME request: Better Auth merges a
+ * before-hook's returned `context` into the endpoint context, which the
+ * after-hooks receive.
+ */
+const ASSESSMENT_KEY = 'payloadAuthLinkSecondFactor'
+
+/**
+ * Assessments this module issued. The after-hook honours only these
+ * (by identity), so a value planted on the context by anything else
+ * relabels nothing (fail closed).
+ */
+const issuedAssessments = new WeakSet<StepUpAssessment>()
+
+function assessmentOf(ctx: unknown): StepUpAssessment | null {
+  if (typeof ctx !== 'object' || ctx === null || !(ASSESSMENT_KEY in ctx)) {
+    return null
+  }
+  const value: unknown = (ctx as Record<string, unknown>)[ASSESSMENT_KEY]
+  return typeof value === 'object' &&
+    value !== null &&
+    issuedAssessments.has(value as StepUpAssessment)
+    ? (value as StepUpAssessment)
+    : null
+}
+
+/** Options for {@link createSessionProvenancePlugin}. */
+export type SessionProvenanceOptions = {
+  /**
+   * Whether the twoFactor OTP channel (`otpOptions.sendOTP`) is
+   * independent of the user's email inbox. See
+   * `BetterAuthEngineInput.twoFactorOtpChannelIndependent`.
+   */
+  readonly twoFactorOtpChannelIndependent?: boolean | undefined
+  /** Logs lockout refusals and counter-write failures. */
+  readonly logger?: LoggerPort | undefined
+}
+
+/**
+ * The engine's internal session-provenance plugin. Three jobs:
  *
  * 1. **Schema** — one nullable, input-excluded field on Better Auth's
  *    session model: `authenticationMethod`, recording HOW the session
  *    came into being.
  * 2. **Recording** — `hooks.after` on the endpoints whose success
  *    creates (or finally proves) a session: password sign-in records
- *    `password`, the two-factor verifications upgrade their session to
- *    `two-factor`, OAuth callbacks record `oauth`, and so on. The
- *    second factor's own endpoint is the only path that writes
- *    `two-factor`, and server-side mints write
+ *    `password`, the two-factor sign-in verification records
+ *    `two-factor` on the session it issues, OAuth callbacks record
+ *    `oauth`, and so on. The second factor's own endpoint is the only
+ *    path that writes `two-factor`, and server-side mints write
  *    `server-mint`/`server-step-up` (port.ts).
- *
- *    **Step-up (#110):** a CORRECT second factor verified on an
- *    EXISTING session (password, aged, or server-minted) relabels that
- *    session `two-factor` — deterministically, whether or not BA
- *    re-sets the cookie. Only the session the verification itself
- *    authenticated is relabelled: the signature-verified request
- *    cookie must name the session BA resolved for the request
- *    (`ctx.context.session`). A failed verification (wrong code,
- *    non-200, APIError, empty result) relabels nothing.
+ * 3. **Step-up guard (#110, GHSA-38wx-69j6-cgm7)** — a `hooks.before`
+ *    on `/two-factor/verify*` assesses a verification presented on an
+ *    EXISTING session (step-up.ts): it is refused while the account is
+ *    locked, its wrong codes spend Better Auth's own per-user failure
+ *    budget (shared with the sign-in path), and a correct one relabels
+ *    the session `two-factor` only when
+ *    - the factor was enrolled BEFORE this request (the verification
+ *      that enrols the first factor — TOTP confirmation, a backup code
+ *      of an unconfirmed enrolment, the OTP that turns 2FA on — proves
+ *      nothing for the session that enrolled it; the session keeps its
+ *      first-factor label),
+ *    - for `/two-factor/verify-otp`, the OTP channel is independent of
+ *      the session's first factor (by default it is not after a
+ *      magic-link, email-OTP or OAuth sign-in, or an unrecorded one),
+ *    - and the signature-verified request cookie names the session BA
+ *      resolved for the request (`ctx.context.session`), which is the
+ *      session assessed. A failed verification relabels nothing.
  *
  * The server session API reads this per-session fact for its
  * assurance projection; enrollment flags are never consulted. Paths
@@ -163,86 +217,134 @@ async function verifiedPresentedToken(
  * `null` reads as "no recorded method", which the assurance projection
  * treats as proving nothing (fail closed).
  */
-export const sessionProvenancePlugin: BetterAuthPlugin = {
-  id: 'payload-auth-link-session-provenance',
-  init: () => ({ context: {} }),
-  schema: {
-    session: {
-      fields: {
-        authenticationMethod: { type: 'string', required: false, input: false },
+export function createSessionProvenancePlugin(
+  options: SessionProvenanceOptions = {}
+): BetterAuthPlugin {
+  const logger = options.logger ?? nullLogger()
+  const stepUpOptions = {
+    otpChannelIndependent: options.twoFactorOtpChannelIndependent === true,
+    logger,
+  }
+  return {
+    id: 'payload-auth-link-session-provenance',
+    init: () => ({ context: {} }),
+    schema: {
+      session: {
+        fields: {
+          authenticationMethod: { type: 'string', required: false, input: false },
+        },
       },
     },
-  },
-  hooks:
-    process.env.PROVENANCE_HOOKS_OFF === '1'
-      ? undefined
-      : {
-          after: [
-            {
-              matcher: (ctx) => methodForPath(ctx.path) !== null,
-              handler: createAuthMiddleware(async (ctx) => {
-                const method = methodForPath(ctx.path)
-                if (method === null) {
-                  return
-                }
-                // Record ONLY successful requests. BA's after-hooks run
-                // even when the endpoint returned an error response
-                // (verify-totp RETURNS a 401 for a wrong code instead
-                // of unwinding the chain), so success must be checked
-                // explicitly. This mirrors BA's own
-                // `getEndpointResponse` (utils/plugin-helper): the
-                // endpoint's result must be a 200 body — non-2xx
-                // responses and thrown APIErrors record nothing (a
-                // wrong 2FA code must never relabel the presented
-                // session).
-                const returned = (ctx.context as { returned?: unknown }).returned
-                if (returned === null || returned === undefined) {
-                  return
-                }
-                if (returned instanceof Response && returned.status !== 200) {
-                  return
-                }
-                if (isAPIError(returned)) {
-                  return
-                }
-                const hook = ctx as unknown as ProvenanceHookContext
-                const name = hook.context.authCookies?.sessionToken?.name
-                const updateSession = hook.context.internalAdapter?.updateSession
-                if (
-                  typeof name !== 'string' ||
-                  name === '' ||
-                  typeof updateSession !== 'function'
-                ) {
-                  // Cannot resolve the token surface: record nothing rather
-                  // than guess (fail closed).
-                  return
-                }
-                // The response's own session cookie wins: fresh sign-ins,
-                // the 2FA sign-in's new session, enrollment's rotation.
-                // An EXPIRING write means the session is gone: record
-                // nothing.
-                const issued = tokenFromSetCookies(
-                  hook.context.responseHeaders?.getSetCookie?.() ?? [],
-                  name
-                )
-                let token: string | null
-                if (issued !== undefined) {
-                  token = issued
-                } else if (isSecondFactorPath(ctx.path)) {
-                  // A correct second factor on an EXISTING session is a
-                  // step-up of exactly the session it authenticated.
-                  token = await verifiedPresentedToken(hook, name)
-                } else {
-                  // Other methods only ever create a session; with no
-                  // issued cookie there is nothing to record.
-                  token = null
-                }
-                if (token === null) {
-                  return
-                }
-                await updateSession(token, { authenticationMethod: method })
-              }),
-            },
-          ],
-        },
+    hooks:
+      process.env.PROVENANCE_HOOKS_OFF === '1'
+        ? undefined
+        : {
+            before: [
+              {
+                matcher: (ctx) => isSecondFactorPath(ctx.path),
+                handler: createAuthMiddleware(async (ctx) => {
+                  const assessment = await assessSecondFactorRequest(
+                    ctx,
+                    () => getSessionFromCtx(ctx, { disableRefresh: true }),
+                    stepUpOptions
+                  )
+                  issuedAssessments.add(assessment)
+                  return { context: { [ASSESSMENT_KEY]: assessment } }
+                }),
+              },
+            ],
+            after: [
+              {
+                matcher: (ctx) => methodForPath(ctx.path) !== null,
+                handler: createAuthMiddleware(async (ctx) => {
+                  const method = methodForPath(ctx.path)
+                  if (method === null) {
+                    return
+                  }
+                  const returned = (ctx.context as { returned?: unknown }).returned
+                  const secondFactor = isSecondFactorPath(ctx.path)
+                  const assessment = secondFactor ? assessmentOf(ctx) : null
+                  if (assessment?.kind === 'step-up') {
+                    // Spend (wrong code) or reset (success) the failure
+                    // budget Better Auth itself keeps only on sign-in.
+                    await accountStepUp(ctx, assessment, outcomeOf(returned), logger)
+                  }
+                  // Record ONLY successful requests. BA's after-hooks run
+                  // even when the endpoint returned an error response, so
+                  // success must be checked explicitly. This mirrors BA's
+                  // own `getEndpointResponse` (utils/plugin-helper): the
+                  // endpoint's result must be a 200 body — non-2xx
+                  // responses and thrown APIErrors record nothing (a
+                  // wrong 2FA code must never relabel the presented
+                  // session).
+                  if (returned === null || returned === undefined) {
+                    return
+                  }
+                  if (returned instanceof Response && returned.status !== 200) {
+                    return
+                  }
+                  if (isAPIError(returned)) {
+                    return
+                  }
+                  const hook = ctx as unknown as ProvenanceHookContext
+                  const name = hook.context.authCookies?.sessionToken?.name
+                  const updateSession = hook.context.internalAdapter?.updateSession
+                  if (
+                    typeof name !== 'string' ||
+                    name === '' ||
+                    typeof updateSession !== 'function'
+                  ) {
+                    // Cannot resolve the token surface: record nothing rather
+                    // than guess (fail closed).
+                    return
+                  }
+                  // The response's own session cookie wins on sign-ins.
+                  // An EXPIRING write means the session is gone: record
+                  // nothing.
+                  const issued = tokenFromSetCookies(
+                    hook.context.responseHeaders?.getSetCookie?.() ?? [],
+                    name
+                  )
+                  let token: string | null
+                  if (!secondFactor) {
+                    // Other methods only ever create a session; with no
+                    // issued cookie there is nothing to record.
+                    token = issued ?? null
+                  } else if (assessment === null) {
+                    // No assessment from this module's before-hook:
+                    // record nothing (fail closed).
+                    token = null
+                  } else if (assessment.kind === 'sign-in') {
+                    // The challenge path issues a fresh session. If BA
+                    // nevertheless authenticated a presented session,
+                    // this was not the sign-in that was assessed.
+                    token =
+                      resolvedSessionToken(hook.context.session) === null ? (issued ?? null) : null
+                  } else if (!assessment.provesMfa || issued === null) {
+                    // An enrolment, an inbox-bound OTP after an inbox
+                    // sign-in, or a session that just went away.
+                    token = null
+                  } else {
+                    // A step-up of exactly the session it authenticated
+                    // (and that the before-hook assessed); a refresh may
+                    // re-set the SAME token, never another one.
+                    const presented = await verifiedPresentedToken(hook, name)
+                    token =
+                      presented === assessment.token &&
+                      (issued === undefined || issued === presented)
+                        ? presented
+                        : null
+                  }
+                  if (token === null) {
+                    return
+                  }
+                  await updateSession(token, { authenticationMethod: method })
+                }),
+              },
+            ],
+          },
+  }
 }
+
+/** The plugin with its defaults (no independent OTP channel, silent logger). */
+export const sessionProvenancePlugin: BetterAuthPlugin = createSessionProvenancePlugin()

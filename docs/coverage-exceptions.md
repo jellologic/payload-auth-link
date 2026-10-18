@@ -46,6 +46,7 @@ Each cell is lines / functions / branches / statements.
 | `provider-better-auth/src/engine.ts`             | 95 / 93 / 93 / 95 | see below |
 | `provider-better-auth/src/port.ts`               | 88 / 92 / 85 / 88 | see below |
 | `provider-better-auth/src/session-provenance.ts` | 95 / 95 / 95 / 95 | at target |
+| `provider-better-auth/src/step-up.ts`            | 95 / 95 / 95 / 95 | at target |
 | `provider-better-auth/src/where.ts`              | 95 / 95 / 95 / 95 | at target |
 | `web/src/authz.ts`                               | 95 / 95 / 95 / 95 | at target |
 | `web/src/verify.ts`                              | 95 / 95 / 95 / 95 | at target |

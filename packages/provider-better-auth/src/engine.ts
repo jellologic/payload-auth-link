@@ -30,7 +30,7 @@ import {
 import { createIdentityEventBus } from './events.js'
 import { deriveBetterAuthSchema } from './derive-schema.js'
 import { createBetterAuthProviderFromUnknown } from './port.js'
-import { sessionProvenancePlugin } from './session-provenance.js'
+import { createSessionProvenancePlugin } from './session-provenance.js'
 
 /** Engine wiring: Payload access plus the builder's Better Auth options. */
 export type BetterAuthEngineInput<TOptions extends Omit<BetterAuthOptions, 'database'>> = {
@@ -107,6 +107,21 @@ export type BetterAuthEngineInput<TOptions extends Omit<BetterAuthOptions, 'data
    * Defaults to `false` (warn only).
    */
   readonly strictLinking?: boolean | undefined
+  /**
+   * Declare that the `twoFactor` plugin's OTP channel
+   * (`otpOptions.sendOTP`) is independent of the user's email inbox —
+   * for example SMS — so a `/two-factor/verify-otp` step-up proves a
+   * second factor whatever the session's first factor was
+   * (GHSA-38wx-69j6-cgm7).
+   *
+   * Defaults to `false`: the OTP is assumed to reach the same inbox a
+   * magic link, an email OTP sign-in, or (through the IdP account) an
+   * OAuth sign-in already relies on, so an OTP step-up relabels a
+   * session `two-factor` only when its recorded first factor is
+   * `password` or `passkey` (or it is already MFA-proven). TOTP and
+   * backup-code step-ups are unaffected by this option.
+   */
+  readonly twoFactorOtpChannelIndependent?: boolean | undefined
   /**
    * The builder's Better Auth options, passed through verbatim except for
    * `database` (wired to Payload here, so it is omitted from this type),
@@ -485,10 +500,14 @@ export function createBetterAuthEngine<
   // composition — pinned by the option-driven-typing test. The
   // provenance plugin contributes NO endpoints (its schema is
   // runtime-only), so typing the merged array as TPlugins is honest
-  // for the API surface the compiler sees.
+  // for the API surface the compiler sees. It also guards second-factor
+  // step-ups (lockout, enrolment, OTP channel; GHSA-38wx-69j6-cgm7).
   const mergedPlugins = [
     ...(input.options.plugins ?? []),
-    sessionProvenancePlugin,
+    createSessionProvenancePlugin({
+      twoFactorOtpChannelIndependent: input.twoFactorOtpChannelIndependent === true,
+      logger: input.logger ?? nullLogger(),
+    }),
   ] as unknown as TPlugins
   const auth = betterAuth({
     ...input.options,

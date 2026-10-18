@@ -38,6 +38,44 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
+## provider-better-auth (next release): two-factor step-up hardening (advisory GHSA-38wx-69j6-cgm7)
+
+**Upgrade impact:** no schema change. The step-up counter reuses the
+`failedVerificationCount` / `lockedUntil` columns Better Auth 1.7's
+`twoFactor` model already has, so push and migrations have nothing to
+do on SQLite, Postgres or MongoDB. Behaviour changes:
+
+- **Step-ups share the sign-in lockout.** A `/two-factor/verify-*`
+  on an existing session now spends the same per-user failure
+  budget as the sign-in challenge (`twoFactor({ accountLockout })`,
+  default 10 failures → locked 15 minutes). While locked, a step-up
+  is refused with 429 `ACCOUNT_TEMPORARILY_LOCKED` before the code is
+  checked, and failed step-ups can now lock the sign-in path too.
+  Step-up UIs should handle the 429 like the sign-in screen does.
+- **Enrolment no longer counts as MFA proof.** Confirming the FIRST
+  factor (TOTP confirmation after `/two-factor/enable`, a backup code
+  of an unconfirmed enrolment, the OTP that turns 2FA on) used to
+  relabel the session `two-factor`. It now keeps its first-factor
+  label, so a user who just enrolled still has MFA-gated roles
+  withheld (`mfaRequired: true`) until they sign in again with 2FA or
+  step up with the enrolled factor. If your enrolment screen sends
+  users straight to an MFA-gated page, add that sign-in or step-up.
+- **Emailed OTP after an inbox sign-in no longer proves MFA.** A
+  `/two-factor/verify-otp` step-up relabels the session only after a
+  `password` / `passkey` first factor. After a magic-link, email-OTP
+  or OAuth sign-in (or an unrecorded method), it proves nothing; use
+  TOTP or a backup code there. If your `otpOptions.sendOTP` delivers
+  over an independent channel such as SMS, set
+  `createBetterAuthEngine({ twoFactorOtpChannelIndependent: true })`.
+- **Email-OTP sign-ins are recorded.** The provenance table now
+  matches Better Auth 1.7's `/sign-in/email-otp` route, so these
+  sessions report `methods: ['email-otp']` instead of `'unknown'`.
+- Operator step: grant MFA-gated roles (`requireMfaForRoles`) only to
+  users who have already enrolled 2FA. Enabling 2FA needs only the
+  password, so a password-only attacker can still enrol their own
+  authenticator on an account that never enrolled and then sign in
+  with it.
+
 ## plugin 0.13.0 / migrate 0.7.0 / provider-better-auth 0.10.0 / provider-authjs 0.6.0 (one minor across every package)
 
 **Upgrade impact:** no schema change. Push and migrations have nothing to

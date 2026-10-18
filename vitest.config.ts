@@ -221,6 +221,12 @@ export default defineConfig({
           branches: 95,
           statements: 95,
         },
+        'packages/provider-better-auth/src/step-up.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 95,
+          statements: 95,
+        },
         'packages/provider-better-auth/src/where.ts': {
           lines: 95,
           functions: 95,
