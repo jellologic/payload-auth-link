@@ -2018,7 +2018,6 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
-<<<<<<< HEAD
 ## provider-better-auth (next release): two-factor step-up hardening (advisory GHSA-38wx-69j6-cgm7)
 
 **Upgrade impact:** no schema change. The step-up counter reuses the
@@ -2056,7 +2055,7 @@ do on SQLite, Postgres or MongoDB. Behaviour changes:
   password, so a password-only attacker can still enrol their own
   authenticator on an account that never enrolled and then sign in
   with it.
-=======
+
 ## migrate 0.8.0 (manifests bound to their database; GHSA-crrr-3cg7-f6jw)
 
 **Upgrade impact:** no collection schema change; push and migrations
@@ -2121,7 +2120,6 @@ If its table was never created, run your Payload migrations first.
   (`sourceMap` in `--json`).
 - **Refused runs exit 1.** `from-payload-auth` and `adopt-prelink`
   print `<command> failed: …` and exit 1 when a manifest is refused.
->>>>>>> worktree-agent-ac1b42588150376f1
 
 ## plugin 0.13.0 / migrate 0.7.0 / provider-better-auth 0.10.0 / provider-authjs 0.6.0 (one minor across every package)
 
