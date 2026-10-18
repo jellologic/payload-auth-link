@@ -990,7 +990,7 @@ export declare function createOrganizationEndpoints(wired: WiredOptions): Endpoi
 export {};
 
 // ===== repository.d.ts =====
-import { type ClockPort, type CollectionMap, type IdPort, type LoggerPort, type Role, type UserRepository } from '@payload-auth-link/core';
+import { type ClockPort, type CollectionMap, type IdPort, type LoggerPort, type Role, type UserId, type UserRepository } from '@payload-auth-link/core';
 import { type Payload } from 'payload';
 import { type MappingContext } from './mapping.js';
 /** `UserRepository` over the Payload Local API; depth is always explicit. */
@@ -1018,6 +1018,19 @@ export type PayloadUserRepositoryDeps = {
      * Payload API key enabled before the link.
      */
     readonly keepLocalCredentialsOnLink?: boolean | undefined;
+    /**
+     * Observer for the users-document writes this repository actually
+     * performs — called once per successful write, never for a no-op
+     * (an identity already linked, an unchanged email or phone) and
+     * never for a lost create race (`UserExistsError`). The session
+     * service audits impersonated verification through it (issue #116).
+     */
+    readonly onWrite?: ((write: UserDocumentWrite) => void) | undefined;
+};
+/** A users-document write the repository performed (see `onWrite`). */
+export type UserDocumentWrite = {
+    readonly operation: 'create' | 'linkIdentity' | 'setEmail' | 'setPhone';
+    readonly userId: UserId;
 };
 /**
  * `UserRepository` over the Payload Local API. Request-scoped: construct one
@@ -1132,7 +1145,25 @@ export type AuthLinkServer = {
     readonly revokeSession: (sessionId: string) => Promise<void>;
     /** Revoke every live session of one Payload user. */
     readonly revokeAllForUser: (userId: number | string) => Promise<void>;
-    /** Verify an API key; `null` when the key is unknown. */
+    /**
+     * Verify an API key against the provider's own store AND apply the
+     * plugin's account controls to its owner (GHSA-j68x-qjr5-vqv9).
+     * Resolves `null` — the key authenticates no one — when the
+     * provider does not know the key (unknown, disabled, expired,
+     * deleted), when the key's provider user is linked to no Payload
+     * user (the document was deleted, or the identity never signed in
+     * and was never linked), or when that Payload user is suspended
+     * (`suspendedUntil`, or the configured `suspendedUntilField`, in
+     * the future). A lapsed suspension verifies again. Refusals are
+     * logged (`api key refused: owner fails account controls`, with a
+     * `reason`). Safe to use as the authentication step of a host's
+     * own routes.
+     *
+     * `userId` in the result is the PROVIDER user id. Throws when no
+     * registered provider declares `api-key-verify`, or on a provider
+     * or user-store error (a provider's typed refusal, e.g. Better
+     * Auth's `UnsupportedApiKeyOwnerError`, rides as the `cause`).
+     */
     readonly verifyApiKey: (key: string) => Promise<ApiKeyVerification | null>;
     /**
      * The provider's signed session cookie for one session token
@@ -1166,6 +1197,7 @@ export declare function createServices(wired: WiredOptions, payload: Payload): {
 // ===== session.d.ts =====
 import { ResultAsync } from 'neverthrow';
 import type { PayloadRequest } from 'payload';
+import type { UserDocumentWrite } from './repository.js';
 import { ChannelNotAdmittedError, RepositoryError, SessionExpiredError, SessionInvalidError, UserSuspendedError, type ClockPort, type Email, type GuestPrincipal, type LinkingPolicy, type LoggerPort, type ProviderId, type ProviderRegistry, type ResolvedSessionActor, type Role, type Session, type SessionChannel, type SessionPort, type UserRepository } from '@payload-auth-link/core';
 /** `SessionPort` wiring: user store, provider registry, leaf ports. */
 export type SessionServiceDeps = {
@@ -1198,17 +1230,24 @@ export type SessionServiceDeps = {
      */
     readonly ssoDomainAllowed?: ((providerId: ProviderId, email: Email | null) => ResultAsync<boolean, RepositoryError>) | undefined;
     /**
-     * Durable audit channel (CAP-8b, issue #113): the logger composed
-     * with the host's `onAudit` sink. When an impersonated session's
-     * verification links the target's identity to a users document (or
-     * provisions one), that write is recorded here as an
-     * `impersonated operation` — not only as a log line. Optional:
-     * omitted means the plain `logger`.
+     * Durable audit channel (CAP-8b, issues #113 / #116): the logger
+     * composed with the host's `onAudit` sink. Every users-document
+     * write an impersonated session's verification performs — linking
+     * the target's identity, provisioning its document, re-syncing its
+     * email or phone — is recorded here as an `impersonated operation`,
+     * once, by the request that actually wrote (concurrent first touches
+     * that lose the race record nothing). Optional: omitted means those
+     * writes are not audited (the plugin always wires it).
      */
     readonly audit?: {
         readonly logger: LoggerPort;
         /** The users collection slug the audit record names. */
         readonly collection: string;
+        /**
+         * A repository over the same store that reports each write it
+         * performs (never a no-op or a lost race) to `onWrite`.
+         */
+        readonly observedUsers: (onWrite: (write: UserDocumentWrite) => void) => UserRepository;
     } | undefined;
 };
 /**
