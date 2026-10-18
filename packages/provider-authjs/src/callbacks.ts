@@ -7,6 +7,7 @@ import {
   type IdentityEventEmitter,
   type LoggerPort,
 } from '@payload-auth-link/core'
+import { SessionShapeError } from './errors.js'
 
 declare module '@auth/core/types' {
   // The documented Auth.js pattern (self-contained: no imports, which
@@ -168,18 +169,96 @@ function allowlistedSession(input: SessionShape): SessionShape {
 /** Top-level fields of the Auth.js adapter session row. */
 const sessionRowFields = ['sessionToken', 'userId', 'id'] as const
 
+/** Marks a value the scrub removed (distinct from a legitimate `undefined`). */
+const removed: unique symbol = Symbol('removed')
+
+function hasToJSON(value: object): value is { toJSON: (key: string) => unknown } {
+  return typeof (value as { toJSON?: unknown }).toJSON === 'function'
+}
+
 /**
- * A builder `session` callback's result minus the adapter session row
- * fields (`sessionToken`, `userId`, `id`), so a builder that returns
- * `{ ...session, … }` on the database strategy keeps the response to
- * session data. Every other key the builder returns is kept.
+ * One value of a builder session result, as `JSON.stringify` would see
+ * it (`toJSON` applied, own enumerable keys), with the credential
+ * removed: every `sessionToken` key, and every string that contains the
+ * live session token, at any depth. `ancestors` is the path from the
+ * root, so a cycle (which `JSON.stringify` rejects too) fails loudly
+ * while a value shared by two branches is simply copied twice.
  */
-function withoutSessionRowFields(result: SessionShape): SessionShape {
-  const kept = { ...result }
-  for (const field of sessionRowFields) {
-    Reflect.deleteProperty(kept, field)
+function scrubValue(
+  value: unknown,
+  key: string,
+  sessionToken: string | null,
+  ancestors: object[]
+): unknown {
+  const current: unknown =
+    typeof value === 'object' && value !== null && hasToJSON(value) ? value.toJSON(key) : value
+  if (typeof current === 'string') {
+    return sessionToken !== null && current.includes(sessionToken) ? removed : current
   }
-  return kept
+  if (typeof current !== 'object' || current === null) {
+    return current
+  }
+  if (ancestors.includes(current)) {
+    throw new SessionShapeError('the result contains a cyclic reference')
+  }
+  ancestors.push(current)
+  try {
+    if (Array.isArray(current)) {
+      const items: unknown[] = []
+      current.forEach((item: unknown, index) => {
+        const scrubbed = scrubValue(item, String(index), sessionToken, ancestors)
+        if (scrubbed !== removed) {
+          items.push(scrubbed)
+        }
+      })
+      return items
+    }
+    const kept: Record<string, unknown> = {}
+    for (const [entryKey, entry] of Object.entries(current)) {
+      if (entryKey === 'sessionToken') {
+        continue
+      }
+      const scrubbed = scrubValue(entry, entryKey, sessionToken, ancestors)
+      if (scrubbed !== removed) {
+        kept[entryKey] = scrubbed
+      }
+    }
+    return kept
+  } finally {
+    ancestors.pop()
+  }
+}
+
+/**
+ * A builder `session` callback's result made safe to send. The adapter
+ * session row fields (`sessionToken`, `userId`, `id`) are removed at
+ * the top level, so a builder returning `{ ...session, … }` keeps the
+ * response to session data. The credential is removed at ANY depth —
+ * every `sessionToken` key and every string containing the live
+ * database session token — so a builder that nests the session
+ * (`{ ...s, debug: { s } }`) or copies the token under another key
+ * cannot leak it. Everything else the builder returns is kept, in its
+ * JSON form (the response is JSON, so `Date`s become ISO strings).
+ */
+function scrubBuilderSession(result: SessionShape, sessionToken: string | null): SessionShape {
+  const top = { ...result }
+  for (const field of sessionRowFields) {
+    Reflect.deleteProperty(top, field)
+  }
+  const scrubbed = scrubValue(top, '', sessionToken, [])
+  if (typeof scrubbed !== 'object' || scrubbed === null || Array.isArray(scrubbed)) {
+    throw new SessionShapeError('the result is not an object')
+  }
+  // Scrubbing only removes keys and array items from the builder's own
+  // (session-typed) result; the claims layer re-asserts `user.id` and
+  // `user.emailVerified` on top of it.
+  return scrubbed as SessionShape
+}
+
+/** The live database session token Auth.js handed the callback, if any. */
+function liveSessionToken(session: object): string | null {
+  const token: unknown = (session as { sessionToken?: unknown }).sessionToken
+  return typeof token === 'string' && token !== '' ? token : null
 }
 
 /**
@@ -194,8 +273,10 @@ function withoutSessionRowFields(result: SessionShape): SessionShape {
  * `{ user: { name, email, image, id, emailVerified }, expires }` (the
  * Auth.js default shape plus the port's two claims); with one, the
  * builder's result is kept except for the adapter session row fields
- * `sessionToken`, `userId` and `id`, which are always removed. Either
- * way `user.id` and `user.emailVerified` come from the claims layer.
+ * `sessionToken`, `userId` and `id` at the top level and — at any
+ * depth — every `sessionToken` key and every string containing the
+ * live database session token, which are always removed. Either way
+ * `user.id` and `user.emailVerified` come from the claims layer.
  *
  * Spike findings encoded here: the jwt callback re-runs on every session
  * read WITHOUT `user` (the token re-encodes), so claims are stuffed only
@@ -237,7 +318,7 @@ export function createAuthLinkCallbacks(
 
   const session: SessionCallback = async (params) => {
     const resolved = builder?.session
-      ? withoutSessionRowFields(await builder.session(params))
+      ? scrubBuilderSession(await builder.session(params), liveSessionToken(params.session))
       : allowlistedSession(params.session)
     if (params.token === undefined) {
       // Database strategy: no token — Auth.js passes the adapter user

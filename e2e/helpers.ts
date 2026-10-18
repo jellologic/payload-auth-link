@@ -1,4 +1,10 @@
-import { expect, type APIRequestContext, type Locator, type Page } from '@playwright/test'
+import {
+  expect,
+  type APIRequestContext,
+  type Locator,
+  type Page,
+  type Request,
+} from '@playwright/test'
 
 /**
  * Navigate to one of our own pages and wait for first hydration (the
@@ -26,8 +32,12 @@ export async function gotoOwn(page: Page, path: string): Promise<void> {
  * settling — so the same retries cover it. Retry those
  * engine-specific interruptions (up to twice), never other failures.
  * Use directly for Payload admin pages (no hydration marker).
+ *
+ * Before leaving, it waits for the current page to go quiet (see
+ * {@link waitForQuiet}).
  */
 export async function gotoSettled(page: Page, path: string): Promise<void> {
+  await waitForQuiet(page)
   for (let attempt = 0; ; attempt += 1) {
     try {
       await page.goto(path)
@@ -43,6 +53,102 @@ export async function gotoSettled(page: Page, path: string): Promise<void> {
       }
     }
   }
+}
+
+type RequestLedger = { readonly inFlight: Set<Request>; lastChange: number }
+
+const ledgers = new WeakMap<Page, RequestLedger>()
+
+/** The page's in-flight request ledger, recording from the first call on. */
+function ledgerFor(page: Page): RequestLedger {
+  const existing = ledgers.get(page)
+  if (existing !== undefined) {
+    return existing
+  }
+  const ledger: RequestLedger = { inFlight: new Set(), lastChange: Date.now() }
+  const settle = (request: Request) => {
+    ledger.inFlight.delete(request)
+    ledger.lastChange = Date.now()
+  }
+  // The latest main-frame document navigation, while it is in flight.
+  let documentRequest: Request | null = null
+  page.on('request', (request) => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+      documentRequest = request
+    }
+    ledger.inFlight.add(request)
+    ledger.lastChange = Date.now()
+  })
+  page.on('requestfinished', settle)
+  page.on('requestfailed', settle)
+  // A `fetch` is answered once its response arrives: the page's code
+  // has it. Chromium reports a fetch whose body the page never reads
+  // (specs that only check `response.status`) as neither finished nor
+  // failed, so waiting for the body would wait forever.
+  page.on('response', (response) => {
+    const kind = response.request().resourceType()
+    if (kind === 'fetch' || kind === 'xhr') {
+      settle(response.request())
+    }
+  })
+  // A new document committed: whatever the old one still had in flight
+  // is gone with it. Chromium does not always report those requests as
+  // finished or failed, so drop every entry up to the navigation
+  // request (the Set keeps insertion order). Same-document navigations
+  // (history API) have no navigation request and drop nothing.
+  page.on('framenavigated', (frame) => {
+    const committed = documentRequest
+    if (frame !== page.mainFrame() || committed === null) {
+      return
+    }
+    documentRequest = null
+    for (const request of ledger.inFlight) {
+      ledger.inFlight.delete(request)
+      if (request === committed) {
+        break
+      }
+    }
+    ledger.lastChange = Date.now()
+  })
+  ledgers.set(page, ledger)
+  return ledger
+}
+
+/** No request has started or ended for this long: the page is quiet. */
+const QUIET_MS = 100
+
+/**
+ * Wait until the page has no request in flight (and none started or
+ * ended for {@link QUIET_MS}), so the next navigation cancels nothing.
+ *
+ * Specs resume as soon as an assertion holds on what is RENDERED, while
+ * the page may still be fetching: a sign-out's `window.location.assign`
+ * landing page is committed (`toHaveURL`) but still loading its module
+ * graph, which under the TanStack Vite dev server is a dynamic import
+ * that does not hold up `load`; the Payload dashboard renders its nav
+ * from the server before its client modules arrive; a client-side
+ * sign-in shows the account before the route loaders' server-function
+ * fetches return. Navigating away then cancels those requests, and
+ * WebKit — unlike Chromium — reports a cancelled module graph as a page
+ * error, "Importing a module script failed" (and a cancelled loader
+ * fetch as "TypeError: Load failed" from the route error boundary),
+ * which Vite's dev client forwards to the server log as
+ * `[Unhandled error]`. Recording starts at the page's first
+ * `gotoSettled`, before any app-driven navigation it could miss.
+ */
+export async function waitForQuiet(page: Page): Promise<void> {
+  const ledger = ledgerFor(page)
+  await expect
+    .poll(
+      () =>
+        ledger.inFlight.size === 0 && Date.now() - ledger.lastChange >= QUIET_MS
+          ? 'quiet'
+          : [...ledger.inFlight].map(
+              (request) => `${request.method()} ${request.resourceType()} ${request.url()}`
+            ),
+      { message: 'page still has requests in flight', timeout: 30_000, intervals: [50] }
+    )
+    .toBe('quiet')
 }
 
 /**

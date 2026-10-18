@@ -52,9 +52,11 @@ jobs:
           package-manager-cache: false
           node-version: ${{ matrix.node }}
       - run: bun install --frozen-lockfile
-      # The suites resolve workspace packages through their dist
-      # exports — build once under Bun, run the tests under the matrix
-      # Node.
+      # The suites run on the workspace SOURCES: vitest.config.ts
+      # aliases every `@payload-auth-link/*` import to
+      # `packages/<name>/src` (vitest.shared.ts), so they need no dist.
+      # The build is a compile gate only (tsc -b under Bun); the tests
+      # then run under the matrix Node.
       - run: bun run build
       - run: node node_modules/vitest/vitest.mjs run
 
@@ -320,8 +322,9 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
-      # The test boots real Payload configs through the built workspace
-      # packages (dist).
+      # The test boots real Payload configs through the plugin SOURCES
+      # (vitest.config.ts aliases workspace imports to `src`), so it
+      # needs no dist; the build is a compile gate only.
       - run: bun run build
       - run: bunx vitest run packages/plugin/src/__tests__/uninstall.test.ts
 
