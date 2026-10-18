@@ -117,6 +117,9 @@ function ledgerFor(page: Page): RequestLedger {
 /** No request has started or ended for this long: the page is quiet. */
 const QUIET_MS = 100
 
+/** Give up waiting for quiet after this long and navigate anyway. */
+const QUIET_DEADLINE_MS = 10_000
+
 /**
  * Wait until the page has no request in flight (and none started or
  * ended for {@link QUIET_MS}), so the next navigation cancels nothing.
@@ -138,17 +141,17 @@ const QUIET_MS = 100
  */
 export async function waitForQuiet(page: Page): Promise<void> {
   const ledger = ledgerFor(page)
-  await expect
-    .poll(
-      () =>
-        ledger.inFlight.size === 0 && Date.now() - ledger.lastChange >= QUIET_MS
-          ? 'quiet'
-          : [...ledger.inFlight].map(
-              (request) => `${request.method()} ${request.resourceType()} ${request.url()}`
-            ),
-      { message: 'page still has requests in flight', timeout: 30_000, intervals: [50] }
-    )
-    .toBe('quiet')
+  // Best effort, bounded: a request the browser never reports as
+  // settled (CI once held a Payload admin `/api/users/me` fetch for the
+  // whole window) must not fail the spec. This wait only avoids WebKit's
+  // cancelled-load noise; it asserts nothing.
+  const deadline = Date.now() + QUIET_DEADLINE_MS
+  while (Date.now() < deadline) {
+    if (ledger.inFlight.size === 0 && Date.now() - ledger.lastChange >= QUIET_MS) {
+      return
+    }
+    await page.waitForTimeout(50)
+  }
 }
 
 /**
