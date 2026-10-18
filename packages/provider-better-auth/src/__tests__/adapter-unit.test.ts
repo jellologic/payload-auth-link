@@ -431,7 +431,7 @@ describe('adopted models: host validation on first use (issue #49)', () => {
     )
     const adapter = rawAdapter(lacking.payload, { schemaMap: { user: { slug: 'users' } } })
     const failure = await adapter
-      .findOne({ model: 'verification', where: [{ field: 'identifier', value: 'x' }] })
+      .findOne({ model: 'verification', where: [eq('identifier', 'x')] })
       .then(
         () => null,
         (error: unknown) => error
