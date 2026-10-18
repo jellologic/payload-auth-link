@@ -265,9 +265,8 @@ describe('organization endpoints (CAP-11)', () => {
     expect(invited.status).toBe(201)
     const body = (await invited.json()) as { invitation: { id: string; status: string } }
     // The outsider is already a Payload user (JIT above) so this one
-    // lands active — assert whichever status the record reports, and
-    // for the pending path use a fresh never-seen address.
-    expect(['invited', 'active']).toContain(body.invitation.status)
+    // lands active; for the pending path use a fresh never-seen address.
+    expect(body.invitation.status).toBe('active')
 
     const pending = await call('POST', '/auth-link/organizations/invite', {
       cookie: ownerCookie(),

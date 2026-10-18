@@ -601,7 +601,9 @@ export async function runRollback(
     throw new Error(`no manifest at ${manifestPath}; nothing to roll back`)
   }
   if (manifest.finalized) {
-    throw new Error('the migration is finalized; rollback is no longer possible')
+    throw new Error(
+      'the manifest is marked finalized (the finalize command writes that flag into the manifest file); rollback is no longer possible'
+    )
   }
   // A prelink manifest touches only host fields; its rollback needs no
   // ba-* target collections in the config.

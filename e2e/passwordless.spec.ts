@@ -143,7 +143,11 @@ test('Auth.js email OTP wrong codes throttle per identifier (429)', async ({ pag
       { maxRedirects: 0 }
     )
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    expect((await callback(wrong)).status()).not.toBe(429)
+    // Auth.js answers a wrong code with its error redirect — never a
+    // sign-in — and the per-identifier throttle has not tripped yet.
+    const response = await callback(wrong)
+    expect(response.status()).toBe(302)
+    expect(response.headers()['location'] ?? '').toContain('error=Verification')
   }
   // The per-identifier cap (3) now throttles even the genuine code.
   expect((await callback(mail.code)).status()).toBe(429)

@@ -32,14 +32,18 @@ Each cell is lines / functions / branches / statements.
 | `plugin/src/endpoints.ts`                             | 95 / 95 / 95 / 95 | see below |
 | `plugin/src/hooks.ts`                                 | 95 / 95 / 95 / 95 | at target |
 | `plugin/src/lifecycle.ts`                             | 95 / 95 / 95 / 95 | at target |
+| `plugin/src/mapping.ts`                               | 91 / 95 / 92 / 91 | see below |
+| `plugin/src/options.ts`                               | 92 / 95 / 90 / 92 | see below |
 | `plugin/src/organizations.ts`                         | 95 / 95 / 95 / 95 | see below |
 | `plugin/src/repository.ts`                            | 95 / 95 / 95 / 95 | at target |
 | `plugin/src/server.ts`                                | 95 / 95 / 95 / 95 | see below |
+| `plugin/src/services.ts`                              | 78 / 80 / 83 / 78 | see below |
 | `plugin/src/session.ts`                               | 95 / 95 / 95 / 95 | see below |
 | `plugin/src/strategy.ts`                              | 95 / 95 / 95 / 95 | see below |
 | `plugin/src/verified-email.ts`                        | 95 / 95 / 95 / 95 | at target |
 | `provider-authjs/src/adapter.ts`                      | 95 / 95 / 95 / 95 | see below |
 | `provider-authjs/src/callbacks.ts`                    | 95 / 95 / 95 / 95 | at target |
+| `provider-authjs/src/credentials.ts`                  | 95 / 95 / 93 / 95 | see below |
 | `provider-authjs/src/engine.ts`                       | 95 / 95 / 95 / 95 | at target |
 | `provider-authjs/src/port.ts`                         | 95 / 95 / 95 / 95 | at target |
 | `provider-better-auth/src/adapter.ts`                 | 95 / 95 / 95 / 95 | see below |
@@ -122,24 +126,68 @@ arm:
 - Line 254: `?? fallback` on a user-reload error with no `cause`. The
   repository always wraps the storage failure as the cause.
 
-### `plugin/src/organizations.ts` (branches 99.05%)
+### `plugin/src/mapping.ts` (branches 92.23%)
 
-Measured 100 / 100 / 99.05 / 100 (lines / functions / branches /
-statements). The floor is capped at 95. The
-three uncovered arms are:
+Measured 91.37 / 100 / 92.23 / 91.37 (lines / functions / branches /
+statements). Maps provider documents onto the plugin's fields. The
+uncovered arms are untyped-input narrowing on rows the plugin itself
+wrote, plus one exhaustive-switch default:
+
+- Lines 93–112 (`toIdentityRow`): a row that is not a record, a blank
+  `providerUserId`, an unparsable email, and a falsy `linkedAt`. The
+  engine's own tables always hold well-formed rows, so each arm needs
+  a document that bypassed Payload validation; the dropping arms fail
+  safe (the row is skipped with a warning).
+- Line 202: the `identities` field not being an array — same
+  narrowing kind.
+- Line 296: the `phone` spread for `input.phone === undefined`; the
+  callers that reach mapping always project a phone for sessions
+  carrying one, and `undefined` means the input type had none.
+- Line 336: `assertNever(actor)` on the actor union — exhaustive by
+  construction.
+
+### `plugin/src/options.ts` (branches 90.2%)
+
+Measured 92.5 / 100 / 90.2 / 92.15. Config validation; the uncovered
+arms are all fail-fast `InvalidConfigError`/narrowing paths whose
+sibling errors are tested, each needing a config shape no test builds:
+
+- Line 374 and 417: a stored-role value or timestamp that fails its
+  `parse`/date check — the tested configs only carry valid ones.
+- Line 421: `roleManagerRoles` resolving to an empty list (the default
+  derivation always yields at least one role).
+- Line 453: an `engine` slot left undefined where both adapters
+  declare one.
+- Lines 502–512: `roleValues` sanity arms (an unknown canonical role,
+  an empty stored value, an owner-role alias) on maps the tested
+  configs declare correctly.
+- Line 610: `assertNever` on the resolved-provider union.
+- Lines 679–683: `roleManagerRoles` empty or listing a role outside
+  `roles`.
+- Line 714: `organizations.ssoProviders` naming an unregistered
+  provider id.
+- Line 777: `emailVerifiedField` colliding with a plugin-managed
+  users-collection field.
+
+### `plugin/src/organizations.ts` (branches 98.77%)
+
+Measured 100 / 100 / 98.77 / 100 (lines / functions / branches /
+statements). The floor is capped at 95. The four uncovered arms are:
 
 - Line 178: `roleRank` returning `Infinity` for a role that is not in
   `orgRoles`. Its only caller, `mayAssignRole`, checks that both roles
   are configured before ranking them, so the unknown-role arm cannot
   run. The arm stays so that an unknown role can never outrank a
   configured one if a future caller skips that check.
-- Line 885: `refuseWhileImpersonating` when the second
-  `sessions.verify` fails. Every endpoint verifies the same session
-  just before this call, so it can fail only if the session is revoked
-  between the two reads. If that happens, the check falls back to the
-  `req.user` actor alone (`isImpersonating(req)`), which still refuses
-  an impersonated request.
-- Line 1032: `orgRoles.at(-1) ?? null` in the invite endpoint. Wiring
+- Line 907: `refuseWhileImpersonating` throwing on a `presentedActor`
+  that is absent. Every endpoint resolves the presented session just
+  before this call, so the arm needs a session that disappears between
+  the two reads; the `req.user` actor check still refuses the request
+  in that case.
+- Line 933: the list-read audit when the session re-verify fails. The
+  verify passing (and the audit landing) is the tested path; the
+  failure arm refuses the read before any audit is due.
+- Line 1066: `orgRoles.at(-1) ?? null` in the invite endpoint. Wiring
   falls back to `owner`/`admin`/`member` when `orgRoles` is empty, so
   the list is never empty at runtime.
 
@@ -147,14 +195,32 @@ three uncovered arms are:
 
 Measured 99.4 / 100 / 98.46 / 99.4. Registry misses on every provider
 walk (`firstProviderWith`, `allProvidersWith`, `revokeSession`) are
-pinned by `server-failures.test.ts`. The uncovered arms:
+pinned by `server-failures.test.ts`. The one uncovered arm:
 
-- Line 288: `wired.roleValues[role] ?? role` on a role that has no
-  stored value under `projectRolesAs: 'stored'`. Roles are canonical
-  and every configured role has a value.
-- Line 526: `sessionCookie` re-checking `capable[0]` after the length
+- Line 527: `sessionCookie` re-checking `capable[0]` after the length
   check. This is unreachable; the check is there for
   `noUncheckedIndexedAccess`.
+
+(The former second arm — `wired.roleValues[role] ?? role` on a role
+with no stored value — is covered since the round-4 audit tests.)
+
+### `plugin/src/services.ts` (branches 83.33%)
+
+Measured 78.57 / 80 / 83.33 / 78.57. Builds the port's repositories
+plus the SSO-domain gate. The gate is WIRED only when the app
+configures organizations with verified domains AND SSO providers
+(otherwise the property is spread away), so suites without that
+configuration never execute it; the organizations integration suites
+exercise the governed path through REST. Uncovered arms:
+
+- Line 64: a provider id that is not one of the configured
+  `ssoProviders` — early allow without a database read.
+- Line 67: `email === null` — an email-less session can never match a
+  verified domain, so the gate refuses it. Every session the suites
+  present to the gate carries an email claim.
+
+The rest of the file is thin plumbing around the repositories, whose
+fail-loud behavior is pinned in the repository suites it delegates to.
 
 Every fail-loud branch (revoke, revoke-all, verifyApiKey, mint and
 list refusals) and the `verifyApiKey` owner gate (GHSA-j68x: no linked
@@ -167,10 +233,9 @@ guard as `null`, never as the deprecated `email` alias) is tested in
 `session.test.ts`, as is the per-request verify memo's cache hit
 (`requestVerifiedSession`).
 
-- Line 155: registry miss in the stale-cookie warning walk.
-- Line 443: the `email` log field on the provisioning-refused path for
-  a session with no email claim. That path needs a `UserExistsError`
-  from `create`, and only an email-carrying session creates.
+- Line 156: registry miss in the stale-cookie warning walk. (The
+  former second arm — the `email` log field on the provisioning-refused
+  path — is covered since the round-4 audit tests.)
 
 ### `plugin/src/strategy.ts` (branches 95.23%)
 
@@ -204,7 +269,21 @@ real engine in `session-shape-engine.test.ts`. The remaining arms are
 session (Auth.js always passes a user, with `image`), and a sign-in
 `user` without an `id` in the jwt callback (lines 159, 163, 304).
 
-### `provider-better-auth/src/engine.ts` (branches 96.5%)
+### `provider-authjs/src/credentials.ts` (branches 93.44%)
+
+Measured 95.83 / 100 / 93.44 / 95.83. The Auth.js credentials
+provider (local sign-in through the provider, issue #54). Uncovered
+arms are the mapping guards for documents that bypassed Payload
+validation, and one repository error wrap:
+
+- Line 168: the matched user document is not a record.
+- Line 180: the matched document carries no `email`.
+- Line 245: `credentials register` returning a document without an
+  `auId` — the repository errors instead of returning such a row.
+- Line 252: the `?? cause` fallback on a repository error with no
+  cause (repository errors always carry one).
+
+### `provider-better-auth/src/engine.ts` (branches 96.62%)
 
 The `trustedProviders` check for `email-password` (safe only while
 `emailAndPassword.requireEmailVerification` stays on) and for social
@@ -216,7 +295,7 @@ providers without an explicit `true` requirement is tested in
 - Two `if#1` arms in the plugin-id and derived-model loops
   (untyped-input narrowing).
 
-### `provider-better-auth/src/adapter.ts` (branches 96.2%)
+### `provider-better-auth/src/adapter.ts` (branches 96.04%)
 
 `adapter-unit.test.ts` drives the raw adapter without Better Auth's
 adapter factory (issue #113): schema validation, malformed Local API

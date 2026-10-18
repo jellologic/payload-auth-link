@@ -402,6 +402,18 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
           : resolveSourceTables({ ...(derivedSourceMap ?? {}), ...(explicit ?? {}) })
       const found = await introspectDatabase(databaseUrl, { sourceTables })
       database = found
+      // The migration writes its database identity, run records, and
+      // finalize marker into Payload's key-value store. On a database
+      // --apply writes to (the config here installs payload-auth-link),
+      // a missing payload_kv table passes every other check and only
+      // surfaces as an apply-time refusal — flag it first.
+      if (found.payloadKvTable === false && isTargetConfig) {
+        blockers.push({
+          code: 'payload-kv-table-missing',
+          detail:
+            "this database has no 'payload_kv' table — Payload's key-value store, where the importer records the database identity, its runs, and the finalize marker; every --apply refuses until it exists. Run the app's Payload migrations (payload migrate) to create the table, then re-run the doctor; nothing was written",
+        })
+      }
       if (found.unverifiedUsers !== null && found.unverifiedUsers > 0) {
         warnings.push({
           code: 'unverified-users',

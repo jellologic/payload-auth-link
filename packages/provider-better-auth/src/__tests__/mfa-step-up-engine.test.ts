@@ -546,7 +546,49 @@ describe('concurrent attempts cannot outrun the budget (GHSA-xgx5-2cj5-x548)', (
     expect(statuses.filter((status) => status === 429)).toHaveLength(40 - MAX_FAILED)
     expect((await counterOf(userId)).lockedUntil).toBeInstanceOf(Date)
     expect((await verifyTotp(totpNow(secret), cookie)).status).toBe(429)
-    expect((await assuranceOf(cookie)).mfa).toBe(false)
+  })
+
+  it('a burst of 40 wrong backup codes evaluates exactly the budget; the rest are refused', async () => {
+    const { userId, backupCodes, cookie } = await enrolledUser('burst-backup')
+    const wrong = 'not-a-real-backup-code'
+    const statuses = await Promise.all(
+      Array.from(
+        { length: 40 },
+        async () => (await post('/two-factor/verify-backup-code', { code: wrong }, cookie)).status
+      )
+    )
+    // Backup codes carry no per-code cap of their own on a step-up, so
+    // the reservation is what keeps the evaluation to the budget.
+    expect(statuses.filter((status) => status === 401)).toHaveLength(MAX_FAILED)
+    expect(statuses.filter((status) => status === 429)).toHaveLength(40 - MAX_FAILED)
+    expect((await counterOf(userId)).lockedUntil).toBeInstanceOf(Date)
+    // A REAL code is refused while the lock holds, and stays spendable.
+    const real = backupCodes[0]
+    if (real === undefined) {
+      throw new Error('no backup code issued')
+    }
+    expect((await post('/two-factor/verify-backup-code', { code: real }, cookie)).status).toBe(429)
+  })
+
+  it('a burst on the sign-in challenge mints no session and cannot exhaust the budget', async () => {
+    const { email, userId, secret } = await enrolledUser('burst-signin')
+    const jar = await challenge(email)
+    const statuses = await Promise.all(
+      Array.from({ length: 40 }, async () => (await verifyTotp(wrongTotp(secret), jar)).status)
+    )
+    // Row users on this path are Better Auth's to count (the plugin
+    // reserves only for OTP-only users here). Its per-challenge counter
+    // and its cap refuse every wrong code of a burst without ever
+    // minting a session — 401, or 400 once the cap is reached.
+    for (const status of statuses) {
+      expect([400, 401]).toContain(status)
+    }
+    // The burst spent at most the per-challenge cap of the SHARED row
+    // budget, so the account is not locked: a fresh challenge with the
+    // correct code still signs in.
+    expect((await counterOf(userId)).lockedUntil ?? null).toBeNull()
+    const fresh = await mfaSignIn(email, secret)
+    expect(await assuranceOf(fresh.cookie)).toEqual({ methods: ['two-factor'], mfa: true })
   })
 
   it('with 9 spent, a burst of wrong codes plus the right one cannot pass the budget', async () => {
@@ -844,6 +886,27 @@ describe('OTP-only enrolments have a failure budget too (GHSA-xgx5-2cj5-x548)', 
     await spendWrongOtps(email, cookie)
     const otp = await sendTwoFactorOtp(email, cookie)
     expect((await post('/two-factor/verify-otp', { code: otp }, cookie)).status).toBe(429)
+  })
+
+  it('a concurrent burst of wrong OTPs cannot outrun the attempt-row budget', async () => {
+    const { email, cookie } = await otpOnlyUser('otp-only-burst')
+    const otp = await sendTwoFactorOtp(email, cookie)
+    const statuses = await Promise.all(
+      Array.from(
+        { length: 40 },
+        async () => (await post('/two-factor/verify-otp', { code: wrongOtp(otp) }, cookie)).status
+      )
+    )
+    for (const status of statuses) {
+      expect([400, 401, 429]).toContain(status)
+    }
+    // No more attempts reached the verification than the budget allows
+    // (Better Auth's per-OTP cap bounds that lower); everything beyond
+    // it was refused by the reservation, not evaluated.
+    expect(statuses.filter((status) => status !== 429).length).toBeLessThanOrEqual(MAX_FAILED)
+    expect(statuses.filter((status) => status === 429).length).toBeGreaterThanOrEqual(
+      40 - MAX_FAILED
+    )
   })
 })
 

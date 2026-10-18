@@ -94,6 +94,13 @@ export type DatabaseFinding = {
    * importer does NOT carry them; the doctor says so explicitly.
    */
   readonly oauthTables?: readonly string[]
+  /**
+   * Whether Payload's key-value store table (`payload_kv`) exists. The
+   * migration records its database identity, runs, and finalize marker
+   * there, so a target database without the table refuses every
+   * `--apply`.
+   */
+  readonly payloadKvTable?: boolean
 }
 
 /** Default-behaviour changes in payload-auth-link 0.7.0 that bite. */
