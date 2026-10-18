@@ -1,10 +1,11 @@
 import { expect, test, type Page } from '@playwright/test'
 import { adminContext } from './admin-session.js'
-import { gotoOwn, RETRY_ON_RESET, toggleToSignUp } from './helpers.js'
+import { gotoOwn, pageFetch, RETRY_ON_RESET, toggleToSignUp } from './helpers.js'
 import { totp } from './totp.js'
 
 /**
- * Account security (CAP-5/6): TOTP enrollment flips the session's
+ * Account security (CAP-5/6): TOTP enrollment proves nothing for the
+ * enrolling session, and a later password + TOTP sign-in flips the
  * mapped assurance to `mfa: true`; passkeys register and sign in
  * through a CDP virtual authenticator (Chromium only — WebAuthn
  * automation has no cross-browser equivalent here).
@@ -33,7 +34,9 @@ async function signOut(page: Page): Promise<void> {
   await page.context().clearCookies()
 }
 
-test('TOTP verification records a step-up and flips assurance to mfa:true', async ({ page }) => {
+test('TOTP enrollment proves nothing; a password + TOTP sign-in flips assurance to mfa:true', async ({
+  page,
+}) => {
   const email = uniqueEmail('totp')
   await signUp(page, email)
   const before = (await (
@@ -56,13 +59,38 @@ test('TOTP verification records a step-up and flips assurance to mfa:true', asyn
     throw new Error(`no TOTP secret shown (got: ${secretText ?? 'nothing'})`)
   }
   await page.getByLabel(/two-factor code/i).fill(totp(secret))
-  // The page verifies THROUGH the app's step-up route (server-side
-  // re-verification + a minted session with the vouched proof), so the
-  // session records the method.
+  // The page verifies THROUGH the app's step-up route, which forwards
+  // the provider's verdict: confirming an enrollment is not MFA proof
+  // for the enrolling session (GHSA-xgx5-2cj5-x548).
   await page.getByRole('button', { name: /verify two-factor code/i }).click()
-  await expect(page.getByRole('status')).toContainText(/two-factor authentication is on/i, {
+  await expect(page.getByRole('status')).toContainText(/sign in again with it/i, {
     timeout: 30_000,
   })
+
+  const enrolled = (await (
+    await page.request.get('/api/auth-link/session', RETRY_ON_RESET)
+  ).json()) as {
+    user: { assurance?: { mfa: unknown } }
+  }
+  expect(enrolled.user.assurance?.mfa).not.toBe(true)
+  await gotoOwn(page, '/mfa-only')
+  await expect(page.getByTestId('mfa-granted')).toHaveCount(0)
+
+  // A fresh sign-in now stops at the second factor; completing it with
+  // the enrolled TOTP is the MFA proof.
+  await signOut(page)
+  await gotoOwn(page, '/sign-in')
+  const signIn = await pageFetch(page, 'POST', '/api/auth/sign-in/email', { email, password })
+  expect(signIn.status).toBe(200)
+  expect((signIn.body as { twoFactorRedirect?: unknown } | null)?.twoFactorRedirect).toBe(true)
+  // Better Auth caps `/two-factor/*` per IP (enrollment spent some):
+  // wait a 429 out and retry with a fresh code.
+  await expect(async () => {
+    const verified = await pageFetch(page, 'POST', '/api/auth/two-factor/verify-totp', {
+      code: totp(secret),
+    })
+    expect(verified.status, JSON.stringify(verified.body)).toBe(200)
+  }).toPass({ intervals: [2_000], timeout: 30_000 })
 
   const after = (await (
     await page.request.get('/api/auth-link/session', RETRY_ON_RESET)
@@ -71,7 +99,7 @@ test('TOTP verification records a step-up and flips assurance to mfa:true', asyn
   }
   expect(after.user.assurance?.mfa).toBe(true)
 
-  // …and the same route now serves its content.
+  // …and the gated route now serves its content.
   await gotoOwn(page, '/mfa-only')
   await expect(page.getByTestId('mfa-granted')).toContainText(email, { timeout: 30_000 })
 })

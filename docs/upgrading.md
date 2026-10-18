@@ -38,6 +38,112 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
+## plugin 0.15.0 / migrate 0.9.0 / provider-better-auth 0.12.0 / provider-authjs 0.8.0 (one minor across every package)
+
+**Upgrade impact:** no database schema change; push and migrations have
+nothing to do on SQLite, Postgres or MongoDB. Better Auth's new rows
+live in its existing `verification` model, and migrate's new run facts
+live in the existing `payload-kv` records. The steps per package are
+below.
+
+### provider-better-auth: MFA follow-ups (advisory GHSA-xgx5-2cj5-x548)
+
+- **Enrolment is never proof for older sessions.** A step-up relabels a
+  session `two-factor` only with a factor enrolled (and last revealed)
+  BEFORE that session was created. The engine records when a factor
+  was issued (`/two-factor/enable`, `get-totp-uri`,
+  `generate-backup-codes`, an enrolling verify) in Better Auth's
+  `verification` model. The enrolling session, its rotated successor
+  and every session that already existed can no longer be stepped up;
+  users sign in again with the factor. Enrolments made before this
+  release have no record and keep stepping up as before.
+- **The step-up lockout holds under concurrency.** Each attempt takes a
+  slot of `accountLockout.maxFailedAttempts` before the code is checked
+  (serialized per user within a process); a burst is answered with 401s
+  up to the budget, then 429 `ACCOUNT_TEMPORARILY_LOCKED`. Several
+  server processes can still overshoot the budget slightly.
+- **Factor management needs an MFA session.** For a user who already
+  holds an MFA-grade factor, `/two-factor/get-totp-uri`,
+  `generate-backup-codes`, `enable` and `disable` answer 403
+  `TWO_FACTOR_SESSION_REQUIRED` unless the calling session is
+  MFA-proven. UIs should prompt a fresh two-factor sign-in on that
+  code.
+- **Emailed OTP is not MFA by default, on sign-in too.** Without
+  `twoFactorOtpChannelIndependent: true`, a sign-in completed with
+  `/two-factor/verify-otp` is labelled `password` (was `two-factor`),
+  and an OTP step-up never relabels. If `sendOTP` delivers over a
+  channel independent of the inbox (SMS), declare it; otherwise steer
+  MFA-gated users to TOTP.
+- **OTP-only users lock.** Users with two-factor on but no `twoFactor`
+  row get the same failure budget, stored as attempt rows in
+  `verification`.
+- **Session-token redaction is default-deny (issue #116).** Unless
+  `exposeSessionTokens: true`, `token` is stripped from every
+  session-shaped object in Better Auth's JSON, including
+  `/two-factor/verify-*` and `/admin/list-user-sessions`.
+  `/multi-session/*` and `/one-time-token/*` are unchanged.
+- **Apps that mint `createSessionFor(…, { mfaProof: true })` after a
+  Better Auth verify** must not do so after an enrolment confirmation
+  (a successful verify-totp is also how enrolment completes). The
+  reference apps' `/api/step-up` now forwards Better Auth's own
+  session instead and reports `{ ok, mfa }`.
+
+### plugin: `verifyApiKey` applies account controls (advisory GHSA-j68x-qjr5-vqv9)
+
+- `authLinkServer(payload).verifyApiKey(key)` now returns `null` when the
+  key's owner is suspended (the configured `suspendedUntilField`; a
+  lapsed suspension verifies again) or when no Payload user is linked
+  to the key's provider identity (deleted, never signed in, or refused
+  by the link gate). Each refusal logs a warning with its `reason`.
+- **Behavior change:** a key for a provider user who never signed in
+  used to verify. Link those users first (one sign-in, or import /
+  pre-link the identity).
+- **Audit (issue #116):** an impersonated verification that re-syncs an
+  already-linked target's email or phone is audited as
+  `operation: 'setEmail'` / `'setPhone'`; concurrent first touches
+  record one `linkIdentity` (from the request that wrote). Better
+  Auth's own routes called while impersonating are outside the
+  plugin's audit (see `docs/audit.md`).
+
+### migrate: run-bound seals, clone detection, one open run (advisory GHSA-xw9m-ph95-84rx)
+
+- **Seals are bound to their run.** Captured values are sealed with the
+  database id and run in the AES-GCM associated data; a value copied
+  into another manifest does not open. 0.8.0 seals still open inside
+  the signed manifest that carries them.
+- **Unsigned manifests are refused on 0.8+ databases.** `rollback` and
+  `finalize` refuse every unsigned (pre-0.6.0) manifest, whatever
+  `--allow-unsigned-manifest` says, once the database holds a
+  migration database id.
+- **Clone detection.** The database-id record also stores a Postgres
+  fingerprint (`system_identifier` + `current_database()`) and an
+  optional operator environment id (`--environment-id NAME` or
+  `PAYLOAD_AUTH_LINK_ENVIRONMENT_ID`). A mismatch refuses every
+  manifest command until `--new-database-identity` (a clone) or
+  `--database-moved` (the original, moved). Set an environment id in
+  every environment before its first `--apply` to catch SQLite, Mongo
+  and physical Postgres clones. 0.8.0 records gain both values at
+  their next `--apply`.
+- **One open run at a time.** A fresh run is refused while another open
+  run may hold rows, and `finalize` is refused while another open run
+  may hold rows. A run whose manifest is lost is closed by hand (see
+  `docs/migrating-from-payload-auth.md`).
+- **Rollback is transactional** where the adapter supports it
+  (Postgres, SQLite, Mongo replica sets); elsewhere re-running
+  completes it.
+- **`verify` supports adopt mode**, `adopt-prelink` keeps
+  `users.updated_at`, and the doctor warns
+  `adopt-session-no-authentication-method` (adopted session
+  collections need an `authenticationMethod` text field for MFA
+  provenance).
+
+### Tests (issue #116)
+
+Exact status assertions throughout, per-file coverage floors raised
+(plugin `endpoints.ts`, `server.ts`, `collections.ts`, `lifecycle.ts`;
+Auth.js `engine.ts`), and an ECONNRESET retry for idempotent e2e API
+reads.
+
 ## plugin 0.14.0 / migrate 0.8.0 / provider-better-auth 0.11.0 / provider-authjs 0.7.0 (one minor across every package)
 
 **Upgrade impact:** no database schema change; push and migrations have
