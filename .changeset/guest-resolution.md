@@ -1,6 +1,6 @@
 ---
-'@payload-auth-link/core': minor
-'@payload-auth-link/plugin': minor
+'@payload-auth-link/core': patch
+'@payload-auth-link/plugin': patch
 '@payload-auth-link/migrate': patch
 ---
 
