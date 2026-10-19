@@ -547,13 +547,25 @@ describe.skipIf(!canReachPostgres)(
       ).rejects.toThrow(/has run migrate 0\.8\.0 or later/)
       // Where unsigned manifests are still accepted (a database that
       // never ran 0.8 — simulated by hiding its id), the guards below
-      // hold on their own.
+      // hold on their own. The id record lives in the kit's own
+      // collection now (issue #139).
       const idKey = 'payload-auth-link/migrate/database-id'
-      const idRecord = await payload.kv.get(idKey)
-      if (idRecord === null) {
+      const idRecords = (await payload.find({
+        collection: 'payload-auth-link-migrations',
+        where: { key: { equals: idKey } },
+        limit: 1,
+        depth: 0,
+        overrideAccess: true,
+      })) as { docs: { id: number | string; data: unknown }[] }
+      const idRecord = idRecords.docs[0]?.data
+      if (idRecord === undefined) {
         throw new Error('the apply recorded no database id')
       }
-      await payload.kv.delete(idKey)
+      await payload.delete({
+        collection: 'payload-auth-link-migrations',
+        id: idRecords.docs[0].id,
+        overrideAccess: true,
+      })
       try {
         await expect(
           rollbackImport({
@@ -595,7 +607,11 @@ describe.skipIf(!canReachPostgres)(
           })
         ).rejects.toThrow(/manifest names none/)
       } finally {
-        await payload.kv.set(idKey, idRecord)
+        await payload.create({
+          collection: 'payload-auth-link-migrations',
+          data: { key: idKey, data: idRecord },
+          overrideAccess: true,
+        })
       }
       const still = await payload.findByID({
         collection: 'jwks',
