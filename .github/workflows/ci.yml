@@ -367,6 +367,14 @@ jobs:
       - run: bunx vitest run packages/plugin/src/__tests__/integration-organizations-governance.test.ts
         env:
           ORG_PG_URL: postgres://postgres:payload@localhost:5433/pal_orgs
+      # Adopt sign-up on Postgres (issue #135): transaction isolation is
+      # where SQLite in memory hides nested-write bugs.
+      - run: psql -h localhost -p 5433 -U postgres -c "CREATE DATABASE pal_adopt"
+        env:
+          PGPASSWORD: payload
+      - run: bunx vitest run packages/provider-better-auth/src/__tests__/integration-adopt-signup.test.ts
+        env:
+          ADOPT_PG_URL: postgres://postgres:payload@localhost:5433/pal_adopt
 
   release-check:
     runs-on: ubuntu-latest
