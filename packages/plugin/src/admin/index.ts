@@ -4,3 +4,5 @@
  */
 export { IdentityRowLabel } from './IdentityRowLabel.js'
 export { default as ProviderLoginView } from './views/ProviderLoginView.js'
+export { default as ProviderForgotPasswordView } from './views/ProviderForgotPasswordView.js'
+export { default as ProviderResetPasswordView } from './views/ProviderResetPasswordView.js'

@@ -19,34 +19,50 @@ function baseOptions() {
 
 function buildConfigShape(
   options: Parameters<typeof authLink>[0],
-  routes?: { readonly api?: string; readonly admin?: string }
+  routes?: { readonly api?: string; readonly admin?: string },
+  admin?: Record<string, unknown>
 ): {
   loginViewRegistered: boolean
   viewPath: string | undefined
   exportName: string | undefined
   clientProps: unknown
+  forgotView: { exportName?: string | undefined; clientProps?: unknown } | undefined
+  resetView: { exportName?: string | undefined; clientProps?: unknown } | undefined
 } {
   const plugin = authLink(options)
   const config = plugin({
     collections: [],
-    admin: { user: 'users' },
+    admin: { user: 'users', ...(admin ?? {}) },
     ...(routes === undefined ? {} : { routes }),
   } as never) as {
     admin?: {
       components?: {
-        views?: {
-          login?: { Component?: { path?: string; exportName?: string; clientProps?: unknown } }
-        }
+        views?: Record<
+          string,
+          { Component?: { path?: string; exportName?: string; clientProps?: unknown } }
+        >
       }
     }
   }
-  const login = config.admin?.components?.views?.login
+  const views = config.admin?.components?.views ?? {}
+  const login = views['login']
   return {
     loginViewRegistered: login !== undefined,
     viewPath: login?.Component?.path,
     exportName: login?.Component?.exportName,
     clientProps: login?.Component?.clientProps,
+    forgotView: shapeOf(views['forgot']),
+    resetView: shapeOf(views['reset']),
   }
+}
+
+function shapeOf(
+  view: { Component?: { exportName?: string; clientProps?: unknown } } | undefined
+): { exportName?: string | undefined; clientProps?: unknown } | undefined {
+  if (view === undefined) {
+    return undefined
+  }
+  return { exportName: view.Component?.exportName, clientProps: view.Component?.clientProps }
 }
 
 describe('provider-backed admin login view (issue #55)', () => {
@@ -78,6 +94,27 @@ describe('provider-backed admin login view (issue #55)', () => {
     })
   })
 
+  it('registers the provider forgot/reset views alongside it (issue #121)', () => {
+    const shape = buildConfigShape({ ...baseOptions(), admin: { loginView: 'provider' } })
+    expect(shape.forgotView).toEqual({
+      exportName: 'ProviderForgotPasswordView',
+      clientProps: {
+        authBase: '/api/auth',
+        forgotEndpoint: '/api/users/forgot-password',
+        adminRoute: '/admin',
+        resetRoute: '/admin/reset',
+      },
+    })
+    expect(shape.resetView).toEqual({
+      exportName: 'ProviderResetPasswordView',
+      clientProps: {
+        authBase: '/api/auth',
+        resetEndpoint: '/api/users/reset-password',
+        adminRoute: '/admin',
+      },
+    })
+  })
+
   it('derives the view paths from Payload routes, the users slug, and plugin options', () => {
     const shape = buildConfigShape(
       {
@@ -85,13 +122,28 @@ describe('provider-backed admin login view (issue #55)', () => {
         usersCollection: 'operators',
         admin: { loginView: 'provider', signInPath: '/login', authBase: '/backend/auth' },
       },
-      { api: '/backend', admin: '/cms' }
+      { api: '/backend', admin: '/cms' },
+      { routes: { reset: '/password-reset' } }
     )
     expect(shape.clientProps).toEqual({
       authBase: '/backend/auth',
       loginEndpoint: '/backend/operators/login',
       adminRoute: '/cms',
       signInPath: '/login',
+    })
+    // #121: the forgot view's email redirect follows the customized
+    // `admin.routes.reset`, and both endpoints follow `routes.api` and
+    // the users slug.
+    expect(shape.forgotView?.clientProps).toEqual({
+      authBase: '/backend/auth',
+      forgotEndpoint: '/backend/operators/forgot-password',
+      adminRoute: '/cms',
+      resetRoute: '/cms/password-reset',
+    })
+    expect(shape.resetView?.clientProps).toEqual({
+      authBase: '/backend/auth',
+      resetEndpoint: '/backend/operators/reset-password',
+      adminRoute: '/cms',
     })
   })
 
@@ -106,9 +158,11 @@ describe('provider-backed admin login view (issue #55)', () => {
     }
   })
 
-  it('leaves Payload local login untouched by default', () => {
+  it('leaves Payload local login, forgot, and reset untouched by default', () => {
     const shape = buildConfigShape(baseOptions())
     expect(shape.loginViewRegistered).toBe(false)
+    expect(shape.forgotView).toBeUndefined()
+    expect(shape.resetView).toBeUndefined()
   })
 
   it('wires the option through wireOptions', () => {

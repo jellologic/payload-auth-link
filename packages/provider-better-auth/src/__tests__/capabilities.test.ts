@@ -550,7 +550,8 @@ describe('CAP-6 two-factor + requireMfaForRoles', () => {
     if (buildCookie === undefined) {
       throw new Error('the better-auth provider exposes no sessionCookie')
     }
-    const stepUpCookie = await buildCookie(created.value.token)
+    // The signed VALUE under the engine's cookie name (#125).
+    const stepUpCookie = `${engine.sessionCookieNames[0] ?? ''}=${await buildCookie(created.value.token)}`
     const portStepUp = (
       await engine.provider.getSession(new Headers({ cookie: stepUpCookie }))
     )._unsafeUnwrap()

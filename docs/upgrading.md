@@ -38,6 +38,57 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
+## plugin 0.16.0 / core 0.12.0 / provider-better-auth 0.13.0 / migrate 0.11.0 (the #60 journey: adopt sign-ups, hook marker, admin reset views, cookie value)
+
+**Upgrade impact:** no database schema change — the plugin's injected
+users fields are unchanged, and every engine `ba-*` collection keeps
+its shape. The users collection's hook array gains one
+`beforeChange` entry (the roles normalizer), which is the whole
+`snapshots/schema/plugin-users.json` diff; push and migrations have
+nothing to do on SQLite, Postgres, or MongoDB. Three behaviour
+changes below are visible to code; one is visible to admins.
+
+1. **Adopt mode links post-cutover sign-ups automatically (issue
+   #124).** Under `idStrategy: 'payload'` with the user model adopted,
+   the engine writes each new user's row under its own user id AS the
+   document id; the JIT link now resolves that row by id and writes
+   the same identity row `adopt-prelink` writes for pre-cutover users
+   — no email-ownership proof is needed, because nobody but the engine
+   can mint a document with that id. Before this, every sign-up after
+   the cutover kept a valid provider session with `req.user` null and
+   no role. The port declares the fact
+   (`providerUserIdsAreDocumentIds`); engines minting their own row
+   ids never resolve by id. A new create hook on the users collection
+   also normalizes the roles field — a scalar `role` (Better Auth's
+   additionalField) stores as the array shape, and an absent value
+   gets the configured default role. **Client-visible:** through the
+   engine, Better Auth's own sign-in endpoint answers a wrong password
+   with **400 `INVALID_EMAIL_OR_PASSWORD`**; payload-auth's local
+   strategy answered 401 — clients branching on 401 must branch on
+   400 (the plugin's own endpoints keep their documented statuses).
+2. **`authLinkServer.sessionCookie(token)` returns the signed VALUE,
+   `token.<signature>` (issue #125).** The TSDoc always said so, but
+   the implementation returned a whole `Set-Cookie` line
+   (`name=value; Path=/; …`), which never verifies when injected into
+   a request `Cookie` header. Inject the return value as
+   `name=<value>`; the full line for responses is unchanged and stays
+   on `createSessionFor(...).setCookie` (the provider port's new
+   `sessionCookieLine`). A real-engine round trip pins both shapes.
+3. **Every host write the migration kit makes carries a context
+   marker (issue #123).** `payload.update`/`create`/`delete` on host
+   documents during `--apply`, `adopt-prelink --apply`, and rollback
+   restores now pass `context: { [MIGRATION_CONTEXT]: { op: … } }`
+   (exported from `@payload-auth-link/migrate`). Host
+   `beforeChange`/`afterChange` hooks should skip outward side effects
+   (CRM, email, webhooks, indexing) when the key is present — the
+   doctor now warns when the users collection declares such hooks.
+4. **Provider forgot/reset admin views (issue #121).** With
+   `admin: { loginView: 'provider' }`, the admin panel now ships
+   `ProviderForgotPasswordView` and `ProviderResetPasswordView`
+   driving the provider's own reset flow — payload-auth apps lose
+   nothing on migration. Payload's local forgot/reset stays refused
+   for linked documents (GHSA-f4hj) by design.
+
 ## plugin 0.15.0 / migrate 0.9.0 / provider-better-auth 0.12.0 / provider-authjs 0.8.0 (one minor across every package)
 
 **Upgrade impact:** no database schema change; push and migrations have

@@ -180,8 +180,11 @@ export type AuthLinkServer = {
    */
   readonly verifyApiKey: (key: string) => Promise<ApiKeyVerification | null>
   /**
-   * The provider's signed session cookie for one session token
-   * (`token.<signature>` — Better Auth only accepts the signed form).
+   * The provider's signed session cookie VALUE for one session token,
+   * `token.<signature>` — inject it into a request's `Cookie` header
+   * (Better Auth only accepts the signed form). It is the full
+   * `Set-Cookie` line minus the cookie name and attributes; to SET a
+   * cookie on a response, use `createSessionFor(...).setCookie`.
    * Async: the provider resolves its engine's secret on first use.
    */
   readonly sessionCookie: (token: string) => Promise<string>
@@ -356,9 +359,9 @@ function buildAuthLinkServer(wired: WiredOptions, payload: Payload): AuthLinkSer
           token: created.value.token,
           expiresAt: storedExpiresAt ?? expiresAt,
           setCookie:
-            provider.sessionCookie === undefined
+            provider.sessionCookieLine === undefined
               ? undefined
-              : await provider.sessionCookie(created.value.token),
+              : await provider.sessionCookieLine(created.value.token),
         }
       }
       throw new ServerSessionUnsupportedError(String(userId), 'server-session-create')

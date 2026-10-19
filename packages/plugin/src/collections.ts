@@ -254,6 +254,34 @@ function linkableMarkerHook(wired: WiredOptions): CollectionBeforeChangeHook {
 }
 
 /**
+ * An engine-created user arrives with the provider's own role value —
+ * Better Auth's `role` additionalField, a plain string — or with none
+ * at all, and a hasMany select stores neither (issue #124: every
+ * post-cutover adopt sign-up held zero role rows). Normalize on
+ * CREATE: a string becomes a one-element array, an absent or empty
+ * value gets the configured default role (its stored form, matching
+ * how the plugin writes the field). Updates are untouched — existing
+ * users keep their roles, and a manager clearing them stays possible.
+ */
+function defaultRolesHook(wired: WiredOptions): CollectionBeforeChangeHook {
+  const rolesField = wired.config.map.rolesField
+  const defaultRole = wired.roleValues[wired.config.defaultRole] ?? wired.config.defaultRole
+  return ({ data, operation }) => {
+    if (operation !== 'create') {
+      return
+    }
+    const current: unknown = data[rolesField]
+    if (typeof current === 'string' && current !== '') {
+      data[rolesField] = [current]
+      return
+    }
+    if (current === undefined || current === null || current === '') {
+      data[rolesField] = [defaultRole]
+    }
+  }
+}
+
+/**
  * Email-ownership proof never survives an unproven email change: when
  * a document's email changes in a write that is neither the plugin's
  * provider-email resync (which re-grants the proof for the new,
@@ -1134,7 +1162,7 @@ function createUsersCollection(wired: WiredOptions, strategy: AuthStrategy): Col
         accountControlsGateHook(wired),
       ],
       beforeLogin: [accountControlsLoginHook(wired)],
-      beforeChange: [linkableMarkerHook(wired)],
+      beforeChange: [defaultRolesHook(wired), linkableMarkerHook(wired)],
       // First, so it sees the document as read (GHSA-mjvh): the
       // authentication-time veto for Payload's own credentials.
       afterRead: [localCredentialGateHook(wired)],
@@ -1311,7 +1339,11 @@ export function applyUsersCollection(
               accountControlsGateHook(wired),
             ],
             beforeLogin: [...(existing.hooks?.beforeLogin ?? []), accountControlsLoginHook(wired)],
-            beforeChange: [...(existing.hooks?.beforeChange ?? []), linkableMarkerHook(wired)],
+            beforeChange: [
+              defaultRolesHook(wired),
+              ...(existing.hooks?.beforeChange ?? []),
+              linkableMarkerHook(wired),
+            ],
             // First, so it sees the document before host hooks reshape
             // it (GHSA-mjvh): the authentication-time veto for
             // Payload's own credentials.

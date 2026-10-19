@@ -31,6 +31,44 @@ import type { FieldWrite, ImportManifest } from './types.js'
  * `users_role` with new row ids; their values and order are intact).
  */
 
+/**
+ * The `req.context` key the kit marks every host write with (issue
+ * #123). The kit's host writes run through the HOST app's Local API, so
+ * the users collection's `beforeChange` / `afterChange` hooks fire for
+ * each one — `from-payload-auth --apply`, `adopt-prelink --apply`, and
+ * every rollback restore alike. A host hook that triggers outward side
+ * effects (a CRM sync, an email, a webhook, re-indexing) skips them for
+ * migration writes by checking this key:
+ *
+ * ```ts
+ * import { MIGRATION_CONTEXT } from '@payload-auth-link/migrate'
+ *
+ * // in a users-collection hook:
+ * if (req.context?.[MIGRATION_CONTEXT] !== undefined) return
+ * ```
+ */
+export const MIGRATION_CONTEXT = 'payloadAuthLinkMigration'
+
+/** The migration command a marked host write belongs to. */
+export type MigrationContextOp = 'adopt-prelink' | 'import' | 'rollback'
+
+/** The value the kit stores under {@link MIGRATION_CONTEXT} in `req.context`. */
+export type MigrationContextMarker = {
+  readonly op: MigrationContextOp
+}
+
+/**
+ * The `context` argument every Local API host write passes. Payload
+ * merges it into `req.context`, where the host hooks read it (see
+ * {@link MIGRATION_CONTEXT}); the adapter writes beside them
+ * (`payload.db.updateOne`) run no hooks and carry no marker.
+ */
+export function migrationContextOf(op: MigrationContextOp): {
+  readonly context: { readonly [MIGRATION_CONTEXT]: MigrationContextMarker }
+} {
+  return { context: { [MIGRATION_CONTEXT]: { op } } }
+}
+
 /** Seals written by migrate 0.5–0.8.0: bound to the entry only. */
 const legacySealPrefix = 'v1.'
 /** Seals written since 0.9.0: bound to the entry AND its database and run. */
@@ -351,6 +389,10 @@ export function transactionReq(
  * captured value is written back through the adapter right after, in
  * the same transaction. Hosts and caches that key on `updated_at`
  * see the document as unchanged by the migration tooling.
+ *
+ * The Local API write carries {@link migrationContextOf the migration
+ * context marker} (`op` names the command) so host hooks can skip
+ * outward side effects; the adapter's timestamp write runs no hooks.
  */
 export async function updateKeepingTimestamp(
   payload: Payload,
@@ -359,6 +401,8 @@ export async function updateKeepingTimestamp(
     readonly id: string | number
     readonly data: Record<string, unknown>
     readonly updatedAt: unknown
+    /** The command this write belongs to (see {@link MIGRATION_CONTEXT}). */
+    readonly op: MigrationContextOp
   }
 ): Promise<void> {
   await inTransaction(payload, async (transactionID) => {
@@ -367,6 +411,7 @@ export async function updateKeepingTimestamp(
       id: options.id,
       data: options.data,
       overrideAccess: true,
+      ...migrationContextOf(options.op),
       ...transactionReq(transactionID),
     })
     if (typeof options.updatedAt === 'string' && options.updatedAt !== '') {
@@ -382,9 +427,40 @@ export async function updateKeepingTimestamp(
 }
 
 /**
+ * Write host fields through the Local API with the
+ * {@link MIGRATION_CONTEXT} marker (`op` names the command) so host
+ * hooks can skip outward side effects, letting Payload stamp
+ * `updatedAt` as usual — the importer records the captured value and
+ * rollback restores it. This is the importer's host pass
+ * (`from-payload-auth --apply`); the pre-link keeps the timestamp and
+ * goes through {@link updateKeepingTimestamp} instead.
+ */
+export async function updateHostFields(
+  payload: Payload,
+  options: {
+    readonly collection: string
+    readonly id: string | number
+    readonly data: Record<string, unknown>
+    /** The command this write belongs to (see {@link MIGRATION_CONTEXT}). */
+    readonly op: MigrationContextOp
+  }
+): Promise<void> {
+  await payload.update({
+    collection: options.collection,
+    id: options.id,
+    data: options.data,
+    overrideAccess: true,
+    ...migrationContextOf(options.op),
+  })
+}
+
+/**
  * Restore every captured field, one adapter write per document so
  * `updatedAt` lands exactly as captured. Returns the number of field
- * values restored.
+ * values restored. The child-row restore goes through the Local API,
+ * so it carries the migration context marker (`op: 'rollback'`) — the
+ * same skip key the forward writes carry; the adapter write beside it
+ * runs no hooks.
  */
 export async function restoreCaptured(
   payload: Payload,
@@ -445,6 +521,7 @@ export async function restoreCaptured(
         id: entry.id,
         data: childRows,
         overrideAccess: true,
+        ...migrationContextOf('rollback'),
         ...transaction(),
       })
     }

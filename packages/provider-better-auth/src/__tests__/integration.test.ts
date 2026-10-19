@@ -590,22 +590,36 @@ describe('server-session cookie (#54, #72)', () => {
     if (build === undefined) {
       throw new Error('the better-auth provider exposes no sessionCookie')
     }
-    const setCookie = await build(created.value.token)
+    const value = await build(created.value.token)
     // The signed form BA reads back with getSignedCookie: the raw
-    // token alone resolves NO session (issue #72's original bug).
-    const name = engine.sessionCookieNames[0] ?? ''
-    expect(setCookie.startsWith(`${name}=${created.value.token}.`)).toBe(true)
-    expect(setCookie).toContain('HttpOnly')
-    expect(setCookie).toContain('SameSite=Lax')
+    // token alone resolves NO session (issue #72's original bug). The
+    // shape is the bare VALUE `token.<signature>` (#125): injectable
+    // into a request `Cookie` header, no name, no attributes.
+    expect(value.startsWith(`${created.value.token}.`)).toBe(true)
+    expect(value).not.toContain(';')
+    expect(value).not.toContain(`${engine.sessionCookieNames[0] ?? ''}=`)
     // The round trip: BA's own getSession resolves the user from our
-    // cookie alone, with matching attributes from the real context.
+    // cookie pair alone — the injected value under the engine's own
+    // cookie name, exactly how a bridge builds the header (#125).
+    const name = engine.sessionCookieNames[0] ?? ''
     const session = await engine.auth.api.getSession({
-      headers: new Headers({ cookie: setCookie }),
+      headers: new Headers({ cookie: `${name}=${value}` }),
     })
     const user = (session as { user?: { email?: string } | null } | null)?.user
     expect(user?.email).toBe('cookie-roundtrip@test.dev')
     const sessionToken = (session as { session?: { token?: string } | null } | null)?.session?.token
     expect(sessionToken).toBe(created.value.token)
+
+    // The full `Set-Cookie` LINE stays available for responses
+    // (#125): `createSessionFor().setCookie` returns it.
+    const line = engine.provider.sessionCookieLine
+    if (line === undefined) {
+      throw new Error('the better-auth provider exposes no sessionCookieLine')
+    }
+    const setCookie = await line(created.value.token)
+    expect(setCookie.startsWith(`${name}=${created.value.token}.`)).toBe(true)
+    expect(setCookie).toContain('HttpOnly')
+    expect(setCookie).toContain('SameSite=Lax')
   })
 
   it('an unsigned cookie resolves no session', async () => {

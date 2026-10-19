@@ -391,6 +391,18 @@ export interface UserRepository {
   readonly findByPhone?:
     ((phone: PhoneNumber) => ResultAsync<UserRecord | null, RepositoryError>) | undefined
   findByProviderIdentity(ref: ProviderIdentityRef): ResultAsync<UserRecord | null, RepositoryError>
+  /**
+   * Resolve the user document the PROVIDER itself owns by id (issue
+   * #124): under an engine whose {@link IdentityProviderPort.providerUserIdsAreDocumentIds}
+   * is true (adopt mode, `idStrategy: 'payload'`), the row the engine
+   * created for a sign-up carries the provider user id AS the document
+   * id, so a document found this way is the provider's own row — never
+   * a third party's — and linking it needs no email proof.
+   * Optional: repositories wired without such a provider omit it, and
+   * the linking use case then never resolves by id.
+   */
+  readonly findByProviderOwnedId?:
+    ((ref: ProviderIdentityRef) => ResultAsync<UserRecord | null, RepositoryError>) | undefined
   create(input: NewUser): ResultAsync<UserRecord, RepositoryError | UserExistsError>
   linkIdentity(userId: UserId, ref: ProviderIdentityRef): ResultAsync<UserRecord, RepositoryError>
   /**
@@ -580,13 +592,38 @@ export interface IdentityProviderPort {
   readonly verifyApiKey?:
     ((key: string) => ResultAsync<ApiKeyVerification | null, ProviderError>) | undefined
   /**
-   * The provider's correctly signed session cookie for one session
-   * token — `authLinkServer.sessionCookie`. Signing is async (the
-   * provider resolves its engine's secret on first use). Optional:
+   * The provider's correctly signed session cookie VALUE for one
+   * session token, `token.<signature>` — `authLinkServer.sessionCookie`.
+   * Inject it into a request's `Cookie` header; the provider accepts
+   * only the signed form. Signing is async (the provider resolves its
+   * engine's secret on first use). For the full `Set-Cookie` line to
+   * set on a response, use {@link IdentityProviderPort.sessionCookieLine}
+   * or `authLinkServer.createSessionFor(...).setCookie`. Optional:
    * providers whose session transport is not a cookie (stateless
    * Auth.js) omit it.
    */
   readonly sessionCookie?: ((token: string) => Promise<string>) | undefined
+  /**
+   * The full `Set-Cookie` line for one session token — cookie name,
+   * signed value, and the provider's write attributes (Path, HttpOnly,
+   * SameSite, Secure, Domain, Max-Age). This is what
+   * `authLinkServer.createSessionFor(...)` returns as `setCookie`.
+   * Optional: providers without `sessionCookie` omit it too.
+   */
+  readonly sessionCookieLine?: ((token: string) => Promise<string>) | undefined
+  /**
+   * The provider's user ids ARE the document ids of the mapped users
+   * collection (issue #124): adopt mode with `idStrategy: 'payload'`,
+   * where the engine creates user rows in the host Payload collection
+   * using its own user id as the document id. A document resolved by
+   * that id is the provider's own row — the JIT link may attach to it
+   * without an email-ownership proof, because nobody but the engine
+   * can mint a document with that id (Payload ids are server-generated;
+   * client-supplied ids are refused). Optional: engines that mint
+   * their own row ids (the default `idStrategy: 'ba'`) omit it, and
+   * id-based linking never runs for them.
+   */
+  readonly providerUserIdsAreDocumentIds?: boolean | undefined
   /**
    * Enumerate every session id presented by this request beyond the
    * active session (CAP-13b multi-session logout): the ids are

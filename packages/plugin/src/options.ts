@@ -77,10 +77,16 @@ export type AuthLinkPluginOptions = {
    * Admin panel surface (issue #55): `'provider'` swaps Payload's
    * local login view for the provider-backed one — email+password
    * through the provider's sign-in endpoint plus the break-glass
-   * local fallback form (unlinked operator accounts only). The view
-   * is registered as a Payload custom view; the import map must
+   * local fallback form (unlinked operator accounts only). The views
+   * are registered as Payload custom views; the import map must
    * include `@payload-auth-link/plugin/admin#ProviderLoginView` (the
-   * doctor checks for it).
+   * doctor checks for it). Since #121 the flag also swaps the admin
+   * forgot/reset screens for the provider-backed ones
+   * (`ProviderForgotPasswordView` at /admin/forgot,
+   * `ProviderResetPasswordView` at /admin/reset), so linked accounts
+   * — whose local password flow is refused (GHSA-f4hj) — have an
+   * admin-panel path back in; the break-glass local forms stay on
+   * every view for unlinked operators.
    */
   readonly admin?:
     | {

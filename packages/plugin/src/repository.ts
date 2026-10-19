@@ -1,4 +1,4 @@
-import { err, ok, ResultAsync } from 'neverthrow'
+import { err, ok, okAsync, ResultAsync } from 'neverthrow'
 import {
   isRecord,
   RepositoryError,
@@ -10,6 +10,7 @@ import {
   type LoggerPort,
   type NewUser,
   type PhoneNumber,
+  type ProviderId,
   type ProviderIdentityRef,
   type Role,
   type UserId,
@@ -51,6 +52,14 @@ export type PayloadUserRepositoryDeps = {
    * Payload API key enabled before the link.
    */
   readonly keepLocalCredentialsOnLink?: boolean | undefined
+  /**
+   * Whether one provider's user ids ARE the users-collection document
+   * ids (adopt mode, `idStrategy: 'payload'` — the port fact
+   * `providerUserIdsAreDocumentIds`). Only a provider answering true
+   * gets the `findByProviderOwnedId` id-linking path (issue #124);
+   * absent or false, JIT linking never resolves by document id.
+   */
+  readonly providerOwnedUserIds?: ((providerId: ProviderId) => boolean) | undefined
   /**
    * Observer for the users-document writes this repository actually
    * performs — called once per successful write, never for a no-op
@@ -177,12 +186,15 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
       (cause) => new RepositoryError(operation, { cause })
     ).map((found) => firstResultRecord(found, ctx))
 
+  const findById = (id: string): ResultAsync<UserRecord | null, RepositoryError> =>
+    ResultAsync.fromPromise<unknown, RepositoryError>(
+      deps.payload.findByID({ collection, id, depth: deps.depth, overrideAccess: true }),
+      (cause) => new RepositoryError('findById', { cause })
+    ).map((doc) => singleResultRecord(doc, ctx))
+
   return {
     findById(id: UserId): ResultAsync<UserRecord | null, RepositoryError> {
-      return ResultAsync.fromPromise<unknown, RepositoryError>(
-        deps.payload.findByID({ collection, id, depth: deps.depth, overrideAccess: true }),
-        (cause) => new RepositoryError('findById', { cause })
-      ).map((doc) => singleResultRecord(doc, ctx))
+      return findById(String(id))
     },
 
     findByEmail(email: Email): ResultAsync<UserRecord | null, RepositoryError> {
@@ -255,6 +267,22 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
         ],
       })
     },
+
+    ...(deps.providerOwnedUserIds === undefined
+      ? {}
+      : {
+          // Adopt mode (issue #124): the engine writes user rows with
+          // its own user id AS the Payload document id, so the row a
+          // fresh sign-up creates resolves by id and only by id. The
+          // gate is per provider (see the dep): a provider whose
+          // engine mints its own row ids never resolves here.
+          findByProviderOwnedId(ref: ProviderIdentityRef) {
+            if (deps.providerOwnedUserIds?.(ref.providerId) !== true) {
+              return okAsync(null)
+            }
+            return findById(String(ref.providerUserId))
+          },
+        }),
 
     create(input: NewUser): ResultAsync<UserRecord, RepositoryError | UserExistsError> {
       return ResultAsync.fromPromise<unknown, RepositoryError | UserExistsError>(

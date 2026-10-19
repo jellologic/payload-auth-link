@@ -123,14 +123,14 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
   const auditLogger =
     wired.onAudit === null ? wired.logger : composeAuditLogger(wired.logger, wired.onAudit)
   const plugin: Plugin = (config: Config) => {
-    // #55/#72: the provider-backed admin login view. Registered as a
-    // custom view; the import map must include
-    // `@payload-auth-link/plugin/admin#ProviderLoginView` — hence the
-    // explicit `exportName` (a bare `path` would resolve to the
-    // module's non-existent default export). The doctor checks for it.
-    // The view's provider form posts to a cookie-transport provider's
-    // sign-in endpoint, so registering it without one would ship a
-    // form that always 404s — refuse the combination at config time.
+    // #55/#72/#121: the provider-backed admin views (login, forgot,
+    // reset). Registered as custom views; the import map must include
+    // the `@payload-auth-link/plugin/admin#Provider…View` exports —
+    // hence the explicit `exportName` (a bare `path` would resolve to
+    // the module's non-existent default export). The doctor checks for
+    // the login one. The provider forms post to a cookie-transport
+    // provider's endpoints, so registering them without one would ship
+    // forms that always 404 — refuse the combination at config time.
     if (
       wired.adminProviderLoginView &&
       ![...wired.registry.ids()].some((id) => {
@@ -143,6 +143,25 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
       )
     }
     const apiRoute = config.routes?.api ?? '/api'
+    const adminRoute = config.routes?.admin ?? '/admin'
+    // #121: the provider reset view's route — Payload's `routes.admin`
+    // joined with `admin.routes.reset` (defaults '/admin' + '/reset').
+    // The keyed registration below follows a customized
+    // `admin.routes.reset` automatically; the forgot view points the
+    // reset email's `redirectTo` at this same path.
+    const resetRoute = `${adminRoute.endsWith('/') ? adminRoute.slice(0, -1) : adminRoute}${
+      config.admin?.routes?.reset ?? '/reset'
+    }`
+    // The import map entry every provider view shares: one module,
+    // named exports (a bare `path` would resolve to the module's
+    // non-existent default export).
+    const providerView = (exportName: string, clientProps: Record<string, unknown>) => ({
+      Component: {
+        path: '@payload-auth-link/plugin/admin',
+        exportName,
+        clientProps,
+      },
+    })
     const adminConfig = wired.adminProviderLoginView
       ? {
           ...config.admin,
@@ -150,20 +169,29 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
             ...config.admin?.components,
             views: {
               ...config.admin?.components?.views,
-              login: {
-                Component: {
-                  path: '@payload-auth-link/plugin/admin',
-                  exportName: 'ProviderLoginView',
-                  // Derived from the Payload config (custom `routes`,
-                  // users slug) and plugin options, never hard-coded.
-                  clientProps: {
-                    authBase: wired.adminAuthBase,
-                    loginEndpoint: `${apiRoute}/${wired.config.map.usersCollection}/login`,
-                    adminRoute: config.routes?.admin ?? '/admin',
-                    signInPath: wired.adminSignInPath,
-                  },
-                },
-              },
+              login: providerView('ProviderLoginView', {
+                authBase: wired.adminAuthBase,
+                loginEndpoint: `${apiRoute}/${wired.config.map.usersCollection}/login`,
+                adminRoute,
+                signInPath: wired.adminSignInPath,
+              }),
+              // #121: the provider forgot/reset views. The `forgot`
+              // view replaces Payload's built-in /admin/forgot screen;
+              // the `reset` view serves /admin/reset (Better Auth's
+              // email link lands there with `?token=`). The keyed
+              // entries ride `admin.routes.forgot`/`admin.routes.reset`,
+              // so a customized route path keeps working.
+              forgot: providerView('ProviderForgotPasswordView', {
+                authBase: wired.adminAuthBase,
+                forgotEndpoint: `${apiRoute}/${wired.config.map.usersCollection}/forgot-password`,
+                adminRoute,
+                resetRoute,
+              }),
+              reset: providerView('ProviderResetPasswordView', {
+                authBase: wired.adminAuthBase,
+                resetEndpoint: `${apiRoute}/${wired.config.map.usersCollection}/reset-password`,
+                adminRoute,
+              }),
             },
           },
         }

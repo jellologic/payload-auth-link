@@ -118,6 +118,35 @@ describe('doctor units', () => {
     expect(off.finding?.notes.join(' ')).toContain('better-auth')
   })
 
+  test('users analysis: declared collection hooks warn with the context-marker skip (#123)', () => {
+    const hooked = analyzeUsersCollection(
+      {
+        slug: 'users',
+        auth: true,
+        fields: [{ name: 'email', type: 'email' }],
+        hooks: { beforeChange: [() => {}], afterChange: [] },
+      },
+      'roles'
+    )
+    const warning = hooked.issues.find((issue) => issue.code === 'users-collection-hooks')
+    expect(warning?.detail).toContain('once per user')
+    expect(warning?.detail).toContain('payloadAuthLinkMigration')
+    expect(warning?.detail).toContain('MIGRATION_CONTEXT')
+    // An empty hooks array (payload-auth's builder emits those)
+    // declares nothing, so no warning.
+    expect(
+      analyzeUsersCollection(
+        {
+          slug: 'users',
+          auth: true,
+          fields: [],
+          hooks: { beforeChange: [], afterChange: [] },
+        },
+        'roles'
+      ).issues.map((issue) => issue.code)
+    ).not.toContain('users-collection-hooks')
+  })
+
   test('users analysis: adopt mode with the local strategy ON is flagged; the note names no source plugin (#110, #113)', () => {
     const collection = { slug: 'users', auth: true, fields: [{ name: 'email', type: 'email' }] }
     const adopt = analyzeUsersCollection(collection, 'roles', { adoptTarget: true })
@@ -162,6 +191,38 @@ describe('doctor units', () => {
         srcDir: dir,
       })
       expect(report.warnings.map((entry) => entry.code)).toContain('generic-oauth-providers')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('the users-collection-hooks issue is a warning with the marker as the skip (#123)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'doctor-hooks-'))
+    try {
+      const report = await runDoctor({
+        configPath: new URL('../__fixtures__/doctor-fixture/payload.config.ts', import.meta.url)
+          .pathname,
+        srcDir: dir,
+        databaseUrl: '',
+        loadModule: () =>
+          Promise.resolve({
+            custom: { hasBetterAuthPlugin: true },
+            collections: [
+              {
+                slug: 'users',
+                auth: true,
+                fields: [{ name: 'email', type: 'email' }],
+                hooks: { beforeChange: [() => {}] },
+              },
+            ],
+          }),
+      })
+      const codes = report.warnings.map((issue) => issue.code)
+      expect(codes).toContain('users-collection-hooks')
+      expect(report.blockers.map((issue) => issue.code)).not.toContain('users-collection-hooks')
+      expect(
+        report.warnings.find((issue) => issue.code === 'users-collection-hooks')?.detail
+      ).toContain('payloadAuthLinkMigration')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

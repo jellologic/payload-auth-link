@@ -329,6 +329,27 @@ you diff the table across the pre-link, diff those three columns.
 `rollback --manifest` restores every captured field, `updated_at`
 included.
 
+Because every write rides the Local API, your users collection's
+`beforeChange` / `afterChange` hooks run for each of them — once per
+user, for `from-payload-auth --apply`, `adopt-prelink --apply`, and
+every `rollback` restore alike. Hooks that trigger OUTWARD side
+effects (a CRM sync, an email, a webhook, re-indexing) should skip
+migration writes: the kit marks every host write in the request
+context under the `payloadAuthLinkMigration` key, exported as
+`MIGRATION_CONTEXT` from `@payload-auth-link/migrate` (the value's
+`op` names the command), so one guard covers all three commands:
+
+```ts
+import { MIGRATION_CONTEXT } from '@payload-auth-link/migrate'
+
+// in a users-collection hook:
+if (req.context?.[MIGRATION_CONTEXT] !== undefined) return
+```
+
+The doctor reports declared users-collection hooks as the
+`users-collection-hooks` warning so this is on the checklist before
+`--apply`, not discovered in your CRM afterwards.
+
 If the host users collection keeps versions (`versions: { drafts:
 false }` is common in payload-auth apps), every host write the kit
 makes — `--apply`, `adopt-prelink --apply`, and a `rollback` restore —
@@ -698,6 +719,15 @@ The copy is verbatim except for these normalisations:
   user it writes (identity, roles, linking proof): the forward write
   goes through the Local API. `rollback` restores the captured value
   exactly; a second `--apply` writes nothing and bumps nothing.
+- **Host hooks run on every migration write**: `--apply`'s host field
+  writes and every `rollback` restore go through the Local API, so the
+  users collection's `beforeChange` / `afterChange` hooks fire once
+  per user. Skip outward side effects (CRM, email, webhooks,
+  indexing) for migration writes by checking
+  `req.context[MIGRATION_CONTEXT]` — the `payloadAuthLinkMigration`
+  context key the kit marks every host write with, exported from
+  `@payload-auth-link/migrate` ("What the pre-link changes", adopt
+  section, has the guard).
 - **Host versions grow with every write**: if the host users
   collection keeps versions (`versions: { drafts: false }` is common
   in payload-auth apps), each host write appends a version row per

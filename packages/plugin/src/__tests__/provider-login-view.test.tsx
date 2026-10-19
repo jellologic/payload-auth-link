@@ -19,6 +19,13 @@ describe('provider login view (#55, #72)', () => {
     expect(screen.getByRole('button', { name: 'Sign in locally' })).toBeDefined()
   })
 
+  it('links to the provider forgot-password view (#121)', () => {
+    render(<ProviderLoginView adminRoute="/cms" authBase="/api/auth" />)
+    expect(
+      screen.getByRole('link', { name: 'Reset it through the provider' }).getAttribute('href')
+    ).toBe('/cms/forgot')
+  })
+
   it('the provider form posts to Better Auth’s email sign-in endpoint (issue #72: /api/auth/sign-in was never a route)', async () => {
     const fetchMock = vi.fn(() => Promise.resolve(new Response(null, { status: 200 })))
     vi.stubGlobal('fetch', fetchMock)

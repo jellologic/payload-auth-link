@@ -582,6 +582,11 @@ export function createBetterAuthEngine<
       plugins: pluginIds,
       oauth: hasSocialOauth,
       events,
+      // Issue #124: in adopt mode with Payload-owned ids, the engine
+      // writes user rows under its own user id AS the document id —
+      // the JIT link may resolve the row by that id.
+      providerUserIdsAreDocumentIds:
+        input.idStrategy === 'payload' && input.schemaMap?.user !== undefined,
       ...(input.legacySessions === undefined ? {} : { legacySessions: input.legacySessions }),
     }
   )

@@ -19,7 +19,9 @@ import { Button } from '@payloadcms/ui'
  *
  * Registered by the plugin when `admin: { loginView: 'provider' }` —
  * Payload renders it at /admin/login via the import map
- * (`@payload-auth-link/plugin/admin#ProviderLoginView`).
+ * (`@payload-auth-link/plugin/admin#ProviderLoginView`). The same flag
+ * registers the provider forgot/reset views (issue #121); the view
+ * links to the forgot one below the sign-in forms.
  */
 export type ProviderLoginViewProps = {
   /**
@@ -162,6 +164,9 @@ const ProviderLoginView: React.FC<ProviderLoginViewProps> = ({
     <p>
       Social-only accounts (no provider password) sign in through the{' '}
       <a href={signInPath}>app sign-in page</a> and return here — the session cookie carries over.
+    </p>
+    <p>
+      Forgot your password? <a href={`${adminRoute}/forgot`}>Reset it through the provider</a>.
     </p>
     <SignInForm
       adminRoute={adminRoute}
