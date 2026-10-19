@@ -192,6 +192,13 @@ export type SessionUser = {
    * for a step-up sign-in instead of a flat "forbidden".
    */
   readonly mfaRequired?: true | undefined
+  /**
+   * Present (`true`) only for an anonymous (guest) session resolved to
+   * its own adopted document (`admitAnonymous`, issue #126) — the
+   * access-control signal that this caller is a guest, whatever roles
+   * the document carries.
+   */
+  readonly anonymous?: true | undefined
 }
 
 // Derived from the `authMethods` tuple in ports.ts (single source,
@@ -344,6 +351,8 @@ export function parseSessionUser(
     // Only the literal `true` survives: anything else is not a
     // step-up signal (absent and malformed alike degrade to absent).
     ...(value.mfaRequired === true ? { mfaRequired: true as const } : {}),
+    // Same literal-true contract for the guest marker (issue #126).
+    ...(value.anonymous === true ? { anonymous: true as const } : {}),
   }
 }
 

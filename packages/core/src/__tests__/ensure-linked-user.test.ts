@@ -904,3 +904,85 @@ describe('ensureLinkedUser adopt mode: provider-owned document ids (issue #124)'
     }
   })
 })
+
+describe('ensureLinkedUser anonymous guests (admitAnonymous, issue #126)', () => {
+  function guestProfile(providerUserId: string): ProviderProfile {
+    return {
+      email: email('guest@example.com'),
+      emailVerified: false,
+      identity: { email: null, phone: null, anonymous: true },
+      name: null,
+      image: null,
+      providerUserId,
+    }
+  }
+
+  it('an anonymous session refuses by default (D3), even over an owned id', async () => {
+    const users = new OwnedIdFakeUserRepository()
+    const now = systemClock().now()
+    users.seedOwned({
+      id: defineUserId('ba-1'),
+      email: email('guest@example.com'),
+      roles: [role('user')],
+      identities: [],
+      createdAt: now,
+      updatedAt: now,
+    })
+    const result = await ensureLinkedUser(
+      { users, logger: nullLogger() },
+      { providerId, profile: guestProfile('ba-1'), defaultRoles: [role('user')] }
+    )
+    expect(result.isErr()).toBe(true)
+    if (result.isErr()) {
+      expect(result.error.message).toMatch(/never link/)
+    }
+  })
+
+  it('the opt-in links the guest to its OWN adopted document and writes the identity row', async () => {
+    const users = new OwnedIdFakeUserRepository()
+    const now = systemClock().now()
+    users.seedOwned({
+      id: defineUserId('ba-1'),
+      email: email('guest@example.com'),
+      roles: [role('user')],
+      identities: [],
+      createdAt: now,
+      updatedAt: now,
+    })
+    const result = await ensureLinkedUser(
+      { users, logger: nullLogger() },
+      {
+        providerId,
+        profile: guestProfile('ba-1'),
+        defaultRoles: [role('user')],
+        admitAnonymous: true,
+      }
+    )
+    expect(result.isOk()).toBe(true)
+    if (result.isOk()) {
+      expect(result.value.id).toBe('ba-1')
+      expect(result.value.identities).toHaveLength(1)
+      expect(result.value.identities[0]?.providerUserId).toBe('ba-1')
+    }
+  })
+
+  it('a guest whose row is gone is refused, never provisioned', async () => {
+    const users = new OwnedIdFakeUserRepository()
+    const result = await ensureLinkedUser(
+      { users, logger: nullLogger() },
+      {
+        providerId,
+        profile: guestProfile('ba-404'),
+        defaultRoles: [role('user')],
+        admitAnonymous: true,
+      }
+    )
+    expect(result.isErr()).toBe(true)
+    if (result.isErr()) {
+      expect(result.error.message).toMatch(/no document/)
+    }
+    // Nothing was created.
+    const lookup = await users.findByEmail(email('guest@example.com'))
+    expect(lookup.isOk() && lookup.value === null).toBe(true)
+  })
+})

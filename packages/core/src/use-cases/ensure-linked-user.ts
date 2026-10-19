@@ -35,6 +35,19 @@ export type EnsureLinkedUserInput = {
    * pre-PORT-3 behavior for callers that omit it.
    */
   readonly linkingPolicy?: LinkingPolicy | undefined
+  /**
+   * Let an anonymous (guest) session resolve to its OWN document
+   * (issue #126). Meaningful only when the provider declares
+   * `providerUserIdsAreDocumentIds` (adopt mode): the guest's row was
+   * created by the engine in the host collection, so the id link
+   * resolves and attaches it — the app's `created_by`-style guest data
+   * stays reachable through Payload access control. The link writes
+   * the identity row; the document's own roles govern the projection.
+   * Without the flag the D3 refusal stands: anonymous never links,
+   * never provisions. There is no anonymous provisioning either way —
+   * a guest whose row does not exist is refused, not created.
+   */
+  readonly admitAnonymous?: boolean | undefined
 }
 
 type EnsureLinkedUserError =
@@ -137,8 +150,12 @@ export function ensureLinkedUser(
   const policy = input.linkingPolicy ?? defaultLinkingPolicy
   // D3: anonymous identities never link, under any policy — checked
   // before the already-linked fast path so an anonymous session can
-  // never ride a previously linked identity.
-  if (input.profile.identity.anonymous) {
+  // never ride a previously linked identity. THE OPT-IN (issue #126)
+  // relaxes the refusal, not the fast path's meaning: admitAnonymous
+  // is wired only for adopted user collections, where an anonymous
+  // session's identity row could only have been written for that same
+  // guest's own document.
+  if (input.profile.identity.anonymous && input.admitAnonymous !== true) {
     deps.logger.warn('link refused: anonymous identity never links', {
       providerId: input.providerId,
     })
@@ -209,6 +226,44 @@ export function ensureLinkedUser(
         .andThen(syncPhone)
     }
     if (emailClaim === null) {
+      // An identity with no email claim: a PHONE-only identity decides
+      // by policy; an ANONYMOUS one never reaches the email path at
+      // all. Both resolve by provider-owned id first (below).
+      if (input.profile.identity.anonymous) {
+        // Opt-in adopt mode (issue #126): the guest's row was written
+        // by the engine under this id. Resolve and link it; a missing
+        // row is refused, never provisioned.
+        const findByProviderOwnedId = deps.users.findByProviderOwnedId
+        if (findByProviderOwnedId === undefined) {
+          deps.logger.warn('anonymous link refused: repository resolves no provider-owned ids', {
+            providerId: input.providerId,
+          })
+          return errAsync(
+            new UnverifiedIdentityError(
+              'anonymous guest resolves to no document: the wired provider does not own document ids (adopt mode only)'
+            )
+          )
+        }
+        return findByProviderOwnedId.call(deps.users, ref).andThen((owned) => {
+          if (!owned) {
+            deps.logger.warn('anonymous link refused: the guest document does not exist', {
+              providerId: input.providerId,
+            })
+            return errAsync(
+              new UnverifiedIdentityError(
+                'anonymous guest resolves to no document (admitAnonymous is on; the guest row is gone)'
+              )
+            )
+          }
+          return deps.users.linkIdentity(owned.id, ref).map((user) => {
+            deps.logger.info('guest linked to its adopted document', {
+              userId: user.id,
+              providerId: input.providerId,
+            })
+            return user
+          })
+        })
+      }
       // Phone-only identity: the declared policy decides. The default
       // refuses exactly as the pre-PORT-3 gate did; the opt-in branch
       // links by verified phone to an existing user only.

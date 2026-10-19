@@ -79,6 +79,22 @@ describe('provider-backed admin login view (issue #55)', () => {
     ).toThrow(/register a provider that mints cookie sessions/)
   })
 
+  it('refuses admitAnonymous without a provider-owned-id port (issue #126)', () => {
+    // Guests resolve to their own document only where the engine wrote
+    // it (adopt mode); anything else refuses at config time.
+    expect(() => buildConfigShape({ ...baseOptions(), admitAnonymous: true })).toThrow(
+      /admitAnonymous/
+    )
+  })
+
+  it('accepts admitAnonymous with a provider-owned-id port (issue #126)', () => {
+    const { provider } = createStubProvider()
+    const owned = { ...provider, providerUserIdsAreDocumentIds: true as const }
+    expect(() =>
+      buildConfigShape({ ...baseOptions(), providers: [owned], admitAnonymous: true })
+    ).not.toThrow()
+  })
+
   it('registers the custom login view when admin.loginView is provider', () => {
     const shape = buildConfigShape({ ...baseOptions(), admin: { loginView: 'provider' } })
     expect(shape.loginViewRegistered).toBe(true)

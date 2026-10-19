@@ -142,6 +142,21 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
         `admin.loginView: 'provider' renders the cookie-transport provider's sign-in form (${wired.adminAuthBase}/sign-in/email) — register a provider that mints cookie sessions (better-auth), or keep the default login view`
       )
     }
+    // Issue #126: guests resolve to their own document only where the
+    // engine wrote it — adopt mode with the user model adopted. The
+    // provider port's fact is the wiring proof; anything else refuses
+    // at config time instead of refusing (or mis-linking) at runtime.
+    if (
+      wired.admitAnonymous &&
+      ![...wired.registry.ids()].some((id) => {
+        const required = wired.registry.require(id)
+        return required.isOk() && required.value.providerUserIdsAreDocumentIds === true
+      })
+    ) {
+      throw new InvalidConfigError(
+        "admitAnonymous: true resolves a guest session to its own document, which only exists where the engine writes user rows into the mapped users collection — run the better-auth engine with schemaMap.user and idStrategy: 'payload' (adopt mode), or drop the option"
+      )
+    }
     const apiRoute = config.routes?.api ?? '/api'
     const adminRoute = config.routes?.admin ?? '/admin'
     // #121: the provider reset view's route — Payload's `routes.admin`

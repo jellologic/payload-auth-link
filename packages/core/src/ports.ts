@@ -157,6 +157,12 @@ export type Session = {
   readonly userId: UserId
   readonly providerId: ProviderId
   readonly expiresAt: Date
+  /**
+   * Present (`true`) only for an anonymous (guest) session resolved to
+   * its own adopted document (`admitAnonymous`, issue #126). Access
+   * functions read it off `req.user.anonymous` to tell guests apart.
+   */
+  readonly anonymous?: true | undefined
   /** How the session was proven, when the provider reported it. */
   readonly assurance?: SessionAssurance | undefined
   /**

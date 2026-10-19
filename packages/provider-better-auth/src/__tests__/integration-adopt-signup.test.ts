@@ -26,6 +26,7 @@ import {
   type SanitizedConfig,
 } from 'payload'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { anonymous } from 'better-auth/plugins'
 import { createBetterAuthEngine } from '../engine.js'
 import { authLink } from '@payload-auth-link/plugin'
 
@@ -49,10 +50,12 @@ const engine = createBetterAuthEngine({
     verification: { slug: 'verifications' },
   },
   idStrategy: 'payload',
+  autoDeclare: true,
   options: {
     baseURL: ORIGIN,
     trustedOrigins: [ORIGIN],
     secret: SECRET,
+    plugins: [anonymous()],
     rateLimit: { enabled: false },
     emailAndPassword: { enabled: true, requireEmailVerification: false },
   },
@@ -107,6 +110,7 @@ beforeAll(async () => {
           { name: 'emailVerified', type: 'checkbox', defaultValue: false },
           { name: 'name', type: 'text' },
           { name: 'image', type: 'text' },
+          { name: 'isAnonymous', type: 'checkbox', defaultValue: false },
           {
             name: 'role',
             type: 'select',
@@ -157,6 +161,8 @@ beforeAll(async () => {
         // payload-auth's users table carried the role column: adopt
         // setups point the plugin at it (the field name below).
         rolesField: 'role',
+        // Issue #126: guests resolve to their own document.
+        admitAnonymous: true,
         providers: [engine.provider],
       }),
     ],
@@ -236,5 +242,47 @@ describe('adopt mode: a post-cutover sign-up resolves through the plugin (issue 
       overrideAccess: true,
     })
     expect(created?.['role']).toEqual(['staff'])
+  })
+
+  it('an anonymous guest resolves to its own document with the marker (admitAnonymous, #126)', async () => {
+    const guest = await engine.auth.handler(
+      authRequest('/sign-in/anonymous', { method: 'POST', body: {} })
+    )
+    expect(guest.status, `guest sign-in: ${await guest.clone().text()}`).toBe(200)
+    const cookie = sessionCookieOf(guest)
+
+    const session = await handleEndpoints({
+      config,
+      request: new Request(`${ORIGIN}/api/auth-link/session`, { headers: { cookie } }),
+    })
+    expect(session.status).toBe(200)
+    const body = (await session.json()) as {
+      user: { id: string; roles?: string[]; email: string; anonymous?: boolean } | null
+    }
+    // The guest is a USER now — own document, roles, and the marker
+    // access functions key on.
+    expect(body.user).not.toBeNull()
+    expect(body.user?.anonymous).toBe(true)
+    expect(body.user?.roles).toEqual(['user'])
+    const doc = await payload?.findByID({ collection: 'users', id: body.user?.id ?? '' })
+    expect(doc?.['isAnonymous']).toBe(true)
+    expect(doc?.['identities']).toHaveLength(1)
+  })
+
+  it('a named user carries no anonymous marker', async () => {
+    const signIn = await engine.auth.handler(
+      authRequest('/sign-in/email', {
+        method: 'POST',
+        body: { email: 'late@example.com', password: 'correct-horse' },
+      })
+    )
+    const session = await handleEndpoints({
+      config,
+      request: new Request(`${ORIGIN}/api/auth-link/session`, {
+        headers: { cookie: sessionCookieOf(signIn) },
+      }),
+    })
+    const body = (await session.json()) as { user: { anonymous?: boolean } | null }
+    expect(body.user?.anonymous).toBeUndefined()
   })
 })

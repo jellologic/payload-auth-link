@@ -2094,6 +2094,34 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
+## plugin 0.17.0 / core 0.13.0 (round 7: guests resolve in adopt mode — `admitAnonymous`)
+
+**Upgrade impact:** no database schema change; no collection-shape
+change. Defaults are untouched — anonymous sessions keep refusing
+unless an adopt target opts in.
+
+Anonymous (guest) sessions never resolved to `req.user` (D3) — but
+payload-auth RESOLVED them, and apps built on it let guests own data
+through that document (`created_by`-style columns). After a switch,
+every `payload.auth({ headers })` call read `null` for a guest:
+ownership checks failed, guest-owned records went unreachable through
+Payload access control, and per-user rate limits fell back to IP.
+
+- **Adopt targets opt back in** with `authLink({ admitAnonymous:
+true })`: each guest session resolves to its OWN host document — the
+  row the engine wrote — and the JIT link writes the same identity row
+  `adopt-prelink` writes. The projection carries `anonymous: true` (on
+  `req.user` and on the session endpoint's JSON) so access functions
+  can tell guests apart; the document's own roles govern `roles`.
+- **Wiring enforces adopt mode**: the option is refused unless a
+  registered provider's engine writes user rows into the mapped users
+  collection (`schemaMap.user` + `idStrategy: 'payload'`).
+- **Never provisioned**: a guest whose row does not exist is refused,
+  not created — import mode keeps the D3 refusal outright, and guest
+  data there must key outside Payload.
+- Un-upgraded guests (BA's `upgrade-anonymous` flow) keep becoming
+  normal linked users through the usual verified-identity path.
+
 ## plugin 0.16.0 / core 0.12.0 / provider-better-auth 0.13.0 / migrate 0.11.0 (the #60 journey: adopt sign-ups, hook marker, admin reset views, cookie value)
 
 **Upgrade impact:** no database schema change — the plugin's injected

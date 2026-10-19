@@ -51,6 +51,9 @@ export function createServices(wired: WiredOptions, payload: Payload) {
     clock: wired.clock,
     defaultRoles: [wired.config.defaultRole],
     linkingPolicy: wired.linkingPolicy,
+    // Issue #126: wired only for adopt mode (the config gate proves
+    // it); guests resolve to their own adopted document.
+    admitAnonymous: wired.admitAnonymous,
     admitChannels: wired.admitChannels,
     // CAP-8b (#113): impersonated provisioning reaches `onAudit` too.
     audit: {

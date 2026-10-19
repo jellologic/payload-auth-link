@@ -28,7 +28,10 @@ const baseOptions: AuthLinkPluginOptions = {
   defaultRole: 'user',
   roleManagerRoles: ['admin'],
   reqUser: 'document',
-  providers: [stub.provider],
+  providers: [{ ...stub.provider, providerUserIdsAreDocumentIds: true }],
+  // Issue #126: the guest marker's document-mode copy is exercised by
+  // the anonymous test below; harmless for every named session.
+  admitAnonymous: true,
   logger: nullLogger(),
 }
 
@@ -138,6 +141,59 @@ describe('reqUser: document (issue #57)', () => {
     expect(result?.user?.roles).toEqual(['user'])
     expect(result?.user?.collection).toBe('users')
     expect(result?.user?._strategy).toBe('auth-link')
+  })
+
+  it('an anonymous session projects the guest marker onto the document (#126)', async () => {
+    const services = createServices(wireOptions(baseOptions), payload)
+    const email = parseEmail('guest@test.dev')
+    if (email.isErr()) {
+      throw new Error('unreachable')
+    }
+    const role = parseRole('user')
+    if (role.isErr()) {
+      throw new Error('unreachable')
+    }
+    const created = await services.users.create({
+      email: email.value,
+      roles: [role.value],
+    })
+    if (!created.isOk()) {
+      throw new Error(created.error.message)
+    }
+    // Pre-linked with the document id as the provider user id, exactly
+    // what `admitAnonymous` writes on a guest's first resolution.
+    const linked = await services.users.linkIdentity(created.value.id, {
+      providerId: stub.provider.id,
+      providerUserId: String(created.value.id),
+    })
+    expect(linked.isOk()).toBe(true)
+    const strategy = payload.config.collections
+      .find((collection) => collection.slug === 'users')
+      ?.auth?.strategies?.find((candidate) => candidate.name === 'auth-link')
+    const headers = new Headers()
+    headers.set(
+      'cookie',
+      stub.issue({
+        sessionId: 'doc-guest',
+        providerUserId: String(created.value.id),
+        email: 'guest@test.dev',
+        anonymous: true,
+        expiresAt: new Date(Date.now() + 3_600_000),
+      })
+    )
+    const args = {
+      headers,
+      payload,
+      req: { context: {} } as unknown as import('payload').PayloadRequest,
+    }
+    const result = (await strategy?.authenticate(args)) as {
+      user?: Record<string, unknown>
+    } | null
+    expect(result?.user).not.toBeNull()
+    expect(result?.user?.anonymous).toBe(true)
+    // The document's own roles govern — the create hook gave this one
+    // the default; access functions distinguish guests by the marker.
+    expect(result?.user?.roles).toEqual(['user'])
   })
 
   it("a session's active organization rides on the document shape (#110)", async () => {

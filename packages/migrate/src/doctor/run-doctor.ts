@@ -75,6 +75,11 @@ export const behaviourChanges: readonly BehaviourChange[] = [
     detail:
       "req.user carries { id, collection, email, roles } plus assurance/actor fields, not the full document. Access functions reading other fields see undefined — audit them or opt into reqUser: 'document' (#57).",
   },
+  {
+    title: 'Anonymous sessions refuse unless the adopt target opts in',
+    detail:
+      'Anonymous (guest) sessions never resolve to req.user by design (D3) — payload-auth resolved them. ADOPT targets can restore the old behavior with authLink({ admitAnonymous: true }): each guest then resolves to their own host document, with req.user.anonymous set so access functions can tell guests apart. Import mode has no opt-in; guests own no Payload documents there, so key their data outside Payload.',
+  },
 ]
 
 /**
@@ -466,7 +471,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
         } else {
           warnings.push({
             code: 'anonymous-users',
-            detail: `${anonymous} anonymous user(s) (Better Auth anonymous plugin): they import with isAnonymous only when the target engine declares anonymous(), and the plugin refuses anonymous sessions by design — they never JIT-link to a Payload document`,
+            detail: `${anonymous} anonymous user(s) (Better Auth anonymous plugin): they import with isAnonymous only when the target engine declares anonymous(), and the plugin refuses anonymous sessions by design — they never JIT-link to a Payload document. ADOPT targets can opt out of that refusal with the plugin's \`admitAnonymous: true\` (each guest then resolves to their own host document, with \`req.user.anonymous\` set); import mode has no such option — guests stay refused, so any guest-owned data must keep a non-Payload key`,
           })
         }
       }
