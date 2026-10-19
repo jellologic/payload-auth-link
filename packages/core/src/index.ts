@@ -6,6 +6,7 @@
  * never imports a framework.
  */
 export { assertNever } from './assert.js'
+export { engineCreateMarker } from './context.js'
 export { assertUniqueSlugs, denyAllAccess, resolveSlugs } from './collections.js'
 export type { DenyAllAccess } from './collections.js'
 export {

@@ -2094,6 +2094,33 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
+## migrate 0.12.0 / plugin 0.16.2 / core 0.12.2 / provider-better-auth 0.13.2 (round 8: the kit refuses external KV adapters; adopt identities at creation)
+
+**Upgrade impact:** no database schema change; no collection-shape
+change. One BREAKING refusal for a specific configuration, one
+behavior addition in adopt mode.
+
+1. **The kit refuses a non-database key-value adapter (issue #132).**
+   The migration records its database identity, run records, and the
+   finalize marker through `payload.kv` — with a third-party adapter
+   (Redis, …) those records live OUTSIDE the database they describe: a
+   restore, branch, or clone stops carrying them, and eviction can
+   lose the finalize marker after finalize. Every kit command and the
+   doctor (blocker `kv-adapter-unsupported`) now refuse this
+   configuration — switch the app to the default database-backed
+   key-value store (`databaseKVAdapter`, or no `kv` entry) for the
+   migration window. Apps whose database-backed `payload_kv` table is
+   absent keep seeing `payload-kv-table-missing` (unchanged); with an
+   external adapter the doctor names that instead.
+2. **Adopt mode writes the identity row at creation (issue #132).**
+   The engine stamps its user creates, and the plugin writes the
+   identities row immediately where the provider owns document ids —
+   so a sign-up that never completes sign-in (an unverified email) is
+   still linked and `migrate verify` stays meaningful after cutover
+   (it used to report a permanent "user carries no better-auth
+   identity" mismatch for exactly those users). Operator-created
+   documents never gain a synthetic identity.
+
 ## plugin 0.17.0 / core 0.13.0 (round 7: guests resolve in adopt mode — `admitAnonymous`)
 
 **Upgrade impact:** no database schema change; no collection-shape
