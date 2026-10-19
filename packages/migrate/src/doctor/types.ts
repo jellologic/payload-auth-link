@@ -101,6 +101,12 @@ export type DatabaseFinding = {
    * `--apply`.
    */
   readonly payloadKvTable?: boolean
+  /**
+   * Whether the kit's own record store table
+   * ('payload_auth_link_migrations', the plugin-declared collection)
+   * exists (issue #139).
+   */
+  readonly migrationRecordsTable?: boolean
 }
 
 /** Default-behaviour changes in payload-auth-link 0.7.0 that bite. */

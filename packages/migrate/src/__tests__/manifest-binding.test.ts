@@ -348,8 +348,10 @@ describe('finalize markers: any kind, fail closed (GHSA-crrr-3cg7-f6jw case 2)',
           allowUnsignedDeletes: true,
           allowPlaintextRestore: true,
         })
-      ).rejects.toThrow(/key-value store/)
-      await expect(assertNoFinalizeMarker(payload, 'rollback')).rejects.toThrow(/key-value store/)
+      ).rejects.toThrow(/migration-records store/)
+      await expect(assertNoFinalizeMarker(payload, 'rollback')).rejects.toThrow(
+        /migration-records store/
+      )
     }
   })
 })

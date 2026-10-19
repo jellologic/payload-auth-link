@@ -168,6 +168,13 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
   async function prepareTarget(on: Client): Promise<void> {
     await on.query(adoptSchemaSql)
     await on.query(targetSchemaSql)
+    // The kit's own record store (issue #139): the plugin declares the
+    // collection; a push-based app gets the table here.
+    await on.query(`CREATE TABLE IF NOT EXISTS payload_auth_link_migrations (
+      id serial PRIMARY KEY,
+      key varchar NOT NULL UNIQUE,
+      data jsonb NOT NULL
+    )`)
     await on.query(`
       ALTER TABLE users ADD COLUMN banned boolean DEFAULT false;
       ALTER TABLE users ADD COLUMN ban_reason varchar;
@@ -202,14 +209,14 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
       manifestPath,
     ])
     expect(result.code).toBe(1)
-    expect(result.out).toContain("declares no 'banned' field")
+    expect(result.out, JSON.stringify(result.out)).toContain("declares no 'banned' field")
     expect(result.err).toContain('ABORT')
     expect((await query<{ n: number }>('SELECT count(*)::int AS n FROM ba_users'))[0]?.n).toBe(0)
     expect(existsSync(manifestPath)).toBe(false)
     // The aborted fresh run is closed, not left open (issue #116).
     expect(
       await query<{ state: string }>(
-        "SELECT data->>'state' AS state FROM payload_kv WHERE key LIKE 'payload-auth-link/migrate/runs/%'"
+        "SELECT data->>'state' AS state FROM payload_auth_link_migrations WHERE key LIKE 'payload-auth-link/migrate/runs/%'"
       )
     ).toEqual([{ state: 'rolled-back' }])
     await expectNoLingeringConnections()
@@ -231,7 +238,8 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
     await expectNoLingeringConnections()
   })
 
-  test('the doctor blocks on a target database whose payload_kv table is missing (#119)', async () => {
+  test('the doctor blocks on a target database with nowhere to record kit runs (#119, #139)', async () => {
+    await client.query('ALTER TABLE payload_auth_link_migrations RENAME TO records_hidden')
     await client.query('ALTER TABLE payload_kv RENAME TO payload_kv_hidden')
     try {
       const refused = await run([
@@ -244,16 +252,28 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
       ])
       expect(refused.code).toBe(1)
       const report = JSON.parse(refused.out) as { blockers: { code: string }[] }
-      expect(report.blockers.map((issue) => issue.code)).toContain('payload-kv-table-missing')
+      expect(report.blockers.map((issue) => issue.code)).toContain(
+        'migration-records-store-missing'
+      )
+      await expectNoLingeringConnections()
+    } finally {
+      await client.query('ALTER TABLE records_hidden RENAME TO payload_auth_link_migrations')
+      await client.query('ALTER TABLE payload_kv_hidden RENAME TO payload_kv')
+    }
+    // With the store in place the blocker is gone — even when the
+    // legacy payload_kv table stays hidden (issue #139: the kit's own
+    // collection is the store).
+    await client.query('ALTER TABLE payload_kv RENAME TO payload_kv_hidden')
+    try {
+      const result = await run(['doctor', '--config', basicConfig, '--database-url', url, '--json'])
+      const report = JSON.parse(result.out) as { blockers: { code: string }[] }
+      expect(report.blockers.map((issue) => issue.code)).not.toContain(
+        'migration-records-store-missing'
+      )
       await expectNoLingeringConnections()
     } finally {
       await client.query('ALTER TABLE payload_kv_hidden RENAME TO payload_kv')
     }
-    // With the store in place the blocker is gone.
-    const result = await run(['doctor', '--config', basicConfig, '--database-url', url, '--json'])
-    const report = JSON.parse(result.out) as { blockers: { code: string }[] }
-    expect(report.blockers.map((issue) => issue.code)).not.toContain('payload-kv-table-missing')
-    await expectNoLingeringConnections()
   })
 
   test('from-payload-auth dry run prints the plan and terminates', async () => {
@@ -331,11 +351,11 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
     expect(manifest.mac).toMatch(/^v2\./)
     // Bound to THIS database and run (GHSA-crrr-3cg7-f6jw).
     const ids = await query<{ data: { id: string } }>(
-      "SELECT data FROM payload_kv WHERE key = 'payload-auth-link/migrate/database-id'"
+      "SELECT data FROM payload_auth_link_migrations WHERE key = 'payload-auth-link/migrate/database-id'"
     )
     expect(manifest.databaseId).toBe(ids[0]?.data.id)
     const runs = await query<{ data: { state: string } }>(
-      'SELECT data FROM payload_kv WHERE key = $1',
+      'SELECT data FROM payload_auth_link_migrations WHERE key = $1',
       [`payload-auth-link/migrate/runs/${String(manifest.runId)}`]
     )
     expect(runs[0]?.data.state).toBe('open')
@@ -589,16 +609,16 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
     }
   })
 
-  test('an unreadable key-value store fails closed: nothing is deleted on the word of the file', async () => {
+  test('an unreadable record store fails closed: nothing is deleted on the word of the file', async () => {
     const signed = readFileSync(manifestPath, 'utf8')
     const manifest = readManifestFile()
     const baBefore = await query('SELECT count(*)::int AS n FROM ba_users')
-    await client.query('ALTER TABLE payload_kv RENAME TO payload_kv_hidden')
+    await client.query('ALTER TABLE payload_auth_link_migrations RENAME TO records_hidden')
     try {
       // Signed, or unsigned with every opt-in: both refused.
       const genuine = await run(['rollback', '--config', adminConfig, '--manifest', manifestPath])
       expect(genuine.code).toBe(1)
-      expect(genuine.err).toContain('key-value store')
+      expect(genuine.err).toContain('migration-records store')
       writeFileSync(
         manifestPath,
         JSON.stringify({
@@ -620,11 +640,11 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
         '--allow-plaintext-restore',
       ])
       expect(unsigned.code).toBe(1)
-      expect(unsigned.err).toContain('key-value store')
+      expect(unsigned.err).toContain('migration-records store')
       expect(await query('SELECT count(*)::int AS n FROM ba_users')).toEqual(baBefore)
       await expectNoLingeringConnections()
     } finally {
-      await client.query('ALTER TABLE payload_kv_hidden RENAME TO payload_kv')
+      await client.query('ALTER TABLE records_hidden RENAME TO payload_auth_link_migrations')
       writeFileSync(manifestPath, signed, { mode: 0o600 })
     }
   })
@@ -682,7 +702,7 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
       expect(await query('SELECT count(*)::int AS n FROM ba_users')).toEqual(baBefore)
       expect(
         await query(
-          "SELECT key FROM payload_kv WHERE key LIKE 'payload-auth-link/migrate/finalized/%'"
+          "SELECT key FROM payload_auth_link_migrations WHERE key LIKE 'payload-auth-link/migrate/finalized/%'"
         )
       ).toEqual([])
       // The values themselves are sealed for THIS run: the copy could
@@ -708,14 +728,14 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
     try {
       await prepareTarget(cloneClient)
       const records = await query<{ key: string; data: unknown }>(
-        "SELECT key, data FROM payload_kv WHERE key LIKE 'payload-auth-link/migrate/%'"
+        "SELECT key, data FROM payload_auth_link_migrations WHERE key LIKE 'payload-auth-link/migrate/%'"
       )
       expect(records.length).toBeGreaterThan(1)
       for (const record of records) {
-        await cloneClient.query('INSERT INTO payload_kv (key, data) VALUES ($1, $2)', [
-          record.key,
-          JSON.stringify(record.data),
-        ])
+        await cloneClient.query(
+          'INSERT INTO payload_auth_link_migrations (key, data) VALUES ($1, $2)',
+          [record.key, JSON.stringify(record.data)]
+        )
       }
       process.env.PAL_MIGRATE_CLONE_URL = cloneUrl
       writeFileSync(replay, readFileSync(manifestPath, 'utf8'), { mode: 0o600 })
@@ -753,7 +773,7 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
       expect(reidentified.err).toContain('different database')
       const ids = (
         await cloneClient.query(
-          "SELECT data FROM payload_kv WHERE key = 'payload-auth-link/migrate/database-id'"
+          "SELECT data FROM payload_auth_link_migrations WHERE key = 'payload-auth-link/migrate/database-id'"
         )
       ).rows as { data: { id: string } }[]
       expect(ids[0]?.data.id).not.toBe(readManifestFile().databaseId)
@@ -761,7 +781,7 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
       expect(
         (
           await cloneClient.query(
-            "SELECT key FROM payload_kv WHERE key LIKE 'payload-auth-link/migrate/finalized/%'"
+            "SELECT key FROM payload_auth_link_migrations WHERE key LIKE 'payload-auth-link/migrate/finalized/%'"
           )
         ).rows
       ).toEqual([])
@@ -883,7 +903,7 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
     // longer opens a SECOND run beside this one.
     const stale = join(tmpdir(), `pal-cli-stale-${Date.now()}.json`)
     const openBefore = await query<{ key: string }>(
-      "SELECT key FROM payload_kv WHERE key LIKE 'payload-auth-link/migrate/runs/%' AND data->>'state' = 'open'"
+      "SELECT key FROM payload_auth_link_migrations WHERE key LIKE 'payload-auth-link/migrate/runs/%' AND data->>'state' = 'open'"
     )
     expect(openBefore).toHaveLength(1)
     try {
@@ -903,7 +923,7 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
       expect(readFileSync(stale, 'utf8')).toBe(preRollbackManifest)
       expect(
         await query(
-          "SELECT key FROM payload_kv WHERE key LIKE 'payload-auth-link/migrate/runs/%' AND data->>'state' = 'open'"
+          "SELECT key FROM payload_auth_link_migrations WHERE key LIKE 'payload-auth-link/migrate/runs/%' AND data->>'state' = 'open'"
         )
       ).toEqual(openBefore)
     } finally {
@@ -925,7 +945,7 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
     expect(sealed.finalized).toBe(true)
     expect(sealed.mac).toMatch(/^v2\./)
     const markers = await query<{ key: string }>(
-      "SELECT key FROM payload_kv WHERE key LIKE 'payload-auth-link/migrate/finalized/%'"
+      "SELECT key FROM payload_auth_link_migrations WHERE key LIKE 'payload-auth-link/migrate/finalized/%'"
     )
     expect(markers).toHaveLength(1)
 

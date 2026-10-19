@@ -14,7 +14,6 @@ import { scanSource } from './source-scan.js'
 import { sourceMapFromConfig } from './source-layout.js'
 import { analyzeUsersCollection, findUsersCollection } from './users.js'
 import { parseSourceMapJson, resolveSourceTables } from '../importer/types.js'
-import { kvAdapterOf } from '../kv-adapter.js'
 import type { BehaviourChange, DoctorIssue, DoctorReport, PluginFinding } from './types.js'
 
 /**
@@ -396,18 +395,6 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   // #113): custom slugs need no hand-written --source-map. Explicit
   // --source-map entries still win.
   const derivedSourceMap = configLoaded ? sourceMapFromConfig(config) : null
-  // Issue #132: with a NON-database key-value adapter the kit's records
-  // live outside the database — refuse (config-level: no database needed
-  // to know), and skip the payload_kv table check below (the table
-  // legitimately does not exist and `payload migrate` cannot create it).
-  const kvKind = configLoaded ? kvAdapterOf(config) : 'none'
-  if (kvKind === 'external' && isTargetConfig) {
-    blockers.push({
-      code: 'kv-adapter-unsupported',
-      detail:
-        "this app configures a NON-database key-value adapter (payload.config.kv): the migration records its database identity, its runs, and the finalize marker through payload.kv, and those records must live in the database they describe — a restore, branch, or clone of the database stops carrying them, and eviction can lose the finalize marker. Switch the app to the default database-backed key-value store (payload's databaseKVAdapter) for the migration window; every kit command refuses until then",
-    })
-  }
   const databaseUrl = options.databaseUrl ?? process.env.DATABASE_URL
   let database: DoctorReport['database'] = null
   if (databaseUrl !== undefined && databaseUrl !== '') {
@@ -420,16 +407,34 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
           : resolveSourceTables({ ...(derivedSourceMap ?? {}), ...(explicit ?? {}) })
       const found = await introspectDatabase(databaseUrl, { sourceTables })
       database = found
-      // The migration writes its database identity, run records, and
-      // finalize marker into Payload's key-value store. On a database
-      // --apply writes to (the config here installs payload-auth-link),
-      // a missing payload_kv table passes every other check and only
-      // surfaces as an apply-time refusal — flag it first.
-      if (found.payloadKvTable === false && isTargetConfig && kvKind !== 'external') {
+      // Issue #139: the migration records its database identity, run
+      // records, and finalize marker in the plugin's
+      // 'payload-auth-link-migrations' collection. A database with
+      // neither that table nor the legacy payload_kv table has nowhere
+      // to record them — every kit command refuses (fail closed).
+      if (
+        isTargetConfig &&
+        found.migrationRecordsTable === false &&
+        found.payloadKvTable === false
+      ) {
         blockers.push({
-          code: 'payload-kv-table-missing',
+          code: 'migration-records-store-missing',
           detail:
-            "this database has no 'payload_kv' table — Payload's key-value store, where the importer records the database identity, its runs, and the finalize marker; every --apply refuses until it exists. Run the app's Payload migrations (payload migrate) to create the table, then re-run the doctor; nothing was written",
+            "this database has nowhere to record the migration's database identity, runs, and finalize marker: the plugin declares the 'payload-auth-link-migrations' collection (the kit's own record store) and this database has neither its table nor the legacy 'payload_kv' one. Run the app's Payload migrations (payload migrate) to create the collection, then re-run the doctor; nothing was written",
+        })
+      }
+      // A database that already recorded runs in the LEGACY key-value
+      // store keeps them (the kit migrates them on the next command);
+      // that path needs the new table to exist first.
+      if (
+        isTargetConfig &&
+        found.migrationRecordsTable === false &&
+        found.payloadKvTable === true
+      ) {
+        blockers.push({
+          code: 'migration-records-store-missing',
+          detail:
+            "this database records kit runs in the LEGACY key-value store ('payload_kv'): the kit migrates those records into its own 'payload-auth-link-migrations' collection on the next command, but that collection's table does not exist yet. Run the app's Payload migrations (payload migrate) to create it, then re-run; nothing was written",
         })
       }
       if (found.unverifiedUsers !== null && found.unverifiedUsers > 0) {
