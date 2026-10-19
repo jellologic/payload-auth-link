@@ -1,5 +1,15 @@
 # @payload-auth-link/plugin
 
+## 0.16.3
+
+### Patch Changes
+
+- [#136](https://github.com/jellologic/payload-auth-link/pull/136) [`42de28e`](https://github.com/jellologic/payload-auth-link/commit/42de28e68be60a4862b30bc8714eb591b5c6bfaf) Thanks [@jellologic](https://github.com/jellologic)! - Fix the adopt identity-at-creation regression on Postgres (issue [#135](https://github.com/jellologic/payload-auth-link/issues/135)): 0.16.2's hook wrote its nested update without the request, so on Postgres it could not see the uncommitted row, threw NotFound, and rolled every adopt-mode sign-up back.
+
+  - The update now joins the create's transaction (`req`).
+  - A failed identity write is non-fatal: it logs, and the JIT link attaches the identity on the user's first resolution as before — a sign-up never fails for the identity row.
+  - The adopt sign-up + anonymous integration suite runs on Postgres in CI (`ADOPT_PG_URL`), where transaction isolation differs from SQLite in memory.
+
 ## 0.16.2
 
 ### Patch Changes
