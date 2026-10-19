@@ -93,7 +93,7 @@ const ProviderResetPasswordView: React.FC<ProviderResetPasswordViewProps> = ({
       <div className="provider-reset">
         <h2>Password reset</h2>
         <p>
-          This page needs the token from a reset email — request one from{' '}
+          This page needs the token from a reset email — request one via{' '}
           <a href={`${adminRoute}/forgot`}>the forgot-password page</a>.
         </p>
       </div>
@@ -136,7 +136,7 @@ const ProviderResetPasswordView: React.FC<ProviderResetPasswordViewProps> = ({
       <div className="provider-reset__confirmation">
         <h2>Password updated</h2>
         <p>
-          Sign in with the new password through{' '}
+          Now sign in with the new password — use{' '}
           <a href={`${adminRoute}/login`}>the admin sign-in</a>.
         </p>
       </div>
