@@ -1,7 +1,7 @@
 import { isRecord } from '@payload-auth-link/core'
 import { createHash, randomBytes } from 'node:crypto'
 import type { Payload } from 'payload'
-import { kvAdapterOf } from '../kv-adapter.js'
+import { recordStoreFor } from './record-store.js'
 import {
   defaultTargetSlugs,
   type CreatedRow,
@@ -116,7 +116,7 @@ export function baIdMismatch(row: CreatedRow, doc: unknown): boolean {
   return !isRecord(doc) || typeof doc['baId'] !== 'string' || doc['baId'] !== expected.baId
 }
 
-/** Payload's key-value store, reached structurally (Payload 3.6x+). */
+/** The kit's record store: get/set/keys over the kit's own records. */
 type KeyValueStore = {
   readonly get: (key: string) => Promise<unknown>
   readonly set: (key: string, value: NonNullable<unknown>) => Promise<void>
@@ -124,26 +124,11 @@ type KeyValueStore = {
 }
 
 function keyValueStore(payload: Payload): KeyValueStore | null {
-  // Issue #132: with a non-database key-value adapter (Redis, …) the
-  // kit's records live outside the database they describe — restores,
-  // branches, and clones stop carrying them and eviction can lose the
-  // finalize marker. Every store access refuses, fail-closed.
-  const kind = kvAdapterOf(payload.config)
-  if (kind === 'external') {
-    throw new Error(
-      'this app configures a NON-database key-value adapter (payload.config.kv): the migration records its database identity, its runs, and the finalize marker through payload.kv, and those records must live in the database they describe — a restore, branch, or clone of the database stops carrying them, and eviction can lose the finalize marker. Switch the app to the default database-backed key-value store for the migration window; nothing was changed'
-    )
-  }
-  const kv: unknown = (payload as { kv?: unknown }).kv
-  if (
-    isRecord(kv) &&
-    typeof kv['get'] === 'function' &&
-    typeof kv['set'] === 'function' &&
-    typeof kv['keys'] === 'function'
-  ) {
-    return kv as unknown as KeyValueStore
-  }
-  return null
+  // Issue #139: the records live in the kit's OWN collection (in the
+  // database they describe), whatever `payload.config.kv` is backed
+  // by. Payloads that declare no records collection fall back to
+  // `payload.kv` — the pre-#139 behavior.
+  return recordStoreFor(payload)
 }
 
 const storePrefix = 'payload-auth-link/migrate/'
@@ -159,7 +144,7 @@ export function requireStore(payload: Payload, action: string): KeyValueStore {
   const kv = keyValueStore(payload)
   if (kv === null) {
     throw new Error(
-      `this Payload version exposes no key-value store (payload.kv); ${action} reads and records the migration's database record there — upgrade Payload to a release in the kit's supported band`
+      `no migration-records store is available: upgrade Payload to a release in the kit's supported band and install the payload-auth-link plugin (it declares the migration-records collection); ${action} records its database identity, runs, and finalize marker there`
     )
   }
   return kv
@@ -170,7 +155,7 @@ async function storeCall<T>(action: string, call: () => Promise<T>): Promise<T> 
     return await call()
   } catch (error) {
     throw new Error(
-      `${action}: Payload's key-value store (the payload-kv collection) could not be read or written: ${error instanceof Error ? error.message : String(error)} — create its table (run your Payload migrations) and re-run; nothing was changed`,
+      `${action}: the migration-records store could not be read or written: ${error instanceof Error ? error.message : String(error)} — run the app's Payload migrations (they create the '${'payload-auth-link-migrations'}' collection) and re-run; nothing was changed`,
       { cause: error }
     )
   }
@@ -194,7 +179,7 @@ export async function recordFinalizeMarker(
   const kv = keyValueStore(payload)
   if (kv === null) {
     throw new Error(
-      "this Payload version exposes no key-value store (payload.kv); finalize records its marker there — upgrade Payload to a release in the kit's supported band"
+      'no migration-records store is available: install the payload-auth-link plugin (it declares the migration-records collection); finalize records its marker there'
     )
   }
   try {
@@ -205,7 +190,7 @@ export async function recordFinalizeMarker(
     })
   } catch (error) {
     throw new Error(
-      `could not record the finalize marker in Payload's key-value store (the payload-kv collection): ${error instanceof Error ? error.message : String(error)} — create its table (run your Payload migrations) and re-run finalize; the manifest was not changed`,
+      `could not record the finalize marker in the migration-records store: ${error instanceof Error ? error.message : String(error)} — run the app's Payload migrations (they create the 'payload-auth-link-migrations' collection) and re-run finalize; the manifest was not changed`,
       { cause: error }
     )
   }

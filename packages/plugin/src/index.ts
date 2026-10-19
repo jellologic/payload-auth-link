@@ -12,6 +12,7 @@ import {
   withImpersonationAuditCollections,
   withImpersonationAuditGlobals,
 } from './audit.js'
+import { withMigrationRecords } from './migration-records.js'
 import {
   applyUsersCollection,
   accountControlsGateHook,
@@ -218,9 +219,14 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
       // operator impersonates the request's user (see `audit.ts`).
       collections: withImpersonationAuditCollections(
         withAccountControls(
-          applyOrganizationCollections(
-            applyUsersCollection(config.collections, wired, strategy),
-            wired
+          withMigrationRecords(
+            applyOrganizationCollections(
+              applyUsersCollection(config.collections, wired, strategy),
+              wired
+            ),
+            (detail) => {
+              throw new InvalidConfigError(detail)
+            }
           ),
           wired
         ),

@@ -43,3 +43,13 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS login_attempts integer NOT NULL DEFAU
 ALTER TABLE users ADD COLUMN IF NOT EXISTS lock_until timestamptz;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS salt varchar;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS hash varchar;
+
+-- The migration kit's own record store (issue #139): the plugin
+-- declares the payload-auth-link-migrations collection, so the app's
+-- migrations create it. The kit records its database identity, runs,
+-- and finalize marker here — in the database they describe.
+CREATE TABLE IF NOT EXISTS payload_auth_link_migrations (
+  id serial PRIMARY KEY,
+  key varchar NOT NULL UNIQUE,
+  data jsonb NOT NULL
+);

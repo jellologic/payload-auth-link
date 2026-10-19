@@ -141,6 +141,7 @@ export async function introspectDatabase(
     // --apply; report its presence so the doctor can flag the gap
     // before that.
     const payloadKvTable = await tableExists(client, 'payload_kv')
+    const migrationRecordsTable = await tableExists(client, 'payload_auth_link_migrations')
 
     const orphans: { kind: string; count: number }[] = []
     const skippedChecks: string[] = []
@@ -246,6 +247,7 @@ export async function introspectDatabase(
       anonymousUsers,
       oauthTables,
       payloadKvTable,
+      migrationRecordsTable,
     }
   } finally {
     await client.end()

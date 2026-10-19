@@ -374,9 +374,11 @@ describe('doctor on a TARGET config (issue #116)', () => {
     }
   })
 
-  test('an external key-value adapter blocks, naming the setup (issue #132)', async () => {
-    const externalKv = { init: () => ({}) }
-    const databaseKv = { init: () => ({}), kvCollection: { slug: 'payload-kv' } }
+  test('the key-value adapter no longer gates the doctor (issue #139)', async () => {
+    // The kit records into its own collection (issue #139): any
+    // payload.config.kv — Redis included — is supported, and the
+    // config-level kv-adapter blocker is gone. The record-store check
+    // is database-level (migration-records-store-missing).
     const report = async (kv: unknown): Promise<DoctorReport> =>
       runDoctor({
         configPath: fixturePath,
@@ -388,18 +390,11 @@ describe('doctor on a TARGET config (issue #116)', () => {
             collections: [],
           }),
       })
-    const external = await report(externalKv)
-    expect(external.blockers.map((issue) => issue.code)).toContain('kv-adapter-unsupported')
-    expect(
-      external.blockers.find((issue) => issue.code === 'kv-adapter-unsupported')?.detail
-    ).toContain('NON-database key-value adapter')
-    // The database-backed adapter is a supported setup.
-    const database = await report(databaseKv)
-    expect(database.blockers.map((issue) => issue.code)).not.toContain('kv-adapter-unsupported')
-    // No adapter at all is the default, database-backed.
-    expect((await report(undefined)).blockers.map((issue) => issue.code)).not.toContain(
-      'kv-adapter-unsupported'
-    )
+    for (const kv of [{ init: () => ({}) }, { kvCollection: { slug: 'payload-kv' } }, undefined]) {
+      const codes = (await report(kv)).blockers.map((issue) => issue.code)
+      expect(codes).not.toContain('kv-adapter-unsupported')
+      expect(codes).not.toContain('migration-records-store-missing')
+    }
   })
 
   test('a session collection that declares the field, or none at all, does not warn', async () => {

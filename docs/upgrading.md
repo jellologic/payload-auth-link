@@ -38,6 +38,35 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
+## plugin 0.17.0 / migrate 0.13.0 (round 10: the kit owns its record store — `payload.config.kv` becomes irrelevant)
+
+**Upgrade impact:** ONE new database table, created by the app's own
+migrations — additive only. The plugin declares the
+`payload-auth-link-migrations` collection (hidden, access-denied, no
+document locking): columns `id`, `key` (unique), `data` (jsonb), no
+timestamps. On SQLite and MongoDB, push creates it; on Postgres,
+`payload migrate:create` generates the additive table (no data moves).
+Run the app's migrations after upgrading, BEFORE any kit command —
+until the table exists, every kit command refuses (fail closed) and
+the doctor blocks (`migration-records-store-missing`).
+
+This implements what issue #139 asked for: the kit's database identity,
+run records, and finalize marker live in the kit's OWN store — in the
+database they describe — instead of the app's `payload.config.kv`:
+
+- a Redis (or any) KV adapter no longer blocks the kit or loses its
+  records to eviction; the round-8 refusal (`kv-adapter-unsupported`)
+  and the kit-wide refusal are gone;
+- restores, branches, and clones carry the records (the GHSA-xw9m
+  binding semantics are unchanged — same keys, same seals, now in the
+  kit's own table);
+- **legacy records carry over**: a database whose runs live in the old
+  `payload_kv` table is migrated on the first kit command (one bulk
+  copy, flagged); the legacy table can then be dropped whenever the
+  app likes;
+- the doctor's check now verifies the new table (or the legacy one for
+  pre-upgrade databases) instead of the KV adapter.
+
 ## plugin 0.16.3 / provider-better-auth 0.13.3 (round 9: fix the adopt identity-at-creation regression on Postgres)
 
 **Upgrade impact:** none — a bugfix. The identity-at-creation hook

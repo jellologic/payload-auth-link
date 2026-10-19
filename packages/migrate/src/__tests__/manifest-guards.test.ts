@@ -142,10 +142,14 @@ describe('the database finalize marker', () => {
 
   it('finalize fails loudly when the store is unavailable; checks report it', async () => {
     const broken = fakePayload({ kv: 'throws' })
-    await expect(recordFinalizeMarker(broken, manifest, 'now')).rejects.toThrow(/payload-kv/)
+    await expect(recordFinalizeMarker(broken, manifest, 'now')).rejects.toThrow(
+      /migration-records store/
+    )
     expect(await finalizeMarkerState(broken, manifest, { anyOfKind: true })).toBe('unavailable')
     const missing = fakePayload({})
-    await expect(recordFinalizeMarker(missing, manifest, 'now')).rejects.toThrow(/payload\.kv/)
+    await expect(recordFinalizeMarker(missing, manifest, 'now')).rejects.toThrow(
+      /migration-records store is available/
+    )
     expect(await finalizeMarkerState(missing, manifest, { anyOfKind: false })).toBe('unavailable')
   })
 })

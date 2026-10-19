@@ -82,6 +82,7 @@ const { createBetterAuthCollections } =
 const { wireOptions } = await import('../packages/plugin/dist/options.js')
 const { createAuthLinkStrategy } = await import('../packages/plugin/dist/strategy.js')
 const { applyUsersCollection } = await import('../packages/plugin/dist/collections.js')
+const { migrationRecordsCollection } = await import('../packages/plugin/dist/migration-records.js')
 
 const wired = wireOptions({
   baseUrl: 'http://schema-snapshot.test',
@@ -102,6 +103,9 @@ const snapshots = {
   // The merge path is the common one: an existing users collection
   // gains the plugin's injected fields.
   'plugin-users.json': sanitize(usersCollection),
+  // The kit's own record store (issue #139): declared by the plugin so
+  // the app's migrations create it.
+  'plugin-migration-records.json': sanitize(migrationRecordsCollection()),
 }
 
 function pendingChangesets() {

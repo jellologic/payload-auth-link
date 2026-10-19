@@ -12,6 +12,7 @@ import { nextCookies } from 'better-auth/next-js'
 import { jwt, magicLink, organization } from 'better-auth/plugins'
 import { authLink } from '@payload-auth-link/plugin'
 import { createBetterAuthEngine } from '@payload-auth-link/provider-better-auth'
+import { isRecord } from '@payload-auth-link/core'
 import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -547,13 +548,30 @@ describe.skipIf(!canReachPostgres)(
       ).rejects.toThrow(/has run migrate 0\.8\.0 or later/)
       // Where unsigned manifests are still accepted (a database that
       // never ran 0.8 — simulated by hiding its id), the guards below
-      // hold on their own.
+      // hold on their own. The id record lives in the kit's own
+      // collection now (issue #139).
       const idKey = 'payload-auth-link/migrate/database-id'
-      const idRecord = await payload.kv.get(idKey)
-      if (idRecord === null) {
+      const found = await payload.find({
+        collection: 'payload-auth-link-migrations',
+        where: { key: { equals: idKey } },
+        limit: 1,
+        depth: 0,
+        overrideAccess: true,
+      })
+      const idDoc: unknown = (found as { docs?: unknown[] }).docs?.[0]
+      const idRecord: unknown = isRecord(idDoc) ? idDoc.data : undefined
+      if (typeof idRecord !== 'object' || idRecord === null) {
         throw new Error('the apply recorded no database id')
       }
-      await payload.kv.delete(idKey)
+      const idDocId: unknown = isRecord(idDoc) ? idDoc.id : undefined
+      if (typeof idDocId !== 'string' && typeof idDocId !== 'number') {
+        throw new Error('the apply recorded no database id')
+      }
+      await payload.delete({
+        collection: 'payload-auth-link-migrations',
+        id: idDocId,
+        overrideAccess: true,
+      })
       try {
         await expect(
           rollbackImport({
@@ -595,7 +613,11 @@ describe.skipIf(!canReachPostgres)(
           })
         ).rejects.toThrow(/manifest names none/)
       } finally {
-        await payload.kv.set(idKey, idRecord)
+        await payload.create({
+          collection: 'payload-auth-link-migrations',
+          data: { key: idKey, data: idRecord },
+          overrideAccess: true,
+        })
       }
       const still = await payload.findByID({
         collection: 'jwks',

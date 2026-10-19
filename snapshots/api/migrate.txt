@@ -306,6 +306,12 @@ export type DatabaseFinding = {
      * `--apply`.
      */
     readonly payloadKvTable?: boolean;
+    /**
+     * Whether the kit's own record store table
+     * ('payload_auth_link_migrations', the plugin-declared collection)
+     * exists (issue #139).
+     */
+    readonly migrationRecordsTable?: boolean;
 };
 /** Default-behaviour changes in payload-auth-link 0.7.0 that bite. */
 export type BehaviourChange = {
@@ -691,7 +697,7 @@ export declare function targetSlugsOf(overrides?: Readonly<Record<string, string
 export declare function assertCreatedRowsScoped(manifest: Pick<ImportManifest, 'kind' | 'created'>, slugs: TargetSlugMap): void;
 /** A created row whose `baId` no longer matches its source key. */
 export declare function baIdMismatch(row: CreatedRow, doc: unknown): boolean;
-/** Payload's key-value store, reached structurally (Payload 3.6x+). */
+/** The kit's record store: get/set/keys over the kit's own records. */
 type KeyValueStore = {
     readonly get: (key: string) => Promise<unknown>;
     readonly set: (key: string, value: NonNullable<unknown>) => Promise<void>;
@@ -1354,6 +1360,49 @@ export type PrelinkResult = {
     readonly fieldWrites: number;
 };
 export declare function prelinkUsers(options: PrelinkOptions): Promise<PrelinkResult>;
+
+// ===== importer/record-store.d.ts =====
+import type { Payload } from 'payload';
+/**
+ * The kit's own database-backed record store (issue #139): the
+ * `payload-auth-link-migrations` collection the plugin declares, so the
+ * database identity, the run records, and the finalize marker live IN
+ * the database they describe — regardless of what `payload.config.kv`
+ * is backed by (Redis, …). Restores, branches, and clones carry them;
+ * eviction cannot touch them; the GHSA-xw9m binding semantics are
+ * unchanged.
+ *
+ * Legacy databases recorded these in the app's `payload.kv` (the
+ * payload-kv collection, 0.8.0–0.12.x). The first store access on such
+ * a database copies every kit record (`payload-auth-link/migrate/*`)
+ * into the collection — one bulk pass, flagged — and from then on the
+ * collection is the only store consulted. Until the copy completes,
+ * any failure refuses (fail closed, as the GHSA-crrr contract
+ * requires); afterwards the app's KV adapter is irrelevant to the kit.
+ *
+ * A payload whose config declares no records collection (a fake, or an
+ * app too old to ship the plugin) falls back to `payload.kv` directly,
+ * preserving the pre-#139 behavior.
+ */
+declare const recordsSlug = "payload-auth-link-migrations";
+export declare function recordsCollectionDeclared(payload: Payload): boolean;
+/** The app's key-value store, reached structurally (Payload 3.6x+). */
+export declare function legacyStore(payload: Payload): {
+    readonly get: (key: string) => Promise<unknown>;
+    readonly set: (key: string, value: NonNullable<unknown>) => Promise<void>;
+    readonly keys: () => Promise<string[]>;
+} | null;
+/**
+ * The kit's record store: the collection when the config declares it
+ * (the plugin ships it), otherwise the app's `payload.kv` directly —
+ * the pre-#139 behavior for payloads too old to declare the store.
+ */
+export declare function recordStoreFor(payload: Payload): {
+    readonly get: (key: string) => Promise<unknown>;
+    readonly set: (key: string, value: NonNullable<unknown>) => Promise<void>;
+    readonly keys: () => Promise<string[]>;
+} | null;
+export { recordsSlug };
 
 // ===== importer/run-import.d.ts =====
 import { type PrelinkResult } from './prelink.js';
