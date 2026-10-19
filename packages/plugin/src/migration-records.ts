@@ -34,6 +34,10 @@ export function migrationRecordsCollection(): CollectionConfig {
     // reporter hit exactly that), failing every write on an existing
     // app. Nothing here needs concurrency protection.
     lockDocuments: false,
+    // No versions (and therefore no timestamps): the records are
+    // current-state only, and versions would add a `_v` table plus a
+    // timestamps requirement the store does not want.
+    versions: false,
     access: {
       create: () => false,
       read: () => false,
