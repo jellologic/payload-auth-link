@@ -1,5 +1,12 @@
 # @payload-auth-link/provider-better-auth
 
+## 0.13.1
+
+### Patch Changes
+
+- Updated dependencies [[`6ee27be`](https://github.com/jellologic/payload-auth-link/commit/6ee27be17c014ebcb850694cac03bca07a46d6a8)]:
+  - @payload-auth-link/core@0.12.1
+
 ## 0.13.0
 
 ### Minor Changes
