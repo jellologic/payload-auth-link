@@ -110,7 +110,7 @@
     },
     "packages/migrate": {
       "name": "@payload-auth-link/migrate",
-      "version": "0.9.0",
+      "version": "0.10.0",
       "bin": {
         "payload-auth-link-migrate": "./dist/cli.js",
       },
