@@ -34,6 +34,17 @@ export type DenyAllAccess = {
  */
 export declare function denyAllAccess(): DenyAllAccess;
 
+// ===== context.d.ts =====
+/**
+ * The `req.context` key the ENGINE stamps on the Local API creates it
+ * performs for Better Auth users (issue #132). The plugin's users
+ * collection hook reads it to tell an engine-created row (whose id IS
+ * the provider user id in adopt mode, and whose identities row can be
+ * written at creation) apart from an operator-created document, which
+ * must never gain a synthetic identity.
+ */
+export declare const engineCreateMarker = "payload-auth-link:engine-create";
+
 // ===== cookies.d.ts =====
 import type { CookieOptions } from './ports.js';
 /** RFC 6265 cookie-name token check, shared by serialization and wiring. */
@@ -586,6 +597,7 @@ export declare function parseSessionResponse(response: Pick<Response, 'ok' | 'js
  * never imports a framework.
  */
 export { assertNever } from './assert.js';
+export { engineCreateMarker } from './context.js';
 export { assertUniqueSlugs, denyAllAccess, resolveSlugs } from './collections.js';
 export type { DenyAllAccess } from './collections.js';
 export { expiringCookieOptions, hostCookiePrefix, isCookieName, parseCookieHeader, resolveSecureCookies, secureCookiePrefix, serializeCookie, } from './cookies.js';

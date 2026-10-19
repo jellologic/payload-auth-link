@@ -1,4 +1,4 @@
-import { InvalidConfigError } from '@payload-auth-link/core'
+import { engineCreateMarker, InvalidConfigError } from '@payload-auth-link/core'
 import type { CollectionConfig } from 'payload'
 import { describe, expect, it } from 'vitest'
 import { applyUsersCollection, fieldName } from '../collections.js'
@@ -433,5 +433,174 @@ describe('applyUsersCollection', () => {
     const before = JSON.stringify(existing)
     applyUsersCollection([existing], options, strategy)
     expect(JSON.stringify(existing)).toBe(before)
+  })
+})
+
+describe('adoptIdentityHook — the identity row at creation (issue #132)', () => {
+  function identityHookOf(
+    options: Parameters<typeof applyUsersCollection>[1],
+    strategy: Parameters<typeof applyUsersCollection>[2]
+  ) {
+    const users = applyUsersCollection([], options, strategy)[0]
+    const hook = users?.hooks?.afterChange?.[0]
+    expect(hook).toBeTypeOf('function')
+    return hook as (args: {
+      doc: Record<string, unknown>
+      operation: string
+      req: {
+        context?: Record<string, unknown>
+        payload: { update: (args: unknown) => Promise<unknown> }
+      }
+    }) => Promise<void>
+  }
+
+  it('writes the identity row for an engine-marked create over a provider-owned-id port', async () => {
+    const { provider } = createStubProvider()
+    const owned = { ...provider, providerUserIdsAreDocumentIds: true as const }
+    const options = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['admin', 'user'],
+      defaultRole: 'user',
+      providers: [owned],
+    })
+    const hook = identityHookOf(options, createAuthLinkStrategy(options))
+    const updates: unknown[] = []
+    await hook({
+      doc: { id: 7, email: 'guest@test.dev', identities: [] },
+      operation: 'create',
+      req: {
+        context: { [engineCreateMarker]: true },
+        payload: {
+          update: (args: unknown) => {
+            updates.push(args)
+            return Promise.resolve()
+          },
+        },
+      },
+    })
+    expect(updates).toHaveLength(1)
+    const written = updates[0] as { data: { identities: unknown } }
+    const rows = written.data.identities as
+      | {
+          providerId: unknown
+          providerUserId: unknown
+          email: unknown
+          linkedAt: unknown
+        }[]
+      | undefined
+    expect(rows).toHaveLength(1)
+    expect(rows?.[0]?.providerId).toBe(provider.id)
+    expect(rows?.[0]?.providerUserId).toBe('7')
+    expect(rows?.[0]?.email).toBe('guest@test.dev')
+    expect(typeof rows?.[0]?.linkedAt).toBe('string')
+  })
+
+  it('leaves an operator-created document alone (no engine marker)', async () => {
+    const { provider } = createStubProvider()
+    const owned = { ...provider, providerUserIdsAreDocumentIds: true as const }
+    const options = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['admin', 'user'],
+      defaultRole: 'user',
+      providers: [owned],
+    })
+    const hook = identityHookOf(options, createAuthLinkStrategy(options))
+    const updates: unknown[] = []
+    await hook({
+      doc: { id: 8, email: 'operator@test.dev', identities: [] },
+      operation: 'create',
+      req: {
+        context: {},
+        payload: {
+          update: (args: unknown) => {
+            updates.push(args)
+            return Promise.resolve()
+          },
+        },
+      },
+    })
+    expect(updates).toHaveLength(0)
+  })
+
+  it('leaves a document that already carries identities alone', async () => {
+    const { provider } = createStubProvider()
+    const owned = { ...provider, providerUserIdsAreDocumentIds: true as const }
+    const options = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['admin', 'user'],
+      defaultRole: 'user',
+      providers: [owned],
+    })
+    const hook = identityHookOf(options, createAuthLinkStrategy(options))
+    const updates: unknown[] = []
+    await hook({
+      doc: {
+        id: 10,
+        email: 'linked@test.dev',
+        identities: [{ providerId: provider.id, providerUserId: 'elsewhere' }],
+      },
+      operation: 'create',
+      req: {
+        context: { [engineCreateMarker]: true },
+        payload: {
+          update: (args: unknown) => {
+            updates.push(args)
+            return Promise.resolve()
+          },
+        },
+      },
+    })
+    expect(updates).toHaveLength(0)
+  })
+
+  it('a request with no context object is not an engine create', async () => {
+    const { provider } = createStubProvider()
+    const owned = { ...provider, providerUserIdsAreDocumentIds: true as const }
+    const options = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['admin', 'user'],
+      defaultRole: 'user',
+      providers: [owned],
+    })
+    const hook = identityHookOf(options, createAuthLinkStrategy(options))
+    const updates: unknown[] = []
+    await hook({
+      doc: { id: 11, email: 'nocontext@test.dev', identities: [] },
+      operation: 'create',
+      req: {
+        payload: {
+          update: (args: unknown) => {
+            updates.push(args)
+            return Promise.resolve()
+          },
+        },
+      },
+    })
+    expect(updates).toHaveLength(0)
+  })
+
+  it('a wiring with no provider-owned-id port never writes', async () => {
+    const options = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['admin', 'user'],
+      defaultRole: 'user',
+      providers: [createStubProvider().provider],
+    })
+    const hook = identityHookOf(options, createAuthLinkStrategy(options))
+    const updates: unknown[] = []
+    await hook({
+      doc: { id: 9, email: 'x@test.dev', identities: [] },
+      operation: 'create',
+      req: {
+        context: { [engineCreateMarker]: true },
+        payload: {
+          update: (args: unknown) => {
+            updates.push(args)
+            return Promise.resolve()
+          },
+        },
+      },
+    })
+    expect(updates).toHaveLength(0)
   })
 })

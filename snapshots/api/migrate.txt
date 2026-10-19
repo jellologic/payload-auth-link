@@ -691,6 +691,19 @@ export declare function targetSlugsOf(overrides?: Readonly<Record<string, string
 export declare function assertCreatedRowsScoped(manifest: Pick<ImportManifest, 'kind' | 'created'>, slugs: TargetSlugMap): void;
 /** A created row whose `baId` no longer matches its source key. */
 export declare function baIdMismatch(row: CreatedRow, doc: unknown): boolean;
+/** Payload's key-value store, reached structurally (Payload 3.6x+). */
+type KeyValueStore = {
+    readonly get: (key: string) => Promise<unknown>;
+    readonly set: (key: string, value: NonNullable<unknown>) => Promise<void>;
+    readonly keys: () => Promise<string[]>;
+};
+/**
+ * The store, or a thrown error naming the fix. Every manifest-driven
+ * write reads its database record there and FAILS CLOSED without it
+ * (GHSA-crrr-3cg7-f6jw): an unreadable store is never read as "not
+ * finalized" or "no other run".
+ */
+export declare function requireStore(payload: Payload, action: string): KeyValueStore;
 /** The finalize marker key of one manifest (its kind + first-apply stamp). */
 export declare function finalizeMarkerKey(manifest: Pick<ImportManifest, 'kind' | 'createdAt'>): string;
 /**
@@ -820,6 +833,7 @@ export declare function recordRun(payload: Payload, runId: string, record: RunRe
  * the plugin's own default, `roles`.
  */
 export declare function hostRolesField(payload: Payload): string;
+export {};
 
 // ===== importer/host-writes.d.ts =====
 import type { Payload } from 'payload';
@@ -1778,8 +1792,29 @@ export { countTables, findOrphans, openSource, probeSourceLayout, readFlatRows, 
 export { readManifest, writeManifest, verifyImport, rollbackImport, finalizeManifest, defaultManifestPath, defaultPrelinkManifestPath, type FinalizeOptions, type RollbackOptions, type VerifyIssue, type VerifyResult, } from './importer/lifecycle.js';
 export { defaultSourceTables, defaultTargetSlugs, parseSourceMapJson, presentTables, resolveSourceTables, sourceModelNames, type CreatedRow, type ResolvedSourceTables, type SourceModel, type SourceTableMap, type TargetModel, type TargetSlugMap, type FieldWrite, type ImportManifest, type ManifestKind, type ImportPlan, type ImportResult, type PlanRow, type Unmappable, } from './importer/types.js';
 export { exportToJsonl, parseExportTables, exportTables, optionalAuthTables, resolveAuthTables, } from './exporters.js';
+export { kvAdapterOf } from './kv-adapter.js';
+export type { KvAdapterKind } from './kv-adapter.js';
 export { cliMain } from './cli.js';
 export type { BehaviourChange, DatabaseFinding, DoctorIssue, DoctorReport, PluginFinding, SourceFinding, UsersFinding, VersionFinding, } from './doctor/types.js';
+
+// ===== kv-adapter.d.ts =====
+/**
+ * How the app's Payload key-value store is backed (issue #132). The
+ * migration records its database identity, its runs, and the finalize
+ * marker through `payload.kv`, and those records must live IN the
+ * database they describe: a restore, branch, or clone of the database
+ * stops carrying them otherwise, and eviction can lose the finalize
+ * marker (the GHSA-xw9m binding semantics assume database durability).
+ *
+ * - `'none'` — no adapter configured: Payload's default, which is
+ *   database-backed (the `payload-kv` collection / `payload_kv` table).
+ * - `'database'` — `databaseKVAdapter()` (or equivalent) configured: it
+ *   always ships the `kvCollection` it creates.
+ * - `'external'` — any other adapter (Redis, …): the records live
+ *   outside the database. Every kit command refuses this.
+ */
+export type KvAdapterKind = 'database' | 'external' | 'none';
+export declare function kvAdapterOf(config: unknown): KvAdapterKind;
 
 // ===== private-file.d.ts =====
 /**

@@ -107,6 +107,8 @@ export {
   optionalAuthTables,
   resolveAuthTables,
 } from './exporters.js'
+export { kvAdapterOf } from './kv-adapter.js'
+export type { KvAdapterKind } from './kv-adapter.js'
 export { cliMain } from './cli.js'
 export type {
   BehaviourChange,

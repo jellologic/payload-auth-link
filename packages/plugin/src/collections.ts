@@ -1,6 +1,7 @@
 import { Ok, ResultAsync } from 'neverthrow'
 import {
   assertNever,
+  engineCreateMarker,
   InvalidConfigError,
   isRecord,
   isSuspendedAt,
@@ -278,6 +279,79 @@ function defaultRolesHook(wired: WiredOptions): CollectionBeforeChangeHook {
     if (current === undefined || current === null || current === '') {
       data[rolesField] = [defaultRole]
     }
+  }
+}
+
+/**
+ * Write the identity row at CREATION for engine-created users in
+ * adopt mode (issue #132 part 3): the engine stamps its creates with
+ * {@link engineCreateMarker}, and where the provider owns document
+ * ids the created row's id IS the provider user id — so the identity
+ * row the first resolution would write can be written immediately.
+ * Without it, a sign-up that never completes sign-in (an unverified
+ * email) never triggers the JIT link and `migrate verify` reports a
+ * permanent mismatch after cutover.
+ *
+ * Operator-created documents (no marker) never gain a synthetic
+ * identity; a document that already carries identities is untouched.
+ */
+function adoptIdentityHook(wired: WiredOptions): CollectionAfterChangeHook {
+  let adoptProviderId: string | null | undefined
+  const adoptProvider = (): string | null => {
+    if (adoptProviderId !== undefined) {
+      return adoptProviderId
+    }
+    adoptProviderId = null
+    for (const id of wired.registry.ids()) {
+      const required = wired.registry.require(id)
+      if (required.isOk() && required.value.providerUserIdsAreDocumentIds === true) {
+        adoptProviderId = id
+        break
+      }
+    }
+    return adoptProviderId
+  }
+  return async ({ doc, operation, req }) => {
+    if (operation !== 'create') {
+      return
+    }
+    if (!isRecord(req.context) || req.context[engineCreateMarker] !== true) {
+      return
+    }
+    const providerId = adoptProvider()
+    if (providerId === null) {
+      return
+    }
+    const identitiesField = wired.config.map.identitiesField
+    const existing: unknown = isRecord(doc) ? doc[identitiesField] : undefined
+    if (Array.isArray(existing) && existing.length > 0) {
+      return
+    }
+    const email = isRecord(doc) && typeof doc.email === 'string' ? doc.email : ''
+    const id: unknown = isRecord(doc) ? doc.id : undefined
+    if (typeof id !== 'string' && typeof id !== 'number') {
+      return
+    }
+    await req.payload.update({
+      collection: wired.config.map.usersCollection,
+      id,
+      data: {
+        [identitiesField]: [
+          {
+            providerId,
+            providerUserId: String(id),
+            email,
+            linkedAt: new Date().toISOString(),
+          },
+        ],
+      },
+      context: { [engineCreateMarker]: true },
+      overrideAccess: true,
+    })
+    wired.logger.info('identity written at creation (adopt mode)', {
+      providerId,
+      userId: String(id),
+    })
   }
 }
 
@@ -1166,7 +1240,7 @@ function createUsersCollection(wired: WiredOptions, strategy: AuthStrategy): Col
       // First, so it sees the document as read (GHSA-mjvh): the
       // authentication-time veto for Payload's own credentials.
       afterRead: [localCredentialGateHook(wired)],
-      afterChange: [suspendRevokeHook(wired)],
+      afterChange: [adoptIdentityHook(wired), suspendRevokeHook(wired)],
       me: [authLinkMeHook],
     },
   }
@@ -1348,7 +1422,7 @@ export function applyUsersCollection(
             // it (GHSA-mjvh): the authentication-time veto for
             // Payload's own credentials.
             afterRead: [localCredentialGateHook(wired), ...(existing.hooks?.afterRead ?? [])],
-            afterChange: [...afterChange, suspendRevokeHook(wired)],
+            afterChange: [...afterChange, adoptIdentityHook(wired), suspendRevokeHook(wired)],
             me: [authLinkMeHook, ...(existing.hooks?.me ?? [])],
           },
         }

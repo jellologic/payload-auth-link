@@ -180,6 +180,18 @@ describe('adopt mode: a post-cutover sign-up resolves through the plugin (issue 
       })
     )
     expect(signUp.status).toBe(200)
+    // Issue #132 part 3: the identity row is written AT CREATION — a
+    // sign-up that never completes sign-in (unverified email) is still
+    // linked, so `verify` never reports a permanent mismatch.
+    const justCreated = await payload?.find({
+      collection: 'users',
+      where: { email: { equals: 'late@example.com' } },
+      limit: 1,
+      overrideAccess: true,
+    })
+    const freshDoc = justCreated?.docs[0] as Record<string, unknown> | undefined
+    expect(Array.isArray(freshDoc?.identities)).toBe(true)
+    expect(freshDoc?.identities).toHaveLength(1)
     const signIn = await engine.auth.handler(
       authRequest('/sign-in/email', {
         method: 'POST',

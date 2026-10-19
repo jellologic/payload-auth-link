@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto'
-import { assertUniqueSlugs, isRecord, resolveSlugs } from '@payload-auth-link/core'
+import {
+  assertUniqueSlugs,
+  engineCreateMarker,
+  isRecord,
+  resolveSlugs,
+} from '@payload-auth-link/core'
 import type { BetterAuthOptions } from 'better-auth'
 import {
   createAdapterFactory,
@@ -937,6 +942,10 @@ export function createPayloadDatabaseAdapter(
             const doc: unknown = await payload.create({
               collection: plan.slug,
               data: toPayloadData(data, plan, { forCreate: true, idCoerce: idCoerceFor(key) }),
+              // Issue #132: the plugin's users hook reads this to write
+              // the identity row at creation (adopt mode), and to leave
+              // operator-created documents alone.
+              context: { [engineCreateMarker]: true },
               overrideAccess: true,
             })
             return asModelRow<T>(

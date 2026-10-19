@@ -6,6 +6,7 @@ import { classifyPlugins, pluginsFromSourceTree } from '../doctor/plugins.js'
 import { runDoctor } from '../doctor/run-doctor.js'
 import { scanSource } from '../doctor/source-scan.js'
 import { snakeCaseTableName, sourceMapFromConfig } from '../doctor/source-layout.js'
+import type { DoctorReport } from '../doctor/types.js'
 import { analyzeUsersCollection } from '../doctor/users.js'
 
 describe('doctor units', () => {
@@ -371,6 +372,34 @@ describe('doctor on a TARGET config (issue #116)', () => {
     } finally {
       rmSync(srcDir, { recursive: true, force: true })
     }
+  })
+
+  test('an external key-value adapter blocks, naming the setup (issue #132)', async () => {
+    const externalKv = { init: () => ({}) }
+    const databaseKv = { init: () => ({}), kvCollection: { slug: 'payload-kv' } }
+    const report = async (kv: unknown): Promise<DoctorReport> =>
+      runDoctor({
+        configPath: fixturePath,
+        databaseUrl: '',
+        loadModule: () =>
+          Promise.resolve({
+            kv,
+            plugins: [authLinkEntry],
+            collections: [],
+          }),
+      })
+    const external = await report(externalKv)
+    expect(external.blockers.map((issue) => issue.code)).toContain('kv-adapter-unsupported')
+    expect(
+      external.blockers.find((issue) => issue.code === 'kv-adapter-unsupported')?.detail
+    ).toContain('NON-database key-value adapter')
+    // The database-backed adapter is a supported setup.
+    const database = await report(databaseKv)
+    expect(database.blockers.map((issue) => issue.code)).not.toContain('kv-adapter-unsupported')
+    // No adapter at all is the default, database-backed.
+    expect((await report(undefined)).blockers.map((issue) => issue.code)).not.toContain(
+      'kv-adapter-unsupported'
+    )
   })
 
   test('a session collection that declares the field, or none at all, does not warn', async () => {

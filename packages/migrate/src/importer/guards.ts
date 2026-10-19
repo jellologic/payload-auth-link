@@ -1,6 +1,7 @@
 import { isRecord } from '@payload-auth-link/core'
 import { createHash, randomBytes } from 'node:crypto'
 import type { Payload } from 'payload'
+import { kvAdapterOf } from '../kv-adapter.js'
 import {
   defaultTargetSlugs,
   type CreatedRow,
@@ -123,6 +124,16 @@ type KeyValueStore = {
 }
 
 function keyValueStore(payload: Payload): KeyValueStore | null {
+  // Issue #132: with a non-database key-value adapter (Redis, …) the
+  // kit's records live outside the database they describe — restores,
+  // branches, and clones stop carrying them and eviction can lose the
+  // finalize marker. Every store access refuses, fail-closed.
+  const kind = kvAdapterOf(payload.config)
+  if (kind === 'external') {
+    throw new Error(
+      'this app configures a NON-database key-value adapter (payload.config.kv): the migration records its database identity, its runs, and the finalize marker through payload.kv, and those records must live in the database they describe — a restore, branch, or clone of the database stops carrying them, and eviction can lose the finalize marker. Switch the app to the default database-backed key-value store for the migration window; nothing was changed'
+    )
+  }
   const kv: unknown = (payload as { kv?: unknown }).kv
   if (
     isRecord(kv) &&
@@ -144,7 +155,7 @@ const markerPrefix = `${storePrefix}finalized/`
  * (GHSA-crrr-3cg7-f6jw): an unreadable store is never read as "not
  * finalized" or "no other run".
  */
-function requireStore(payload: Payload, action: string): KeyValueStore {
+export function requireStore(payload: Payload, action: string): KeyValueStore {
   const kv = keyValueStore(payload)
   if (kv === null) {
     throw new Error(
