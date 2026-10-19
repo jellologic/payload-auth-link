@@ -69,9 +69,12 @@ describe('signed session cookie builder (#54/#72)', () => {
       } as unknown as BetterAuthServerApi,
       sessionCookieNames: cookieNames,
     })
-    const build = provider.sessionCookie
+    // The attribute tests target the full Set-Cookie LINE (what
+    // responses set); the VALUE form carries the name/attributes
+    // nowhere (#125).
+    const build = provider.sessionCookieLine
     if (build === undefined) {
-      throw new Error('the port exposes no sessionCookie')
+      throw new Error('the port exposes no sessionCookieLine')
     }
     return build
   }

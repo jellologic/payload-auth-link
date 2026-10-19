@@ -151,6 +151,55 @@ export declare function IdentityRowLabel(): JSX.Element;
  */
 export { IdentityRowLabel } from './IdentityRowLabel.js';
 export { default as ProviderLoginView } from './views/ProviderLoginView.js';
+export { default as ProviderForgotPasswordView } from './views/ProviderForgotPasswordView.js';
+export { default as ProviderResetPasswordView } from './views/ProviderResetPasswordView.js';
+
+// ===== admin/views/ProviderForgotPasswordView.d.ts =====
+import React from 'react';
+/**
+ * The provider-backed admin forgot-password view (issue #121): two forms.
+ *
+ * - **Provider reset request** posts to Better Auth's own
+ *   request-password-reset endpoint (`${authBase}/request-password-reset`)
+ *   with `redirectTo` pointed at the provider reset view, so the email
+ *   link lands back in the admin panel (`/admin/reset?token=…`). The
+ *   provider owns the ceremony — linked accounts never mint a local
+ *   credential (GHSA-f4hj).
+ * - **Break-glass local request** posts to Payload's own forgot-password
+ *   endpoint for UNLINKED operator accounts; linked documents are
+ *   refused there by design (GHSA-f4hj), with the refusal surfaced.
+ *
+ * Replaces Payload's built-in forgot screen when
+ * `admin: { loginView: 'provider' }` — Payload renders it at
+ * /admin/forgot via the import map
+ * (`@payload-auth-link/plugin/admin#ProviderForgotPasswordView`).
+ */
+export type ProviderForgotPasswordViewProps = {
+    /**
+     * The app-relative auth base for provider requests (e.g. `/api/auth`).
+     * Set by the plugin from its own wiring (`admin.authBase`).
+     */
+    readonly authBase: string;
+    /**
+     * Payload's local forgot-password endpoint for the break-glass form —
+     * `${routes.api}/${usersSlug}/forgot-password`. Set by the plugin from
+     * the Payload config; defaults to `/api/users/forgot-password`.
+     */
+    readonly forgotEndpoint?: string | undefined;
+    /**
+     * Payload's `routes.admin`, for the link back to the login view. Set
+     * by the plugin; defaults to `/admin`.
+     */
+    readonly adminRoute?: string | undefined;
+    /**
+     * The admin path the reset email's link opens — Payload's
+     * `routes.admin` joined with `admin.routes.reset` (the provider reset
+     * view's route). Set by the plugin; defaults to `/admin/reset`.
+     */
+    readonly resetRoute?: string | undefined;
+};
+declare const ProviderForgotPasswordView: React.FC<ProviderForgotPasswordViewProps>;
+export default ProviderForgotPasswordView;
 
 // ===== admin/views/ProviderLoginView.d.ts =====
 import React from 'react';
@@ -170,7 +219,9 @@ import React from 'react';
  *
  * Registered by the plugin when `admin: { loginView: 'provider' }` —
  * Payload renders it at /admin/login via the import map
- * (`@payload-auth-link/plugin/admin#ProviderLoginView`).
+ * (`@payload-auth-link/plugin/admin#ProviderLoginView`). The same flag
+ * registers the provider forgot/reset views (issue #121); the view
+ * links to the forgot one below the sign-in forms.
  */
 export type ProviderLoginViewProps = {
     /**
@@ -198,6 +249,56 @@ export type ProviderLoginViewProps = {
 };
 declare const ProviderLoginView: React.FC<ProviderLoginViewProps>;
 export default ProviderLoginView;
+
+// ===== admin/views/ProviderResetPasswordView.d.ts =====
+import React from 'react';
+/**
+ * The provider-backed admin reset-password view (issue #121): the form
+ * the reset email's link opens.
+ *
+ * - **Provider reset** posts the token and the new password to Better
+ *   Auth's own reset endpoint (`${authBase}/reset-password`) — the
+ *   provider owns the ceremony, so linked accounts never mint a local
+ *   credential (GHSA-f4hj).
+ * - **Break-glass local reset** posts to Payload's own reset-password
+ *   endpoint for UNLINKED operator accounts; linked documents are
+ *   refused there by design (GHSA-f4hj), with the refusal surfaced.
+ *
+ * Better Auth's email link carries the token as a `?token=` query
+ * parameter on `redirectTo`; the view reads it from there, falling
+ * back to a `/reset/:token` path segment. Registered by the plugin
+ * when `admin: { loginView: 'provider' }` — Payload renders it at
+ * `/admin/reset` via the import map
+ * (`@payload-auth-link/plugin/admin#ProviderResetPasswordView`).
+ */
+export type ProviderResetPasswordViewProps = {
+    /**
+     * The app-relative auth base for provider requests (e.g. `/api/auth`).
+     * Set by the plugin from its own wiring (`admin.authBase`).
+     */
+    readonly authBase: string;
+    /**
+     * Payload's local reset-password endpoint for the break-glass form —
+     * `${routes.api}/${usersSlug}/reset-password`. Set by the plugin from
+     * the Payload config; defaults to `/api/users/reset-password`.
+     */
+    readonly resetEndpoint?: string | undefined;
+    /**
+     * Payload's `routes.admin`, for the forgot link when the token is
+     * missing and the link back to the login view after success. Set by
+     * the plugin; defaults to `/admin`.
+     */
+    readonly adminRoute?: string | undefined;
+};
+/**
+ * Read the reset token the way the two flows hand it over: Better
+ * Auth's redirect appends `?token=…` to `redirectTo`; a `/reset/:token`
+ * path segment is the fallback (manual navigation, or an email
+ * template pointing at the path form). `null` when neither is present.
+ */
+export declare function readResetToken(adminRoute: string): string | null;
+declare const ProviderResetPasswordView: React.FC<ProviderResetPasswordViewProps>;
+export default ProviderResetPasswordView;
 
 // ===== audit.d.ts =====
 import { type LoggerPort, type ResolvedSessionActor } from '@payload-auth-link/core';
@@ -606,10 +707,16 @@ export type AuthLinkPluginOptions = {
      * Admin panel surface (issue #55): `'provider'` swaps Payload's
      * local login view for the provider-backed one — email+password
      * through the provider's sign-in endpoint plus the break-glass
-     * local fallback form (unlinked operator accounts only). The view
-     * is registered as a Payload custom view; the import map must
+     * local fallback form (unlinked operator accounts only). The views
+     * are registered as Payload custom views; the import map must
      * include `@payload-auth-link/plugin/admin#ProviderLoginView` (the
-     * doctor checks for it).
+     * doctor checks for it). Since #121 the flag also swaps the admin
+     * forgot/reset screens for the provider-backed ones
+     * (`ProviderForgotPasswordView` at /admin/forgot,
+     * `ProviderResetPasswordView` at /admin/reset), so linked accounts
+     * — whose local password flow is refused (GHSA-f4hj) — have an
+     * admin-panel path back in; the break-glass local forms stay on
+     * every view for unlinked operators.
      */
     readonly admin?: {
         readonly loginView?: 'provider' | undefined;
@@ -990,7 +1097,7 @@ export declare function createOrganizationEndpoints(wired: WiredOptions): Endpoi
 export {};
 
 // ===== repository.d.ts =====
-import { type ClockPort, type CollectionMap, type IdPort, type LoggerPort, type Role, type UserId, type UserRepository } from '@payload-auth-link/core';
+import { type ClockPort, type CollectionMap, type IdPort, type LoggerPort, type ProviderId, type Role, type UserId, type UserRepository } from '@payload-auth-link/core';
 import { type Payload } from 'payload';
 import { type MappingContext } from './mapping.js';
 /** `UserRepository` over the Payload Local API; depth is always explicit. */
@@ -1018,6 +1125,14 @@ export type PayloadUserRepositoryDeps = {
      * Payload API key enabled before the link.
      */
     readonly keepLocalCredentialsOnLink?: boolean | undefined;
+    /**
+     * Whether one provider's user ids ARE the users-collection document
+     * ids (adopt mode, `idStrategy: 'payload'` — the port fact
+     * `providerUserIdsAreDocumentIds`). Only a provider answering true
+     * gets the `findByProviderOwnedId` id-linking path (issue #124);
+     * absent or false, JIT linking never resolves by document id.
+     */
+    readonly providerOwnedUserIds?: ((providerId: ProviderId) => boolean) | undefined;
     /**
      * Observer for the users-document writes this repository actually
      * performs — called once per successful write, never for a no-op
@@ -1166,8 +1281,11 @@ export type AuthLinkServer = {
      */
     readonly verifyApiKey: (key: string) => Promise<ApiKeyVerification | null>;
     /**
-     * The provider's signed session cookie for one session token
-     * (`token.<signature>` — Better Auth only accepts the signed form).
+     * The provider's signed session cookie VALUE for one session token,
+     * `token.<signature>` — inject it into a request's `Cookie` header
+     * (Better Auth only accepts the signed form). It is the full
+     * `Set-Cookie` line minus the cookie name and attributes; to SET a
+     * cookie on a response, use `createSessionFor(...).setCookie`.
      * Async: the provider resolves its engine's secret on first use.
      */
     readonly sessionCookie: (token: string) => Promise<string>;

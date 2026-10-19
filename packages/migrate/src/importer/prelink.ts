@@ -36,6 +36,9 @@ import type { FieldWrite, ImportManifest, Unmappable } from './types.js'
  * itself keeps each document's `updatedAt` (issue #116); the Local
  * API's full-document write does re-create hasMany child rows (such as
  * `users_role`) with new surrogate row ids — values and order intact.
+ * The write carries the kit's migration context marker
+ * (`MIGRATION_CONTEXT`, host-writes.ts) so host hooks can skip their
+ * outward side effects (issue #123).
  */
 
 export type PrelinkOptions = {
@@ -283,12 +286,14 @@ export async function prelinkUsers(options: PrelinkOptions): Promise<PrelinkResu
           data.linkableEmail = row.email
         }
         // The pre-link is bookkeeping, not a user edit (issue #116):
-        // the document keeps its updatedAt.
+        // the document keeps its updatedAt. Marked (op 'adopt-prelink')
+        // so host hooks can skip outward side effects (issue #123).
         await updateKeepingTimestamp(payload, {
           collection: usersSlug,
           id: row.id,
           data,
           updatedAt: before?.['updatedAt'],
+          op: 'adopt-prelink',
         })
       }
     } catch (error) {

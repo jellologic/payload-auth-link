@@ -389,9 +389,7 @@ describe('authLinkServer — registry ids that no longer resolve', () => {
     })
     const server = authLinkServer(fakePayload)
     await expect(server.verifyApiKey('unknown')).resolves.toBeNull()
-    await expect(server.sessionCookie('tok')).resolves.toBe(
-      'al_stub_session=tok; Path=/; HttpOnly; SameSite=Lax'
-    )
+    await expect(server.sessionCookie('tok')).resolves.toBe('tok.stub-signature')
     await expect(server.revokeSession('sess-1')).resolves.toBeUndefined()
   })
 })
@@ -459,6 +457,7 @@ describe('authLinkServer.createSessionFor — refusal paths', () => {
           createProviderSession: () =>
             okAsync({ sessionId: 'sid', token: 'tok', storedExpiresAt: null }),
           sessionCookie: undefined,
+          sessionCookieLine: undefined,
         }),
       ],
       { onAudit: (event) => void audit.push(event) }
@@ -510,9 +509,21 @@ describe('authLinkServer.sessionCookie', () => {
 
   it("signs with the single cookie-transport provider's writer", async () => {
     const server = serverFor([port('a', { sessionCookie: undefined }), port('b')])
-    await expect(server.sessionCookie('tok')).resolves.toBe(
-      'al_stub_session=tok; Path=/; HttpOnly; SameSite=Lax'
-    )
+    await expect(server.sessionCookie('tok')).resolves.toBe('tok.stub-signature')
+  })
+
+  it('returns the signed value token.<signature>, never a Set-Cookie line (#125)', async () => {
+    const server = serverFor([port('a', { sessionCookie: undefined }), port('b')])
+    const value = await server.sessionCookie('tok')
+    // Exactly the signed form: token, one dot, the signature — no
+    // cookie name, no attributes. A caller injecting this into a
+    // request `Cookie` header must not get `name=name=…; Path=/…`.
+    expect(value).toBe('tok.stub-signature')
+    expect(value).not.toContain(';')
+    expect(value).not.toContain('al_stub_session=')
+    // The line shape stays available where responses need it: the
+    // mint's setCookie.
+    expect(port('b').sessionCookieLine).toBeDefined()
   })
 })
 

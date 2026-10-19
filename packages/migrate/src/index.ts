@@ -28,6 +28,29 @@ export {
 } from './importer/run-import.js'
 export { prelinkUsers, type PrelinkOptions, type PrelinkResult } from './importer/prelink.js'
 export { applyImport, summarizePlanRows } from './importer/apply.js'
+/**
+ * The `req.context` key the migration kit marks every host write with
+ * (issue #123). The kit's host writes run through YOUR app's Local API
+ * (`from-payload-auth --apply`, `adopt-prelink --apply`, and every
+ * `rollback` restore), so the users collection's `beforeChange` /
+ * `afterChange` hooks fire once per user. A hook that triggers outward
+ * side effects skips them for migration writes by checking this key:
+ *
+ * ```ts
+ * import { MIGRATION_CONTEXT } from '@payload-auth-link/migrate'
+ *
+ * // in a users-collection hook:
+ * if (req.context?.[MIGRATION_CONTEXT] !== undefined) return
+ * ```
+ *
+ * The value under the key is a {@link MigrationContextMarker} whose
+ * `op` names the command the write belongs to.
+ */
+export {
+  MIGRATION_CONTEXT,
+  type MigrationContextMarker,
+  type MigrationContextOp,
+} from './importer/host-writes.js'
 export {
   countTables,
   findOrphans,

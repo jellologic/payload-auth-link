@@ -92,6 +92,14 @@ function linkByVerifiedPhone(
  * with {@link UnverifiedEmailError} (no unverified-email account
  * takeover); an unknown email creates a fresh user with `defaultRoles`.
  *
+ * Before the email path, a repository exposing
+ * `findByProviderOwnedId` (adopt mode: the provider's user ids ARE the
+ * document ids, issue #124) resolves the engine's own row by id and
+ * links it without an email proof — the row could only have been
+ * created by the engine. The email sync of the already-linked branch
+ * is not repeated here: with the identity row written, the next
+ * request takes that branch and converges the email as usual.
+ *
  * The linking authority is the declared {@link LinkingPolicy}
  * (PORT-3) over the `identity` claims (PORT-1): the deprecated
  * `email`/`emailVerified` aliases on the profile are never read here.
@@ -231,56 +239,87 @@ export function ensureLinkedUser(
           return assertNever(policy)
       }
     }
-    const claimEmail = emailClaim.value
-    const claimVerified = emailClaim.verified
-    return deps.users.findByEmail(claimEmail).andThen((existing) => {
-      if (existing) {
+    // The email path, extracted so the adopt-mode id link can fall
+    // through to it.
+    const linkByEmailOrProvision = (): ResultAsync<UserRecord, EnsureLinkedUserError> => {
+      const claimEmail = emailClaim.value
+      const claimVerified = emailClaim.verified
+      return deps.users.findByEmail(claimEmail).andThen((existing) => {
+        if (existing) {
+          if (!claimVerified) {
+            deps.logger.warn('link refused: provider email unverified', {
+              email: claimEmail,
+              providerId: input.providerId,
+            })
+            return errAsync(new UnverifiedEmailError(claimEmail))
+          }
+          return deps.users
+            .linkIdentity(existing.id, ref)
+            .map((user) => {
+              deps.logger.info('identity linked', {
+                userId: user.id,
+                providerId: input.providerId,
+              })
+              return user
+            })
+            .andThen(syncPhone)
+        }
         if (!claimVerified) {
-          deps.logger.warn('link refused: provider email unverified', {
+          // CAP-9: under the opt-in policy, a session whose email is an
+          // unverified placeholder (e.g. a BA phone sign-up's temp
+          // address, held by no existing user — checked above) may
+          // still link by a VERIFIED phone claim. The unverified email
+          // itself never links or provisions.
+          if (policy.kind === 'verified-email-or-phone' && verifiedPhone !== undefined) {
+            return linkByVerifiedPhone(deps, input, ref, verifiedPhone)
+          }
+          deps.logger.warn('registration refused: provider email unverified', {
             email: claimEmail,
             providerId: input.providerId,
           })
           return errAsync(new UnverifiedEmailError(claimEmail))
         }
-        return deps.users
-          .linkIdentity(existing.id, ref)
-          .map((user) => {
-            deps.logger.info('identity linked', {
-              userId: user.id,
-              providerId: input.providerId,
-            })
-            return user
-          })
-          .andThen(syncPhone)
-      }
-      if (!claimVerified) {
-        // CAP-9: under the opt-in policy, a session whose email is an
-        // unverified placeholder (e.g. a BA phone sign-up's temp
-        // address, held by no existing user — checked above) may
-        // still link by a VERIFIED phone claim. The unverified email
-        // itself never links or provisions.
-        if (policy.kind === 'verified-email-or-phone' && verifiedPhone !== undefined) {
-          return linkByVerifiedPhone(deps, input, ref, verifiedPhone)
-        }
-        deps.logger.warn('registration refused: provider email unverified', {
+        const candidate: NewUser = {
           email: claimEmail,
-          providerId: input.providerId,
+          roles: input.defaultRoles,
+          identity: ref,
+          ...(verifiedPhone === undefined ? {} : { phone: verifiedPhone }),
+        }
+        return deps.users.create(candidate).map((user) => {
+          deps.logger.info('user registered via provider', {
+            userId: user.id,
+            providerId: input.providerId,
+          })
+          return user
         })
-        return errAsync(new UnverifiedEmailError(claimEmail))
-      }
-      const candidate: NewUser = {
-        email: claimEmail,
-        roles: input.defaultRoles,
-        identity: ref,
-        ...(verifiedPhone === undefined ? {} : { phone: verifiedPhone }),
-      }
-      return deps.users.create(candidate).map((user) => {
-        deps.logger.info('user registered via provider', {
-          userId: user.id,
-          providerId: input.providerId,
-        })
-        return user
       })
+    }
+    // Adopt mode (issue #124): the engine wrote the user's row itself,
+    // under the provider user id AS the document id, so the row exists
+    // before any identity row does. Link it first — no email proof is
+    // needed, because nobody but the engine can mint a document with
+    // that id (see the port fact). Running before the email path keeps
+    // a fresh sign-up away from the email-collision refusal its own
+    // unproven row would otherwise trip, and writes the same identity
+    // row `adopt-prelink` writes for pre-cutover users.
+    const findByProviderOwnedId = deps.users.findByProviderOwnedId
+    if (findByProviderOwnedId === undefined) {
+      return linkByEmailOrProvision()
+    }
+    return findByProviderOwnedId.call(deps.users, ref).andThen((owned) => {
+      if (!owned) {
+        return linkByEmailOrProvision()
+      }
+      return deps.users
+        .linkIdentity(owned.id, ref)
+        .map((user) => {
+          deps.logger.info('identity linked by provider-owned document id', {
+            userId: user.id,
+            providerId: input.providerId,
+          })
+          return user
+        })
+        .andThen(syncPhone)
     })
   })
 }

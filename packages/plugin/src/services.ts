@@ -34,6 +34,13 @@ export function createServices(wired: WiredOptions, payload: Payload) {
     roleValues: wired.roleValues,
     roleValuesReverse: wired.roleValuesReverse,
     keepLocalCredentialsOnLink: wired.allowLocalCredentialsForLinkedDocs,
+    // Issue #124: per provider, whether its user ids ARE the
+    // users-collection document ids (adopt mode, `idStrategy:
+    // 'payload'`). Only those providers get the id-linking path.
+    providerOwnedUserIds: (providerId) => {
+      const required = wired.registry.require(providerId)
+      return required.isOk() && required.value.providerUserIdsAreDocumentIds === true
+    },
   }
   const users = createPayloadUserRepository(repositoryDeps)
   const orgs = wired.organizations

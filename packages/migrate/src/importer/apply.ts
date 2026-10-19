@@ -2,7 +2,7 @@ import { isRecord } from '@payload-auth-link/core'
 import type { Payload } from 'payload'
 import { closeAbortedPass, openRun, recordRunEntries } from './binding.js'
 import { hostRolesField, type IdentityCheck } from './guards.js'
-import { capturedKeys, captureBefore, type SealScope } from './host-writes.js'
+import { capturedKeys, captureBefore, updateHostFields, type SealScope } from './host-writes.js'
 import { signManifest } from './manifest-mac.js'
 import {
   readFlatRows,
@@ -52,6 +52,9 @@ import {
  * - Every created row and every host field write lands in the
  *   manifest — the FIRST captured prior value per field wins, sealed —
  *   so `rollback` is exact and the source tables stay untouched.
+ * - Every host field write is marked with the kit's migration context
+ *   (`MIGRATION_CONTEXT`, see host-writes.ts) so host hooks can skip
+ *   their outward side effects for migration writes (issue #123).
  */
 
 export type ApplyOptions = {
@@ -520,11 +523,13 @@ export async function applyImport(options: ApplyOptions): Promise<ImportResult> 
               scope: sealScope(),
             })
             fieldWriteCount += newlyCaptured
-            await payload.update({
+            // Marked (op 'import') so host hooks can skip outward side
+            // effects for migration writes (issue #123).
+            await updateHostFields(payload, {
               collection: 'users',
               id: hostId,
               data: writes,
-              overrideAccess: true,
+              op: 'import',
             })
           }
         }

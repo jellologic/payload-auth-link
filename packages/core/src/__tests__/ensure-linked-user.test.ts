@@ -83,7 +83,7 @@ function profile(
 
 /** In-memory port implementation: proves the port is implementable. */
 class FakeUserRepository implements UserRepository {
-  private readonly users = new Map<string, UserRecord>()
+  protected readonly users = new Map<string, UserRecord>()
   private nextId = 1
 
   findById(id: UserId): ResultAsync<UserRecord | null, RepositoryError> {
@@ -813,5 +813,94 @@ describe('ensureLinkedUser phone handling (CAP-9, issue #110)', () => {
         }
       )
     ).rejects.toThrow(/Unreachable/)
+  })
+})
+
+/** Fake with provider-owned document ids (adopt mode, issue #124). */
+class OwnedIdFakeUserRepository extends FakeUserRepository {
+  /** Seed a row whose document id equals a provider user id. */
+  seedOwned(user: UserRecord): void {
+    this.users.set(user.id, user)
+  }
+
+  findByProviderOwnedId(ref: ProviderIdentityRef): ResultAsync<UserRecord | null, RepositoryError> {
+    return okAsync(this.users.get(ref.providerUserId) ?? null)
+  }
+}
+
+describe('ensureLinkedUser adopt mode: provider-owned document ids (issue #124)', () => {
+  /** An engine-written row: the document id IS the provider user id. */
+  function seedOwnedRow(users: OwnedIdFakeUserRepository, emailAddress: string): void {
+    const now = systemClock().now()
+    users.seedOwned({
+      id: defineUserId('ba-1'),
+      email: email(emailAddress),
+      roles: [role('user')],
+      identities: [],
+      createdAt: now,
+      updatedAt: now,
+    })
+  }
+
+  it('links the provider-owned row by id and writes the identity row — even with an unverified email claim', async () => {
+    const users = new OwnedIdFakeUserRepository()
+    seedOwnedRow(users, 'new-signup@example.com')
+    // The email path would refuse an unverified claim outright; the id
+    // path runs first, because the row is the engine's own.
+    const result = await ensureLinkedUser(
+      { users, logger: nullLogger() },
+      {
+        providerId,
+        profile: profile({
+          providerUserId: 'ba-1',
+          email: email('new-signup@example.com'),
+          emailVerified: false,
+        }),
+        defaultRoles: [role('user')],
+      }
+    )
+    expect(result.isOk()).toBe(true)
+    if (result.isOk()) {
+      expect(result.value.id).toBe('ba-1')
+      expect(result.value.identities).toHaveLength(1)
+      expect(result.value.identities[0]?.providerUserId).toBe('ba-1')
+    }
+  })
+
+  it('a miss falls through to the email path and provisions as before', async () => {
+    const users = new OwnedIdFakeUserRepository()
+    seedOwnedRow(users, 'other-signup@example.com')
+    const result = await ensureLinkedUser(
+      { users, logger: nullLogger() },
+      {
+        providerId,
+        profile: profile({ providerUserId: 'ba-2' }),
+        defaultRoles: [role('user')],
+      }
+    )
+    expect(result.isOk()).toBe(true)
+    if (result.isOk()) {
+      // A FRESH user, not the unrelated owned row.
+      expect(result.value.id).not.toBe('ba-1')
+      expect(result.value.identities[0]?.providerUserId).toBe('ba-2')
+    }
+  })
+
+  it('is idempotent: the second request resolves through the identity row, not the id', async () => {
+    const users = new OwnedIdFakeUserRepository()
+    seedOwnedRow(users, 'new-signup@example.com')
+    const input = {
+      providerId,
+      profile: profile({ providerUserId: 'ba-1' }),
+      defaultRoles: [role('user')],
+    }
+    const first = await ensureLinkedUser({ users, logger: nullLogger() }, input)
+    expect(first.isOk()).toBe(true)
+    const second = await ensureLinkedUser({ users, logger: nullLogger() }, input)
+    expect(second.isOk()).toBe(true)
+    if (first.isOk() && second.isOk()) {
+      expect(second.value.id).toBe(first.value.id)
+      expect(second.value.identities).toHaveLength(1)
+    }
   })
 })

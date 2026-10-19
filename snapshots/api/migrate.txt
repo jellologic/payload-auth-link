@@ -482,6 +482,9 @@ import { type ImportManifest, type ImportResult, type PlanRow, type Unmappable }
  * - Every created row and every host field write lands in the
  *   manifest — the FIRST captured prior value per field wins, sealed —
  *   so `rollback` is exact and the source tables stay untouched.
+ * - Every host field write is marked with the kit's migration context
+ *   (`MIGRATION_CONTEXT`, see host-writes.ts) so host hooks can skip
+ *   their outward side effects for migration writes (issue #123).
  */
 export type ApplyOptions = {
     readonly payload: Payload;
@@ -822,6 +825,68 @@ export declare function hostRolesField(payload: Payload): string;
 import type { Payload } from 'payload';
 import type { FieldWrite, ImportManifest } from './types.js';
 /**
+ * Host-document field writes with exact rollback (issues #50, #88).
+ *
+ * Capture: before the importer (or `adopt-prelink`) writes a host
+ * field, its CURRENT value is captured into the manifest — once per
+ * document field, the FIRST capture wins, so a second `--apply` can
+ * never overwrite the pre-import value with imported state. The
+ * document's `updatedAt` is captured the same way, because the Local
+ * API write bumps it.
+ *
+ * Privacy: captured values (identity rows and `linkableEmail` carry
+ * email addresses) are sealed with AES-256-GCM under a key derived
+ * from the target app's Payload `secret`; the manifest stores no value
+ * in the clear. Rollback needs the same secret — it boots the same
+ * app. Each value is bound (GCM associated data) to its entry AND to
+ * the database id and run nonce of the manifest that captured it
+ * (GHSA-xw9m-ph95-84rx), so it opens in no other manifest.
+ *
+ * Restore: rollback writes the captured values back through the
+ * DATABASE ADAPTER (`payload.db.updateOne`), not the Local API
+ * operation: the operation would stamp a fresh `updatedAt` and re-run
+ * hooks, so the "restored" row would differ from the original. The
+ * adapter write sets exactly the captured fields — `updatedAt`
+ * included — on every adapter (Postgres, SQLite, Mongo). What it
+ * cannot preserve is documented in docs/migrating-from-payload-auth.md
+ * (the forward Local API write re-creates hasMany child rows such as
+ * `users_role` with new row ids; their values and order are intact).
+ */
+/**
+ * The `req.context` key the kit marks every host write with (issue
+ * #123). The kit's host writes run through the HOST app's Local API, so
+ * the users collection's `beforeChange` / `afterChange` hooks fire for
+ * each one — `from-payload-auth --apply`, `adopt-prelink --apply`, and
+ * every rollback restore alike. A host hook that triggers outward side
+ * effects (a CRM sync, an email, a webhook, re-indexing) skips them for
+ * migration writes by checking this key:
+ *
+ * ```ts
+ * import { MIGRATION_CONTEXT } from '@payload-auth-link/migrate'
+ *
+ * // in a users-collection hook:
+ * if (req.context?.[MIGRATION_CONTEXT] !== undefined) return
+ * ```
+ */
+export declare const MIGRATION_CONTEXT = "payloadAuthLinkMigration";
+/** The migration command a marked host write belongs to. */
+export type MigrationContextOp = 'adopt-prelink' | 'import' | 'rollback';
+/** The value the kit stores under {@link MIGRATION_CONTEXT} in `req.context`. */
+export type MigrationContextMarker = {
+    readonly op: MigrationContextOp;
+};
+/**
+ * The `context` argument every Local API host write passes. Payload
+ * merges it into `req.context`, where the host hooks read it (see
+ * {@link MIGRATION_CONTEXT}); the adapter writes beside them
+ * (`payload.db.updateOne`) run no hooks and carry no marker.
+ */
+export declare function migrationContextOf(op: MigrationContextOp): {
+    readonly context: {
+        readonly [MIGRATION_CONTEXT]: MigrationContextMarker;
+    };
+};
+/**
  * The run a sealed value belongs to (GHSA-xw9m-ph95-84rx): the
  * database id and run nonce of the version-4 manifest that captured
  * it.
@@ -931,17 +996,42 @@ export declare function transactionReq(transactionID: TransactionId | null): {
  * captured value is written back through the adapter right after, in
  * the same transaction. Hosts and caches that key on `updated_at`
  * see the document as unchanged by the migration tooling.
+ *
+ * The Local API write carries {@link migrationContextOf the migration
+ * context marker} (`op` names the command) so host hooks can skip
+ * outward side effects; the adapter's timestamp write runs no hooks.
  */
 export declare function updateKeepingTimestamp(payload: Payload, options: {
     readonly collection: string;
     readonly id: string | number;
     readonly data: Record<string, unknown>;
     readonly updatedAt: unknown;
+    /** The command this write belongs to (see {@link MIGRATION_CONTEXT}). */
+    readonly op: MigrationContextOp;
+}): Promise<void>;
+/**
+ * Write host fields through the Local API with the
+ * {@link MIGRATION_CONTEXT} marker (`op` names the command) so host
+ * hooks can skip outward side effects, letting Payload stamp
+ * `updatedAt` as usual — the importer records the captured value and
+ * rollback restores it. This is the importer's host pass
+ * (`from-payload-auth --apply`); the pre-link keeps the timestamp and
+ * goes through {@link updateKeepingTimestamp} instead.
+ */
+export declare function updateHostFields(payload: Payload, options: {
+    readonly collection: string;
+    readonly id: string | number;
+    readonly data: Record<string, unknown>;
+    /** The command this write belongs to (see {@link MIGRATION_CONTEXT}). */
+    readonly op: MigrationContextOp;
 }): Promise<void>;
 /**
  * Restore every captured field, one adapter write per document so
  * `updatedAt` lands exactly as captured. Returns the number of field
- * values restored.
+ * values restored. The child-row restore goes through the Local API,
+ * so it carries the migration context marker (`op: 'rollback'`) — the
+ * same skip key the forward writes carry; the adapter write beside it
+ * runs no hooks.
  */
 export declare function restoreCaptured(payload: Payload, manifest: Pick<ImportManifest, 'fieldWrites' | 'databaseId' | 'runId'>, options?: {
     readonly rolesField?: string | undefined;
@@ -1199,6 +1289,9 @@ import type { ImportManifest, Unmappable } from './types.js';
  * itself keeps each document's `updatedAt` (issue #116); the Local
  * API's full-document write does re-create hasMany child rows (such as
  * `users_role`) with new surrogate row ids — values and order intact.
+ * The write carries the kit's migration context marker
+ * (`MIGRATION_CONTEXT`, host-writes.ts) so host hooks can skip their
+ * outward side effects (issue #123).
  */
 export type PrelinkOptions = {
     readonly payload: Payload;
@@ -1662,6 +1755,25 @@ export { introspectDatabase } from './doctor/database.js';
 export { runFromPayloadAuth, runVerify, runRollback, runFinalize, runAdoptPrelink, type FinalizeCommandOptions, type ImportCommandOptions, type PrelinkCommandOptions, } from './importer/run-import.js';
 export { prelinkUsers, type PrelinkOptions, type PrelinkResult } from './importer/prelink.js';
 export { applyImport, summarizePlanRows } from './importer/apply.js';
+/**
+ * The `req.context` key the migration kit marks every host write with
+ * (issue #123). The kit's host writes run through YOUR app's Local API
+ * (`from-payload-auth --apply`, `adopt-prelink --apply`, and every
+ * `rollback` restore), so the users collection's `beforeChange` /
+ * `afterChange` hooks fire once per user. A hook that triggers outward
+ * side effects skips them for migration writes by checking this key:
+ *
+ * ```ts
+ * import { MIGRATION_CONTEXT } from '@payload-auth-link/migrate'
+ *
+ * // in a users-collection hook:
+ * if (req.context?.[MIGRATION_CONTEXT] !== undefined) return
+ * ```
+ *
+ * The value under the key is a {@link MigrationContextMarker} whose
+ * `op` names the command the write belongs to.
+ */
+export { MIGRATION_CONTEXT, type MigrationContextMarker, type MigrationContextOp, } from './importer/host-writes.js';
 export { countTables, findOrphans, openSource, probeSourceLayout, readFlatRows, readSourceUsers, unverifiedEmails, type OrphanScan, type SourceClient, type SourceLayoutIssue, type SourceAccount, type SourceRow, type SourceUser, } from './importer/source.js';
 export { readManifest, writeManifest, verifyImport, rollbackImport, finalizeManifest, defaultManifestPath, defaultPrelinkManifestPath, type FinalizeOptions, type RollbackOptions, type VerifyIssue, type VerifyResult, } from './importer/lifecycle.js';
 export { defaultSourceTables, defaultTargetSlugs, parseSourceMapJson, presentTables, resolveSourceTables, sourceModelNames, type CreatedRow, type ResolvedSourceTables, type SourceModel, type SourceTableMap, type TargetModel, type TargetSlugMap, type FieldWrite, type ImportManifest, type ManifestKind, type ImportPlan, type ImportResult, type PlanRow, type Unmappable, } from './importer/types.js';

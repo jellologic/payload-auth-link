@@ -916,6 +916,8 @@ export type BetterAuthProviderDeps = {
     readonly auth: BetterAuthServerApi;
     /** From {@link getBetterAuthSessionCookieNames} (see `cookies.ts`). */
     readonly sessionCookieNames: readonly string[];
+    /** Issue #124: adopt mode — `idStrategy: 'payload'` with the user model adopted. */
+    readonly providerUserIdsAreDocumentIds?: boolean | undefined;
     /**
      * Clearing attributes per session cookie, from
      * {@link getBetterAuthSessionCookieClearOptions} (see `cookies.ts`).
@@ -1003,6 +1005,8 @@ export declare function createBetterAuthProviderFromUnknown(auth: unknown, sessi
         readonly until: string;
         readonly cookieNames: readonly string[];
     } | undefined;
+    /** Issue #124: adopt mode, `idStrategy: 'payload'`, user model adopted. */
+    readonly providerUserIdsAreDocumentIds?: boolean | undefined;
 }): IdentityProviderPort;
 
 // ===== session-provenance.d.ts =====

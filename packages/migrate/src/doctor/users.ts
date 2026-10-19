@@ -107,6 +107,27 @@ export function localStrategyOn(collection: Record<string, unknown>): boolean {
  */
 const pluginStrategyName = 'auth-link'
 
+/**
+ * The collection-hook kinds a migration write meets (issue #123) —
+ * Payload declares them under the collection's `hooks` object. An empty
+ * array declares nothing (payload-auth's builder emits those).
+ */
+function declaredHookKinds(collection: Record<string, unknown>): string[] {
+  const hooks: unknown = collection.hooks
+  if (typeof hooks !== 'object' || hooks === null) {
+    return []
+  }
+  const record = hooks as Record<string, unknown>
+  const kinds: string[] = []
+  for (const kind of ['beforeChange', 'afterChange'] as const) {
+    const declared: unknown = record[kind]
+    if (Array.isArray(declared) && declared.length > 0) {
+      kinds.push(kind)
+    }
+  }
+  return kinds
+}
+
 export function analyzeUsersCollection(
   collection: Record<string, unknown> | null,
   rolesFieldName: string,
@@ -195,6 +216,16 @@ export function analyzeUsersCollection(
         .join(
           ', '
         )} collide with the plugin's injected fields; rename them before booting payload-auth-link (its config throws on collisions)`,
+    })
+  }
+
+  // Host hooks fire once per user for every write the kit makes (issue
+  // #123): a warning, never a blocker — the marker is the opt-out.
+  const hookKinds = declaredHookKinds(collection)
+  if (hookKinds.length > 0) {
+    issues.push({
+      code: 'users-collection-hooks',
+      detail: `the users collection declares ${hookKinds.join(' and ')} hook(s): every host write the kit makes ('from-payload-auth --apply', 'adopt-prelink --apply', and a rollback restore) goes through the Local API, so they run once per user. Hooks that trigger outward side effects (CRM sync, email, webhooks, indexing) should skip migration writes: check req.context['payloadAuthLinkMigration'] — the kit marks every host write with it (MIGRATION_CONTEXT, exported from @payload-auth-link/migrate)`,
     })
   }
 

@@ -388,7 +388,7 @@ describe('real-engine server sessions', () => {
     if (buildCookie === undefined) {
       throw new Error('the better-auth provider exposes no sessionCookie')
     }
-    const cookie = await buildCookie(created.token)
+    const cookie = `${engine.sessionCookieNames[0] ?? ''}=${await buildCookie(created.token)}`
     const session = await engine.provider.getSession(new Headers({ cookie }))
     if (session.isErr() || session.value === null) {
       throw new Error(session.isErr() ? session.error.message : 'minted cookie resolved nothing')
@@ -505,7 +505,7 @@ describe('real-engine server sessions', () => {
     if (buildCookie === undefined) {
       throw new Error('the better-auth provider exposes no sessionCookie')
     }
-    const mintedCookie = await buildCookie(created.token)
+    const mintedCookie = `${engine.sessionCookieNames[0] ?? ''}=${await buildCookie(created.token)}`
     const before = await engine.provider.getSession(new Headers({ cookie: mintedCookie }))
     if (before.isErr() || before.value === null) {
       throw new Error(before.isErr() ? before.error.message : 'no session')
@@ -538,7 +538,7 @@ describe('real-engine server sessions', () => {
     if (buildCookie === undefined) {
       throw new Error('the better-auth provider exposes no sessionCookie')
     }
-    const mintedCookie = await buildCookie(created.token)
+    const mintedCookie = `${engine.sessionCookieNames[0] ?? ''}=${await buildCookie(created.token)}`
     const wrong = await engine.auth.handler(
       authRequest('/two-factor/verify-totp', {
         method: 'POST',
@@ -656,7 +656,11 @@ describe('real-engine server sessions', () => {
       if (buildCookie === undefined) {
         throw new Error('the better-auth provider exposes no sessionCookie')
       }
-      return (await buildCookie(created.token)).split(';')[0] ?? ''
+      // The signed VALUE under the engine's cookie name — the request
+      // `Cookie` pair form (#125: sessionCookie no longer returns the
+      // whole Set-Cookie line).
+      const name = engine.sessionCookieNames[0] ?? ''
+      return `${name}=${await buildCookie(created.token)}`
     }
 
     it('relabels a fresh password session two-factor, without any cookie re-set', async () => {

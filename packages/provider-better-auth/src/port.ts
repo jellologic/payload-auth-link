@@ -147,6 +147,8 @@ export type BetterAuthProviderDeps = {
   readonly auth: BetterAuthServerApi
   /** From {@link getBetterAuthSessionCookieNames} (see `cookies.ts`). */
   readonly sessionCookieNames: readonly string[]
+  /** Issue #124: adopt mode — `idStrategy: 'payload'` with the user model adopted. */
+  readonly providerUserIdsAreDocumentIds?: boolean | undefined
   /**
    * Clearing attributes per session cookie, from
    * {@link getBetterAuthSessionCookieClearOptions} (see `cookies.ts`).
@@ -204,6 +206,8 @@ export type BetterAuthProviderDeps = {
 }
 
 type PortFunctions = {
+  /** Issue #124: adopt mode — the engine's user ids are document ids. */
+  readonly providerUserIdsAreDocumentIds?: boolean | undefined
   readonly getSession: (input: BetterAuthSessionQuery) => Promise<unknown>
   readonly deleteSession: (token: string) => Promise<unknown>
   readonly deleteUserSessions: (userId: string) => Promise<unknown>
@@ -224,7 +228,12 @@ type PortFunctions = {
         readonly isProviderUser: (userId: string) => Promise<boolean>
       }
     | undefined
-  readonly buildSessionCookie: (token: string) => Promise<string>
+  readonly buildSessionCookies: {
+    /** The signed value `token.<signature>` (BA reads only the signed form). */
+    readonly value: (token: string) => Promise<string>
+    /** The full `Set-Cookie` line (name, attributes), for responses. */
+    readonly line: (token: string) => Promise<string>
+  }
   readonly listDeviceSessions?: ((input: { headers: Headers }) => Promise<unknown>) | undefined
   readonly sessionCookieNames: readonly string[]
   readonly capabilities: ReadonlySet<Capability>
@@ -497,7 +506,7 @@ function createPortFromFunctions(deps: PortFunctions): IdentityProviderPort {
   const clearOptions = deps.sessionCookieClearOptions
   const logoutCookieNames = deps.logoutCookieNames
   const events = deps.events
-  const buildSessionCookie = deps.buildSessionCookie
+  const buildSessionCookies = deps.buildSessionCookies
   const apiKeys = deps.apiKeys
   const listDeviceSessions = deps.listDeviceSessions
   const legacySessions = deps.legacySessions
@@ -587,7 +596,12 @@ function createPortFromFunctions(deps: PortFunctions): IdentityProviderPort {
               (result) => narrowApiKeyVerification(result)
             ).andThen((verified) => refuseNonUserApiKeyOwner(verified, apiKeys.isProviderUser)),
         }),
-    sessionCookie: (token: string) => buildSessionCookie(token),
+    sessionCookie: (token: string) => buildSessionCookies.value(token),
+    sessionCookieLine: (token: string) => buildSessionCookies.line(token),
+    // Issue #124: declared by the engine for adopt mode only.
+    ...(deps.providerUserIdsAreDocumentIds === true
+      ? { providerUserIdsAreDocumentIds: true as const }
+      : {}),
     ...(listDeviceSessions === undefined
       ? {}
       : {
@@ -670,17 +684,23 @@ async function signCookieValue(value: string, secret: string): Promise<string> {
  * context's own write attributes (name, Path, HttpOnly, SameSite,
  * Secure, Domain, Max-Age). The context resolves once; every call
  * after that awaits the cached read.
+ *
+ * Two shapes from one context (#125): the signed VALUE
+ * (`token.<signature>`) for `sessionCookie` — injecting into a request
+ * `Cookie` header — and the full `Set-Cookie` LINE for
+ * `sessionCookieLine` (responses, `createSession().setCookie`).
  */
-function buildSessionCookieFromContext(
-  context: PromiseLike<unknown>
-): (token: string) => Promise<string> {
+function buildSessionCookiesFromContext(context: PromiseLike<unknown>): {
+  readonly value: (token: string) => Promise<string>
+  readonly line: (token: string) => Promise<string>
+} {
   const resolved = context.then(narrowSessionCookieContext)
   // The narrowing rejects when the context lacks the cookie fields;
   // without a reader that rejection would sit unhandled from port
   // construction (crashing test runs with fail-closed engines). The
   // builder below surfaces it on first use instead.
   Promise.resolve(resolved).catch(() => {})
-  return async (token: string) => {
+  const line = async (token: string): Promise<string> => {
     const { secret, cookieName, attributes } = await resolved
     const signature = await signCookieValue(token, secret)
     const parts: string[] = [`${cookieName}=${token}.${signature}`]
@@ -706,6 +726,12 @@ function buildSessionCookieFromContext(
     }
     return parts.join('; ')
   }
+  const value = async (token: string): Promise<string> => {
+    const { secret } = await resolved
+    const signature = await signCookieValue(token, secret)
+    return `${token}.${signature}`
+  }
+  return { value, line }
 }
 
 /**
@@ -1004,6 +1030,7 @@ function presentedLogoutCookies(
 export function createBetterAuthProvider(deps: BetterAuthProviderDeps): IdentityProviderPort {
   const verifyApiKey = deps.auth.verifyApiKey
   return createPortFromFunctions({
+    providerUserIdsAreDocumentIds: deps.providerUserIdsAreDocumentIds === true,
     getSession: (input) =>
       getSessionMaybeWithLegacy(
         input,
@@ -1147,9 +1174,10 @@ export function createBetterAuthProvider(deps: BetterAuthProviderDeps): Identity
           },
         }),
     ...(deps.legacySessions === undefined ? {} : { legacySessions: deps.legacySessions }),
-    // #54/#72: the signed session cookie, built from the instance's
-    // own resolved context (secret + cookie attributes).
-    buildSessionCookie: buildSessionCookieFromContext(deps.auth.$context),
+    // #54/#72: the signed session cookie (value + line, #125), built
+    // from the instance's own resolved context (secret + cookie
+    // attributes).
+    buildSessionCookies: buildSessionCookiesFromContext(deps.auth.$context),
     ...(deps.auth.api.listDeviceSessions === undefined
       ? {}
       : { listDeviceSessions: deps.auth.api.listDeviceSessions }),
@@ -1191,6 +1219,8 @@ export function createBetterAuthProviderFromUnknown(
           readonly cookieNames: readonly string[]
         }
       | undefined
+    /** Issue #124: adopt mode, `idStrategy: 'payload'`, user model adopted. */
+    readonly providerUserIdsAreDocumentIds?: boolean | undefined
   }
 ): IdentityProviderPort {
   if (!isRecord(auth)) {
@@ -1247,6 +1277,7 @@ export function createBetterAuthProviderFromUnknown(
           })
       : undefined
   return createPortFromFunctions({
+    providerUserIdsAreDocumentIds: options?.providerUserIdsAreDocumentIds === true,
     getSession: (input) =>
       getSessionMaybeWithLegacy(
         input,
@@ -1360,9 +1391,10 @@ export function createBetterAuthProviderFromUnknown(
               ).then((user) => isRecord(user)),
           },
         }),
-    // #54/#72: the signed session cookie, built from the instance's
-    // own resolved context (secret + cookie attributes).
-    buildSessionCookie: buildSessionCookieFromContext(context),
+    // #54/#72: the signed session cookie (value + line, #125), built
+    // from the instance's own resolved context (secret + cookie
+    // attributes).
+    buildSessionCookies: buildSessionCookiesFromContext(context),
     ...(listDeviceSessions === undefined ? {} : { listDeviceSessions }),
     sessionCookieNames,
     capabilities: betterAuthCapabilities({

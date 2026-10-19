@@ -142,7 +142,12 @@ export function createStubProvider(options?: {
     ...(options?.omitSessionCookie === true
       ? {}
       : {
-          sessionCookie: (token: string) =>
+          // The signed VALUE (`token.<sig>`), per the port contract —
+          // injectable into a request `Cookie` header (#125).
+          sessionCookie: (token: string) => Promise.resolve(`${token}.stub-signature`),
+          // The full `Set-Cookie` line, what `createSession().setCookie`
+          // returns.
+          sessionCookieLine: (token: string) =>
             Promise.resolve(`al_stub_session=${token}; Path=/; HttpOnly; SameSite=Lax`),
         }),
   }

@@ -179,7 +179,9 @@ describe('applyUsersCollection', () => {
       return result[0] as CollectionConfig
     }
     function markerHookOf(users: CollectionConfig) {
-      const hook = users.hooks?.beforeChange?.[0]
+      // The proof marker is the LAST beforeChange hook (the roles
+      // normalizer runs first, issue #124).
+      const hook = users.hooks?.beforeChange?.at(-1)
       expect(hook).toBeTypeOf('function')
       return hook as (args: {
         operation: string
