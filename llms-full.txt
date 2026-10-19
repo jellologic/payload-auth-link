@@ -2094,6 +2094,18 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
+## plugin 0.16.3 / provider-better-auth 0.13.3 (round 9: fix the adopt identity-at-creation regression on Postgres)
+
+**Upgrade impact:** none — a bugfix. The identity-at-creation hook
+(0.16.2) wrote its nested update without the request, so on Postgres it
+could not see the uncommitted row, threw NotFound, and rolled the
+SIGN-UP back — every engine-created user failed in adopt mode
+(issue #135). The update now joins the create's transaction (`req`), a
+failed identity write is non-fatal (logged; the JIT link attaches the
+identity on first resolution as before), and the adopt sign-up
+integration suite runs on Postgres in CI, where transaction isolation
+differs from SQLite in memory.
+
 ## migrate 0.12.0 / plugin 0.16.2 / core 0.12.2 / provider-better-auth 0.13.2 (round 8: the kit refuses external KV adapters; adopt identities at creation)
 
 **Upgrade impact:** no database schema change; no collection-shape

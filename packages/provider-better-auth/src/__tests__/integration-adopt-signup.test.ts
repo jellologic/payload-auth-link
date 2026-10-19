@@ -17,6 +17,7 @@
  *    engine stores nothing);
  * 3. a scalar `role` on a Local API create stores as the array shape.
  */
+import { postgresAdapter } from '@payloadcms/db-postgres'
 import { sqliteAdapter } from '@payloadcms/db-sqlite'
 import {
   buildConfig,
@@ -32,6 +33,14 @@ import { authLink } from '@payload-auth-link/plugin'
 
 const ORIGIN = 'http://adopt-signup.test'
 const SECRET = 'adopt-signup-through-plugin-secret'
+/**
+ * When set (CI's migration-fixture job, or a local Postgres), the
+ * suite runs on Postgres — transaction isolation is where SQLite
+ * in-memory hides nested-write bugs (issue #135). Unset: SQLite.
+ */
+const ADOPT_PG_URL = process.env.ADOPT_PG_URL
+/** Run-scoped email suffix: the Postgres database persists across runs. */
+const RUN = String(Date.now())
 
 let config: SanitizedConfig
 let payload: Payload | undefined
@@ -92,7 +101,10 @@ beforeAll(async () => {
   config = await buildConfig({
     secret: SECRET,
     serverURL: ORIGIN,
-    db: sqliteAdapter({ client: { url: ':memory:' } }),
+    db:
+      ADOPT_PG_URL === undefined
+        ? sqliteAdapter({ client: { url: ':memory:' } })
+        : postgresAdapter({ pool: { connectionString: ADOPT_PG_URL }, push: true }),
     telemetry: false,
     logger: { options: { level: 'silent' } },
     admin: { user: 'users' },
@@ -171,12 +183,12 @@ beforeAll(async () => {
   await engine.auth.$context
 }, 120_000)
 
-describe('adopt mode: a post-cutover sign-up resolves through the plugin (issue #124)', () => {
+describe(`adopt mode: a post-cutover sign-up resolves through the plugin (issue #124; ${ADOPT_PG_URL === undefined ? 'sqlite' : 'postgres'})`, () => {
   it('links the engine-created row on first resolution and applies the default role', async () => {
     const signUp = await engine.auth.handler(
       authRequest('/sign-up/email', {
         method: 'POST',
-        body: { name: 'Post Cutover', email: 'late@example.com', password: 'correct-horse' },
+        body: { name: 'Post Cutover', email: `late-${RUN}@example.com`, password: 'correct-horse' },
       })
     )
     expect(signUp.status).toBe(200)
@@ -185,7 +197,7 @@ describe('adopt mode: a post-cutover sign-up resolves through the plugin (issue 
     // linked, so `verify` never reports a permanent mismatch.
     const justCreated = await payload?.find({
       collection: 'users',
-      where: { email: { equals: 'late@example.com' } },
+      where: { email: { equals: `late-${RUN}@example.com` } },
       limit: 1,
       overrideAccess: true,
     })
@@ -195,7 +207,7 @@ describe('adopt mode: a post-cutover sign-up resolves through the plugin (issue 
     const signIn = await engine.auth.handler(
       authRequest('/sign-in/email', {
         method: 'POST',
-        body: { email: 'late@example.com', password: 'correct-horse' },
+        body: { email: `late-${RUN}@example.com`, password: 'correct-horse' },
       })
     )
     expect(signIn.status).toBe(200)
@@ -210,7 +222,7 @@ describe('adopt mode: a post-cutover sign-up resolves through the plugin (issue 
       user: { id: string; roles?: string[]; email: string } | null
     }
     expect(body.user).not.toBeNull()
-    expect(body.user?.email).toBe('late@example.com')
+    expect(body.user?.email).toBe(`late-${RUN}@example.com`)
     expect(body.user?.roles).toEqual(['user'])
 
     // The link wrote the identities row (the same one `adopt-prelink`
@@ -227,7 +239,7 @@ describe('adopt mode: a post-cutover sign-up resolves through the plugin (issue 
     const signIn = await engine.auth.handler(
       authRequest('/sign-in/email', {
         method: 'POST',
-        body: { email: 'late@example.com', password: 'correct-horse' },
+        body: { email: `late-${RUN}@example.com`, password: 'correct-horse' },
       })
     )
     const cookie = sessionCookieOf(signIn)
@@ -246,7 +258,7 @@ describe('adopt mode: a post-cutover sign-up resolves through the plugin (issue 
     const created = await payload?.create({
       collection: 'users',
       data: {
-        email: 'scalar-role@example.com',
+        email: `scalar-role-${RUN}@example.com`,
         // The engine (Better Auth's additionalField) hands the plugin a
         // plain string; the field is a hasMany select.
         role: 'staff',
@@ -285,7 +297,7 @@ describe('adopt mode: a post-cutover sign-up resolves through the plugin (issue 
     const signIn = await engine.auth.handler(
       authRequest('/sign-in/email', {
         method: 'POST',
-        body: { email: 'late@example.com', password: 'correct-horse' },
+        body: { email: `late-${RUN}@example.com`, password: 'correct-horse' },
       })
     )
     const session = await handleEndpoints({

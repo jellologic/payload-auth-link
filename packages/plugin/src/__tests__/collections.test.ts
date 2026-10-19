@@ -522,6 +522,30 @@ describe('adoptIdentityHook — the identity row at creation (issue #132)', () =
     expect(updates).toHaveLength(0)
   })
 
+  it('a failed identity write is non-fatal and logged (#135)', async () => {
+    const { provider } = createStubProvider()
+    const owned = { ...provider, providerUserIdsAreDocumentIds: true as const }
+    const options = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['admin', 'user'],
+      defaultRole: 'user',
+      providers: [owned],
+    })
+    const hook = identityHookOf(options, createAuthLinkStrategy(options))
+    await hook({
+      doc: { id: 12, email: 'gone@test.dev', identities: [] },
+      operation: 'create',
+      req: {
+        context: { [engineCreateMarker]: true },
+        payload: {
+          update: () => Promise.reject(new Error('Not Found')),
+        },
+      },
+    })
+    // No throw reached the caller: the JIT link attaches the identity
+    // on first resolution instead.
+  })
+
   it('leaves a document that already carries identities alone', async () => {
     const { provider } = createStubProvider()
     const owned = { ...provider, providerUserIdsAreDocumentIds: true as const }
@@ -551,6 +575,61 @@ describe('adoptIdentityHook — the identity row at creation (issue #132)', () =
       },
     })
     expect(updates).toHaveLength(0)
+  })
+
+  it('a non-record document is skipped', async () => {
+    const { provider } = createStubProvider()
+    const owned = { ...provider, providerUserIdsAreDocumentIds: true as const }
+    const options = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['admin', 'user'],
+      defaultRole: 'user',
+      providers: [owned],
+    })
+    const hook = identityHookOf(options, createAuthLinkStrategy(options))
+    const updates: unknown[] = []
+    await hook({
+      doc: null as unknown as Record<string, unknown>,
+      operation: 'create',
+      req: {
+        context: { [engineCreateMarker]: true },
+        payload: {
+          update: (args: unknown) => {
+            updates.push(args)
+            return Promise.resolve()
+          },
+        },
+      },
+    })
+    expect(updates).toHaveLength(0)
+  })
+
+  it('a document without a usable id is skipped; a missing email stores empty', async () => {
+    const { provider } = createStubProvider()
+    const owned = { ...provider, providerUserIdsAreDocumentIds: true as const }
+    const options = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['admin', 'user'],
+      defaultRole: 'user',
+      providers: [owned],
+    })
+    const hook = identityHookOf(options, createAuthLinkStrategy(options))
+    const updates: unknown[] = []
+    const req = {
+      context: { [engineCreateMarker]: true },
+      payload: {
+        update: (args: unknown) => {
+          updates.push(args)
+          return Promise.resolve()
+        },
+      },
+    }
+    await hook({ doc: { identities: [] }, operation: 'create', req })
+    expect(updates).toHaveLength(0)
+    await hook({ doc: { id: 13, identities: [] }, operation: 'create', req })
+    expect(updates).toHaveLength(1)
+    const written = updates[0] as { data: { identities: { email: unknown }[] } }
+    expect(written.data.identities[0]?.email).toBe('')
   })
 
   it('a request with no context object is not an engine create', async () => {

@@ -312,7 +312,7 @@ function adoptIdentityHook(wired: WiredOptions): CollectionAfterChangeHook {
     return adoptProviderId
   }
   return async ({ doc, operation, req }) => {
-    if (operation !== 'create') {
+    if (operation !== 'create' || !isRecord(doc)) {
       return
     }
     if (!isRecord(req.context) || req.context[engineCreateMarker] !== true) {
@@ -323,35 +323,50 @@ function adoptIdentityHook(wired: WiredOptions): CollectionAfterChangeHook {
       return
     }
     const identitiesField = wired.config.map.identitiesField
-    const existing: unknown = isRecord(doc) ? doc[identitiesField] : undefined
+    const existing: unknown = doc[identitiesField]
     if (Array.isArray(existing) && existing.length > 0) {
       return
     }
-    const email = isRecord(doc) && typeof doc.email === 'string' ? doc.email : ''
-    const id: unknown = isRecord(doc) ? doc.id : undefined
+    const id: unknown = doc.id
     if (typeof id !== 'string' && typeof id !== 'number') {
       return
     }
-    await req.payload.update({
-      collection: wired.config.map.usersCollection,
-      id,
-      data: {
-        [identitiesField]: [
-          {
-            providerId,
-            providerUserId: String(id),
-            email,
-            linkedAt: new Date().toISOString(),
-          },
-        ],
-      },
-      context: { [engineCreateMarker]: true },
-      overrideAccess: true,
-    })
-    wired.logger.info('identity written at creation (adopt mode)', {
-      providerId,
-      userId: String(id),
-    })
+    const email = typeof doc.email === 'string' ? doc.email : ''
+    try {
+      // `req` joins the create's transaction (#135): without it the
+      // nested update runs on its own connection, cannot see the
+      // uncommitted row on Postgres, and rolls the sign-up back.
+      await req.payload.update({
+        collection: wired.config.map.usersCollection,
+        id,
+        data: {
+          [identitiesField]: [
+            {
+              providerId,
+              providerUserId: String(id),
+              email,
+              linkedAt: new Date().toISOString(),
+            },
+          ],
+        },
+        context: { [engineCreateMarker]: true },
+        overrideAccess: true,
+        req,
+      })
+      wired.logger.info('identity written at creation (adopt mode)', {
+        providerId,
+        userId: String(id),
+      })
+    } catch (error) {
+      // Non-fatal (#135): the JIT link attaches the identity on the
+      // user's first resolution anyway — a sign-up must never fail
+      // because of the identity row.
+      wired.logger.warn('identity write at creation failed; JIT links on first resolution', {
+        cause: error instanceof Error ? error.message : String(error),
+        providerId,
+        userId: String(id),
+      })
+    }
   }
 }
 
