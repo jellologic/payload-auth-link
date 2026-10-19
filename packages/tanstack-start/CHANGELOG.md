@@ -1,5 +1,14 @@
 # @payload-auth-link/tanstack-start
 
+## 0.7.3
+
+### Patch Changes
+
+- Updated dependencies [[`f75c921`](https://github.com/jellologic/payload-auth-link/commit/f75c9212cbbfa2a59c6d4b84b3ab9a1ef4381aed)]:
+  - @payload-auth-link/core@0.12.2
+  - @payload-auth-link/react@0.7.3
+  - @payload-auth-link/web@0.7.3
+
 ## 0.7.2
 
 ### Patch Changes
