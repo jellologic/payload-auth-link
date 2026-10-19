@@ -12,6 +12,7 @@ import { nextCookies } from 'better-auth/next-js'
 import { jwt, magicLink, organization } from 'better-auth/plugins'
 import { authLink } from '@payload-auth-link/plugin'
 import { createBetterAuthEngine } from '@payload-auth-link/provider-better-auth'
+import { isRecord } from '@payload-auth-link/core'
 import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -550,20 +551,25 @@ describe.skipIf(!canReachPostgres)(
       // hold on their own. The id record lives in the kit's own
       // collection now (issue #139).
       const idKey = 'payload-auth-link/migrate/database-id'
-      const idRecords = (await payload.find({
+      const found = await payload.find({
         collection: 'payload-auth-link-migrations',
         where: { key: { equals: idKey } },
         limit: 1,
         depth: 0,
         overrideAccess: true,
-      })) as { docs: { id: number | string; data: unknown }[] }
-      const idRecord = idRecords.docs[0]?.data
-      if (idRecord === undefined) {
+      })
+      const idDoc: unknown = (found as { docs?: unknown[] }).docs?.[0]
+      const idRecord: unknown = isRecord(idDoc) ? idDoc.data : undefined
+      if (typeof idRecord !== 'object' || idRecord === null) {
+        throw new Error('the apply recorded no database id')
+      }
+      const idDocId: unknown = isRecord(idDoc) ? idDoc.id : undefined
+      if (typeof idDocId !== 'string' && typeof idDocId !== 'number') {
         throw new Error('the apply recorded no database id')
       }
       await payload.delete({
         collection: 'payload-auth-link-migrations',
-        id: idRecords.docs[0].id,
+        id: idDocId,
         overrideAccess: true,
       })
       try {
@@ -609,7 +615,7 @@ describe.skipIf(!canReachPostgres)(
       } finally {
         await payload.create({
           collection: 'payload-auth-link-migrations',
-          data: { key: idKey, data: idRecord },
+          data: { key: idKey, data: idRecord as Record<string, unknown> },
           overrideAccess: true,
         })
       }
