@@ -15,7 +15,49 @@ permissions:
   contents: read
 
 jobs:
+  # Issue: the post-merge run on main re-tested the IDENTICAL tree the
+  # PR just tested (a merge commit of an up-to-date branch is new SHA,
+  # same content). `tested` proves the identity — second parent of the
+  # merge commit is the tested PR head, empty tree diff, all its
+  # checks green — and every other job skips. Skipped counts as
+  # success, so required checks and the release gate (workflow_run on
+  # ci success) hold. On pull_request events it always answers
+  # "do not skip", so PR runs are untouched.
+  tested:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.decide.outputs.skip }}
+    permissions:
+      checks: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD: ${{ github.sha }}
+        run: |
+          set -eu
+          skip=false
+          pr_head=$(git show -s --format=%P "$HEAD" | awk '{print $2}')
+          if [ -n "$pr_head" ] && [ -z "$(git diff --name-only "$HEAD" "$pr_head")" ]; then
+            verdicts=$(gh api "repos/$REPO/commits/$pr_head/check-runs" --paginate \
+              --jq '[.check_runs[] | select(.name != "tested") | .conclusion // "pending"]')
+            bad=$(echo "$verdicts" | jq '[.[] | select(. != "success" and . != "skipped")] | length')
+            good=$(echo "$verdicts" | jq '[.[] | select(. == "success")] | length')
+            if [ "$bad" = "0" ] && [ "$good" != "0" ]; then
+              skip=true
+            fi
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+          echo "tested head: $pr_head; skip=$skip"
   check:
+    if: always() && needs.tested.outputs.skip != 'true'
+    needs: tested
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -36,6 +78,8 @@ jobs:
   # runtime masks Node-only loader differences (the CSS-import case),
   # so the same vitest suite runs under each Node explicitly.
   test-node:
+    if: always() && needs.tested.outputs.skip != 'true'
+    needs: tested
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -65,6 +109,8 @@ jobs:
   # workspace packages through their dist exports, hence the build
   # first), and the Next example must survive a production build.
   examples:
+    if: always() && needs.tested.outputs.skip != 'true'
+    needs: tested
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -92,7 +138,8 @@ jobs:
   changeset:
     # Dependency bumps are internal-only (the lockfile diff is their
     # record; the compat matrix is their gate), like Version PRs.
-    if: github.event_name == 'pull_request' && github.head_ref != 'changeset-release/main' && github.actor != 'dependabot[bot]'
+    if: always() && needs.tested.outputs.skip != 'true' && github.event_name == 'pull_request' && github.head_ref != 'changeset-release/main' && github.actor != 'dependabot[bot]'
+    needs: tested
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -107,6 +154,8 @@ jobs:
   # Generated docs never drift: llms artifacts regenerate as a no-op,
   # media references resolve, and typedoc builds docs/api warning-free.
   docs-fresh:
+    if: always() && needs.tested.outputs.skip != 'true'
+    needs: tested
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -118,6 +167,8 @@ jobs:
       - run: git diff --exit-code -- llms.txt llms-full.txt
 
   e2e:
+    if: always() && needs.tested.outputs.skip != 'true'
+    needs: tested
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -135,6 +186,8 @@ jobs:
           retention-days: 7
 
   e2e-postgres:
+    if: always() && needs.tested.outputs.skip != 'true'
+    needs: tested
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -169,6 +222,8 @@ jobs:
           retention-days: 7
 
   e2e-mongo:
+    if: always() && needs.tested.outputs.skip != 'true'
+    needs: tested
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -189,6 +244,8 @@ jobs:
   # variant of examples/basic (E2E_MFA_POLICY=1) on its own port and
   # SQLite file — the policy cannot be wired beside Auth.js (D4).
   e2e-mfa:
+    if: always() && needs.tested.outputs.skip != 'true'
+    needs: tested
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -209,6 +266,8 @@ jobs:
   # domains, multi-session, roleValues, reqUser against a local mock
   # OIDC provider (e2e/mock-idp.ts). Own port and SQLite file per app.
   e2e-idp:
+    if: always() && needs.tested.outputs.skip != 'true'
+    needs: tested
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -226,6 +285,8 @@ jobs:
           retention-days: 7
 
   e2e-tanstack-idp:
+    if: always() && needs.tested.outputs.skip != 'true'
+    needs: tested
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -243,6 +304,8 @@ jobs:
           retention-days: 7
 
   e2e-tanstack:
+    if: always() && needs.tested.outputs.skip != 'true'
+    needs: tested
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -260,6 +323,8 @@ jobs:
           retention-days: 7
 
   e2e-tanstack-postgres:
+    if: always() && needs.tested.outputs.skip != 'true'
+    needs: tested
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -294,6 +359,8 @@ jobs:
           retention-days: 7
 
   e2e-tanstack-mongo:
+    if: always() && needs.tested.outputs.skip != 'true'
+    needs: tested
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -315,6 +382,8 @@ jobs:
   # plugin + data, reboots WITHOUT it on the same database, and asserts
   # users/content survive.
   uninstall:
+    if: always() && needs.tested.outputs.skip != 'true'
+    needs: tested
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -332,6 +401,8 @@ jobs:
   # contract every migration feature tests against. Postgres is the
   # minimum matrix cell — the fixture IS a Postgres dump.
   migration-fixture:
+    if: always() && needs.tested.outputs.skip != 'true'
+    needs: tested
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -377,6 +448,8 @@ jobs:
           ADOPT_PG_URL: postgres://postgres:payload@localhost:5433/pal_adopt
 
   release-check:
+    if: always() && needs.tested.outputs.skip != 'true'
+    needs: tested
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
