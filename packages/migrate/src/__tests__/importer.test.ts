@@ -615,7 +615,7 @@ describe.skipIf(!canReachPostgres)(
       } finally {
         await payload.create({
           collection: 'payload-auth-link-migrations',
-          data: { key: idKey, data: idRecord as Record<string, unknown> },
+          data: { key: idKey, data: idRecord },
           overrideAccess: true,
         })
       }
