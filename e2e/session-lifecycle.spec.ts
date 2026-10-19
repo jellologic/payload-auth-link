@@ -115,8 +115,9 @@ test('unconfigured OAuth entry points fail closed', async ({ page }) => {
   // (`PROVIDER_NOT_FOUND`) before building any authorization URL.
   expect(social.status()).toBe(404)
   const authjs = await page.request.get('/api/authjs/signin/github', { maxRedirects: 0 })
-  // Auth.js answers unknown providers with a redirect to its error or
-  // sign-in page, never an authorization URL off-site.
+  // Auth.js answers unknown providers with a redirect (302) to its
+  // error or sign-in page, never an authorization URL off-site.
+  expect(authjs.status()).toBe(302)
   const location = authjs.headers()['location'] ?? ''
   expect(location.startsWith('/') || location.startsWith('http://localhost')).toBe(true)
   const session = await page.request.get('/api/auth-link/session', RETRY_ON_RESET)

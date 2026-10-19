@@ -138,6 +138,18 @@ export default defineConfig({
           branches: 95,
           statements: 95,
         },
+        'packages/plugin/src/mapping.ts': {
+          lines: 91,
+          functions: 95,
+          branches: 92,
+          statements: 91,
+        },
+        'packages/plugin/src/options.ts': {
+          lines: 92,
+          functions: 95,
+          branches: 90,
+          statements: 92,
+        },
         'packages/plugin/src/organizations.ts': {
           lines: 95,
           functions: 95,
@@ -151,6 +163,12 @@ export default defineConfig({
           statements: 95,
         },
         'packages/plugin/src/server.ts': { lines: 95, functions: 95, branches: 95, statements: 95 },
+        'packages/plugin/src/services.ts': {
+          lines: 78,
+          functions: 80,
+          branches: 83,
+          statements: 78,
+        },
         'packages/plugin/src/session.ts': {
           lines: 95,
           functions: 95,
@@ -179,6 +197,12 @@ export default defineConfig({
           lines: 95,
           functions: 95,
           branches: 95,
+          statements: 95,
+        },
+        'packages/provider-authjs/src/credentials.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 93,
           statements: 95,
         },
         'packages/provider-authjs/src/engine.ts': {

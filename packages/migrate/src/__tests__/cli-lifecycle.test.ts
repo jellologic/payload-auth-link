@@ -231,6 +231,31 @@ describe.skipIf(!canReachPostgres)('migrate CLI lifecycle, in-process (#88)', ()
     await expectNoLingeringConnections()
   })
 
+  test('the doctor blocks on a target database whose payload_kv table is missing (#119)', async () => {
+    await client.query('ALTER TABLE payload_kv RENAME TO payload_kv_hidden')
+    try {
+      const refused = await run([
+        'doctor',
+        '--config',
+        basicConfig,
+        '--database-url',
+        url,
+        '--json',
+      ])
+      expect(refused.code).toBe(1)
+      const report = JSON.parse(refused.out) as { blockers: { code: string }[] }
+      expect(report.blockers.map((issue) => issue.code)).toContain('payload-kv-table-missing')
+      await expectNoLingeringConnections()
+    } finally {
+      await client.query('ALTER TABLE payload_kv_hidden RENAME TO payload_kv')
+    }
+    // With the store in place the blocker is gone.
+    const result = await run(['doctor', '--config', basicConfig, '--database-url', url, '--json'])
+    const report = JSON.parse(result.out) as { blockers: { code: string }[] }
+    expect(report.blockers.map((issue) => issue.code)).not.toContain('payload-kv-table-missing')
+    await expectNoLingeringConnections()
+  })
+
   test('from-payload-auth dry run prints the plan and terminates', async () => {
     const result = await run([
       'from-payload-auth',

@@ -495,7 +495,7 @@ async function main(
           ...identityOptions,
         })
       } catch (error) {
-        err.write(`finalize failed:${error instanceof Error ? error.message : String(error)}\n`)
+        err.write(`finalize failed: ${error instanceof Error ? error.message : String(error)}\n`)
         return 1
       }
       if (json) {

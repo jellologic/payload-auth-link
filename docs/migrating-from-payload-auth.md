@@ -329,6 +329,17 @@ you diff the table across the pre-link, diff those three columns.
 `rollback --manifest` restores every captured field, `updated_at`
 included.
 
+If the host users collection keeps versions (`versions: { drafts:
+false }` is common in payload-auth apps), every host write the kit
+makes — `--apply`, `adopt-prelink --apply`, and a `rollback` restore —
+also records a Payload version: one row per written user in the
+collection's versions table, plus that version's child rows for the
+`role` / `identities` fields. A real-data rehearsal measured +706 rows
+per apply/rollback cycle. `rollback` restores the fields but does not
+remove the version rows; if the growth matters, disable versions on
+the users collection for the migration window or prune them
+afterwards.
+
 `finalize --config ./src/payload.config.ts --manifest
 ./payload-auth-link-prelink.json` closes the pre-link the same way it
 closes an import: rollback is refused afterwards. In adopt mode there
@@ -687,6 +698,12 @@ The copy is verbatim except for these normalisations:
   user it writes (identity, roles, linking proof): the forward write
   goes through the Local API. `rollback` restores the captured value
   exactly; a second `--apply` writes nothing and bumps nothing.
+- **Host versions grow with every write**: if the host users
+  collection keeps versions (`versions: { drafts: false }` is common
+  in payload-auth apps), each host write appends a version row per
+  written user — plus that version's `role` / `identities` child rows
+  — and `rollback` does not remove them. "What the pre-link changes"
+  (adopt section) has the measured numbers and the remedies.
 - **Host roles use the field configured on `authLink`** (`rolesField`,
   e.g. `role`): the importer, `rollback`, and `verify` read it from the
   booted config, so the roles check runs on `role` layouts too.

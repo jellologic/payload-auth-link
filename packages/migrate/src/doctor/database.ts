@@ -135,6 +135,13 @@ export async function introspectDatabase(
       String((row as { table_name: unknown }).table_name)
     )
 
+    // Payload's key-value store backs the migration's own records (the
+    // database identity, its runs, the finalize marker). A database
+    // whose app never ran the Payload migration creating it fails every
+    // --apply; report its presence so the doctor can flag the gap
+    // before that.
+    const payloadKvTable = await tableExists(client, 'payload_kv')
+
     const orphans: { kind: string; count: number }[] = []
     const skippedChecks: string[] = []
     const orphanChecks: readonly {
@@ -238,6 +245,7 @@ export async function introspectDatabase(
       bannedUsers,
       anonymousUsers,
       oauthTables,
+      payloadKvTable,
     }
   } finally {
     await client.end()

@@ -636,8 +636,12 @@ export async function rollbackImport(
   const now = options.now ?? (() => new Date())
   if (manifest.finalized) {
     // The point of no return: after `finalize`, the manifest's rows are
-    // the migration's history, not a TODO to undo.
-    throw new Error('the migration is finalized; rollback is no longer possible')
+    // the migration's history, not a TODO to undo. Name the flag's
+    // source, so an operator who never ran finalize knows the file
+    // itself carries the mark.
+    throw new Error(
+      'the manifest is marked finalized (the finalize command writes that flag into the manifest file); rollback is no longer possible'
+    )
   }
   // Every row below is deleted, and every field restored, with
   // overrideAccess: only a manifest this app signed may drive that.
