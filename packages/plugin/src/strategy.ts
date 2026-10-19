@@ -152,6 +152,9 @@ function authenticateProviderSession(
         if (payloadUser.mfaRequired !== undefined) {
           user.mfaRequired = payloadUser.mfaRequired
         }
+        if (payloadUser.anonymous === true) {
+          user.anonymous = true
+        }
         if (payloadUser.assurance !== undefined) {
           user.assurance = payloadUser.assurance
         }

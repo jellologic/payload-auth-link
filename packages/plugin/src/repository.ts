@@ -1,4 +1,4 @@
-import { err, ok, okAsync, ResultAsync } from 'neverthrow'
+import { err, errAsync, ok, okAsync, ResultAsync } from 'neverthrow'
 import {
   isRecord,
   RepositoryError,
@@ -83,6 +83,17 @@ export type UserDocumentWrite = {
  * ("A user with the given email is already registered."). Both map to
  * the typed `UserExistsError`, never a raw storage error.
  */
+/**
+ * Whether a repository failure is Payload's "no document with that
+ * id". Structural, not `instanceof` (see {@link isEmailUniqueViolation}
+ * for why): the probe in {@link findByProviderOwnedId} reads a miss as
+ * `null` and lets only real failures through.
+ */
+function isNotFound(error: RepositoryError): boolean {
+  const cause: unknown = error.cause
+  return isRecord(cause) && (cause.name === 'NotFoundError' || cause.status === 404)
+}
+
 function isEmailUniqueViolation(error: unknown, emailField: string): boolean {
   // Structural, not `instanceof`: the host app and the plugin can load
   // different copies of `payload` (e.g. a Payload v4 app with the plugin
@@ -275,12 +286,17 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
           // its own user id AS the Payload document id, so the row a
           // fresh sign-up creates resolves by id and only by id. The
           // gate is per provider (see the dep): a provider whose
-          // engine mints its own row ids never resolves here.
+          // engine mints its own row ids never resolves here. A MISS
+          // is `null`, not a storage error — this is a probe, and the
+          // linking use case falls through on it; only a real storage
+          // failure propagates.
           findByProviderOwnedId(ref: ProviderIdentityRef) {
             if (deps.providerOwnedUserIds?.(ref.providerId) !== true) {
               return okAsync(null)
             }
-            return findById(String(ref.providerUserId))
+            return findById(String(ref.providerUserId)).orElse((error) =>
+              isNotFound(error) ? okAsync(null) : errAsync(error)
+            )
           },
         }),
 

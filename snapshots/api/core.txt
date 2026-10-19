@@ -501,6 +501,13 @@ export type SessionUser = {
      * for a step-up sign-in instead of a flat "forbidden".
      */
     readonly mfaRequired?: true | undefined;
+    /**
+     * Present (`true`) only for an anonymous (guest) session resolved to
+     * its own adopted document (`admitAnonymous`, issue #126) — the
+     * access-control signal that this caller is a guest, whatever roles
+     * the document carries.
+     */
+    readonly anonymous?: true | undefined;
 };
 /**
  * Why {@link parseSessionUser} degraded an optional wire field instead
@@ -837,6 +844,12 @@ export type Session = {
     readonly userId: UserId;
     readonly providerId: ProviderId;
     readonly expiresAt: Date;
+    /**
+     * Present (`true`) only for an anonymous (guest) session resolved to
+     * its own adopted document (`admitAnonymous`, issue #126). Access
+     * functions read it off `req.user.anonymous` to tell guests apart.
+     */
+    readonly anonymous?: true | undefined;
     /** How the session was proven, when the provider reported it. */
     readonly assurance?: SessionAssurance | undefined;
     /**
@@ -1551,6 +1564,19 @@ export type EnsureLinkedUserInput = {
      * pre-PORT-3 behavior for callers that omit it.
      */
     readonly linkingPolicy?: LinkingPolicy | undefined;
+    /**
+     * Let an anonymous (guest) session resolve to its OWN document
+     * (issue #126). Meaningful only when the provider declares
+     * `providerUserIdsAreDocumentIds` (adopt mode): the guest's row was
+     * created by the engine in the host collection, so the id link
+     * resolves and attaches it — the app's `created_by`-style guest data
+     * stays reachable through Payload access control. The link writes
+     * the identity row; the document's own roles govern the projection.
+     * Without the flag the D3 refusal stands: anonymous never links,
+     * never provisions. There is no anonymous provisioning either way —
+     * a guest whose row does not exist is refused, not created.
+     */
+    readonly admitAnonymous?: boolean | undefined;
 };
 /**
  * Bridge a provider identity to a Payload user, converging link and email.

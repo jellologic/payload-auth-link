@@ -324,7 +324,7 @@ export type PayloadAuthUser = SessionUser
  * Structurally the optional tail of `Session`, so callers pass the
  * verified session itself.
  */
-export type SessionUserFacts = Pick<Session, 'assurance' | 'actor' | 'organizationId'>
+export type SessionUserFacts = Pick<Session, 'assurance' | 'actor' | 'organizationId' | 'anonymous'>
 
 /** Defensive copy of the resolved actor discriminated union. */
 function copyActor(actor: NonNullable<Session['actor']>): NonNullable<Session['actor']> {
@@ -376,5 +376,8 @@ export function toPayloadUser(
         }),
     ...(facts?.actor === undefined ? {} : { actor: copyActor(facts.actor) }),
     ...(facts?.organizationId === undefined ? {} : { organizationId: facts.organizationId }),
+    // The guest marker (issue #126): present only for an anonymous
+    // session resolved to its own adopted document.
+    ...(facts?.anonymous === true ? { anonymous: true as const } : {}),
   }
 }

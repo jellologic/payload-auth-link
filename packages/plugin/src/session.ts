@@ -48,6 +48,12 @@ export type SessionServiceDeps = {
    */
   readonly linkingPolicy?: LinkingPolicy | undefined
   /**
+   * Guests resolve to their own adopted document (issue #126). Passed
+   * to `ensureLinkedUser` verbatim; the option's wiring gate guarantees
+   * it is only ever `true` over a provider-owned-id (adopt) port.
+   */
+  readonly admitAnonymous?: boolean | undefined
+  /**
    * Session channels verification admits (CAP-13a). Optional: omitted
    * means `['cookie']`, matching the plugin option default. A live
    * session on any other channel is refused with
@@ -352,6 +358,11 @@ export function createSessionService(deps: SessionServiceDeps): PluginSessionSer
           userId: user.id,
           providerId: found.providerId,
           expiresAt: found.providerSession.expiresAt,
+          // The guest marker rides the session to the projection
+          // (issue #126): access functions read `req.user.anonymous`.
+          ...(found.providerSession.identity.anonymous === true
+            ? { anonymous: true as const }
+            : {}),
           assurance: {
             methods: assurance.methods === 'unknown' ? 'unknown' : [...assurance.methods],
             mfa: assurance.mfa,
@@ -384,6 +395,7 @@ export function createSessionService(deps: SessionServiceDeps): PluginSessionSer
               profile,
               defaultRoles: deps.defaultRoles,
               ...(deps.linkingPolicy === undefined ? {} : { linkingPolicy: deps.linkingPolicy }),
+              ...(deps.admitAnonymous === true ? { admitAnonymous: true } : {}),
             }
           )
         // SSO domain gate (CAP-15): runs before any linking when

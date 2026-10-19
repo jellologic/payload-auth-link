@@ -641,7 +641,7 @@ export type PayloadAuthUser = SessionUser;
  * Structurally the optional tail of `Session`, so callers pass the
  * verified session itself.
  */
-export type SessionUserFacts = Pick<Session, 'assurance' | 'actor' | 'organizationId'>;
+export type SessionUserFacts = Pick<Session, 'assurance' | 'actor' | 'organizationId' | 'anonymous'>;
 /**
  * Project a user record to the session wire shape (roles defensively
  * copied). `facts` carries the verified session's PORT-4 fields:
@@ -869,6 +869,23 @@ export type AuthLinkPluginOptions = {
      */
     readonly admitChannels?: readonly SessionChannel[] | undefined;
     /**
+     * Let anonymous (guest) sessions resolve to their OWN document
+     * (issue #126). Valid only in adopt mode — `idStrategy: 'payload'`
+     * with the user model adopted — where Better Auth writes each
+     * guest's row into the host users collection and the guest's session
+     * can therefore resolve to that document instead of being refused
+     * (D3). payload-auth apps relied on this: guests own data through
+     * the document (`created_by`-style columns), and without the opt-in
+     * every guest reads as `null` after the switch.
+     *
+     * The resolved projection carries `anonymous: true` so access
+     * functions can tell guests apart; the document's own roles govern
+     * `roles`. Guests are still never provisioned (a session whose row
+     * does not exist is refused, not created), never given an email
+     * identity, and the wiring refuses the option outside adopt mode.
+     */
+    readonly admitAnonymous?: boolean | undefined;
+    /**
      * Provider-owned documents (GHSA-f4hj): a users document holding
      * linked provider identities authenticates through its provider —
      * local sign-in and the forgot/reset-password flow are refused for
@@ -932,6 +949,8 @@ export type WiredOptions = {
     readonly linkingPolicy: LinkingPolicy;
     /** Validated admitted session channels (CAP-13a); never empty. */
     readonly admitChannels: readonly SessionChannel[];
+    /** Guest sessions resolve to their own adopted document (#126). */
+    readonly admitAnonymous: boolean;
     /** Validated phone/suspension field names (CAP-7/CAP-9). */
     readonly userFields: UserGovernanceFields;
     /** Roles withheld without MFA proof (CAP-6); empty means no policy. */
@@ -1330,6 +1349,12 @@ export type SessionServiceDeps = {
      * omitted means core's default (`verified-email`).
      */
     readonly linkingPolicy?: LinkingPolicy | undefined;
+    /**
+     * Guests resolve to their own adopted document (issue #126). Passed
+     * to `ensureLinkedUser` verbatim; the option's wiring gate guarantees
+     * it is only ever `true` over a provider-owned-id (adopt) port.
+     */
+    readonly admitAnonymous?: boolean | undefined;
     /**
      * Session channels verification admits (CAP-13a). Optional: omitted
      * means `['cookie']`, matching the plugin option default. A live

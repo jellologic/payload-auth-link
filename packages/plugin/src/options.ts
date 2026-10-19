@@ -242,6 +242,23 @@ export type AuthLinkPluginOptions = {
    */
   readonly admitChannels?: readonly SessionChannel[] | undefined
   /**
+   * Let anonymous (guest) sessions resolve to their OWN document
+   * (issue #126). Valid only in adopt mode — `idStrategy: 'payload'`
+   * with the user model adopted — where Better Auth writes each
+   * guest's row into the host users collection and the guest's session
+   * can therefore resolve to that document instead of being refused
+   * (D3). payload-auth apps relied on this: guests own data through
+   * the document (`created_by`-style columns), and without the opt-in
+   * every guest reads as `null` after the switch.
+   *
+   * The resolved projection carries `anonymous: true` so access
+   * functions can tell guests apart; the document's own roles govern
+   * `roles`. Guests are still never provisioned (a session whose row
+   * does not exist is refused, not created), never given an email
+   * identity, and the wiring refuses the option outside adopt mode.
+   */
+  readonly admitAnonymous?: boolean | undefined
+  /**
    * Provider-owned documents (GHSA-f4hj): a users document holding
    * linked provider identities authenticates through its provider —
    * local sign-in and the forgot/reset-password flow are refused for
@@ -306,6 +323,8 @@ export type WiredOptions = {
   readonly linkingPolicy: LinkingPolicy
   /** Validated admitted session channels (CAP-13a); never empty. */
   readonly admitChannels: readonly SessionChannel[]
+  /** Guest sessions resolve to their own adopted document (#126). */
+  readonly admitAnonymous: boolean
   /** Validated phone/suspension field names (CAP-7/CAP-9). */
   readonly userFields: UserGovernanceFields
   /** Roles withheld without MFA proof (CAP-6); empty means no policy. */
@@ -761,6 +780,7 @@ export function wireOptions(raw: AuthLinkPluginOptions): WiredOptions {
       raw.providers
     ),
     adminProviderLoginView: raw.admin?.loginView === 'provider',
+    admitAnonymous: raw.admitAnonymous === true,
     adminSignInPath: validateAppPath('admin.signInPath', raw.admin?.signInPath ?? '/sign-in'),
     adminAuthBase: validateAppPath('admin.authBase', raw.admin?.authBase ?? '/api/auth'),
     roleManagerRoles,
