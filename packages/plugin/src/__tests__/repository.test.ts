@@ -834,7 +834,7 @@ describe('linkIdentity runs in an adapter transaction (issue #144 scoping)', () 
             return Promise.resolve(user)
           },
         },
-      } as PayloadStub,
+      },
       undefined,
       () => undefined
     )
@@ -879,7 +879,7 @@ describe('linkIdentity runs in an adapter transaction (issue #144 scoping)', () 
         },
         updateOne: () => Promise.reject(new Error('storage gone')),
       },
-    } as PayloadStub)
+    })
     const result = await repo.linkIdentity(defineUserId('u1'), {
       providerId: defineProviderId('stub'),
       providerUserId: 'ba-9',
