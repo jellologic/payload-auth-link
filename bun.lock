@@ -156,7 +156,7 @@
     },
     "packages/plugin": {
       "name": "@payload-auth-link/plugin",
-      "version": "0.18.0",
+      "version": "0.18.1",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
         "neverthrow": "^8.2.0",
@@ -203,7 +203,7 @@
     },
     "packages/provider-better-auth": {
       "name": "@payload-auth-link/provider-better-auth",
-      "version": "0.14.0",
+      "version": "0.14.1",
       "dependencies": {
         "@payload-auth-link/core": "workspace:*",
         "neverthrow": "^8.2.0",
