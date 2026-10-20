@@ -52,14 +52,14 @@
     "node": ">=20.9.0"
   },
   "devDependencies": {
-    "@better-auth/api-key": "1.7.7",
+    "@better-auth/api-key": "1.7.10",
     "@payload-auth-link/core": "workspace:*",
     "@payload-auth-link/plugin": "workspace:*",
     "@payload-auth-link/provider-better-auth": "workspace:*",
     "@payloadcms/db-postgres": "3.91.0",
     "@types/node": "^22",
     "@types/pg": "^8.23.1",
-    "better-auth": "1.7.7",
+    "better-auth": "1.7.10",
     "payload": "3.91.0"
   },
   "peerDependencies": {
