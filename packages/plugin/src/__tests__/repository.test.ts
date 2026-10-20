@@ -838,12 +838,10 @@ describe('linkIdentity runs in an adapter transaction (issue #144 scoping)', () 
       undefined,
       () => undefined
     )
-    const result = await repo.linkIdentity('u1' as never, {
-      providerId: 'stub' as never,
+    const result = await repo.linkIdentity('u1', {
+      providerId: 'stub',
       providerUserId: 'ba-9',
     })
-    if (result.isErr()) {
-    }
     expect(result.isOk()).toBe(true)
     expect(seen).toHaveLength(1)
     const write = seen[0] as { req?: { transactionID?: string } }
@@ -882,8 +880,8 @@ describe('linkIdentity runs in an adapter transaction (issue #144 scoping)', () 
         updateOne: () => Promise.reject(new Error('storage gone')),
       },
     } as PayloadStub)
-    const result = await repo.linkIdentity('u1' as never, {
-      providerId: 'stub' as never,
+    const result = await repo.linkIdentity('u1', {
+      providerId: 'stub',
       providerUserId: 'ba-9',
     })
     expect(result.isErr()).toBe(true)
