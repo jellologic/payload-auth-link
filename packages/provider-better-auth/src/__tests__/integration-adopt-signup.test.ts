@@ -309,4 +309,63 @@ describe(`adopt mode: a post-cutover sign-up resolves through the plugin (issue 
     const body = (await session.json()) as { user: { anonymous?: boolean } | null }
     expect(body.user?.anonymous).toBeUndefined()
   })
+
+  it('suspending an already-signed-in user refuses the BA endpoints without any fresh sign-in (GHSA-jvpf)', async () => {
+    // The identity row is already written at creation (issue #124);
+    // this pins the GHSA-jvpf fix: the endpoint-boundary check reads
+    // the CAP-7 field through Payload, so suspension applies to the
+    // existing cookie with no fresh sign-in.
+    const signUp = await engine.auth.handler(
+      authRequest('/sign-up/email', {
+        method: 'POST',
+        body: { name: 'Suspendee', email: 'suspendee@example.com', password: 'correct-horse' },
+      })
+    )
+    expect(signUp.status).toBe(200)
+    const cookie = sessionCookieOf(signUp)
+
+    // Set the suspension through the raw adapter (as a restore would):
+    // hooks do not run, so the live session is NOT revoked and the
+    // endpoint-boundary check is the only guard — exactly the
+    // GHSA-jvpf scenario.
+    const suspendee = await payload?.find({
+      collection: 'users',
+      where: { email: { equals: 'suspendee@example.com' } },
+      limit: 1,
+      overrideAccess: true,
+    })
+    const suspendeeDoc: unknown = (suspendee as { docs?: unknown[] }).docs?.[0]
+    const suspendeeId = (suspendeeDoc as { id?: unknown } | null)?.id
+    if (typeof suspendeeId !== 'string' && typeof suspendeeId !== 'number') {
+      throw new Error('no suspendee doc')
+    }
+    await payload?.db.updateOne({
+      collection: 'users',
+      id: suspendeeId,
+      data: { suspendedUntil: new Date(Date.now() + 3_600_000) },
+    })
+
+    // The engine's own get-session refuses the existing cookie.
+    const getSession = await engine.auth.handler(
+      authRequest('/get-session', { cookie })
+    )
+    expect(getSession.status).toBe(403)
+
+    // update-user is refused too.
+    const updateUser = await engine.auth.handler(
+      authRequest('/update-user', {
+        method: 'POST',
+        body: { name: 'Renamed While Suspended' },
+        cookie,
+      })
+    )
+    expect(updateUser.status).toBe(403)
+
+    // And the Payload-side session endpoint keeps refusing (CAP-7).
+    const pluginSession = await handleEndpoints({
+      config,
+      request: new Request(`${ORIGIN}/api/auth-link/session`, { headers: { cookie } }),
+    })
+    expect(pluginSession.status).toBe(401)
+  })
 })
