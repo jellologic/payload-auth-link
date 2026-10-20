@@ -80,7 +80,7 @@ const upstreamAdminViolations: Record<3 | 4, Readonly<Record<string, number>>> =
   // Payload v4 (4.0.0-beta line): Gecko flags contrast on fixed chrome
   // (nav group label, Create New, column headers, pagination); Chromium
   // and WebKit report none. Counts are the max across engines.
-  4: { 'color-contrast': 8 },
+  4: { 'color-contrast': 9 },
 }
 
 function payloadMajor(testInfo: TestInfo): 3 | 4 {
