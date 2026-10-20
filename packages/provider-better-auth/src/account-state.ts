@@ -35,6 +35,17 @@ import { isRecord, nullLogger, type LoggerPort } from '@payload-auth-link/core'
 export type AccountStateOptions = {
   /** The CAP-7 suspension field on the user row. Default: `suspendedUntil`. */
   readonly suspendedUntilField?: string | undefined
+  /**
+   * Read the user row FRESH through Payload (issue GHSA-jvpf-3fhq-f5ph):
+   * Better Auth's internal adapter returns only BA-schema fields, and
+   * the CAP-7 `suspendedUntil` field is not declared there — reading
+   * through the internal adapter always sees it as undefined. When
+   * provided, the endpoint-boundary check reads through this instead
+   * (the engine passes a lookup honoring `schemaMap.user`,
+   * `idStrategy`, and `suspendedUntilField`). Optional only for
+   * payloads without the plugin's users fields.
+   */
+  readonly readUserRow?: ((userId: string) => Promise<unknown>) | undefined
   readonly logger?: LoggerPort | undefined
 }
 
@@ -85,10 +96,10 @@ function accountRefused(reason: 'banned' | 'suspended'): APIError {
 export async function accountStateRefusal(
   userId: string,
   field: string,
-  findUserById: (id: string) => Promise<unknown>,
+  readUserRow: (id: string) => Promise<unknown>,
   logger: LoggerPort
 ): Promise<APIError | null> {
-  const row: unknown = await findUserById(userId)
+  const row: unknown = await readUserRow(userId)
   if (!isRecord(row)) {
     return null
   }
@@ -107,6 +118,11 @@ export async function accountStateRefusal(
 export function createAccountStatePlugin(options: AccountStateOptions = {}): BetterAuthPlugin {
   const logger = options.logger ?? nullLogger()
   const field = options.suspendedUntilField ?? DEFAULT_SUSPENDED_UNTIL_FIELD
+  // The user-row reader for the suspension check (issue GHSA-jvpf):
+  // Better Auth's internal adapter returns only BA-schema fields, so
+  // the CAP-7 `suspendedUntil` column must be read through Payload.
+  // The engine always wires this; a bare plugin without it enforces
+  // bans only (suspension is skipped, never falsely enforced).
   return {
     id: 'payload-auth-link-account-state',
     init: () => ({ context: {} }),
@@ -147,20 +163,19 @@ export function createAccountStatePlugin(options: AccountStateOptions = {}): Bet
             if (typeof userId !== 'string' || userId === '') {
               return
             }
-            const findUserById = (
-              ctx.context.internalAdapter as {
-                findUserById?: (id: string) => Promise<unknown>
-              }
-            ).findUserById
-            if (typeof findUserById !== 'function') {
+            // The suspension check MUST read through Payload
+            // (GHSA-jvpf): the internal adapter narrows the row to
+            // BA-schema fields and drops the CAP-7 column. Bans are
+            // visible there, suspension is not — so without a row
+            // reader, only bans are enforced at this boundary.
+            const rowReader = options.readUserRow
+            if (rowReader === undefined) {
+              logger.warn('account-state: no row reader wired; suspension not enforced here', {
+                userId,
+              })
               return
             }
-            const refusal = await accountStateRefusal(
-              userId,
-              field,
-              (id) => findUserById(id),
-              logger
-            )
+            const refusal = await accountStateRefusal(userId, field, (id) => rowReader(id), logger)
             if (refusal !== null) {
               throw refusal
             }

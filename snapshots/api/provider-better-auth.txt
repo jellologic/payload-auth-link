@@ -35,12 +35,23 @@ import { type LoggerPort } from '@payload-auth-link/core';
 export type AccountStateOptions = {
     /** The CAP-7 suspension field on the user row. Default: `suspendedUntil`. */
     readonly suspendedUntilField?: string | undefined;
+    /**
+     * Read the user row FRESH through Payload (issue GHSA-jvpf-3fhq-f5ph):
+     * Better Auth's internal adapter returns only BA-schema fields, and
+     * the CAP-7 `suspendedUntil` field is not declared there — reading
+     * through the internal adapter always sees it as undefined. When
+     * provided, the endpoint-boundary check reads through this instead
+     * (the engine passes a lookup honoring `schemaMap.user`,
+     * `idStrategy`, and `suspendedUntilField`). Optional only for
+     * payloads without the plugin's users fields.
+     */
+    readonly readUserRow?: ((userId: string) => Promise<unknown>) | undefined;
     readonly logger?: LoggerPort | undefined;
 };
 export declare function activeBanOf(user: Record<string, unknown>, now: Date): boolean;
 export declare function activeSuspensionOf(user: Record<string, unknown>, field: string, now: Date): boolean;
 /** One fresh user-row read + the two state checks. Returns null when allowed. */
-export declare function accountStateRefusal(userId: string, field: string, findUserById: (id: string) => Promise<unknown>, logger: LoggerPort): Promise<APIError | null>;
+export declare function accountStateRefusal(userId: string, field: string, readUserRow: (id: string) => Promise<unknown>, logger: LoggerPort): Promise<APIError | null>;
 export declare function createAccountStatePlugin(options?: AccountStateOptions): BetterAuthPlugin;
 
 // ===== adapter.d.ts =====
