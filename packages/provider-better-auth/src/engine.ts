@@ -9,9 +9,11 @@ import {
   type LoggerPort,
   type VersionRange,
 } from '@payload-auth-link/core'
+import { APIError } from 'better-auth/api'
 import { betterAuth, type BetterAuthOptions, type BetterAuthPlugin } from 'better-auth'
 import type { CollectionConfig, Payload } from 'payload'
 import { createPayloadDatabaseAdapter } from './adapter.js'
+import { activeBanOf, activeSuspensionOf, createAccountStatePlugin } from './account-state.js'
 import {
   createBetterAuthCollections,
   defaultBetterAuthSlugs,
@@ -129,6 +131,13 @@ export type BetterAuthEngineInput<TOptions extends Omit<BetterAuthOptions, 'data
    * unaffected by this option.
    */
   readonly twoFactorOtpChannelIndependent?: boolean | undefined
+  /**
+   * The CAP-7 suspension field on the user row the account-state
+   * plugin reads (issue GHSA-xxff-hh6q-c99p). Defaults to
+   * `suspendedUntil` — the field the plugin injects. Set it only when
+   * a host renamed the field on an adopted users collection.
+   */
+  readonly suspendedUntilField?: string | undefined
   /**
    * Keep Better Auth's raw session tokens in its HTTP JSON responses
    * (issues #113 and #116, security-model row 28). Defaults to `false`:
@@ -476,6 +485,67 @@ export function createBetterAuthEngine<
   const builderHooks = input.options.databaseHooks
   const databaseHooks: BetterAuthOptions['databaseHooks'] = {
     ...builderHooks,
+    // Account-state enforcement at session creation (GHSA-62xf /
+    // GHSA-xxff): a suspended or banned user cannot sign in fresh —
+    // the check reads the user row FRESH from storage, so a ban or a
+    // `suspendedUntil` set mid-session applies to the next sign-in
+    // without any revocation step. Server-side mints
+    // (`createProviderSession`) are covered separately in the port.
+    session: {
+      ...builderHooks?.session,
+      create: {
+        ...builderHooks?.session?.create,
+        before: async (incoming) => {
+          const session: { userId: string } & Record<string, unknown> = incoming
+          const userId: unknown = session.userId
+          if (typeof userId === 'string' && userId !== '') {
+            // Read the user row through PAYLOAD: the engine's user
+            // model maps to the ba-users collection (payload-auth) or
+            // the adopted users collection (adopt mode), where the
+            // BA user id rides `baId` — or IS the document id under
+            // `idStrategy: 'payload'` (issue #124's id fact).
+            const idStrategy = input.idStrategy ?? 'ba'
+            const adoptedUser = input.schemaMap?.user !== undefined
+            const idField = adoptedUser && idStrategy === 'payload' ? 'id' : 'baId'
+            const userSlug = input.schemaMap?.user?.slug ?? slugs.user
+            const live = await input.getPayload()
+            const found: unknown = await live.find({
+              collection: userSlug,
+              where: { [idField]: { equals: userId } },
+              limit: 1,
+              depth: 0,
+              pagination: false,
+              overrideAccess: true,
+            })
+            const row: unknown = (found as { docs?: unknown[] }).docs?.[0]
+            if (isRecord(row)) {
+              const now = new Date()
+              const suspendedUntilField = input.suspendedUntilField ?? 'suspendedUntil'
+              if (activeBanOf(row, now)) {
+                throw APIError.from('FORBIDDEN', {
+                  message: 'this account is banned',
+                  code: 'ACCOUNT_BANNED',
+                })
+              }
+              if (activeSuspensionOf(row, suspendedUntilField, now)) {
+                throw APIError.from('FORBIDDEN', {
+                  message: 'this account is suspended until further notice',
+                  code: 'ACCOUNT_SUSPENDED',
+                })
+              }
+            }
+          }
+          // Builder hooks run for side effects, matching the user and
+          // account hook composition above.
+          const builderBefore = builderHooks?.session?.create?.before as
+            ((session: unknown, context: unknown) => Promise<unknown>) | undefined
+          if (builderBefore) {
+            await builderBefore(session, null)
+          }
+          return { data: session }
+        },
+      },
+    },
     user: {
       ...builderHooks?.user,
       update: {
@@ -535,6 +605,14 @@ export function createBetterAuthEngine<
   const exposeSessionTokens = input.exposeSessionTokens === true
   const mergedPlugins = [
     ...(input.options.plugins ?? []),
+    // Account-state enforcement (GHSA-62xf-qq8f-x6w9, GHSA-xxff-hh6q-c99p):
+    // suspension and Better Auth admin bans refuse at the engine
+    // boundary — session creation and every session-bearing request —
+    // not only where payload-auth-link resolves the session.
+    createAccountStatePlugin({
+      suspendedUntilField: input.suspendedUntilField,
+      logger: input.logger ?? nullLogger(),
+    }),
     createSessionProvenancePlugin({
       twoFactorOtpChannelIndependent: input.twoFactorOtpChannelIndependent === true,
       logger: input.logger ?? nullLogger(),
@@ -587,6 +665,28 @@ export function createBetterAuthEngine<
       // the JIT link may resolve the row by that id.
       providerUserIdsAreDocumentIds:
         input.idStrategy === 'payload' && input.schemaMap?.user !== undefined,
+      // GHSA-62xf / GHSA-xxff: the port reads the user row FRESH for
+      // its account-state refusals (mints, API-key verification) —
+      // the same row the middleware checks at the endpoint boundary.
+      accountState: {
+        suspendedUntilField: input.suspendedUntilField ?? 'suspendedUntil',
+        readUserRow: async (userId: string) => {
+          const live = await input.getPayload()
+          const idStrategy = input.idStrategy ?? 'ba'
+          const adoptedUser = input.schemaMap?.user !== undefined
+          const idField = adoptedUser && idStrategy === 'payload' ? 'id' : 'baId'
+          const userSlug = input.schemaMap?.user?.slug ?? slugs.user
+          const found: unknown = await live.find({
+            collection: userSlug,
+            where: { [idField]: { equals: userId } },
+            limit: 1,
+            depth: 0,
+            pagination: false,
+            overrideAccess: true,
+          })
+          return (found as { docs?: unknown[] }).docs?.[0]
+        },
+      },
       ...(input.legacySessions === undefined ? {} : { legacySessions: input.legacySessions }),
     }
   )

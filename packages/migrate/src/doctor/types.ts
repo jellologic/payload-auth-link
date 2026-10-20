@@ -90,6 +90,14 @@ export type DatabaseFinding = {
   /** Anonymous-plugin users (`is_anonymous = true`), or `null` (issue #88). */
   readonly anonymousUsers?: number | null
   /**
+   * Invitation rows whose `role` holds the JSON-encoded array STRING
+   * payload-auth wrote into the varchar role column ('["member"]',
+   * issue #142) — accepting such an invitation after the switch copies
+   * that string into the member's role and fails. `null` when the
+   * invitations table or its role column is absent.
+   */
+  readonly legacyInvitationRoles?: number | null
+  /**
    * OAuth-provider plugin tables present (`oauth_*`, issue #88). The
    * importer does NOT carry them; the doctor says so explicitly.
    */

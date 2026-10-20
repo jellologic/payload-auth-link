@@ -1,3 +1,48 @@
+// ===== account-state.d.ts =====
+import { APIError } from 'better-auth/api';
+import type { BetterAuthPlugin } from 'better-auth';
+import { type LoggerPort } from '@payload-auth-link/core';
+/**
+ * Account-state enforcement on the Better Auth side (issues
+ * GHSA-62xf-qq8f-x6w9 and GHSA-xxff-hh6q-c99p).
+ *
+ * Suspension (`suspendedUntil`, the plugin's CAP-7 field) and Better
+ * Auth admin bans (`banned` + `banExpires`) were enforced only where
+ * payload-auth-link resolves a session — the Payload strategy, the
+ * server API, API keys. Better Auth's own endpoints kept working with
+ * the same cookie: a suspended user could sign in fresh, read
+ * `get-session`, mint API keys, update their profile; a banned user
+ * kept every live session (Better Auth itself refuses bans only at
+ * new sign-ins, and its revocation path was broken on adopted role
+ * fields).
+ *
+ * This plugin closes that at the engine boundary:
+ * - `hooks.before` on every request: when a session resolves, the user
+ *   row is read fresh and an ACTIVE ban or suspension refuses the
+ *   request with 403 — so `get-session` un-authenticates, and every
+ *   authenticated provider endpoint (api keys, organization
+ *   management, update-user, …) refuses.
+ * - `databaseHooks.session.create.before`: the same check refuses the
+ *   session at creation, so a suspended or banned user cannot sign in
+ *   fresh.
+ *
+ * The user row is read FRESH per request (never from a cached
+ * session): the state can change between requests, which is the point.
+ * `suspendedUntil` is read from the configured field (the plugin's
+ * CAP-7 field name); `banned`/`banExpires` are Better Auth's own admin
+ * columns.
+ */
+export type AccountStateOptions = {
+    /** The CAP-7 suspension field on the user row. Default: `suspendedUntil`. */
+    readonly suspendedUntilField?: string | undefined;
+    readonly logger?: LoggerPort | undefined;
+};
+export declare function activeBanOf(user: Record<string, unknown>, now: Date): boolean;
+export declare function activeSuspensionOf(user: Record<string, unknown>, field: string, now: Date): boolean;
+/** One fresh user-row read + the two state checks. Returns null when allowed. */
+export declare function accountStateRefusal(userId: string, field: string, findUserById: (id: string) => Promise<unknown>, logger: LoggerPort): Promise<APIError | null>;
+export declare function createAccountStatePlugin(options?: AccountStateOptions): BetterAuthPlugin;
+
 // ===== adapter.d.ts =====
 import type { BetterAuthOptions } from 'better-auth';
 import { type AdapterFactory } from 'better-auth/adapters';
@@ -410,6 +455,13 @@ export type BetterAuthEngineInput<TOptions extends Omit<BetterAuthOptions, 'data
      */
     readonly twoFactorOtpChannelIndependent?: boolean | undefined;
     /**
+     * The CAP-7 suspension field on the user row the account-state
+     * plugin reads (issue GHSA-xxff-hh6q-c99p). Defaults to
+     * `suspendedUntil` — the field the plugin injects. Set it only when
+     * a host renamed the field on an adopted users collection.
+     */
+    readonly suspendedUntilField?: string | undefined;
+    /**
      * Keep Better Auth's raw session tokens in its HTTP JSON responses
      * (issues #113 and #116, security-model row 28). Defaults to `false`:
      * the engine's redaction plugin is default-deny — it removes `token`
@@ -560,7 +612,7 @@ export declare function createBetterAuthEngine<TOptions extends Omit<BetterAuthO
                 id: string;
             }) => Record<string, unknown>;
         } | undefined;
-        account: (import("better-auth").BetterAuthDBOptions<"account", "createdAt" | "updatedAt" | "userId" | "accountId" | "providerId" | "accessToken" | "refreshToken" | "idToken" | "accessTokenExpiresAt" | "refreshTokenExpiresAt" | "scope" | "password" | "id"> & {
+        account: (import("better-auth").BetterAuthDBOptions<"account", "userId" | "password" | "id" | "createdAt" | "updatedAt" | "accountId" | "providerId" | "accessToken" | "refreshToken" | "idToken" | "accessTokenExpiresAt" | "refreshTokenExpiresAt" | "scope"> & {
             updateAccountOnSignIn?: boolean;
             accountLinking?: {
                 enabled?: boolean;
@@ -918,6 +970,11 @@ export type BetterAuthProviderDeps = {
     readonly sessionCookieNames: readonly string[];
     /** Issue #124: adopt mode — `idStrategy: 'payload'` with the user model adopted. */
     readonly providerUserIdsAreDocumentIds?: boolean | undefined;
+    /** GHSA-62xf/xxff: the account-state reader for the port's refusals. */
+    readonly accountState?: {
+        readonly suspendedUntilField: string;
+        readonly readUserRow: (userId: string) => Promise<unknown>;
+    } | undefined;
     /**
      * Clearing attributes per session cookie, from
      * {@link getBetterAuthSessionCookieClearOptions} (see `cookies.ts`).
@@ -1007,6 +1064,11 @@ export declare function createBetterAuthProviderFromUnknown(auth: unknown, sessi
     } | undefined;
     /** Issue #124: adopt mode, `idStrategy: 'payload'`, user model adopted. */
     readonly providerUserIdsAreDocumentIds?: boolean | undefined;
+    /** GHSA-62xf/xxff: the account-state reader for the port's refusals. */
+    readonly accountState?: {
+        readonly suspendedUntilField: string;
+        readonly readUserRow: (userId: string) => Promise<unknown>;
+    } | undefined;
 }): IdentityProviderPort;
 
 // ===== session-provenance.d.ts =====

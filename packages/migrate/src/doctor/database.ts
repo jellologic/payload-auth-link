@@ -124,6 +124,25 @@ export async function introspectDatabase(
       }
     }
 
+    // Legacy invitation roles (issue #142): payload-auth stored the
+    // organization plugin's invitation `role` as a JSON-encoded array
+    // STRING ('["member"]') in the varchar role column. Better Auth's
+    // accept-invitation copies that value into the member's role as-is,
+    // so after the switch every such invitation fails on accept. Count
+    // them; `null` when the invitations table or its role column is
+    // absent (nothing to say).
+    let legacyInvitationRoles: number | null = null
+    const invitationsTable = tables['invitations']
+    if (invitationsTable !== null && (await tableExists(client, invitationsTable))) {
+      if ((await columnsOf(client, invitationsTable)).has('role')) {
+        const result = await client.query(
+          `SELECT count(*)::int AS n FROM ${invitationsTable} WHERE role LIKE '[%'`
+        )
+        const first = result.rows[0] as { n?: number } | undefined
+        legacyInvitationRoles = first?.n ?? null
+      }
+    }
+
     // OAuth-provider plugin tables (oauthProvider / oidcProvider /
     // mcp): the importer does not carry them (issue #88).
     const oauthResult = await client.query(
@@ -245,6 +264,7 @@ export async function introspectDatabase(
       skippedChecks,
       bannedUsers,
       anonymousUsers,
+      legacyInvitationRoles,
       oauthTables,
       payloadKvTable,
       migrationRecordsTable,

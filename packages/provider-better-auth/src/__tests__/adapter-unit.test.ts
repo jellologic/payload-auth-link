@@ -16,9 +16,11 @@
  */
 import { getAuthTables } from 'better-auth/db'
 import type { CleanedWhere, CustomAdapter, JoinConfig } from 'better-auth/adapters'
+import { admin } from 'better-auth/plugins'
 import type { Payload } from 'payload'
 import { describe, expect, it, vi } from 'vitest'
 import { createPayloadDatabaseAdapter, type PayloadDatabaseAdapterDeps } from '../adapter.js'
+import { deriveBetterAuthSchema } from '../derive-schema.js'
 import { AdapterOperationError, UnknownModelError, UnsupportedSchemaError } from '../errors.js'
 
 vi.mock('better-auth/adapters', async (importOriginal) => {
@@ -499,6 +501,105 @@ describe('adopted models: host validation on first use (issue #49)', () => {
     // Reads normalize the relationship id back to a string.
     expect(created.userId).toBe('42')
     expect(created.id).toBe('3')
+  })
+})
+
+describe('adopted hasMany select fields bridge to Better Auth strings (issue #143)', () => {
+  const hostUsers = {
+    config: {
+      auth: { disableLocalStrategy: true },
+      fields: [
+        { name: 'email', type: 'email' },
+        { name: 'emailVerified', type: 'checkbox' },
+        { name: 'name', type: 'text' },
+        { name: 'image', type: 'text' },
+        { name: 'createdAt', type: 'date' },
+        { name: 'updatedAt', type: 'date' },
+        { name: 'role', type: 'select', hasMany: true },
+        { name: 'tier', type: 'select' },
+      ],
+    },
+  }
+  const storedDoc = {
+    id: 7,
+    email: 'a@example.com',
+    name: 'A',
+    emailVerified: false,
+    role: ['admin', 'staff'],
+  }
+
+  /** The engine's `autoDeclare` path: the admin plugin's fields, derived. */
+  function adoptedAdapter(payload: Payload): CustomAdapter {
+    return rawAdapter(
+      payload,
+      {
+        ...deriveBetterAuthSchema({ plugins: [admin()] }),
+        schemaMap: { user: { slug: 'users' } },
+        idStrategy: 'payload',
+      },
+      creatorContext(getAuthTables({ plugins: [admin()] }))
+    )
+  }
+
+  it('reads the array column as the comma-joined string; a scalar column value passes through', async () => {
+    let scalarRole = false
+    const { payload } = fakePayload(
+      {
+        find: () =>
+          Promise.resolve({
+            docs: [scalarRole ? { ...storedDoc, role: 'admin' } : storedDoc],
+          }),
+      },
+      { users: hostUsers }
+    )
+    const adapter = adoptedAdapter(payload)
+    const joined = await adapter.findOne<Record<string, unknown>>({
+      model: 'user',
+      where: [eq('id', '7')],
+    })
+    expect(joined?.role).toBe('admin,staff')
+    scalarRole = true
+    const scalarRow = await adapter.findOne<Record<string, unknown>>({
+      model: 'user',
+      where: [eq('id', '7')],
+    })
+    expect(scalarRow?.role).toBe('admin')
+  })
+
+  it('splits the joined string back into the array on write; an empty join stores no roles', async () => {
+    const { payload, mocks } = fakePayload(
+      {
+        find: () => Promise.resolve({ docs: [storedDoc] }),
+        update: (args) => Promise.resolve({ ...storedDoc, ...(args.data as object) }),
+      },
+      { users: hostUsers }
+    )
+    const adapter = adoptedAdapter(payload)
+    const updated = await adapter.update<Record<string, unknown>>({
+      model: 'user',
+      where: [eq('id', '7')],
+      update: { role: 'user,staff' },
+    })
+    // The row Better Auth reads back carries its joined string again.
+    expect(updated?.role).toBe('user,staff')
+    expect(mocks.update.mock.calls[0]?.[0]?.data).toMatchObject({ role: ['user', 'staff'] })
+
+    await adapter.update({ model: 'user', where: [eq('id', '7')], update: { role: '' } })
+    expect(mocks.update.mock.calls[1]?.[0]?.data).toMatchObject({ role: [] })
+  })
+
+  it('lands a create role string as the array and passes an array value through', async () => {
+    const { payload, mocks } = fakePayload(
+      { create: (args) => Promise.resolve({ id: 8, ...(args.data as object) }) },
+      { users: hostUsers }
+    )
+    const adapter = adoptedAdapter(payload)
+    await adapter.create({ model: 'user', data: { email: 'n@example.com', role: 'staff' } })
+    await adapter.create({ model: 'user', data: { email: 'n2@example.com', role: ['staff'] } })
+    const first = mocks.create.mock.calls[0]?.[0]?.data as Record<string, unknown>
+    const second = mocks.create.mock.calls[1]?.[0]?.data as Record<string, unknown>
+    expect(first.role).toEqual(['staff'])
+    expect(second.role).toEqual(['staff'])
   })
 })
 

@@ -272,6 +272,31 @@ use `requireMfaForRoles`. The doctor warns
 (`adopt-session-no-authentication-method`) on a session collection
 without it — on the payload-auth config, and on an adopt-mode target.
 
+**Legacy invitation roles are JSON-encoded strings (#142).** payload-auth
+stored the organization plugin's invitation `role` as a JSON-encoded
+array STRING — literally `["member"]` inside the varchar `role` column
+(seen on Better Auth 1.6.30 and 1.7.10 with payload-auth). After the
+switch, accepting such a legacy invitation copies that string into the
+new member's role and the accept fails. `adopt-prelink` does not touch
+the invitations table (it writes the users collection only), so rewrite
+the rows by hand before the cutover:
+`UPDATE invitations SET role = 'member' WHERE role LIKE '[%'` — using
+Better Auth's comma-joined form when the array held several roles
+(`["a","b"]` becomes `a,b`). The doctor reports the count as the
+`legacy-invitation-roles` warning.
+
+**Review read access on the adopted provider collections before the
+cutover.** Adopt mode reuses your `accounts`, `sessions`,
+`verifications`, and `apiKeys` collections WITH their legacy access
+rules — often a collection-level `read` like adminOrSelf with no
+field-level read, which lets a signed-in user read their own password
+hash and OAuth tokens over REST/GraphQL. On an adopt-mode config the
+doctor flags each such field (`readable-credential-field`); close each
+one with a field-level `access: { read: … }` for managers only, or
+deny the collection's reads outright (`denyAllAccess()` from
+`@payload-auth-link/core` is the engine's own default for fresh
+`ba-*` collections).
+
 ### Pre-link the users: `adopt-prelink`
 
 Adopt mode serves the Better Auth side, but the plugin side still has

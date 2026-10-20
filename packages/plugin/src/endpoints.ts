@@ -86,14 +86,21 @@ export function logoutCookieClears(
 
 /**
  * Expire every logout cookie (see {@link logoutCookieClears}) on a
- * logout response. Revoking the server session without clearing the
- * cookies would leave the browser presenting a dead token: optimistic
- * middleware keeps passing it through and the user looks signed in
- * until the cookie naturally expires.
+ * logout response target. Revoking the server session without clearing
+ * the cookies would leave the browser presenting a dead token:
+ * optimistic middleware keeps passing it through and the user looks
+ * signed in until the cookie naturally expires. Shared with the users
+ * collection' afterLogout hook (`logout.ts`), whose target is
+ * `req.responseHeaders` — Payload merges those onto the REST logout
+ * response.
  */
-function expireSessionCookies(wired: WiredOptions, response: Response, headers?: Headers): void {
+export function expireSessionCookies(
+  wired: WiredOptions,
+  target: Headers,
+  headers?: Headers
+): void {
   for (const [name, clearing] of logoutCookieClears(wired, headers)) {
-    response.headers.append('Set-Cookie', serializeCookie(name, '', clearing))
+    target.append('Set-Cookie', serializeCookie(name, '', clearing))
   }
 }
 
@@ -103,8 +110,10 @@ function expireSessionCookies(wired: WiredOptions, response: Response, headers?:
  * multi-session) cookie names, or a non-cookie credential header
  * (`Authorization`, `x-api-key`). An anonymous logout presents none,
  * so it is answered without walking — or querying — any provider.
+ * Shared with the users collection' afterLogout hook (`logout.ts`),
+ * which must likewise leave Payload-local-only logouts untouched.
  */
-function presentsSessionCredential(wired: WiredOptions, headers: Headers): boolean {
+export function presentsSessionCredential(wired: WiredOptions, headers: Headers): boolean {
   if (headers.has('authorization') || headers.has('x-api-key')) {
     return true
   }
@@ -137,9 +146,11 @@ function presentsSessionCredential(wired: WiredOptions, headers: Headers): boole
  * through two providers would otherwise keep the second session alive
  * server-side after logout. Failures are logged and skipped: the
  * cookies are expired regardless, and one provider being down must not
- * block logout from the others.
+ * block logout from the others. Shared with the users collection'
+ * afterLogout hook (`logout.ts`) for the presented-but-unverified path
+ * (an expired or refused session the strategy could not resolve).
  */
-async function revokePresentedSessions(
+export async function revokePresentedSessions(
   wired: WiredOptions,
   headers: Headers,
   skip: ProviderId | null
@@ -283,7 +294,7 @@ export function createEndpoints(wired: WiredOptions): Endpoint[] {
           // — and still expires every logout cookie, residue included.
           wired.logger.debug('logout endpoint: no session credential presented')
           const anonymous = unauthorized()
-          expireSessionCookies(wired, anonymous, req.headers)
+          expireSessionCookies(wired, anonymous.headers, req.headers)
           return anonymous
         }
         const { sessions } = services(req)
@@ -296,7 +307,7 @@ export function createEndpoints(wired: WiredOptions): Endpoint[] {
           // (expired link, unverified email): revoke it too.
           await revokePresentedSessions(wired, req.headers, null)
           const alreadyOut = unauthorized()
-          expireSessionCookies(wired, alreadyOut, req.headers)
+          expireSessionCookies(wired, alreadyOut.headers, req.headers)
           return alreadyOut
         }
         // Enumerate multi-session handles BEFORE revoking the active
@@ -322,11 +333,11 @@ export function createEndpoints(wired: WiredOptions): Endpoint[] {
           // providers registered through a transition (or clear them
           // out-of-band) rather than dropping them outright.
           const failed = jsonResponse({ error: 'revoke failed' }, 500)
-          expireSessionCookies(wired, failed, req.headers)
+          expireSessionCookies(wired, failed.headers, req.headers)
           return failed
         }
         const signedOut = jsonResponse({ ok: true }, 200)
-        expireSessionCookies(wired, signedOut, req.headers)
+        expireSessionCookies(wired, signedOut.headers, req.headers)
         return signedOut
       },
     },

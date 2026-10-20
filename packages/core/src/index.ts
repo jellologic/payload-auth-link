@@ -7,6 +7,8 @@
  */
 export { assertNever } from './assert.js'
 export { engineCreateMarker } from './context.js'
+export { authLinkWriteMarker } from './context.js'
+export type { AuthLinkWriteMarker, AuthLinkWriteOp } from './context.js'
 export { assertUniqueSlugs, denyAllAccess, resolveSlugs } from './collections.js'
 export type { DenyAllAccess } from './collections.js'
 export {

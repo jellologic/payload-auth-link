@@ -139,6 +139,7 @@ describe('createBetterAuthEngine', () => {
     expect(engine.auth.options.plugins?.[0]).toBe(marker)
     expect(ids).toEqual([
       'magic-link',
+      'payload-auth-link-account-state',
       'payload-auth-link-session-provenance',
       'payload-auth-link-session-token-redaction',
     ])
@@ -147,6 +148,7 @@ describe('createBetterAuthEngine', () => {
   it('gives an absent plugin list exactly the engine plugins', () => {
     const engine = createBetterAuthEngine({ getPayload, options: {} })
     expect(engine.auth.options.plugins?.map((plugin) => plugin.id)).toEqual([
+      'payload-auth-link-account-state',
       'payload-auth-link-session-provenance',
       'payload-auth-link-session-token-redaction',
     ])
@@ -155,6 +157,7 @@ describe('createBetterAuthEngine', () => {
   it('exposeSessionTokens: true leaves the redaction plugin out (issue #113)', () => {
     const engine = createBetterAuthEngine({ getPayload, exposeSessionTokens: true, options: {} })
     expect(engine.auth.options.plugins?.map((plugin) => plugin.id)).toEqual([
+      'payload-auth-link-account-state',
       'payload-auth-link-session-provenance',
     ])
   })

@@ -49,6 +49,22 @@ export declare function findManualSites(content: string): readonly string[];
 /** Apply every rule to one file; reports what fired and what needs a human. */
 export declare function applyCodemods(file: string, content: string): CodemodFileResult;
 
+// ===== doctor/adopted-credentials.d.ts =====
+import type { DoctorIssue } from './types.js';
+/**
+ * The access function is literally `() => false` (or its long
+ * `function` form) — deny-everyone, provably. Anything else is opaque
+ * and treated as potentially granting the read.
+ */
+export declare function isDenyAllRead(read: unknown): boolean;
+/**
+ * One warning per credential field on an adopted provider collection
+ * (payload-auth stamps each with `custom.betterAuthModelKey`) that a
+ * non-manager can read: no field-level `access.read`, and the
+ * collection-level read is not literally `() => false`.
+ */
+export declare function readableCredentialFields(config: unknown): DoctorIssue[];
+
 // ===== doctor/bands.d.ts =====
 import { type VersionRange } from '@payload-auth-link/core';
 import type { VersionFinding } from './types.js';
@@ -105,7 +121,7 @@ export type PluginSourceHit = {
 export declare function pluginsFromSourceTree(srcDir: string): readonly PluginSourceHit[];
 
 // ===== doctor/run-doctor.d.ts =====
-import type { BehaviourChange, DoctorReport } from './types.js';
+import type { BehaviourChange, DatabaseFinding, DoctorIssue, DoctorReport } from './types.js';
 /**
  * The read-only doctor (issue #52): point it at a payload-auth app and
  * get the exact list of what breaks before touching anything. It loads
@@ -174,6 +190,17 @@ export declare function collectionSlugs(config: unknown): string[];
  * reference). The engine's own `ba-sessions` declares the field.
  */
 export declare function sessionCollectionsWithoutAuthMethod(config: unknown): string[];
+/**
+ * The warning for legacy invitation roles (issue #142): payload-auth
+ * stored the organization plugin's invitation `role` as a
+ * JSON-encoded array STRING, and accepting one after the switch copies
+ * that string into the member's role and fails. adopt-prelink writes
+ * the users collection ONLY — it does not touch the invitations table
+ * — so the fix is a hand rewrite, and the warning says so. Extracted
+ * so tests can assert its exact shape against a synthetic
+ * DatabaseFinding (introspectDatabase is Postgres-backed).
+ */
+export declare function legacyInvitationRolesWarning(found: Pick<DatabaseFinding, 'legacyInvitationRoles'>): DoctorIssue | null;
 export declare function runDoctor(options: DoctorOptions): Promise<DoctorReport>;
 
 // ===== doctor/source-layout.d.ts =====
@@ -294,6 +321,14 @@ export type DatabaseFinding = {
     readonly bannedUsers?: number | null;
     /** Anonymous-plugin users (`is_anonymous = true`), or `null` (issue #88). */
     readonly anonymousUsers?: number | null;
+    /**
+     * Invitation rows whose `role` holds the JSON-encoded array STRING
+     * payload-auth wrote into the varchar role column ('["member"]',
+     * issue #142) — accepting such an invitation after the switch copies
+     * that string into the member's role and fails. `null` when the
+     * invitations table or its role column is absent.
+     */
+    readonly legacyInvitationRoles?: number | null;
     /**
      * OAuth-provider plugin tables present (`oauth_*`, issue #88). The
      * importer does NOT carry them; the doctor says so explicitly.
@@ -1312,6 +1347,12 @@ import type { ImportManifest, Unmappable } from './types.js';
  * The write carries the kit's migration context marker
  * (`MIGRATION_CONTEXT`, host-writes.ts) so host hooks can skip their
  * outward side effects (issue #123).
+ *
+ * The users collection is the ONLY one this command writes: the
+ * invitations table is not among its written tables, so invitation
+ * rows carrying the legacy JSON-encoded role strings (issue #142) are
+ * NOT normalized here — rewrite them by hand (the doctor reports them
+ * as `legacy-invitation-roles`).
  */
 export type PrelinkOptions = {
     readonly payload: Payload;

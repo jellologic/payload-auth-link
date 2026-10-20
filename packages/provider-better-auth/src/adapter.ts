@@ -111,6 +111,17 @@ type ModelPlan = {
    * provider-provisioned users; nobody can sign into it.
    */
   injectPasswordOnCreate: boolean
+  /**
+   * Set by host validation (issue #143): Better Auth fields whose
+   * adopted host column is a `hasMany` select — an array on disk where
+   * the Better Auth schema declares a scalar string (the admin plugin's
+   * `role`, which its `has-permission` check comma-splits and every
+   * `/admin/*` route gates on). Reads present the comma-joined string;
+   * writes split Better Auth's string back into the array. Populated
+   * before any read or write — every operation awaits host validation
+   * through `payloadOf`.
+   */
+  readonly hasManySelects: Set<string>
 }
 
 function planFor(
@@ -137,6 +148,7 @@ function planFor(
     baToPayload,
     payloadToBa,
     injectPasswordOnCreate: false,
+    hasManySelects: new Set<string>(),
   }
 }
 
@@ -328,9 +340,11 @@ function readPayloadId(doc: Record<string, unknown>, operation: string): string 
  * `id` (`baId`, or the document `id` for adopted models under
  * `idStrategy: 'payload'`), Payload field names become Better Auth
  * names through the model plan, id-bearing fields are normalized to
- * strings (Better Auth compares row ids as strings), and `date` fields
+ * strings (Better Auth compares row ids as strings), `date` fields
  * become `Date` instances (matching the memory adapter's in-memory
- * semantics). With `select`, only the selected Better Auth fields are
+ * semantics), and adopted `hasMany` select columns present the
+ * comma-joined string the Better Auth schema declares (issue #143).
+ * With `select`, only the selected Better Auth fields are
  * kept. Storage drift (a row without its id, an unparseable date)
  * throws `AdapterOperationError` here instead of reaching Better Auth
  * as a malformed row.
@@ -372,6 +386,15 @@ function toBaRow(
       row[baName] = date
       continue
     }
+    if (plan.hasManySelects.has(baName)) {
+      // Issue #143: a `hasMany` select stores an array where the Better
+      // Auth schema declares a scalar string. Present the comma-joined
+      // form Better Auth operates on (`admin/has-permission` splits it);
+      // a value that is not an array (a scalar already in the column)
+      // is already in the presented shape and passes through.
+      row[baName] = Array.isArray(value) ? value.join(',') : value
+      continue
+    }
     row[baName] = idFields.has(baName) && typeof value === 'number' ? String(value) : value
   }
   return row
@@ -384,7 +407,9 @@ function toBaRow(
  * id, and the created document's id comes back as the row id),
  * Payload-owned timestamps are dropped, field names resolve through the
  * model plan, id-bearing relationship fields are coerced to the
- * Payload id type, and `Date` instances become ISO strings. Only
+ * Payload id type, `Date` instances become ISO strings, and Better
+ * Auth's comma-joined strings for adopted `hasMany` select columns are
+ * split back into the stored arrays (issue #143). Only
  * Better Auth fields are ever written — host-only fields on adopted
  * collections are invisible here and therefore survive every write
  * (issue #49).
@@ -412,6 +437,17 @@ function toPayloadData(
       continue
     }
     const payloadName: string = plan.baToPayload[key] ?? key
+    if (plan.hasManySelects.has(key)) {
+      // Issue #143: Better Auth sends the comma-joined string its admin
+      // plugin builds (`parseRoles` joins with ","), while the `hasMany`
+      // select stores the array. Split is the exact inverse of the read
+      // join: empty parts cannot be select values, so `''` (the join of
+      // no roles) lands as `[]`. A value already shaped as an array —
+      // or anything else — passes through unchanged.
+      out[payloadName] =
+        typeof entry === 'string' ? entry.split(',').filter((part) => part !== '') : entry
+      continue
+    }
     out[payloadName] = entry instanceof Date ? entry.toISOString() : options.idCoerce(key, entry)
   }
   if (options.forCreate && plan.injectPasswordOnCreate && out.password === undefined) {
@@ -645,8 +681,18 @@ export function createPayloadDatabaseAdapter(
     { baFields, optionalFields }: Pick<ValidatedSchema, 'baFields' | 'optionalFields'>
   ): void => {
     {
-      const hostCache = new Map<string, Map<string, string>>()
-      const hostFieldTypes = (slug: string): Map<string, string> => {
+      /** The host field shapes one adopted collection is validated against. */
+      type HostFields = {
+        /** Payload field type per host field name. */
+        readonly types: ReadonlyMap<string, string>
+        /**
+         * `hasMany` select names — array-valued columns backing a scalar
+         * Better Auth field (issue #143).
+         */
+        readonly manySelects: ReadonlySet<string>
+      }
+      const hostCache = new Map<string, HostFields>()
+      const hostFields = (slug: string): HostFields => {
         const cached = hostCache.get(slug)
         if (cached !== undefined) {
           return cached
@@ -658,6 +704,7 @@ export function createPayloadDatabaseAdapter(
           )
         }
         const types = new Map<string, string>()
+        const manySelects = new Set<string>()
         const walk = (fields: unknown): void => {
           if (!Array.isArray(fields)) {
             return
@@ -672,12 +719,16 @@ export function createPayloadDatabaseAdapter(
               }
               continue
             }
+            if (field.type === 'select' && field.hasMany === true) {
+              manySelects.add(field.name)
+            }
             types.set(field.name, typeof field.type === 'string' ? field.type : 'unknown')
           }
         }
         walk(collection.config?.fields)
-        hostCache.set(slug, types)
-        return types
+        const shapes: HostFields = { types, manySelects }
+        hostCache.set(slug, shapes)
+        return shapes
       }
       // Every adopted model, not only those planned by the first
       // operation: a `findOne` resolves Payload before planning its
@@ -693,7 +744,7 @@ export function createPayloadDatabaseAdapter(
         if (!plan.adopted) {
           continue
         }
-        const fieldTypes = hostFieldTypes(plan.slug)
+        const { types: fieldTypes, manySelects } = hostFields(plan.slug)
         const mapped = schemaMap[model]?.fields ?? {}
         for (const [baName, payloadName] of Object.entries(mapped)) {
           if (!fieldTypes.has(payloadName)) {
@@ -725,6 +776,12 @@ export function createPayloadDatabaseAdapter(
           }
           if (fieldType === 'relationship') {
             idFields.add(baName)
+          }
+          if (manySelects.has(payloadName)) {
+            // Issue #143: the adopted column is a `hasMany` select — an
+            // array on disk under a scalar Better Auth field. Reads join
+            // and writes split (see {@link ModelPlan.hasManySelects}).
+            plan.hasManySelects.add(baName)
           }
         }
         idFieldsByModel.set(model, idFields)
