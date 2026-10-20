@@ -61,7 +61,7 @@
     "@payloadcms/ui": "3.91.0",
     "graphql": "16.14.2",
     "payload": "3.91.0",
-    "react": "19.3.0"
+    "react": "19.3.1"
   },
   "publishConfig": {
     "access": "public",
