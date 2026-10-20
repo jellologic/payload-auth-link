@@ -2147,7 +2147,9 @@ advisory required enforcement (below).
    The check reads the user row FRESH per request — a ban or
    suspension applies to the next request without any revocation
    step. `suspendedUntilField` (engine input) names the field for
-   renamed hosts.
+   renamed hosts. The users collection's hook array also gains the
+   `afterLogout` provider-session hook (the whole schema-adjacent
+   diff this round; see `snapshots/schema/plugin-users.json`).
 2. **Admin Log out ends the provider session (GHSA-gw3c-8g59-q72j).**
    With `loginView: 'provider'`, the admin panel's Log out now
    revokes the presented provider session server-side and expires the
