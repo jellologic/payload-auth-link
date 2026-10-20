@@ -838,8 +838,8 @@ describe('linkIdentity runs in an adapter transaction (issue #144 scoping)', () 
       undefined,
       () => undefined
     )
-    const result = await repo.linkIdentity('u1', {
-      providerId: 'stub',
+    const result = await repo.linkIdentity(defineUserId('u1'), {
+      providerId: defineProviderId('stub'),
       providerUserId: 'ba-9',
     })
     expect(result.isOk()).toBe(true)
@@ -880,8 +880,8 @@ describe('linkIdentity runs in an adapter transaction (issue #144 scoping)', () 
         updateOne: () => Promise.reject(new Error('storage gone')),
       },
     } as PayloadStub)
-    const result = await repo.linkIdentity('u1', {
-      providerId: 'stub',
+    const result = await repo.linkIdentity(defineUserId('u1'), {
+      providerId: defineProviderId('stub'),
       providerUserId: 'ba-9',
     })
     expect(result.isErr()).toBe(true)
