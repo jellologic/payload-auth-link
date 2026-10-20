@@ -2094,6 +2094,85 @@ and wait for (or cut) a compat patch that widens the band after the
 matrix proves the new version. Prerelease builds only ever match via
 an explicit `exact` entry — canaries never float in through a range.
 
+## plugin 0.17.1 (round 11: admin logout ends the provider session)
+
+**Upgrade impact:** none — no schema change. A behavior fix
+(GHSA-gw3c-8g59-q72j): with `admin: { loginView: 'provider' }` and
+`disableLocalStrategy: true`, Payload's admin **Log out** (and any
+`POST /api/<users>/logout`) ended only Payload's own token — the
+provider's session cookie (`bl.session_token`, its `__Secure-` variant,
+session-data and multi-session cookies) stayed live, so the next request
+to /admin or REST was still authenticated as the same user.
+
+The users collection now carries an `afterLogout` hook (installed on
+both assembly paths — a collection the plugin creates and a host
+collection it adopts) that, on a logout whose request still presents a
+provider session:
+
+- revokes the presented session through the provider port — reusing the
+  session the plugin already verified for the request, so no second
+  provider walk; a presented-but-unverifiable credential (expired
+  cookie, mixed local + provider login) gets a best-effort sweep of
+  whatever is still live, like `DELETE /auth-link/session`; and
+- expires every registered provider's session, logout, legacy, and
+  per-request multi-session cookies on the response, with each
+  provider's clearing attributes (`sessionCookieClearOptions`) intact —
+  same cookie set the plugin's own logout endpoint expires.
+
+A Payload-local-only logout presents no provider credential and is
+untouched. Revocation is best-effort and fail-safe: a provider error is
+logged and never breaks the logout response (Payload has already ended
+its own session). Cookies of a provider REMOVED from the registry keep
+the standing rule: they are not cleared — keep removed providers
+registered through a transition, or clear them out-of-band.
+
+## plugin 0.18.0 / provider-better-auth 0.14.0 / migrate 0.14.0 (round 11: the re-validation batch — bans enforced, logout ends the provider session, role bridging, scoped writes)
+
+**Upgrade impact:** no database schema change for plugin or
+provider-better-auth (the role bridging and logout hook are code
+only); migrate gains one doctor warning and one prelink behavior,
+both additive. Defaults are unchanged except where a security
+advisory required enforcement (below).
+
+1. **Better Auth bans and suspension are enforced at the engine
+   boundary (GHSA-62xf-qq8f-x6w9, GHSA-xxff-hh6q-c99p).** An ACTIVE
+   admin ban (`banned`, with `banExpires` absent or in the future) or
+   a CAP-7 suspension now refuses — at Better Auth's own endpoints
+   (`get-session` 403, fresh sign-in 403, `api-key/create` refused)
+   and through the provider port (session resolution, server-side
+   mints, API-key verification). Before this, both states were
+   enforced only where payload-auth-link resolves a session: banned
+   users kept live sessions and working API keys, and suspended users
+   could sign in fresh and act through every Better Auth endpoint.
+   The check reads the user row FRESH per request — a ban or
+   suspension applies to the next request without any revocation
+   step. `suspendedUntilField` (engine input) names the field for
+   renamed hosts.
+2. **Admin Log out ends the provider session (GHSA-gw3c-8g59-q72j).**
+   With `loginView: 'provider'`, the admin panel's Log out now
+   revokes the presented provider session server-side and expires the
+   provider's session/logout/multi-session cookies on the response —
+   previously it cleared only Payload's token and the browser stayed
+   signed in. Payload-local-only logouts are untouched.
+3. **Adopted hasMany roles bridge to Better Auth's string form
+   (issue #143).** `/admin/*` endpoints 500'd on adopted hasMany role
+   fields (Better Auth splits a string); the adapter now presents the
+   comma-joined string on read and splits on write.
+4. **The plugin's own writes are scoped and marked (issue #144).**
+   The JIT identity link writes only the plugin-owned fields through
+   the adapter (a legacy row failing unrelated validation no longer
+   blocks sign-in), and every plugin-initiated Local API write
+   carries `context[authLinkWriteMarker] = { op }` (exported from
+   core) so host hooks can skip them. `verifyApiKey` gains the
+   adopt-mode owned-id link fallback (part 3 of #144 is covered by
+   the integrator — see the PR).
+5. **The doctor flags legacy invitation roles and readable
+   credential fields (issues #142, #145).** `legacy-invitation-roles`
+   warns when payload-auth's JSON-encoded invitation roles
+   (`["member"]`) cross the cutover; `readable-credential-field`
+   warns when an adopted provider collection leaves password hashes,
+   OAuth tokens, session tokens or API keys readable by non-managers.
+
 ## plugin 0.17.0 / migrate 0.13.0 (round 10: the kit owns its record store — `payload.config.kv` becomes irrelevant)
 
 **Upgrade impact:** ONE new database table, created by the app's own

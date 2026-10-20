@@ -477,7 +477,7 @@ export declare function localCredentialGateHook(wired: WiredOptions): Collection
 export {};
 
 // ===== endpoints.d.ts =====
-import { type CookieOptions } from '@payload-auth-link/core';
+import { type CookieOptions, type ProviderId } from '@payload-auth-link/core';
 import type { Endpoint } from 'payload';
 import type { WiredOptions } from './options.js';
 /**
@@ -496,6 +496,39 @@ import type { WiredOptions } from './options.js';
  * attributes. Exported for the endpoint suite.
  */
 export declare function logoutCookieClears(wired: WiredOptions, headers?: Headers): ReadonlyMap<string, CookieOptions>;
+/**
+ * Expire every logout cookie (see {@link logoutCookieClears}) on a
+ * logout response target. Revoking the server session without clearing
+ * the cookies would leave the browser presenting a dead token:
+ * optimistic middleware keeps passing it through and the user looks
+ * signed in until the cookie naturally expires. Shared with the users
+ * collection' afterLogout hook (`logout.ts`), whose target is
+ * `req.responseHeaders` — Payload merges those onto the REST logout
+ * response.
+ */
+export declare function expireSessionCookies(wired: WiredOptions, target: Headers, headers?: Headers): void;
+/**
+ * Whether the request presents anything a provider could read as a
+ * session: one of the registered session (or legacy, or per-request
+ * multi-session) cookie names, or a non-cookie credential header
+ * (`Authorization`, `x-api-key`). An anonymous logout presents none,
+ * so it is answered without walking — or querying — any provider.
+ * Shared with the users collection' afterLogout hook (`logout.ts`),
+ * which must likewise leave Payload-local-only logouts untouched.
+ */
+export declare function presentsSessionCredential(wired: WiredOptions, headers: Headers): boolean;
+/**
+ * Best-effort revoke of every OTHER provider session the request
+ * presents. Verification stops at the first registered provider with a
+ * live session (registry order is precedence), so a browser signed in
+ * through two providers would otherwise keep the second session alive
+ * server-side after logout. Failures are logged and skipped: the
+ * cookies are expired regardless, and one provider being down must not
+ * block logout from the others. Shared with the users collection'
+ * afterLogout hook (`logout.ts`) for the presented-but-unverified path
+ * (an expired or refused session the strategy could not resolve).
+ */
+export declare function revokePresentedSessions(wired: WiredOptions, headers: Headers, skip: ProviderId | null): Promise<void>;
 /**
  * Plugin endpoints. Custom endpoints are unauthenticated by default, so each
  * handler checks the session explicitly; state-changing handlers additionally
@@ -564,6 +597,36 @@ import type { WiredOptions } from './options.js';
  * sync in the session service is the backstop.
  */
 export declare function subscribeIdentityEvents(wired: WiredOptions, payload: Payload): void;
+
+// ===== logout.d.ts =====
+import type { CollectionAfterLogoutHook } from 'payload';
+import type { WiredOptions } from './options.js';
+/**
+ * GHSA-gw3c-8g59-q72j: Payload's admin **Log out** (and any
+ * `POST /api/<users>/logout`) ends only Payload's own token — the
+ * provider's session cookie stayed live, so the next request to
+ * /admin or REST was still authenticated as the same user. This
+ * afterLogout hook closes that gap:
+ *
+ * - the session the plugin already verified for this request (the
+ *   per-request memo — no second provider walk) is revoked through the
+ *   provider port;
+ * - when nothing was verified but the request still PRESENTS a
+ *   provider credential (an expired or refused session, or a mixed
+ *   local+provider login), whatever is still live is swept, like the
+ *   `DELETE /auth-link/session` endpoint's idempotent path;
+ * - every registered provider's session (and non-session logout,
+ *   legacy, and per-request multi-session) cookies are expired on the
+ *   response — `req.responseHeaders`, which Payload merges onto the
+ *   REST logout response.
+ *
+ * A Payload-local-only logout presents no provider credential and is
+ * left untouched. Everything is best-effort and fail-safe: a provider
+ * error is logged (never thrown) and must not break the logout
+ * response — Payload has already ended its own session by the time
+ * this runs.
+ */
+export declare function providerSessionLogoutHook(wired: WiredOptions): CollectionAfterLogoutHook;
 
 // ===== mapping.d.ts =====
 import { type ClockPort, type CollectionMap, type LoggerPort, type NewUser, type ProviderIdentityRef, type Role, type Session, type SessionUser, type UserRecord } from '@payload-auth-link/core';
@@ -1194,6 +1257,8 @@ export type UserDocumentWrite = {
     readonly operation: 'create' | 'linkIdentity' | 'setEmail' | 'setPhone';
     readonly userId: UserId;
 };
+/** A database transaction id, as `payload.db.beginTransaction` returns it. */
+export type TransactionId = string | number;
 /**
  * `UserRepository` over the Payload Local API. Request-scoped: construct one
  * per request from `req.payload` — no shared instances, no init ordering.

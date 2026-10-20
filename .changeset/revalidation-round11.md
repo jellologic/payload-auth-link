@@ -5,6 +5,13 @@
 '@payload-auth-link/migrate': minor
 ---
 
+`Upgrade impact:` ONE new database table column pair on the users
+collection is NOT introduced — the only schema-adjacent diff is the
+users collection's hook array gaining the `afterLogout` provider-
+session hook (see snapshots/schema/plugin-users.json). Push and
+migrations have nothing to do on SQLite, Postgres, or MongoDB. No
+operator data steps; the logout behavior applies on upgrade.
+
 The 0.17.0 re-validation batch: engine-boundary account-state enforcement, admin logout ends the provider session, adopted-role bridging, and scoped plugin writes.
 
 - **provider-better-auth** (GHSA-62xf-qq8f-x6w9, GHSA-xxff-hh6q-c99p): a new engine plugin enforces the account state at the Better Auth boundary — an ACTIVE admin ban (`banned` + `banExpires`) or a CAP-7 suspension refuses `get-session`, every authenticated provider endpoint, and fresh sign-ins, and the port refuses session resolution, server-side mints, and API-key verification for such users. Before this, both states were enforced only where payload-auth-link resolves a session: banned users kept live sessions and working API keys, and suspended users could sign in fresh and act through every Better Auth endpoint. The user row is read FRESH per request via the internal adapter, so a ban or suspension applies to the next request without revocation. `suspendedUntilField` (engine input) names the CAP-7 field for renamed hosts.
