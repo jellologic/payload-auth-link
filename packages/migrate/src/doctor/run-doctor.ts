@@ -2,6 +2,7 @@ import { isRecord } from '@payload-auth-link/core'
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { readableCredentialFields } from './adopted-credentials.js'
 import { checkVersions } from './bands.js'
 import { introspectDatabase } from './database.js'
 import {
@@ -14,7 +15,13 @@ import { scanSource } from './source-scan.js'
 import { sourceMapFromConfig } from './source-layout.js'
 import { analyzeUsersCollection, findUsersCollection } from './users.js'
 import { parseSourceMapJson, resolveSourceTables } from '../importer/types.js'
-import type { BehaviourChange, DoctorIssue, DoctorReport, PluginFinding } from './types.js'
+import type {
+  BehaviourChange,
+  DatabaseFinding,
+  DoctorIssue,
+  DoctorReport,
+  PluginFinding,
+} from './types.js'
 
 /**
  * The read-only doctor (issue #52): point it at a payload-auth app and
@@ -222,6 +229,29 @@ export function sessionCollectionsWithoutAuthMethod(config: unknown): string[] {
   return missing
 }
 
+/**
+ * The warning for legacy invitation roles (issue #142): payload-auth
+ * stored the organization plugin's invitation `role` as a
+ * JSON-encoded array STRING, and accepting one after the switch copies
+ * that string into the member's role and fails. adopt-prelink writes
+ * the users collection ONLY — it does not touch the invitations table
+ * — so the fix is a hand rewrite, and the warning says so. Extracted
+ * so tests can assert its exact shape against a synthetic
+ * DatabaseFinding (introspectDatabase is Postgres-backed).
+ */
+export function legacyInvitationRolesWarning(
+  found: Pick<DatabaseFinding, 'legacyInvitationRoles'>
+): DoctorIssue | null {
+  const count = found.legacyInvitationRoles
+  if (count === undefined || count === null || count <= 0) {
+    return null
+  }
+  return {
+    code: 'legacy-invitation-roles',
+    detail: `${count} invitation row(s) store their role as the JSON-encoded array STRING payload-auth wrote into the varchar role column ('["member"]' — seen on Better Auth 1.6.30 and 1.7.10 with payload-auth): after the switch, accepting such an invitation copies that string into the member's role and the accept fails. adopt-prelink does not touch the invitations table — rewrite the rows by hand before the cutover, e.g. UPDATE invitations SET role = 'member' WHERE role LIKE '[%' (several roles take Better Auth's comma-joined form: '["a","b"]' becomes 'a,b')`,
+  }
+}
+
 /** Default config loader: a dynamic import of the TS/JS config module. */
 async function defaultLoadModule(path: string): Promise<unknown> {
   const mod: unknown = await import(pathToFileURL(path).href)
@@ -368,6 +398,14 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
         })
       }
     }
+    // Adopted provider collections (issue #145) reuse the host's
+    // legacy access rules: flag credential fields a non-manager can
+    // read. A SOURCE config stays as-is — nothing is adopted yet, and
+    // the payload-auth-installed blocker already routes to adopt or
+    // import.
+    if (adoptTarget) {
+      warnings.push(...readableCredentialFields(config))
+    }
     for (const issue of userIssues) {
       if (
         issue.code === 'injected-field-collision' ||
@@ -442,6 +480,13 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
           code: 'unverified-users',
           detail: `${found.unverifiedUsers} user(s) have emailVerified = false. No user receives the verified-email linking proof by default — the importer and adopt-prelink grant it only with --grant-linkable-from-verified, and even then never to these users — but every user is still pre-linked to their document through the better-auth identity, so each resolves on their next sign-in (issue #69); no operator action is required`,
         })
+      }
+      // Legacy invitation roles 500 the accept flow after the switch
+      // (issue #142): warn with the hand rewrite, since adopt-prelink
+      // does not write the invitations table.
+      const invitationRoles = legacyInvitationRolesWarning(found)
+      if (invitationRoles !== null) {
+        warnings.push(invitationRoles)
       }
       // Fail closed on the source layout (issue #68): a mapped model
       // whose table is absent blocks until --source-map explains it.

@@ -18,7 +18,9 @@ import {
   type ApiKeyVerification,
   authMethods,
   type AuthMethod,
+  nullLogger,
 } from '@payload-auth-link/core'
+import { accountStateRefusal } from './account-state.js'
 import { presentedBetterAuthCookieChunks } from './cookies.js'
 import { UnsupportedApiKeyOwnerError } from './errors.js'
 import type { IdentityEventBus } from './events.js'
@@ -149,6 +151,13 @@ export type BetterAuthProviderDeps = {
   readonly sessionCookieNames: readonly string[]
   /** Issue #124: adopt mode — `idStrategy: 'payload'` with the user model adopted. */
   readonly providerUserIdsAreDocumentIds?: boolean | undefined
+  /** GHSA-62xf/xxff: the account-state reader for the port's refusals. */
+  readonly accountState?:
+    | {
+        readonly suspendedUntilField: string
+        readonly readUserRow: (userId: string) => Promise<unknown>
+      }
+    | undefined
   /**
    * Clearing attributes per session cookie, from
    * {@link getBetterAuthSessionCookieClearOptions} (see `cookies.ts`).
@@ -208,6 +217,19 @@ export type BetterAuthProviderDeps = {
 type PortFunctions = {
   /** Issue #124: adopt mode — the engine's user ids are document ids. */
   readonly providerUserIdsAreDocumentIds?: boolean | undefined
+  /**
+   * Account-state enforcement (GHSA-62xf-qq8f-x6w9, GHSA-xxff-hh6q-c99p):
+   * when present, session resolution, session minting, and API-key
+   * verification read the user row FRESH and refuse an ACTIVE Better
+   * Auth ban (`banned` + `banExpires`) or a CAP-7 suspension
+   * (`suspendedUntil` beyond now).
+   */
+  readonly accountState?:
+    | {
+        readonly suspendedUntilField: string
+        readonly readUserRow: (userId: string) => Promise<unknown>
+      }
+    | undefined
   readonly getSession: (input: BetterAuthSessionQuery) => Promise<unknown>
   readonly deleteSession: (token: string) => Promise<unknown>
   readonly deleteUserSessions: (userId: string) => Promise<unknown>
@@ -530,8 +552,43 @@ function createPortFromFunctions(deps: PortFunctions): IdentityProviderPort {
       return runProviderOperation(
         providerId,
         'getSession',
-        () =>
-          deps.getSession({ headers, query: { disableCookieCache: true, disableRefresh: true } }),
+        async () => {
+          let result: unknown
+          try {
+            result = await deps.getSession({
+              headers,
+              query: { disableCookieCache: true, disableRefresh: true },
+            })
+          } catch (error) {
+            // The engine's account-state middleware refuses an ACTIVE
+            // ban or suspension with a typed 403 (GHSA-62xf /
+            // GHSA-xxff). At the port that means "no session": null,
+            // so the strategy refuses and the credential gate arms.
+            if (
+              isRecord(error) &&
+              isRecord(error.body) &&
+              (error.body.code === 'ACCOUNT_BANNED' || error.body.code === 'ACCOUNT_SUSPENDED')
+            ) {
+              return null
+            }
+            throw error
+          }
+          if (deps.accountState) {
+            const userId = sessionUserIdOf(result)
+            if (userId !== null) {
+              const refusal = await accountStateRefusal(
+                userId,
+                deps.accountState.suspendedUntilField,
+                deps.accountState.readUserRow,
+                nullLogger()
+              )
+              if (refusal !== null) {
+                return null
+              }
+            }
+          }
+          return result
+        },
         (result) => narrowSession(result, channel)
       )
     },
@@ -568,7 +625,28 @@ function createPortFromFunctions(deps: PortFunctions): IdentityProviderPort {
       return runProviderOperation(
         providerId,
         'createProviderSession',
-        () => deps.createProviderSession(providerUserId, options),
+        async () => {
+          // GHSA-62xf: server-side mints run outside Better Auth's
+          // endpoint context, where its own ban check never fires —
+          // the account state is checked here, before minting.
+          if (deps.accountState) {
+            const refusal = await accountStateRefusal(
+              providerUserId,
+              deps.accountState.suspendedUntilField,
+              deps.accountState.readUserRow,
+              nullLogger()
+            )
+            if (refusal !== null) {
+              const code: unknown = isRecord(refusal.body) ? refusal.body.code : undefined
+              throw new ProviderError(
+                providerId,
+                `createProviderSession: account state refused (${String(code)})`,
+                { cause: refusal }
+              )
+            }
+          }
+          return deps.createProviderSession(providerUserId, options)
+        },
         narrowCreatedSession
       )
     },
@@ -592,7 +670,28 @@ function createPortFromFunctions(deps: PortFunctions): IdentityProviderPort {
             runProviderOperation(
               providerId,
               'verifyApiKey',
-              () => apiKeys.verify(key),
+              async () => {
+                const raw = await apiKeys.verify(key)
+                // GHSA-62xf: a banned (or suspended) owner's key verifies
+                // no further than this point.
+                if (deps.accountState) {
+                  const owner = ownerOfRawVerification(raw)
+                  if (owner !== null) {
+                    const refusal = await accountStateRefusal(
+                      owner,
+                      deps.accountState.suspendedUntilField,
+                      deps.accountState.readUserRow,
+                      nullLogger()
+                    )
+                    if (refusal !== null) {
+                      throw new ProviderError(providerId, `verifyApiKey: ${refusal.message}`, {
+                        cause: refusal,
+                      })
+                    }
+                  }
+                }
+                return raw
+              },
               (result) => narrowApiKeyVerification(result)
             ).andThen((verified) => refuseNonUserApiKeyOwner(verified, apiKeys.isProviderUser)),
         }),
@@ -895,6 +994,30 @@ function refuseNonUserApiKeyOwner(
   )
 }
 
+/** The user id a raw Better Auth getSession result carries, or null. */
+function sessionUserIdOf(result: unknown): string | null {
+  if (!isRecord(result)) {
+    return null
+  }
+  const user: unknown = result.user
+  const id: unknown = isRecord(user) ? user.id : undefined
+  return typeof id === 'string' && id !== '' ? id : null
+}
+
+/** The owner id a raw api-key verification result carries, or null. */
+function ownerOfRawVerification(result: unknown): string | null {
+  if (!isRecord(result) || !isRecord(result.key)) {
+    return null
+  }
+  const owner: unknown =
+    typeof result.key.referenceId === 'string' && result.key.referenceId !== ''
+      ? result.key.referenceId
+      : typeof result.key.userId === 'string' && result.key.userId !== ''
+        ? result.key.userId
+        : undefined
+  return typeof owner === 'string' && owner !== '' ? owner : null
+}
+
 function narrowApiKeyVerification(result: unknown): ApiKeyVerification | null {
   if (result === null || result === undefined) {
     return null
@@ -1031,6 +1154,14 @@ export function createBetterAuthProvider(deps: BetterAuthProviderDeps): Identity
   const verifyApiKey = deps.auth.verifyApiKey
   return createPortFromFunctions({
     providerUserIdsAreDocumentIds: deps.providerUserIdsAreDocumentIds === true,
+    ...(deps.accountState === undefined
+      ? {}
+      : {
+          accountState: {
+            suspendedUntilField: deps.accountState.suspendedUntilField,
+            readUserRow: deps.accountState.readUserRow,
+          },
+        }),
     getSession: (input) =>
       getSessionMaybeWithLegacy(
         input,
@@ -1221,6 +1352,13 @@ export function createBetterAuthProviderFromUnknown(
       | undefined
     /** Issue #124: adopt mode, `idStrategy: 'payload'`, user model adopted. */
     readonly providerUserIdsAreDocumentIds?: boolean | undefined
+    /** GHSA-62xf/xxff: the account-state reader for the port's refusals. */
+    readonly accountState?:
+      | {
+          readonly suspendedUntilField: string
+          readonly readUserRow: (userId: string) => Promise<unknown>
+        }
+      | undefined
   }
 ): IdentityProviderPort {
   if (!isRecord(auth)) {
@@ -1278,6 +1416,7 @@ export function createBetterAuthProviderFromUnknown(
       : undefined
   return createPortFromFunctions({
     providerUserIdsAreDocumentIds: options?.providerUserIdsAreDocumentIds === true,
+    accountState: options?.accountState,
     getSession: (input) =>
       getSessionMaybeWithLegacy(
         input,

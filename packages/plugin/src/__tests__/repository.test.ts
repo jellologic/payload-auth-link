@@ -1,4 +1,5 @@
 import {
+  authLinkWriteMarker,
   defineProviderId,
   defineUserId,
   parseEmail,
@@ -13,6 +14,7 @@ import {
 } from '@payload-auth-link/core'
 import { ValidationError, type Payload } from 'payload'
 import { describe, expect, it, vi } from 'vitest'
+import { linkableCreateMarker } from '../collections.js'
 import { wireOptions } from '../options.js'
 import { createPayloadUserRepository, type UserDocumentWrite } from '../repository.js'
 import { createStubProvider } from './stub-provider.js'
@@ -56,6 +58,17 @@ type PayloadStub = {
   findByID?: (args: unknown) => Promise<unknown>
   create?: (args: unknown) => Promise<unknown>
   update?: (args: unknown) => Promise<unknown>
+  /**
+   * The database-adapter write the repository scopes identity and
+   * credential fields through (issue #144); `update` is the Local API
+   * operation and must stay untouched by linkIdentity/unlinkIdentity.
+   */
+  db?: {
+    updateOne?: (args: unknown) => Promise<unknown>
+    beginTransaction?: () => Promise<string>
+    commitTransaction?: () => Promise<void>
+    rollbackTransaction?: () => Promise<void>
+  }
 }
 
 function repository(
@@ -76,6 +89,12 @@ function repository(
       findByID: stub.findByID ?? (() => Promise.resolve({})),
       create: stub.create ?? rejecting,
       update: stub.update ?? rejecting,
+      db: {
+        updateOne: stub.db?.updateOne ?? rejecting,
+        beginTransaction: stub.db?.beginTransaction,
+        commitTransaction: stub.db?.commitTransaction,
+        rollbackTransaction: stub.db?.rollbackTransaction,
+      },
     } as unknown as Payload,
     map: wired.config.map,
     defaultRole: wired.config.defaultRole,
@@ -178,24 +197,53 @@ describe('payload user repository linkIdentity', () => {
 
   it('returns the existing record without writing when already linked', async () => {
     const update = vi.fn(down)
-    const users = repository({ find: found([linkedDoc]), update })
+    const updateOne = vi.fn(down)
+    const users = repository({ find: found([linkedDoc]), update, db: { updateOne } })
     expect((await users.linkIdentity(userId, ref)).isOk()).toBe(true)
     expect(update).not.toHaveBeenCalled()
+    expect(updateOne).not.toHaveBeenCalled()
   })
 
   it('appends the identity, keeping existing rows', async () => {
-    const update = vi.fn<(args: unknown) => Promise<unknown>>(() => Promise.resolve(linkedDoc))
+    const updateOne = vi.fn<(args: unknown) => Promise<unknown>>(() => Promise.resolve(linkedDoc))
     const other = { ...linkedDoc, identities: [{ ...linkedDoc.identities[0], providerId: 'x' }] }
-    const users = repository({ find: found([other]), update })
+    const users = repository({ find: found([other]), db: { updateOne } })
     expect((await users.linkIdentity(userId, ref)).isOk()).toBe(true)
-    expect(update.mock.calls[0]?.[0]).toMatchObject({
+    expect(updateOne.mock.calls[0]?.[0]).toMatchObject({
       id: userId,
       data: { identities: [{ providerId: 'x' }, { providerId: 'stub', providerUserId: 'stub-1' }] },
     })
   })
 
+  it('links through the scoped adapter write, never through full-document validation (issue #144)', async () => {
+    // The host operation path WOULD refuse this document: a legacy row
+    // whose `name` predates the host's required `name` field fails
+    // full-document validation on ANY Local API update (Payload merges
+    // the stored document into the incoming data and validates every
+    // field). The link must not depend on unrelated fields.
+    const fullDocumentValidation = () =>
+      Promise.reject(
+        new ValidationError({ errors: [{ path: 'name', message: 'This field is required.' }] })
+      )
+    const update = vi.fn(fullDocumentValidation)
+    const updateOne = vi.fn<(args: unknown) => Promise<unknown>>(() => Promise.resolve(linkedDoc))
+    const users = repository({ find: found([doc]), update, db: { updateOne } })
+    expect((await users.linkIdentity(userId, ref)).isOk()).toBe(true)
+    // The full-document operation never ran: its validation never saw
+    // the legacy row.
+    expect(update).not.toHaveBeenCalled()
+    // ONLY plugin-owned fields are written — no host field, no marker
+    // (the adapter runs no hooks, so there is nothing to skip).
+    const call = updateOne.mock.calls[0]?.[0] as {
+      data: Record<string, unknown>
+      context?: unknown
+    }
+    expect(Object.keys(call.data).sort()).toEqual(['identities'])
+    expect(call.context).toBeUndefined()
+  })
+
   it('clears Payload local sessions when the collection keeps them (useSessions)', async () => {
-    const update = vi.fn<(args: unknown) => Promise<unknown>>(() => Promise.resolve(linkedDoc))
+    const updateOne = vi.fn<(args: unknown) => Promise<unknown>>(() => Promise.resolve(linkedDoc))
     const wired = wireOptions({
       baseUrl: 'http://auth-link.test',
       roles: ['user', 'admin'],
@@ -207,7 +255,7 @@ describe('payload user repository linkIdentity', () => {
         collections: { users: { config: { auth: { useSessions: true } } } },
         find: found([doc]),
         findByID: () => Promise.resolve({}),
-        update,
+        db: { updateOne },
       } as unknown as Payload,
       map: wired.config.map,
       defaultRole: wired.config.defaultRole,
@@ -217,26 +265,73 @@ describe('payload user repository linkIdentity', () => {
       depth: wired.depth,
     })
     expect((await users.linkIdentity(userId, ref)).isOk()).toBe(true)
-    expect(update.mock.calls[0]?.[0]).toMatchObject({ data: { sessions: [] } })
+    expect(updateOne.mock.calls[0]?.[0]).toMatchObject({ data: { sessions: [] } })
   })
 
   it('leaves sessions alone when the collection keeps none', async () => {
-    const update = vi.fn<(args: unknown) => Promise<unknown>>(() => Promise.resolve(linkedDoc))
-    const users = repository({ find: found([doc]), update })
+    const updateOne = vi.fn<(args: unknown) => Promise<unknown>>(() => Promise.resolve(linkedDoc))
+    const users = repository({ find: found([doc]), db: { updateOne } })
     expect((await users.linkIdentity(userId, ref)).isOk()).toBe(true)
-    const data = (update.mock.calls[0]?.[0] as { data: Record<string, unknown> }).data
+    const data = (updateOne.mock.calls[0]?.[0] as { data: Record<string, unknown> }).data
     expect('sessions' in data).toBe(false)
+  })
+
+  it('clears the API key AND its Payload lookup index (the index hook does not run here)', async () => {
+    const updateOne = vi.fn<(args: unknown) => Promise<unknown>>(() => Promise.resolve(linkedDoc))
+    const wired = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['user', 'admin'],
+      defaultRole: 'user',
+      providers: [createStubProvider().provider],
+    })
+    const users = createPayloadUserRepository({
+      payload: {
+        collections: {
+          users: {
+            config: {
+              auth: { useAPIKey: true },
+              fields: [{ name: 'enableAPIKey', type: 'checkbox' }],
+            },
+          },
+        },
+        find: found([doc]),
+        findByID: () => Promise.resolve({}),
+        db: { updateOne },
+      } as unknown as Payload,
+      map: wired.config.map,
+      defaultRole: wired.config.defaultRole,
+      logger: wired.logger,
+      clock: wired.clock,
+      ids: wired.ids,
+      depth: wired.depth,
+    })
+    expect((await users.linkIdentity(userId, ref)).isOk()).toBe(true)
+    // Payload's Local API nulls `apiKeyIndex` through the
+    // `setAPIKeyIndex` field hook on `apiKey: null`; the adapter path
+    // runs no hooks, so the scoped write clears the HMAC lookup
+    // column itself — the API-key strategy matches on it alone. The
+    // write is SPLIT: plain columns through the adapter's
+    // plain-UPDATE path, array child rows through the rewrite (a
+    // mixed payload would upsert the main row from partial data and
+    // trip NOT NULL on the untouched columns).
+    expect(updateOne.mock.calls[0]?.[0]).toMatchObject({
+      data: { apiKey: null, apiKeyIndex: null, enableAPIKey: false },
+    })
+    expect(updateOne.mock.calls[1]?.[0]).toMatchObject({
+      data: { identities: [expect.objectContaining({ providerUserId: 'stub-1' })] },
+    })
+    expect(updateOne).toHaveBeenCalledTimes(2)
   })
 
   it('maps write outages and unmappable results to RepositoryError', async () => {
     expectRepositoryError(
-      await repository({ find: found([doc]), update: down }).linkIdentity(userId, ref)
+      await repository({ find: found([doc]), db: { updateOne: down } }).linkIdentity(userId, ref)
     )
     expectRepositoryError(
-      await repository({ find: found([doc]), update: () => Promise.resolve(null) }).linkIdentity(
-        userId,
-        ref
-      )
+      await repository({
+        find: found([doc]),
+        db: { updateOne: () => Promise.resolve(null) },
+      }).linkIdentity(userId, ref)
     )
   })
 })
@@ -461,27 +556,41 @@ describe('payload user repository unlinkIdentity (CAP-14)', () => {
 
   it('is an idempotent no-op when the identity is not linked', async () => {
     const update = vi.fn(down)
-    const users = repository({ find: found([doc]), update })
+    const updateOne = vi.fn(down)
+    const users = repository({ find: found([doc]), update, db: { updateOne } })
     expect((await users.unlinkIdentity(userId, ref)).isOk()).toBe(true)
     expect(update).not.toHaveBeenCalled()
+    expect(updateOne).not.toHaveBeenCalled()
   })
 
   it('removes only the matching row and never deletes the user', async () => {
-    const update = vi.fn<(args: unknown) => Promise<unknown>>(() => Promise.resolve(doc))
-    const users = repository({ find: found([linkedDoc]), update })
+    const updateOne = vi.fn<(args: unknown) => Promise<unknown>>(() => Promise.resolve(doc))
+    const users = repository({ find: found([linkedDoc]), db: { updateOne } })
     const result = await users.unlinkIdentity(userId, ref)
     expect(result._unsafeUnwrap().identities).toEqual([])
-    expect(update.mock.calls[0]?.[0]).toMatchObject({ id: userId, data: { identities: [] } })
+    expect(updateOne.mock.calls[0]?.[0]).toMatchObject({ id: userId, data: { identities: [] } })
+  })
+
+  it('scopes the write to the identities field (issue #144)', async () => {
+    const update = vi.fn(down)
+    const updateOne = vi.fn<(args: unknown) => Promise<unknown>>(() => Promise.resolve(doc))
+    const users = repository({ find: found([linkedDoc]), update, db: { updateOne } })
+    expect((await users.unlinkIdentity(userId, ref)).isOk()).toBe(true)
+    const call = updateOne.mock.calls[0]?.[0] as { data: Record<string, unknown> }
+    expect(Object.keys(call.data).sort()).toEqual(['identities'])
   })
 
   it('maps write outages and unmappable results to RepositoryError', async () => {
     expectRepositoryError(
-      await repository({ find: found([linkedDoc]), update: down }).unlinkIdentity(userId, ref)
+      await repository({ find: found([linkedDoc]), db: { updateOne: down } }).unlinkIdentity(
+        userId,
+        ref
+      )
     )
     expectRepositoryError(
       await repository({
         find: found([linkedDoc]),
-        update: () => Promise.resolve(null),
+        db: { updateOne: () => Promise.resolve(null) },
       }).unlinkIdentity(userId, ref)
     )
   })
@@ -566,10 +675,10 @@ describe('payload user repository write observer (issue #116)', () => {
     const newUser = { email: email('linked@test.dev'), roles: [parseRole('user')._unsafeUnwrap()] }
     // Performed writes.
     await observe({ create: () => Promise.resolve(doc) }).create(newUser)
-    await observe({ find: found([doc]), update: () => Promise.resolve(linkedDoc) }).linkIdentity(
-      userId,
-      ref
-    )
+    await observe({
+      find: found([doc]),
+      db: { updateOne: () => Promise.resolve(linkedDoc) },
+    }).linkIdentity(userId, ref)
     await observe({
       find: found([doc]),
       update: () => Promise.resolve({ ...doc, email: 'next@test.dev' }),
@@ -592,10 +701,79 @@ describe('payload user repository write observer (issue #116)', () => {
     writes.length = 0
     // No-ops, a lost create race, and a failed write report nothing.
     await observe({ create: uniqueEmailViolation }).create(newUser)
-    await observe({ find: found([linkedDoc]), update: down }).linkIdentity(userId, ref)
+    await observe({ find: found([linkedDoc]), db: { updateOne: down } }).linkIdentity(userId, ref)
     await observe({ find: found([doc]), update: down }).setEmail(userId, email('linked@test.dev'))
     await observe({ find: found([doc]), update: down }).setEmail(userId, email('next@test.dev'))
     expect(writes).toEqual([])
+  })
+})
+
+describe('payload user repository write marker (issue #144 part 2)', () => {
+  it('stamps resync-email on the setEmail write so host hooks can skip it', async () => {
+    const writes: Array<Record<string, unknown> | undefined> = []
+    const users = repository({
+      find: found([linkedDoc]),
+      update: (args: unknown) => {
+        writes.push(args as Record<string, unknown>)
+        return Promise.resolve({ ...linkedDoc, email: 'next@test.dev' })
+      },
+    })
+    expect((await users.setEmail(userId, email('next@test.dev'))).isOk()).toBe(true)
+    expect(writes[0]?.context).toEqual({ [authLinkWriteMarker]: { op: 'resync-email' } })
+  })
+
+  it('stamps resync-phone on the setPhone write', async () => {
+    const writes: Array<Record<string, unknown> | undefined> = []
+    let call = 0
+    const find = () => {
+      call += 1
+      return Promise.resolve({ docs: call === 1 ? [doc] : [] })
+    }
+    const users = repository({
+      find,
+      update: (args: unknown) => {
+        writes.push(args as Record<string, unknown>)
+        return Promise.resolve({ ...doc, phone: '+14155550132' })
+      },
+    })
+    expect(
+      (await users.setPhone?.(userId, parsePhoneNumber('+14155550132')._unsafeUnwrap()))?.isOk()
+    ).toBe(true)
+    expect(writes[0]?.context).toEqual({ [authLinkWriteMarker]: { op: 'resync-phone' } })
+  })
+
+  it('stamps set-roles on the setRoles write', async () => {
+    const writes: Array<Record<string, unknown> | undefined> = []
+    const users = repository({
+      update: (args: unknown) => {
+        writes.push(args as Record<string, unknown>)
+        return Promise.resolve({ ...doc, roles: ['admin'] })
+      },
+    })
+    expect((await users.setRoles(userId, [parseRole('admin')._unsafeUnwrap()])).isOk()).toBe(true)
+    expect(writes[0]?.context).toEqual({ [authLinkWriteMarker]: { op: 'set-roles' } })
+  })
+
+  it('stamps create beside the linkable-create proof marker', async () => {
+    const writes: Array<Record<string, unknown> | undefined> = []
+    const users = repository({
+      create: (args: unknown) => {
+        writes.push(args as Record<string, unknown>)
+        return Promise.resolve(doc)
+      },
+    })
+    expect(
+      (
+        await users.create({
+          email: email('linked@test.dev'),
+          roles: [parseRole('user')._unsafeUnwrap()],
+        })
+      ).isOk()
+    ).toBe(true)
+    expect(writes[0]?.context).toEqual({
+      [linkableCreateMarker]: true,
+      [authLinkWriteMarker]: { op: 'create' },
+    })
   })
 })
 
@@ -612,5 +790,95 @@ describe('payload user repository setRoles', () => {
     expectRepositoryError(
       await repository({ update: () => Promise.resolve(null) }).setRoles(userId, roles)
     )
+  })
+})
+
+describe('linkIdentity runs in an adapter transaction (issue #144 scoping)', () => {
+  it('commits the transaction and carries it on the scoped write', async () => {
+    const seen: unknown[] = []
+    const repo = repository(
+      {
+        find: found([
+          {
+            id: 'u1',
+            email: 'tx@test.dev',
+            identities: [],
+            roles: ['user'],
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+        ]),
+        findByID: () =>
+          Promise.resolve({
+            id: 'u1',
+            email: 'tx@test.dev',
+            identities: [],
+            roles: ['user'],
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          }),
+        db: {
+          beginTransaction: () => Promise.resolve('tx-7'),
+          commitTransaction: () => Promise.resolve(),
+          rollbackTransaction: () => Promise.resolve(),
+          updateOne: (args) => {
+            seen.push(args)
+            return Promise.resolve(user)
+          },
+        },
+      } as PayloadStub,
+      undefined,
+      () => undefined
+    )
+    const result = await repo.linkIdentity('u1' as never, {
+      providerId: 'stub' as never,
+      providerUserId: 'ba-9',
+    })
+    if (result.isErr()) {
+    }
+    expect(result.isOk()).toBe(true)
+    expect(seen).toHaveLength(1)
+    const write = seen[0] as { req?: { transactionID?: string } }
+    expect(write.req?.transactionID).toBe('tx-7')
+  })
+
+  it('rolls the transaction back and rethrows when the scoped write fails', async () => {
+    let rolledBack = false
+    const repo = repository({
+      find: found([
+        {
+          id: 'u1',
+          email: 'tx@test.dev',
+          identities: [],
+          roles: ['user'],
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ]),
+      findByID: () =>
+        Promise.resolve({
+          id: 'u1',
+          email: 'tx@test.dev',
+          identities: [],
+          roles: ['user'],
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }),
+      db: {
+        beginTransaction: () => Promise.resolve('tx-8'),
+        commitTransaction: () => Promise.resolve(),
+        rollbackTransaction: () => {
+          rolledBack = true
+          return Promise.resolve()
+        },
+        updateOne: () => Promise.reject(new Error('storage gone')),
+      },
+    } as PayloadStub)
+    const result = await repo.linkIdentity('u1' as never, {
+      providerId: 'stub' as never,
+      providerUserId: 'ba-9',
+    })
+    expect(result.isErr()).toBe(true)
+    expect(rolledBack).toBe(true)
   })
 })

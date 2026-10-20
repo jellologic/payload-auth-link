@@ -1,6 +1,7 @@
 import { Ok, ResultAsync } from 'neverthrow'
 import {
   assertNever,
+  authLinkWriteMarker,
   engineCreateMarker,
   InvalidConfigError,
   isRecord,
@@ -38,6 +39,7 @@ import {
 } from './credential-gate.js'
 import type { WiredOptions } from './options.js'
 import { normalizeUserEmailHook } from './hooks.js'
+import { providerSessionLogoutHook } from './logout.js'
 import { REQUEST_VERIFY_KEY } from './session.js'
 import { strategyName } from './strategy.js'
 
@@ -349,7 +351,10 @@ function adoptIdentityHook(wired: WiredOptions): CollectionAfterChangeHook {
             },
           ],
         },
-        context: { [engineCreateMarker]: true },
+        context: {
+          [engineCreateMarker]: true,
+          [authLinkWriteMarker]: { op: 'identity-at-creation' },
+        },
         overrideAccess: true,
         req,
       })
@@ -1256,6 +1261,7 @@ function createUsersCollection(wired: WiredOptions, strategy: AuthStrategy): Col
       // authentication-time veto for Payload's own credentials.
       afterRead: [localCredentialGateHook(wired)],
       afterChange: [adoptIdentityHook(wired), suspendRevokeHook(wired)],
+      afterLogout: [providerSessionLogoutHook(wired)],
       me: [authLinkMeHook],
     },
   }
@@ -1438,6 +1444,7 @@ export function applyUsersCollection(
             // Payload's own credentials.
             afterRead: [localCredentialGateHook(wired), ...(existing.hooks?.afterRead ?? [])],
             afterChange: [...afterChange, adoptIdentityHook(wired), suspendRevokeHook(wired)],
+            afterLogout: [...(existing.hooks?.afterLogout ?? []), providerSessionLogoutHook(wired)],
             me: [authLinkMeHook, ...(existing.hooks?.me ?? [])],
           },
         }

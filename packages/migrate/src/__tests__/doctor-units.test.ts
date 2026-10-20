@@ -2,8 +2,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
+import { readableCredentialFields } from '../doctor/adopted-credentials.js'
 import { classifyPlugins, pluginsFromSourceTree } from '../doctor/plugins.js'
-import { runDoctor } from '../doctor/run-doctor.js'
+import { legacyInvitationRolesWarning, runDoctor } from '../doctor/run-doctor.js'
 import { scanSource } from '../doctor/source-scan.js'
 import { snakeCaseTableName, sourceMapFromConfig } from '../doctor/source-layout.js'
 import type { DoctorReport } from '../doctor/types.js'
@@ -626,5 +627,244 @@ describe('doctor report formatting', () => {
     expect(format).toContain('== behaviour changes')
     expect(format).toContain('== blockers ==')
     expect(format).toContain('== warnings ==')
+  })
+})
+
+describe('doctor: legacy invitation roles (#142)', () => {
+  test('a positive count warns with the artifact, the count, and the hand rewrite', () => {
+    const warning = legacyInvitationRolesWarning({ legacyInvitationRoles: 3 })
+    expect(warning?.code).toBe('legacy-invitation-roles')
+    expect(warning?.detail).toContain('3 invitation row(s)')
+    expect(warning?.detail).toContain('["member"]')
+    expect(warning?.detail).toContain("UPDATE invitations SET role = 'member' WHERE role LIKE '[%'")
+    expect(warning?.detail).toContain("'a,b'")
+    // adopt-prelink writes the users collection only: the warning must
+    // not send the operator to it for this fix.
+    expect(warning?.detail).toContain('does not touch the invitations table')
+  })
+
+  test('zero, unknown (null), and absent counts emit nothing', () => {
+    expect(legacyInvitationRolesWarning({})).toBeNull()
+    expect(legacyInvitationRolesWarning({ legacyInvitationRoles: 0 })).toBeNull()
+    expect(legacyInvitationRolesWarning({ legacyInvitationRoles: null })).toBeNull()
+  })
+})
+
+describe('doctor: readable credential fields on adopted collections (#145)', () => {
+  const selfRead = { read: ({ req }: { req: { user?: unknown } }) => req.user !== null }
+
+  test('flags each credential field lacking a field-level read, naming collection and field', () => {
+    const issues = readableCredentialFields({
+      collections: [
+        {
+          slug: 'accounts',
+          custom: { betterAuthModelKey: 'account' },
+          access: selfRead,
+          fields: [
+            { name: 'email', type: 'email' },
+            { name: 'password', type: 'text' },
+            { name: 'accessToken', type: 'text' },
+            { name: 'refresh_token', type: 'text' },
+            { name: 'id_token', type: 'text' },
+          ],
+        },
+        {
+          slug: 'userSessions',
+          custom: { betterAuthModelKey: 'session' },
+          fields: [{ name: 'token', type: 'text' }],
+        },
+        {
+          slug: 'apiKeys',
+          custom: { betterAuthModelKey: 'apikey' },
+          fields: [{ name: 'key', type: 'text' }],
+        },
+      ],
+    })
+    // One per field, canonical order within a model: accounts'
+    // password, accessToken, refresh_token, id_token (camelCase
+    // spellings first), then the session token and the API key.
+    expect(issues.map((issue) => issue.code)).toEqual([
+      'readable-credential-field',
+      'readable-credential-field',
+      'readable-credential-field',
+      'readable-credential-field',
+      'readable-credential-field',
+      'readable-credential-field',
+    ])
+    const details = issues.map((issue) => issue.detail)
+    expect(details[0]).toContain("'accounts'")
+    expect(details[0]).toContain("'password'")
+    expect(details[1]).toContain("'accessToken'")
+    expect(details[2]).toContain("'refresh_token'")
+    expect(details[3]).toContain("'id_token'")
+    expect(details[4]).toContain("'userSessions'")
+    expect(details[4]).toContain("'token'")
+    expect(details[5]).toContain("'apiKeys'")
+    expect(details[5]).toContain("'key'")
+    for (const detail of details) {
+      expect(detail).toContain('access: { read:')
+      expect(detail).toContain('denyAllAccess()')
+    }
+  })
+
+  test('a field-level access.read, or a literal () => false collection read, stays silent', () => {
+    const account = (access: unknown, fieldAccess?: unknown): Record<string, unknown> => ({
+      slug: 'accounts',
+      custom: { betterAuthModelKey: 'account' },
+      ...(access === undefined ? {} : { access }),
+      fields: [
+        {
+          name: 'password',
+          type: 'text',
+          ...(fieldAccess === undefined ? {} : { access: fieldAccess }),
+        },
+      ],
+    })
+    // The host decided at field level: silent whatever the collection read.
+    expect(
+      readableCredentialFields({ collections: [account(selfRead, { read: () => false })] })
+    ).toEqual([])
+    // The collection-level read denies everyone — denyAllAccess's exact shape.
+    expect(readableCredentialFields({ collections: [account({ read: () => false })] })).toEqual([])
+    expect(
+      readableCredentialFields({
+        collections: [
+          account({
+            read: () => false,
+            create: () => false,
+            update: () => false,
+            delete: () => false,
+          }),
+        ],
+      })
+    ).toEqual([])
+    // An OPAQUE collection read proves nothing: it still flags.
+    expect(readableCredentialFields({ collections: [account(selfRead)] })).toHaveLength(1)
+  })
+
+  test('no collection read at all still flags — Payload defaults to any signed-in user', () => {
+    const issues = readableCredentialFields({
+      collections: [
+        {
+          slug: 'verifications',
+          custom: { betterAuthModelKey: 'verification' },
+          fields: [{ name: 'value', type: 'text' }],
+        },
+      ],
+    })
+    expect(issues).toHaveLength(1)
+    expect(issues[0]?.detail).toContain("'verifications'")
+    expect(issues[0]?.detail).toContain("'value'")
+    expect(issues[0]?.detail).toContain('no read access')
+  })
+
+  test('collections without payload-auth’s model stamp are never flagged', () => {
+    expect(
+      readableCredentialFields({
+        collections: [
+          {
+            slug: 'posts',
+            fields: [
+              { name: 'token', type: 'text' },
+              { name: 'key', type: 'text' },
+            ],
+          },
+          { slug: 'accounts', fields: [{ name: 'password', type: 'text' }] },
+        ],
+      })
+    ).toEqual([])
+  })
+
+  test('fields nested in tabs are found', () => {
+    const issues = readableCredentialFields({
+      collections: [
+        {
+          slug: 'accounts',
+          custom: { betterAuthModelKey: 'account' },
+          access: selfRead,
+          fields: [
+            {
+              type: 'tabs',
+              tabs: [{ label: 'Credentials', fields: [{ name: 'password', type: 'text' }] }],
+            },
+          ],
+        },
+      ],
+    })
+    expect(issues).toHaveLength(1)
+    expect(issues[0]?.detail).toContain("'password'")
+  })
+})
+
+describe('doctor: the credential check rides the adopt-target gate (#145)', () => {
+  const authLinkEntry = Object.assign(() => ({}), {
+    slug: 'payload-auth-link',
+    options: { rolesField: 'role' },
+  })
+  const fixturePath = new URL('../__fixtures__/doctor-fixture/payload.config.ts', import.meta.url)
+    .pathname
+
+  const config = (adoptTarget: boolean): Record<string, unknown> => ({
+    ...(adoptTarget ? { plugins: [authLinkEntry] } : { custom: { hasBetterAuthPlugin: true } }),
+    collections: [
+      {
+        slug: 'users',
+        auth: { disableLocalStrategy: true },
+        fields: [{ name: 'email', type: 'email' }],
+      },
+      {
+        slug: 'accounts',
+        custom: { betterAuthModelKey: 'account' },
+        access: { read: ({ req }: { req: { user?: unknown } }) => req.user !== null },
+        fields: [{ name: 'password', type: 'text' }],
+      },
+      {
+        slug: 'sessions',
+        custom: { betterAuthModelKey: 'session' },
+        fields: [
+          { name: 'user', type: 'relationship', relationTo: 'users' },
+          { name: 'token', type: 'text' },
+          { name: 'expiresAt', type: 'date' },
+          { name: 'authenticationMethod', type: 'text' },
+        ],
+      },
+    ],
+  })
+
+  test('an adopt target warns once per readable credential field', async () => {
+    const srcDir = mkdtempSync(join(tmpdir(), 'doctor-credentials-'))
+    try {
+      const report = await runDoctor({
+        configPath: fixturePath,
+        srcDir,
+        databaseUrl: '',
+        loadModule: () => Promise.resolve(config(true)),
+      })
+      const issues = report.warnings.filter((issue) => issue.code === 'readable-credential-field')
+      expect(issues.map((issue) => issue.detail)).toEqual([
+        expect.stringContaining("'accounts'"),
+        expect.stringContaining("'sessions'"),
+      ])
+      expect(issues[0]?.detail).toContain("'password'")
+      expect(issues[1]?.detail).toContain("'token'")
+      expect(report.blockers.map((issue) => issue.code)).not.toContain('readable-credential-field')
+    } finally {
+      rmSync(srcDir, { recursive: true, force: true })
+    }
+  })
+
+  test('the payload-auth SOURCE config is not flagged (nothing is adopted yet)', async () => {
+    const srcDir = mkdtempSync(join(tmpdir(), 'doctor-credentials-source-'))
+    try {
+      const report = await runDoctor({
+        configPath: fixturePath,
+        srcDir,
+        databaseUrl: '',
+        loadModule: () => Promise.resolve(config(false)),
+      })
+      expect(report.warnings.map((issue) => issue.code)).not.toContain('readable-credential-field')
+    } finally {
+      rmSync(srcDir, { recursive: true, force: true })
+    }
   })
 })

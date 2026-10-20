@@ -39,6 +39,12 @@ import type { FieldWrite, ImportManifest, Unmappable } from './types.js'
  * The write carries the kit's migration context marker
  * (`MIGRATION_CONTEXT`, host-writes.ts) so host hooks can skip their
  * outward side effects (issue #123).
+ *
+ * The users collection is the ONLY one this command writes: the
+ * invitations table is not among its written tables, so invitation
+ * rows carrying the legacy JSON-encoded role strings (issue #142) are
+ * NOT normalized here — rewrite them by hand (the doctor reports them
+ * as `legacy-invitation-roles`).
  */
 
 export type PrelinkOptions = {

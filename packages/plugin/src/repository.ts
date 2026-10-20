@@ -1,8 +1,11 @@
 import { err, errAsync, ok, okAsync, ResultAsync } from 'neverthrow'
 import {
+  authLinkWriteMarker,
   isRecord,
   RepositoryError,
   UserExistsError,
+  type AuthLinkWriteMarker,
+  type AuthLinkWriteOp,
   type ClockPort,
   type CollectionMap,
   type Email,
@@ -160,6 +163,157 @@ function collectionApiKeyShape(
 }
 
 /**
+ * The `context` argument every plugin-initiated Local API write passes
+ * (issue #144, mirroring the migrate kit's `MIGRATION_CONTEXT`):
+ * Payload merges it into `req.context`, where host hooks read it to
+ * skip their outward side effects for the plugin's bookkeeping writes
+ * (see {@link authLinkWriteMarker}). The adapter writes beside them
+ * (`payload.db.updateOne` in {@link scopedUpdate}) run no hooks and
+ * carry no marker.
+ */
+function writeContextOf(op: AuthLinkWriteOp): {
+  readonly context: { readonly [authLinkWriteMarker]: AuthLinkWriteMarker }
+} {
+  return { context: { [authLinkWriteMarker]: { op } } }
+}
+
+/** A database transaction id, as `payload.db.beginTransaction` returns it. */
+export type TransactionId = string | number
+
+/**
+ * The adapter's transaction API, reached structurally: absent on some
+ * adapters, so the scoped writes below degrade to per-statement
+ * transactions there (the migrate kit ships the same probe in its
+ * `inTransaction`).
+ */
+type TransactionApi = {
+  readonly beginTransaction: () => Promise<TransactionId | null>
+  readonly commitTransaction: (id: TransactionId) => Promise<void>
+  readonly rollbackTransaction: (id: TransactionId) => Promise<void>
+}
+
+function transactionApi(payload: Payload): TransactionApi | null {
+  const db: unknown = (payload as { db?: unknown }).db
+  if (
+    typeof db === 'object' &&
+    db !== null &&
+    typeof (db as Record<string, unknown>)['beginTransaction'] === 'function' &&
+    typeof (db as Record<string, unknown>)['commitTransaction'] === 'function' &&
+    typeof (db as Record<string, unknown>)['rollbackTransaction'] === 'function'
+  ) {
+    return db as unknown as TransactionApi
+  }
+  return null
+}
+
+/**
+ * Run `work` inside ONE adapter transaction when the adapter provides
+ * one (Postgres, SQLite; MongoDB on a replica set), committing when it
+ * resolves and rolling back when it throws. The scoped writes replace
+ * Local API updates — which Payload wraps in its own fresh
+ * transaction (`initTransaction`) — so the adapter's multi-statement
+ * upsert (main row, then child rows) keeps its all-or-nothing
+ * behavior.
+ */
+async function inTransaction<T>(
+  payload: Payload,
+  work: (transactionID: TransactionId | null) => Promise<T>
+): Promise<T> {
+  const api = transactionApi(payload)
+  const id = api === null ? null : await api.beginTransaction()
+  if (api === null || id === null) {
+    return work(null)
+  }
+  let result: T
+  try {
+    result = await work(id)
+  } catch (error) {
+    await api.rollbackTransaction(id)
+    throw error
+  }
+  await api.commitTransaction(id)
+  return result
+}
+
+/** An adapter `req` carrying the transaction, or nothing. */
+function transactionReq(
+  transactionID: TransactionId | null
+): { readonly req: { readonly transactionID: TransactionId } } | Record<string, never> {
+  return transactionID === null ? {} : { req: { transactionID } }
+}
+
+/**
+ * Write ONLY the given (plugin-owned) fields, straight through the
+ * database adapter (issue #144 part 1). `payload.update` runs
+ * full-document validation — it merges the stored document into the
+ * incoming data and validates every field — so a legacy row failing
+ * ANY unrelated required field (a host that made `name` required
+ * after the row was created) could never receive an identity link,
+ * and the user could not sign in. The adapter path writes exactly the
+ * given fields: Payload's own update operation feeds the same
+ * `db.updateOne` after hooks and validation, so unrelated validation
+ * never runs here.
+ *
+ * `data` is a LIST of payloads written in order inside ONE adapter
+ * transaction ({@link inTransaction}); the last write's document is
+ * returned. The split is load-bearing on the SQL adapters: a payload
+ * with array fields (`identities`, `sessions`) rewrites child rows
+ * and must carry NO main-row columns, because the adapter reaches
+ * child rows through a full-document upsert whose INSERT branch would
+ * have to satisfy every NOT NULL column from partial data; a payload
+ * with only plain columns takes the adapter's plain-UPDATE path and
+ * touches exactly those columns. So: credential columns first,
+ * identity rows last, and the final read-back sees both.
+ *
+ * Parity with the operation write this replaces, spelled out:
+ * - Row `id`s for array rows must be SUPPLIED: Payload mints them in
+ *   the `id` field's `beforeChange` hook (`baseIDField`), and on SQL
+ *   the child table's `id` is a NOT NULL PRIMARY KEY with no default.
+ *   Callers include a freshly minted id per row (the operation minted
+ *   fresh ids on every write too, because the repository's rows never
+ *   carried them).
+ * - Payload's `apiKeyIndex` lookup column is nulled EXPLICITLY when a
+ *   key is revoked: the Local API does that through its
+ *   `setAPIKeyIndex` field hook, and no hook runs here — left stale,
+ *   the HMAC would still authenticate (the API-key strategy matches
+ *   on the index alone).
+ * - `updatedAt` is not stamped: the adapter writes no timestamps of
+ *   its own. Hosts keying caches on `updated_at` see identity
+ *   bookkeeping as silent — the migrate kit's scoped writes make the
+ *   same choice deliberately.
+ * - No version row is created for hosts with `versions` on the users
+ *   collection (the operation would have created one).
+ * - No hook fires, so no host hook can veto or observe the write;
+ *   that is why these writes carry no {@link authLinkWriteMarker}.
+ */
+function scopedUpdate(
+  payload: Payload,
+  options: {
+    readonly collection: string
+    readonly id: string | number
+    readonly data: readonly Record<string, unknown>[]
+    /** The failing operation's name for the `RepositoryError`. */
+    readonly operation: string
+  }
+): ResultAsync<unknown, RepositoryError> {
+  return ResultAsync.fromPromise<unknown, RepositoryError>(
+    inTransaction(payload, async (transactionID) => {
+      let result: unknown = null
+      for (const data of options.data) {
+        result = await payload.db.updateOne({
+          collection: options.collection,
+          id: options.id,
+          data,
+          ...transactionReq(transactionID),
+        })
+      }
+      return result
+    }),
+    (cause) => new RepositoryError(options.operation, { cause })
+  )
+}
+
+/**
  * `UserRepository` over the Payload Local API. Request-scoped: construct one
  * per request from `req.payload` — no shared instances, no init ordering.
  *
@@ -310,7 +464,12 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
           data: toNewUserData(input, ctx, deps.ids.newId()),
           // Proves plugin-managed creation, so the linkable marker hook
           // marks the document as owning its email (JIT linking proof).
-          context: { [linkableCreateMarker]: true },
+          // The write marker (issue #144) lets host hooks skip their
+          // outward side effects for the plugin's bookkeeping creates.
+          context: {
+            [linkableCreateMarker]: true,
+            [authLinkWriteMarker]: { op: 'create' },
+          },
           overrideAccess: true,
         }),
         (cause) => {
@@ -378,12 +537,18 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
           }
           const rows = [
             ...existing.identities.map((identity) => ({
+              // The adapter runs no field hooks, so the `id` each
+              // identities row carries in storage (Payload's
+              // `baseIDField`, the child table's PRIMARY KEY on SQL)
+              // must be minted here — the old Local API write minted a
+              // fresh one per row on every write too.
+              id: deps.ids.newId(),
               providerId: identity.providerId,
               providerUserId: identity.providerUserId,
               email: identity.email,
               linkedAt: identity.linkedAt.toISOString(),
             })),
-            toIdentityData(ref, existing.email, deps.clock),
+            { id: deps.ids.newId(), ...toIdentityData(ref, existing.email, deps.clock) },
           ]
           // The document becomes (more) provider-owned: local
           // sessions issued BEFORE the link must not survive it — a
@@ -395,27 +560,41 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
           const revokeLocalSessions = collectionUsesLocalSessions(deps.payload, collection)
           // A Payload API key enabled before the link is a local
           // credential of the same kind: it is cleared in the same
-          // write (`apiKey: null` also drops Payload's lookup index),
-          // unless the host keeps local credentials on linked
+          // write, unless the host keeps local credentials on linked
           // documents. The provider-owned gate in collections.ts
           // refuses any key that survives (e.g. a later re-enable).
           const apiKeyShape = collectionApiKeyShape(deps.payload, collection)
           const revokeApiKey = apiKeyShape.useAPIKey && deps.keepLocalCredentialsOnLink !== true
-          return ResultAsync.fromPromise<unknown, RepositoryError>(
-            deps.payload.update({
-              collection,
-              id: userId,
-              data: {
+          // Scoped write (issue #144 part 1): ONLY the plugin-owned
+          // fields go to the adapter, split as {@link scopedUpdate}
+          // requires — credential columns first (plain-UPDATE path,
+          // including the `apiKeyIndex` lookup column that the Local
+          // API's `setAPIKeyIndex` field hook would have nulled), the
+          // identity rows and session clearing last (child-row
+          // rewrite). The Local API's full-document validation would
+          // fail the link — and with it the sign-in — for a document
+          // that fails an unrelated required field; no hook fires
+          // here, so nothing host-side can veto the write either.
+          return scopedUpdate(deps.payload, {
+            collection,
+            id: userId,
+            data: [
+              ...(revokeApiKey
+                ? [
+                    {
+                      apiKey: null,
+                      apiKeyIndex: null,
+                      ...(apiKeyShape.enableField ? { enableAPIKey: false } : {}),
+                    },
+                  ]
+                : []),
+              {
                 [deps.map.identitiesField]: rows,
                 ...(revokeLocalSessions ? { sessions: [] } : {}),
-                ...(revokeApiKey
-                  ? { apiKey: null, ...(apiKeyShape.enableField ? { enableAPIKey: false } : {}) }
-                  : {}),
               },
-              overrideAccess: true,
-            }),
-            (cause) => new RepositoryError('linkIdentity:update', { cause })
-          ).andThen((doc) => {
+            ],
+            operation: 'linkIdentity:update',
+          }).andThen((doc) => {
             if (revokeLocalSessions) {
               deps.logger.info('local sessions revoked on identity link', {
                 userId,
@@ -455,22 +634,29 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
           // Idempotent: the identity is already unlinked (CAP-14).
           return ok(existing)
         }
-        return ResultAsync.fromPromise<unknown, RepositoryError>(
-          deps.payload.update({
-            collection,
-            id: userId,
-            data: {
+        // Scoped write (issue #144 part 1): only the identities field,
+        // straight through the adapter — the full-document operation
+        // would refuse a document that fails an unrelated required
+        // field. No hook relied on this write (no email moves, no
+        // credential state changes), and none fires. The rows carry
+        // freshly minted ids: the adapter runs no field hooks to mint
+        // them (see linkIdentity).
+        return scopedUpdate(deps.payload, {
+          collection,
+          id: userId,
+          data: [
+            {
               [deps.map.identitiesField]: rows.map((identity) => ({
+                id: deps.ids.newId(),
                 providerId: identity.providerId,
                 providerUserId: identity.providerUserId,
                 email: identity.email,
                 linkedAt: identity.linkedAt.toISOString(),
               })),
             },
-            overrideAccess: true,
-          }),
-          (cause) => new RepositoryError('unlinkIdentity:update', { cause })
-        ).andThen((doc) => {
+          ],
+          operation: 'unlinkIdentity:update',
+        }).andThen((doc) => {
           const record = singleResultRecord(doc, ctx)
           if (!record) {
             return err(new RepositoryError('unlinkIdentity: unmappable result'))
@@ -491,6 +677,16 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
         if (existing.email === email) {
           return ok(existing)
         }
+        // This write keeps the Local API on purpose (issue #144): it
+        // moves the document email, and the collection's
+        // `resetProofOnEmailChange` hook (GHSA-8524) is the guard that
+        // clears every proof when an email moves WITHOUT re-granting
+        // it in the same write. The re-grant fields below satisfy the
+        // hook today; if a refactor ever dropped them, the hook — not
+        // this code — would still refuse to let a stale proof ride a
+        // moved address. The adapter path runs no hooks, so it would
+        // silently lose that safety net (plus Payload's email
+        // validation and the unique-violation mapping below).
         return ResultAsync.fromPromise<unknown, RepositoryError | UserExistsError>(
           deps.payload.update({
             collection,
@@ -513,6 +709,9 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
                 linkedAt: identity.linkedAt.toISOString(),
               })),
             },
+            // The write marker (issue #144 part 2): host hooks skip
+            // their outward side effects for the plugin's resync.
+            ...writeContextOf('resync-email'),
             overrideAccess: true,
           }),
           (cause) => {
@@ -547,11 +746,16 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
             if (holder && holder.id !== userId) {
               return err(new RepositoryError('setPhone: phone already held by another user'))
             }
+            // Local API on purpose (issue #144): the plugin's phone
+            // field validates E.164 in its own `validate`, and host
+            // hooks observe the change; the write marker (issue #144
+            // part 2) lets them skip their outward side effects.
             return ResultAsync.fromPromise<unknown, RepositoryError>(
               deps.payload.update({
                 collection,
                 id: userId,
                 data: { [phoneField]: phone },
+                ...writeContextOf('resync-phone'),
                 overrideAccess: true,
               }),
               (cause) => new RepositoryError('setPhone', { cause })
@@ -578,6 +782,9 @@ export function createPayloadUserRepository(deps: PayloadUserRepositoryDeps): Us
           data: {
             [deps.map.rolesField]: roles.map((role) => deps.roleValues?.[role] ?? role),
           },
+          // The write marker (issue #144 part 2): host hooks skip
+          // their outward side effects for the plugin's role writes.
+          ...writeContextOf('set-roles'),
           overrideAccess: true,
         }),
         (cause) => new RepositoryError('setRoles', { cause })
