@@ -794,6 +794,14 @@ describe('payload user repository setRoles', () => {
 })
 
 describe('linkIdentity runs in an adapter transaction (issue #144 scoping)', () => {
+  const user = {
+    id: 'u1',
+    email: 'tx@test.dev',
+    identities: [],
+    roles: ['user'],
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }
   it('commits the transaction and carries it on the scoped write', async () => {
     const seen: unknown[] = []
     const repo = repository(
