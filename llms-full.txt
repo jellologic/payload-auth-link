@@ -2175,6 +2175,10 @@ advisory required enforcement (below).
    warns when an adopted provider collection leaves password hashes,
    OAuth tokens, session tokens or API keys readable by non-managers.
 
+## plugin 0.18.1 / provider-better-auth 0.13.1→0.14.1 line (GHSA-jvpf follow-up: the boundary check now sees suspensions)
+
+The 0.14.0 account-state plugin's endpoint middleware read the user row through Better Auth's internal adapter, which returns only BA-schema fields — the CAP-7 `suspendedUntil` column (a payload-auth-link-injected field, not a BA one) was silently absent, so an ALREADY-SIGNED-IN suspended user kept working at every Better Auth endpoint (bans were enforced; fresh sign-ins were refused by the creation hook, which reads through Payload). The middleware now reads through the engine's Payload-backed row reader — same reader as the mint/verify refusals — honoring `schemaMap.user`, `idStrategy`, and `suspendedUntilField`. Regression: adopt mode, suspension set through the raw adapter (hooks bypassed, live session not revoked): `get-session` 403, `update-user` 403, Payload-side session endpoint 401.
+
 ## plugin 0.17.0 / migrate 0.13.0 (round 10: the kit owns its record store — `payload.config.kv` becomes irrelevant)
 
 **Upgrade impact:** ONE new database table, created by the app's own

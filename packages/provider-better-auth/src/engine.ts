@@ -602,6 +602,28 @@ export function createBetterAuthEngine<
   // step-ups (lockout, enrolment, OTP channel; GHSA-38wx-69j6-cgm7).
   // Session-token redaction (#113) is appended the same way and also
   // contributes no endpoints (hooks only).
+  // GHSA-62xf / GHSA-jvpf: the account-state checks read the user row
+  // FRESH through Payload — the internal adapter narrows rows to
+  // BA-schema fields and drops the CAP-7 `suspendedUntil` column, so
+  // the endpoint-boundary and mint/verify refusals must both read the
+  // same way: honoring `schemaMap.user`, `idStrategy`, and the
+  // configured field name.
+  const accountStateRowReader = async (userId: string): Promise<unknown> => {
+    const live = await input.getPayload()
+    const idStrategy = input.idStrategy ?? 'ba'
+    const adoptedUser = input.schemaMap?.user !== undefined
+    const idField = adoptedUser && idStrategy === 'payload' ? 'id' : 'baId'
+    const userSlug = input.schemaMap?.user?.slug ?? slugs.user
+    const found: unknown = await live.find({
+      collection: userSlug,
+      where: { [idField]: { equals: userId } },
+      limit: 1,
+      depth: 0,
+      pagination: false,
+      overrideAccess: true,
+    })
+    return (found as { docs?: unknown[] }).docs?.[0]
+  }
   const exposeSessionTokens = input.exposeSessionTokens === true
   const mergedPlugins = [
     ...(input.options.plugins ?? []),
@@ -611,6 +633,7 @@ export function createBetterAuthEngine<
     // not only where payload-auth-link resolves the session.
     createAccountStatePlugin({
       suspendedUntilField: input.suspendedUntilField,
+      readUserRow: accountStateRowReader,
       logger: input.logger ?? nullLogger(),
     }),
     createSessionProvenancePlugin({
@@ -670,22 +693,7 @@ export function createBetterAuthEngine<
       // the same row the middleware checks at the endpoint boundary.
       accountState: {
         suspendedUntilField: input.suspendedUntilField ?? 'suspendedUntil',
-        readUserRow: async (userId: string) => {
-          const live = await input.getPayload()
-          const idStrategy = input.idStrategy ?? 'ba'
-          const adoptedUser = input.schemaMap?.user !== undefined
-          const idField = adoptedUser && idStrategy === 'payload' ? 'id' : 'baId'
-          const userSlug = input.schemaMap?.user?.slug ?? slugs.user
-          const found: unknown = await live.find({
-            collection: userSlug,
-            where: { [idField]: { equals: userId } },
-            limit: 1,
-            depth: 0,
-            pagination: false,
-            overrideAccess: true,
-          })
-          return (found as { docs?: unknown[] }).docs?.[0]
-        },
+        readUserRow: accountStateRowReader,
       },
       ...(input.legacySessions === undefined ? {} : { legacySessions: input.legacySessions }),
     }
