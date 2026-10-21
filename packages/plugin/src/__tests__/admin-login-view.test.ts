@@ -107,6 +107,10 @@ describe('provider-backed admin login view (issue #55)', () => {
       loginEndpoint: '/api/users/login',
       adminRoute: '/admin',
       signInPath: '/sign-in',
+      // #157: no provider facts on the stub port — no alternative
+      // methods are offered.
+      magicLink: false,
+      socialProviders: [],
     })
   })
 
@@ -146,6 +150,8 @@ describe('provider-backed admin login view (issue #55)', () => {
       loginEndpoint: '/backend/operators/login',
       adminRoute: '/cms',
       signInPath: '/login',
+      magicLink: false,
+      socialProviders: [],
     })
     // #121: the forgot view's email redirect follows the customized
     // `admin.routes.reset`, and both endpoints follow `routes.api` and
@@ -161,6 +167,31 @@ describe('provider-backed admin login view (issue #55)', () => {
       resetEndpoint: '/backend/operators/reset-password',
       adminRoute: '/cms',
     })
+  })
+
+  it('passes the provider port’s magic-link and social facts into the login view (#157)', () => {
+    // The alternative methods read the ENGINE's configuration off the
+    // port — the same source the gates above read — never a separate
+    // app-side list.
+    const { provider } = createStubProvider()
+    const withMethods = {
+      ...provider,
+      magicLinkEnabled: true as const,
+      socialProviders: ['google', 'facebook'],
+    }
+    const shape = buildConfigShape({
+      ...baseOptions(),
+      providers: [withMethods],
+      admin: { loginView: 'provider' },
+    })
+    expect(shape.clientProps).toMatchObject({
+      magicLink: true,
+      socialProviders: ['google', 'facebook'],
+    })
+    // The forgot/reset views stay method-free — they are not sign-in
+    // surfaces.
+    expect(shape.forgotView?.clientProps).not.toHaveProperty('magicLink')
+    expect(shape.resetView?.clientProps).not.toHaveProperty('socialProviders')
   })
 
   it('refuses non-app-relative view paths at wiring', () => {

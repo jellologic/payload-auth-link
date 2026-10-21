@@ -199,6 +199,23 @@ Auth model at the payload-auth collection that already holds it, and
 `idStrategy: 'payload'` makes the Payload document id the Better Auth
 id.
 
+**Known payload-auth issue (#156).** On payload-auth ≤ 1.9.x with
+better-auth ≥ 1.6, a config re-evaluation in the same process — an HMR
+reload, a config module that failed to load once and was re-evaluated
+on the next request, a test that builds the config twice — stacks
+payload-auth's hook wrappers (it rewrites the app's
+`betterAuthOptions.hooks` object in place on every build) and breaks
+every Better Auth endpoint: every admin request is signed out and the
+strategy throws `TypeError … evaluating 'res.session.userId'`. A
+restart clears it until the next rebuild — it is not a session-store
+or cookie bug, and the `doctor` flags it
+(`payload-auth-hook-stacking`). payload-auth-link does not have this
+failure mode — its hooks are plugin-level, never stack, and never
+mutate your options — so the migration fixes it. Until the cutover,
+restart the dev server after any config failure, or hand payload-auth
+a fresh `hooks` object per build
+(`betterAuthOptions: { ...opts, hooks: { ...opts.hooks } }`).
+
 ```ts
 createBetterAuthEngine({
   getPayload,

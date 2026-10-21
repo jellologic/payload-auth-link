@@ -1298,6 +1298,22 @@ export interface IdentityProviderPort {
      */
     readonly providerUserIdsAreDocumentIds?: boolean | undefined;
     /**
+     * Social provider ids the provider's ENGINE registered (issue #157:
+     * Better Auth's `socialProviders` option keys — `'google'`,
+     * `'github'`, …), for sign-in surfaces that render native
+     * "Continue with …" methods. Read-only facts about what is
+     * configured; the plugin never drives them. Optional: engines
+     * without social OAuth omit it.
+     */
+    readonly socialProviders?: readonly string[] | undefined;
+    /**
+     * Whether the provider's engine supports magic-link sign-in (issue
+     * #157: Better Auth's `magic-link` plugin is installed), for sign-in
+     * surfaces that render a magic-link email form. Optional: engines
+     * without the plugin omit it.
+     */
+    readonly magicLinkEnabled?: boolean | undefined;
+    /**
      * Enumerate every session id presented by this request beyond the
      * active session (CAP-13b multi-session logout): the ids are
      * provider-verified handles suitable for {@link revokeSession},

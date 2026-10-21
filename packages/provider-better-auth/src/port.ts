@@ -194,6 +194,20 @@ export type BetterAuthProviderDeps = {
    */
   readonly oauth?: boolean | undefined
   /**
+   * Ids the instance's `socialProviders` option registers (issue #157,
+   * e.g. `'google'`), surfaced on the port for the admin login view's
+   * "Continue with …" buttons. The engine derives them from the
+   * builder's options; direct users pass the ids they actually
+   * configured.
+   */
+  readonly socialProviders?: readonly string[] | undefined
+  /**
+   * Whether the magic-link plugin is installed on this instance (issue
+   * #157): surfaces the port's `magicLinkEnabled` fact. The engine
+   * sets this from the plugin list; direct users set it honestly.
+   */
+  readonly magicLinkEnabled?: boolean | undefined
+  /**
    * Identity lifecycle event bus (CAP-14): when present, the port
    * exposes `onIdentityEvent` subscriptions fed by the engine's
    * `databaseHooks` translation. Direct users who compose their own
@@ -259,6 +273,13 @@ type PortFunctions = {
   readonly listDeviceSessions?: ((input: { headers: Headers }) => Promise<unknown>) | undefined
   readonly sessionCookieNames: readonly string[]
   readonly capabilities: ReadonlySet<Capability>
+  /**
+   * Issue #157: social provider ids configured on the instance,
+   * surfaced verbatim on the port (empty means none).
+   */
+  readonly socialProviders?: readonly string[] | undefined
+  /** Issue #157: whether the magic-link plugin is installed. */
+  readonly magicLinkEnabled?: boolean | undefined
   readonly sessionCookieClearOptions?: ((name: string) => CookieOptions | undefined) | undefined
   readonly logoutCookieNames?: readonly string[] | undefined
   readonly events?: IdentityEventBus | undefined
@@ -532,6 +553,8 @@ function createPortFromFunctions(deps: PortFunctions): IdentityProviderPort {
   const apiKeys = deps.apiKeys
   const listDeviceSessions = deps.listDeviceSessions
   const legacySessions = deps.legacySessions
+  const socialProviders = deps.socialProviders
+  const magicLinkEnabled = deps.magicLinkEnabled === true
   return {
     id: providerId,
     capabilities: deps.capabilities,
@@ -700,6 +723,13 @@ function createPortFromFunctions(deps: PortFunctions): IdentityProviderPort {
     // Issue #124: declared by the engine for adopt mode only.
     ...(deps.providerUserIdsAreDocumentIds === true
       ? { providerUserIdsAreDocumentIds: true as const }
+      : {}),
+    // Issue #157: the admin login view's alternative methods read
+    // these facts off the port — what the engine actually configured,
+    // never a separate app-side list.
+    ...(magicLinkEnabled ? { magicLinkEnabled: true as const } : {}),
+    ...(socialProviders !== undefined && socialProviders.length > 0
+      ? { socialProviders: [...socialProviders] }
       : {}),
     ...(listDeviceSessions === undefined
       ? {}
@@ -1323,6 +1353,8 @@ export function createBetterAuthProvider(deps: BetterAuthProviderDeps): Identity
       : { sessionCookieClearOptions: deps.sessionCookieClearOptions }),
     ...(deps.logoutCookieNames === undefined ? {} : { logoutCookieNames: deps.logoutCookieNames }),
     ...(deps.events === undefined ? {} : { events: deps.events }),
+    ...(deps.socialProviders === undefined ? {} : { socialProviders: deps.socialProviders }),
+    magicLinkEnabled: deps.magicLinkEnabled === true,
   })
 }
 
@@ -1343,6 +1375,10 @@ export function createBetterAuthProviderFromUnknown(
     readonly impersonation?: boolean | undefined
     readonly plugins?: readonly string[] | undefined
     readonly oauth?: boolean | undefined
+    /** Issue #157: social provider ids configured on the instance. */
+    readonly socialProviders?: readonly string[] | undefined
+    /** Issue #157: whether the magic-link plugin is installed. */
+    readonly magicLinkEnabled?: boolean | undefined
     readonly events?: IdentityEventBus | undefined
     readonly legacySessions?:
       | {
@@ -1545,5 +1581,7 @@ export function createBetterAuthProviderFromUnknown(
     ...(logoutCookieNames === undefined ? {} : { logoutCookieNames }),
     ...(options?.events === undefined ? {} : { events: options.events }),
     ...(options?.legacySessions === undefined ? {} : { legacySessions: options.legacySessions }),
+    ...(options?.socialProviders === undefined ? {} : { socialProviders: options.socialProviders }),
+    magicLinkEnabled: options?.magicLinkEnabled === true,
   })
 }

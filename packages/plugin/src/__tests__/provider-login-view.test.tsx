@@ -115,3 +115,100 @@ describe('provider login view (#55, #72)', () => {
     })
   })
 })
+
+describe('provider login view alternative methods (#157)', () => {
+  it('renders nothing new without the port facts — the view is unchanged', () => {
+    render(<ProviderLoginView authBase="/api/auth" />)
+    expect(screen.queryByText('Alternative sign-in methods')).toBeNull()
+    expect(document.querySelectorAll('form').length).toBe(2)
+    expect(screen.queryByRole('button', { name: /Continue with/ })).toBeNull()
+    // The two forms keep their original order and endpoints: the
+    // provider form first, break-glass second.
+    const [providerForm, localForm] = [...document.querySelectorAll('form')]
+    expect(providerForm?.querySelector('input[name="password"]')).toBeDefined()
+    expect(localForm?.querySelector('input[name="password"]')).toBeDefined()
+  })
+
+  it('renders social buttons and the magic-link form above the provider form', () => {
+    render(
+      <ProviderLoginView
+        adminRoute="/cms"
+        authBase="/api/auth"
+        magicLink
+        socialProviders={['google', 'facebook']}
+      />
+    )
+    const methods = screen.getByText('Alternative sign-in methods')
+    const providerHeading = screen.getByText('Provider sign-in')
+    // The section PRECEDES the provider form in the DOM.
+    expect(
+      methods.compareDocumentPosition(providerHeading) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Continue with Google' })).toBeDefined()
+    expect(screen.getByRole('button', { name: 'Continue with Facebook' })).toBeDefined()
+    // Magic-link form, provider form, break-glass form.
+    expect(document.querySelectorAll('form').length).toBe(3)
+    // The break-glass and provider forms survive unchanged below.
+    expect(screen.getByText('Break-glass local sign-in')).toBeDefined()
+    expect(screen.getByRole('button', { name: 'Sign in with provider' })).toBeDefined()
+  })
+
+  it('social buttons navigate to the provider social sign-in endpoint with the admin callback', () => {
+    const assign = vi.fn()
+    const location = { href: '' }
+    Object.defineProperty(location, 'href', { set: assign, get: () => '' })
+    vi.stubGlobal('location', location)
+    render(
+      <ProviderLoginView adminRoute="/cms" authBase="/api/auth" socialProviders={['google']} />
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Continue with Google' }))
+    expect(assign).toHaveBeenCalledWith(
+      '/api/auth/sign-in/social?provider=google&callbackURL=%2Fcms'
+    )
+  })
+
+  it('the magic-link form posts email + callbackURL and swaps to the sent state', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(null, { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<ProviderLoginView adminRoute="/cms" authBase="/api/auth" magicLink />)
+    const magicLinkForm = document.querySelectorAll('form')[0]
+    if (magicLinkForm === undefined) {
+      throw new Error('no magic-link form')
+    }
+    const emailInput = magicLinkForm.querySelector('input[name="email"]')
+    if (emailInput === null || !(emailInput instanceof HTMLInputElement)) {
+      throw new Error('no email input')
+    }
+    fireEvent.change(emailInput, { target: { value: 'user@example.com' } })
+    fireEvent.submit(magicLinkForm)
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/auth/sign-in/magic-link',
+        expect.objectContaining({ method: 'POST' })
+      )
+    })
+    const firstCall = fetchMock.mock.calls[0]
+    if (firstCall === undefined) {
+      throw new Error('fetch was not called')
+    }
+    const init = (firstCall as unknown as [string, RequestInit])[1]
+    expect(init.body).toContain('"email":"user@example.com"')
+    expect(init.body).toContain('"callbackURL":"/cms"')
+    expect(await screen.findByText(/check your email/i)).toBeDefined()
+    // The sent state replaces the form — no resubmit surface.
+    expect(document.querySelectorAll('form').length).toBe(2)
+  })
+
+  it('a failed magic-link request surfaces the error and keeps the form', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(null, { status: 500 })))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<ProviderLoginView authBase="/api/auth" magicLink />)
+    const magicLinkForm = document.querySelectorAll('form')[0]
+    if (magicLinkForm === undefined) {
+      throw new Error('no magic-link form')
+    }
+    fireEvent.submit(magicLinkForm)
+    expect(await screen.findByText(/Sign-in failed \(500\)/)).toBeDefined()
+    expect(document.querySelectorAll('form').length).toBe(3)
+  })
+})

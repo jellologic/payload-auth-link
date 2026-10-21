@@ -1,7 +1,7 @@
 import { isRecord } from '@payload-auth-link/core'
 import { createHash, randomBytes } from 'node:crypto'
 import type { Payload } from 'payload'
-import { recordStoreFor } from './record-store.js'
+import { LegacySweepError, recordStoreFor } from './record-store.js'
 import {
   defaultTargetSlugs,
   type CreatedRow,
@@ -154,8 +154,15 @@ async function storeCall<T>(action: string, call: () => Promise<T>): Promise<T> 
   try {
     return await call()
   } catch (error) {
+    // The legacy-sweep refusal is already operator-facing final text
+    // (issue #155) — re-wrapping it would point the operator at
+    // Payload migrations, which is not the fix for a KV enumeration
+    // failure.
+    if (error instanceof LegacySweepError) {
+      throw error
+    }
     throw new Error(
-      `${action}: the migration-records store could not be read or written: ${error instanceof Error ? error.message : String(error)} — run the app's Payload migrations (they create the '${'payload-auth-link-migrations'}' collection) and re-run; nothing was changed`,
+      `${action}: the migration-records store could not be read or written: ${error instanceof Error ? error.message : String(error)} — run the app's Payload migrations (they create the 'payload-auth-link-migrations' collection) and re-run; nothing was changed`,
       { cause: error }
     )
   }

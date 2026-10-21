@@ -5,11 +5,14 @@ import {
   wellKnownProviderIds,
   type LoggerPort,
 } from '@payload-auth-link/core'
+import { authLink } from '@payload-auth-link/plugin'
+import { sqliteAdapter } from '@payloadcms/db-sqlite'
+import type { BetterAuthOptions } from 'better-auth'
 import { admin } from 'better-auth/plugins'
 import { magicLink } from 'better-auth/plugins/magic-link'
 import { organization } from 'better-auth/plugins/organization'
-import type { Payload } from 'payload'
-import { describe, expect, it, vi } from 'vitest'
+import { buildConfig, getPayload as getPayloadFromPayload, type Payload } from 'payload'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { defaultBetterAuthSlugs } from '../collections.js'
 import { assertBetterAuthVersion, createBetterAuthEngine } from '../engine.js'
 import { UnsupportedSchemaError } from '../errors.js'
@@ -199,6 +202,37 @@ describe('createBetterAuthEngine', () => {
     expect(markerOnly.provider.capabilities.has('revoke-user-sessions')).toBe(true)
     expect(markerOnly.provider.capabilities.has('server-session-create')).toBe(true)
     expect(markerOnly.provider.capabilities.has('server-session-list')).toBe(true)
+  })
+
+  it('surfaces magic-link and social-provider facts on the port (issue #157)', () => {
+    // Without the plugin and without social providers, both facts are
+    // ABSENT — a login view reading them renders no alternative
+    // methods.
+    const plain = createBetterAuthEngine({ getPayload, options: {} })
+    expect(plain.provider.magicLinkEnabled).toBeUndefined()
+    expect(plain.provider.socialProviders).toBeUndefined()
+
+    const withMethods = createBetterAuthEngine({
+      getPayload,
+      options: {
+        plugins: [magicLink({ sendMagicLink: () => Promise.resolve() })],
+        socialProviders: {
+          google: { clientId: 'id', clientSecret: 'secret' },
+          github: { clientId: 'id', clientSecret: 'secret' },
+        },
+      },
+    })
+    expect(withMethods.provider.magicLinkEnabled).toBe(true)
+    // The CONFIGURED ids (the option's object keys), in config order.
+    expect(withMethods.provider.socialProviders).toEqual(['google', 'github'])
+
+    // Social providers alone do not flip the magic-link fact.
+    const socialOnly = createBetterAuthEngine({
+      getPayload,
+      options: { socialProviders: { google: { clientId: 'id', clientSecret: 'secret' } } },
+    })
+    expect(socialOnly.provider.magicLinkEnabled).toBeUndefined()
+    expect(socialOnly.provider.socialProviders).toEqual(['google'])
   })
 
   it('wires the provider, collections, slugs, and cookie names', () => {
@@ -426,5 +460,225 @@ describe('createBetterAuthEngine', () => {
     })
     // Better Auth defers adapter init, so the failure surfaces on $context.
     await expect(engine.auth.$context).rejects.toBeInstanceOf(UnsupportedSchemaError)
+  })
+})
+
+/**
+ * Issue #156 regression: payload-auth 1.9.4 rewrites the app's OWN
+ * `betterAuthOptions.hooks` object in place on every config build, so
+ * a SECOND build in the same process stacks its better-call wrappers
+ * and every Better Auth endpoint starts answering a
+ * `{ headers, response }` envelope — no session anywhere, and the
+ * payload-auth strategy then throws on `res.session.userId`. This pins
+ * the property payload-auth-link already has: building the engine
+ * twice from the SAME options object reference leaves the
+ * app-supplied hooks object untouched and both engines' endpoints
+ * identical.
+ *
+ * Real Better Auth on real Payload storage (SQLite in memory) behind a
+ * real authLink boot, driven through `auth.handler` and `auth.api`.
+ */
+describe('issue #156: two engine builds from one options object never stack hooks', () => {
+  const ORIGIN = 'http://engine-156.test'
+  const SECRET = 'engine-issue-156-secret-0123456789ab'
+  const PASSWORD = 'correct-horse-battery'
+
+  const beforePaths: string[] = []
+  const afterPaths: string[] = []
+  /** The request path a hook context names, defensively extracted:
+   * `request` may be absent or its URL relative/unparseable here. */
+  function pathOf(context: { readonly request?: { readonly url?: string } | undefined }): string {
+    try {
+      return new URL(context.request?.url ?? 'http://local.test/').pathname
+    } catch {
+      return '(unparseable)'
+    }
+  }
+  // The app-supplied hooks object, passed BY REFERENCE into the
+  // options — exactly the object payload-auth 1.9.4 wraps in place.
+  const hooks: NonNullable<BetterAuthOptions['hooks']> = {
+    before: (context) => {
+      beforePaths.push(pathOf(context))
+      // The PROMISE return is load-bearing: better-auth 1.7's
+      // runBeforeHooks does `withSpan(...).catch(...)` on the hook's
+      // return, so a synchronous undefined return crashes it.
+      // Resolving without a value lets the request continue —
+      // payload-auth's stacked wrapper instead RESOLVES the hook with
+      // the `{ headers, response }` envelope it received, which Better
+      // Auth then treats as the ANSWER — the endpoint never runs.
+      return Promise.resolve(undefined)
+    },
+    after: (context) => {
+      afterPaths.push(pathOf(context))
+      // Better Auth 1.7's after-hook contract resolves with an object
+      // (`{ response }`) — pass the response through unchanged.
+      return Promise.resolve({
+        response: (context as { context?: { returned?: unknown } }).context?.returned,
+      })
+    },
+  }
+
+  const options: Omit<BetterAuthOptions, 'database'> = {
+    baseURL: ORIGIN,
+    trustedOrigins: [ORIGIN],
+    secret: SECRET,
+    rateLimit: { enabled: false },
+    emailAndPassword: { enabled: true, requireEmailVerification: false },
+    hooks,
+  }
+
+  // Function-aware deep snapshot: each function maps to a stable id,
+  // so a WRAPPED hook (payload-auth's move) fails the compare where a
+  // JSON.stringify snapshot would silently drop it.
+  const fnIds = new Map<unknown, number>()
+  function snapshot(value: unknown): unknown {
+    if (typeof value === 'function') {
+      let id = fnIds.get(value)
+      if (id === undefined) {
+        id = fnIds.size
+        fnIds.set(value, id)
+      }
+      return `<function ${String(id)}>`
+    }
+    if (value === null || typeof value !== 'object') {
+      return value
+    }
+    if (Array.isArray(value)) {
+      return value.map(snapshot)
+    }
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, snapshot(entry)])
+    )
+  }
+
+  // Taken BEFORE any engine build: if a build mutated the options, the
+  // final compare against this snapshot fails.
+  const snapshotBefore = snapshot(options)
+
+  let payload: Payload | undefined
+  const live = (): Payload => {
+    if (payload === undefined) {
+      throw new Error('Payload not ready')
+    }
+    return payload
+  }
+
+  // ONE input object, shared by BOTH builds (same reference).
+  const engineInput = {
+    getPayload: (): Promise<Payload> => Promise.resolve(live()),
+    options,
+  }
+  const first = createBetterAuthEngine(engineInput)
+
+  beforeAll(async () => {
+    const config = await buildConfig({
+      secret: SECRET,
+      serverURL: ORIGIN,
+      telemetry: false,
+      logger: { options: { level: 'silent' } },
+      admin: { user: 'users' },
+      db: sqliteAdapter({ client: { url: ':memory:' } }),
+      collections: [{ slug: 'users', auth: true, fields: [] }, ...first.collections],
+      plugins: [
+        authLink({
+          baseUrl: ORIGIN,
+          roles: ['admin', 'user'],
+          defaultRole: 'user',
+          providers: [first.provider],
+        }),
+      ],
+    })
+    payload = await getPayloadFromPayload({ config })
+    await first.auth.$context
+  }, 120_000)
+
+  type HandlerOnly = {
+    readonly auth: { readonly handler: (request: Request) => Promise<Response> }
+  }
+
+  function post(engine: HandlerOnly, path: string, body: unknown): Promise<Response> {
+    return engine.auth.handler(
+      new Request(`${ORIGIN}/api/auth${path}`, {
+        method: 'POST',
+        headers: { origin: ORIGIN, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    )
+  }
+
+  function get(engine: HandlerOnly, path: string, cookie: string): Promise<Response> {
+    return engine.auth.handler(
+      new Request(`${ORIGIN}/api/auth${path}`, { headers: { origin: ORIGIN, cookie } })
+    )
+  }
+
+  /** The BA session cookie pair a response set (throws when absent). */
+  function cookieOf(response: Response): string {
+    const name = first.sessionCookieNames[0] ?? ''
+    const entry = response.headers.getSetCookie().find((cookie) => cookie.startsWith(`${name}=`))
+    if (entry === undefined) {
+      throw new Error(`no session cookie set (status ${String(response.status)})`)
+    }
+    return entry.split(';')[0] ?? ''
+  }
+
+  it('keeps every endpoint working and the app hooks object untouched', async () => {
+    // The FIRST build: a plain sign-up answers normally.
+    const email = 'second-build@engine-156.test'
+    const up = await post(first, '/sign-up/email', { name: 'Builds', email, password: PASSWORD })
+    expect(up.status).toBe(200)
+    const upBody = (await up.json()) as Record<string, unknown>
+    expect(upBody).toMatchObject({ user: { email } })
+    // The payload-auth 1.9.4 fingerprint is `{"response":{"headers":{}}}`.
+    expect(upBody).not.toHaveProperty('response')
+    const cookie = cookieOf(up)
+
+    // The SECOND build from the SAME options object — payload-auth's
+    // moment of failure. Here it must change nothing.
+    const second = createBetterAuthEngine(engineInput)
+    await second.auth.$context
+
+    // Sign in through the SECOND engine, then read the session back
+    // through its API: a session object, never the envelope.
+    const signIn = await post(second, '/sign-in/email', { email, password: PASSWORD })
+    expect(signIn.status).toBe(200)
+    const signInBody = (await signIn.json()) as Record<string, unknown>
+    expect(signInBody).toMatchObject({ user: { email } })
+    expect(signInBody).not.toHaveProperty('response')
+    const secondCookie = cookieOf(signIn)
+    const session = await second.auth.api.getSession({
+      headers: new Headers({ cookie: secondCookie }),
+    })
+    expect(session).not.toBeNull()
+    expect(session?.user?.email).toBe(email)
+    expect(session?.session?.userId).toEqual(expect.any(String))
+
+    // Sign-up through the SECOND build answers normally too.
+    const secondEmail = 'second-build-too@engine-156.test'
+    const up2 = await post(second, '/sign-up/email', {
+      name: 'Builds Too',
+      email: secondEmail,
+      password: PASSWORD,
+    })
+    expect(up2.status).toBe(200)
+    const up2Body = (await up2.json()) as Record<string, unknown>
+    expect(up2Body).toMatchObject({ user: { email: secondEmail } })
+    expect(up2Body).not.toHaveProperty('response')
+
+    // The FIRST engine still serves its cookie after the second build:
+    // the second engine's endpoints behave identically to the first's.
+    const again = await get(first, '/get-session', cookie)
+    expect(again.status).toBe(200)
+    expect(await again.json()).toMatchObject({ user: { email } })
+
+    // The app-supplied hooks object was never mutated: the SAME
+    // functions by reference (payload-auth replaces `before`/`after`
+    // with wrappers), the same deep shape, and the hooks still ran as
+    // pass-throughs on the requests above.
+    expect(options.hooks?.before).toBe(hooks.before)
+    expect(options.hooks?.after).toBe(hooks.after)
+    expect(snapshot(options)).toEqual(snapshotBefore)
+    expect(beforePaths.length).toBeGreaterThan(0)
+    expect(afterPaths.length).toBeGreaterThan(0)
   })
 })

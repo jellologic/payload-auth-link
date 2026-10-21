@@ -168,6 +168,29 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
     const resetRoute = `${adminRoute.endsWith('/') ? adminRoute.slice(0, -1) : adminRoute}${
       config.admin?.routes?.reset ?? '/reset'
     }`
+    // Issue #157: the login view's alternative methods (magic link,
+    // social sign-in) render only when the provider's engine actually
+    // supports them. The port's facts are read the same way the gates
+    // above read theirs — never a separate app-side list. The flags
+    // merge across registered providers (normally exactly one
+    // cookie-transport one); social ids dedupe in first-seen order.
+    let loginMagicLink = false
+    const loginSocialProviders: string[] = []
+    for (const id of wired.registry.ids()) {
+      const required = wired.registry.require(id)
+      if (!required.isOk()) {
+        continue
+      }
+      const port = required.value
+      if (port.magicLinkEnabled === true) {
+        loginMagicLink = true
+      }
+      for (const providerId of port.socialProviders ?? []) {
+        if (!loginSocialProviders.includes(providerId)) {
+          loginSocialProviders.push(providerId)
+        }
+      }
+    }
     // The import map entry every provider view shares: one module,
     // named exports (a bare `path` would resolve to the module's
     // non-existent default export).
@@ -190,6 +213,10 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
                 loginEndpoint: `${apiRoute}/${wired.config.map.usersCollection}/login`,
                 adminRoute,
                 signInPath: wired.adminSignInPath,
+                // Issue #157: the alternative methods, derived from the
+                // provider port — absent facts render no new section.
+                magicLink: loginMagicLink,
+                socialProviders: loginSocialProviders,
               }),
               // #121: the provider forgot/reset views. The `forgot`
               // view replaces Payload's built-in /admin/forgot screen;
