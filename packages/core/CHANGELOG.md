@@ -1,5 +1,11 @@
 # @payload-auth-link/core
 
+## 0.13.1
+
+### Patch Changes
+
+- [#158](https://github.com/jellologic/payload-auth-link/pull/158) [`0edf171`](https://github.com/jellologic/payload-auth-link/commit/0edf1714419a133a6c796e55561bc0e463aa0248) Thanks [@jellologic](https://github.com/jellologic)! - `ProviderLoginView` (the `loginView: 'provider'` admin login screen) gains native alternative sign-in methods ([#157](https://github.com/jellologic/payload-auth-link/issues/157)): a "Continue with …" button per social provider the engine actually configured, and — with Better Auth's magic-link plugin installed — an email form posting Better Auth's own `sign-in/magic-link` endpoint with a "check your email" state. Passwordless adopt-mode apps (local strategy disabled, magic-link/social users — the payload-auth 1.9.4 shape) sign their users in at `/admin/login` without an app-side custom view. The methods are derived from the provider port, never configured separately: `IdentityProviderPort` grows optional `socialProviders` (the configured ids) and `magicLinkEnabled` facts, the better-auth engine derives both from the instance's options and plugin list, and the plugin forwards them into the view. Without the facts the view renders exactly as before.
+
 ## 0.13.0
 
 ### Minor Changes

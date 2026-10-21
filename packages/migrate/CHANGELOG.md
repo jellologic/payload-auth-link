@@ -1,5 +1,16 @@
 # @payload-auth-link/migrate
 
+## 0.14.1
+
+### Patch Changes
+
+- [#158](https://github.com/jellologic/payload-auth-link/pull/158) [`0edf171`](https://github.com/jellologic/payload-auth-link/commit/0edf1714419a133a6c796e55561bc0e463aa0248) Thanks [@jellologic](https://github.com/jellologic)! - The legacy key-value sweep (the one-time migration of `payload-auth-link/migrate/*` records out of the app's `payload.config.kv`) now fails with its own named error when the KV refuses the unbounded `keys()` it needs — a large Redis-backed KV does (Upstash: "ERR too many keys to fetch, please use SCAN") — instead of a generic storage error that sent operators chasing Payload migrations ([#155](https://github.com/jellologic/payload-auth-link/issues/155)). New `--no-legacy-kv` flag on every kit command skips the sweep entirely for apps whose KV never held kit records (anything first seen at 0.13+): the records collection becomes the only store consulted. Nothing else changes; the sweep failure writes nothing.
+
+- [#158](https://github.com/jellologic/payload-auth-link/pull/158) [`0edf171`](https://github.com/jellologic/payload-auth-link/commit/0edf1714419a133a6c796e55561bc0e463aa0248) Thanks [@jellologic](https://github.com/jellologic)! - The migration doctor now warns (`payload-auth-hook-stacking`) when a SOURCE config runs payload-auth ≤ 1.9.x on better-auth ≥ 1.6 ([#156](https://github.com/jellologic/payload-auth-link/issues/156)): payload-auth rewrites the app's own `betterAuthOptions.hooks` object in place on every config build, so a second build in the same process — an HMR reload, a config module that failed once and was re-evaluated, a test building the config twice — stacks the wrappers and breaks every Better Auth endpoint (every admin request signed out, `getSession` answering a `{headers,response}` envelope, `better-auth-strategy` throwing on `res.session.userId`). The guide's payload-auth section documents the failure, its fingerprint, and the interim workaround; a regression test in provider-better-auth pins that payload-auth-link never does this — two engine builds from one options object leave every endpoint working and the app's hooks object untouched.
+- Updated dependencies [[`0edf171`](https://github.com/jellologic/payload-auth-link/commit/0edf1714419a133a6c796e55561bc0e463aa0248)]:
+  - @payload-auth-link/core@0.13.1
+  - @payload-auth-link/next@0.8.5
+
 ## 0.14.0
 
 ### Minor Changes
