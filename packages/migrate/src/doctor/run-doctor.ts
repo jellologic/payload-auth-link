@@ -1,4 +1,4 @@
-import { isRecord } from '@payload-auth-link/core'
+import { isRecord, parseVersion, readInstalledVersion } from '@payload-auth-link/core'
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -116,6 +116,60 @@ export function findPayloadAuthPlugin(config: unknown): {
     }
   }
   return null
+}
+
+/**
+ * Issue #156: payload-auth ≤ 1.9.x rewrites the app's OWN
+ * `betterAuthOptions.hooks` object in place on EVERY config build (its
+ * admin role middlewares wrap `hooks.before`/`hooks.after` without
+ * chaining them properly). With better-auth ≥ 1.6, a SECOND build in
+ * the same process wraps the first build's wrappers, and the stacked
+ * envelope takes over every Better Auth endpoint. Extracted pure so
+ * tests can assert its exact shape against version pairs
+ * (`checkVersions` reads the REAL installed manifests).
+ */
+export function payloadAuthHookStackingWarning(input: {
+  /** `findPayloadAuthPlugin` found the legacy plugin in the loaded config. */
+  readonly payloadAuthDetected: boolean
+  /** The app's installed payload-auth manifest version, or `null`. */
+  readonly payloadAuthVersion: string | null
+  /** The app's installed better-auth manifest version, or `null`. */
+  readonly betterAuthVersion: string | null
+}): DoctorIssue | null {
+  // Only the legacy plugin stacks hooks: a payload-auth-link (TARGET)
+  // config carries plugin-level hooks and never touches the app's.
+  if (!input.payloadAuthDetected) {
+    return null
+  }
+  const betterAuth = input.betterAuthVersion === null ? null : parseVersion(input.betterAuthVersion)
+  // better-auth 1.6 is where `runBeforeHooks` starts treating a
+  // truthy hook return as the endpoint's ANSWER; below that the
+  // stacked wrappers stay inert. An unreadable manifest cannot prove
+  // the gate, so this stays silent.
+  if (
+    betterAuth === null ||
+    !(betterAuth.major >= 2 || (betterAuth.major === 1 && betterAuth.minor >= 6))
+  ) {
+    return null
+  }
+  const payloadAuth =
+    input.payloadAuthVersion === null ? null : parseVersion(input.payloadAuthVersion)
+  // Every shipped payload-auth release wraps in place (1.9.4 is the
+  // newest at reporting time); a fix has never shipped upstream. An
+  // unreadable manifest does not silence the warning — the plugin is
+  // demonstrably in the loaded config. Only a future 2.x is assumed
+  // fixed.
+  if (payloadAuth !== null && payloadAuth.major >= 2) {
+    return null
+  }
+  return {
+    code: 'payload-auth-hook-stacking',
+    detail: `payload-auth (installed ${
+      input.payloadAuthVersion ?? 'version unreadable'
+    }) rewrites the app's own betterAuthOptions.hooks object IN PLACE on every config build, and with better-auth ${
+      input.betterAuthVersion ?? '?'
+    } (≥ 1.6) a second build in the same process stacks the wrappers and breaks every Better Auth endpoint: every admin request is signed out (/api/users/me → 401, /admin → the login page), auth.api.getSession answers a {headers,response} envelope instead of a session, and better-auth-strategy throws TypeError … evaluating 'res.session.userId'. The trigger is any config re-evaluation in one process: a config module that failed to load and was re-evaluated on the next request, an HMR reload, a test that builds the config twice. A restart clears it until the next rebuild — it is NOT a session-store or cookie bug. The migration to payload-auth-link is the fix: its hooks are plugin-level, never stack, and never touch your options object. Until the cutover: restart the dev server after any config failure, and hand payload-auth a fresh hooks object per build (betterAuthOptions: { ...opts, hooks: { ...opts.hooks } })`,
+  }
 }
 
 /**
@@ -270,7 +324,11 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   const configDir = dirname(configPath)
   const srcDir = options.srcDir === undefined ? configDir : resolve(options.srcDir)
 
-  const versions = checkVersions(pathToFileURL(configPath).href)
+  // Manifests resolve through the APP's dependency tree (issue #156's
+  // payload-auth read walks up from the config file, exactly like the
+  // band checks).
+  const configUrl = pathToFileURL(configPath).href
+  const versions = checkVersions(configUrl)
   const blockers: DoctorIssue[] = []
   const warnings: DoctorIssue[] = []
   for (const finding of versions) {
@@ -321,6 +379,20 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
       detail:
         'payload-auth is installed and configured: migrate with adopt (#49, zero row moves) or the importer (#50, reversible copy). Its admin views, payload.betterAuth accessor, and user-table layout all change.',
     })
+    // Issue #156: on payload-auth ≤ 1.9.x with better-auth ≥ 1.6, a
+    // config re-evaluation in one process stacks payload-auth's hook
+    // wrappers and signs every admin request out — named here so a
+    // "signed out after a reload" report on a not-yet-migrated app is
+    // not chased as a session-store or cookie bug.
+    const hookStacking = payloadAuthHookStackingWarning({
+      payloadAuthDetected: true,
+      payloadAuthVersion: readInstalledVersion('payload-auth', configUrl),
+      betterAuthVersion:
+        versions.find((finding) => finding.name === 'better-auth')?.installed ?? null,
+    })
+    if (hookStacking !== null) {
+      warnings.push(hookStacking)
+    }
   }
 
   // payload-auth keeps the builder's options in its closure, so the

@@ -11,6 +11,7 @@
  */
 import type * as Codemods from './codemods.js'
 import { runDoctor } from './doctor/run-doctor.js'
+import { setSkipLegacySweep } from './importer/record-store.js'
 import type { DoctorReport } from './doctor/types.js'
 import {
   runAdoptPrelink,
@@ -104,6 +105,10 @@ Commands:
   finalize          --config ./src/payload.config.ts [--manifest ...]
                     (records the finalize in the app's database and
                     re-signs the manifest; rollback is refused afterwards)
+  [--no-legacy-kv]  (all kit commands: skip the one-time migration of
+                    payload-auth-link records out of the app's KV — for
+                    apps whose KV never held them, or whose KV refuses
+                    the sweep's key listing, e.g. large Upstash Redis)
   adopt-prelink     --config ./src/payload.config.ts [--apply] [--json]
                     [--manifest ./payload-auth-link-prelink.json]
                     [--users-slug users] [--verified-field emailVerified]
@@ -323,6 +328,13 @@ async function main(
     return 3
   }
   if (importCommands.includes(command)) {
+    // Issue #155: an operator who knows the app's KV never held
+    // payload-auth-link records from 0.13-or-earlier can skip the
+    // legacy sweep — large Redis-backed KVs refuse the unbounded
+    // keys() the sweep needs.
+    if (flags.get('no-legacy-kv') === true) {
+      setSkipLegacySweep(true)
+    }
     const databaseUrl =
       typeof flags.get('database-url') === 'string'
         ? (flags.get('database-url') as string)

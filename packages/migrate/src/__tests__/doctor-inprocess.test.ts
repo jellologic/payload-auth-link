@@ -59,12 +59,18 @@ describe.skipIf(!canLoadFixture)('doctor: in-process fixture report (exact block
       'ba-internals-usage',
     ])
     expect(report.warnings.map((issue) => issue.code)).toEqual([
+      // The fixture IS the failing combo (#156): payload-auth 1.9.4 on
+      // better-auth 1.6.30, so the hook-stacking warning fires first.
+      'payload-auth-hook-stacking',
       // payload-auth's session collection has no authenticationMethod
       // field; adopting it as-is records no MFA provenance (#116).
       'adopt-session-no-authentication-method',
       'non-canonical-role-value',
       'database-not-inspected',
     ])
+    expect(
+      report.warnings.find((issue) => issue.code === 'payload-auth-hook-stacking')?.detail
+    ).toContain('res.session.userId')
     expect(
       report.warnings.find((issue) => issue.code === 'adopt-session-no-authentication-method')
         ?.detail

@@ -107,6 +107,28 @@ async function rawSet(payload: Payload, key: string, value: NonNullable<unknown>
 const migrated = new WeakMap<object, Promise<void>>()
 
 /**
+ * The legacy key-value sweep could not run (issue #155): an unbounded
+ * `keys()` refused by a large Redis-backed KV. Final — the message is
+ * the operator-facing text; `storeCall` must not re-wrap it.
+ */
+export class LegacySweepError extends Error {}
+
+let skipLegacySweep = false
+
+/**
+ * Skip the legacy key-value sweep entirely (issue #155): the operator
+ * asserts this KV never held payload-auth-link records from 0.13-or-
+ * earlier, so there is nothing to migrate and an unbounded `keys()`
+ * (Upstash refuses them on large KVs) must not fail the command. The
+ * collection remains the only store consulted — with the skip set,
+ * legacy KV records are unreachable, which IS the assertion. Set by
+ * the CLI's `--no-legacy-kv` flag.
+ */
+export function setSkipLegacySweep(skip: boolean): void {
+  skipLegacySweep = skip
+}
+
+/**
  * Copy every kit record from the legacy `payload.kv` into the
  * collection, once per booted Payload (a memo guards concurrent
  * accesses; a failed copy stays failed — the command refuses and a
@@ -125,7 +147,21 @@ function ensureLegacyMigrated(
     if (flag !== null) {
       return
     }
-    const keys = await legacy.keys()
+    let keys: string[]
+    try {
+      keys = await legacy.keys()
+    } catch (error) {
+      // Issue #155: unbounded keys() is refused by large Redis-backed
+      // KVs (Upstash: "please use SCAN"). The sweep cannot run — name
+      // it and offer the explicit skip instead of a generic storage
+      // error that would send the operator chasing migrations.
+      throw new LegacySweepError(
+        `the legacy key-value sweep could not enumerate the app's key-value store: ${
+          error instanceof Error ? error.message : String(error)
+        } — the one-time migration of payload-auth-link records from 0.13-or-earlier did not run. If this KV never held such records, re-run with --no-legacy-kv to skip the sweep; nothing was changed`,
+        { cause: error }
+      )
+    }
     for (const key of keys) {
       if (!key.startsWith('payload-auth-link/migrate/') || key === migrationFlagKey) {
         continue
@@ -152,7 +188,7 @@ function collectionStore(payload: Payload): {
   readonly set: (key: string, value: NonNullable<unknown>) => Promise<void>
   readonly keys: () => Promise<string[]>
 } {
-  const legacy = legacyStore(payload)
+  const legacy = skipLegacySweep ? null : legacyStore(payload)
   const ready = legacy === null ? Promise.resolve() : ensureLegacyMigrated(payload, legacy)
   return {
     get: async (key) => {

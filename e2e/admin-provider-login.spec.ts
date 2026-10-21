@@ -107,3 +107,90 @@ test('a provider-linked admin signs in through the provider login view', async (
     await revert.close()
   }
 })
+
+test('a passwordless user signs in through the view’s magic-link form (#157)', async ({
+  page,
+  browser,
+  baseURL,
+}) => {
+  // The bock shape (#157): a verified provider account signs into the
+  // admin through the view's alternative-methods form. Any address can
+  // REQUEST a link, but only a known, verified account gets a usable
+  // session — so register + verify one first. Like the test above, it
+  // is promoted to `admin` (the panel refuses plain users), and demoted
+  // afterwards so later specs on the shared server see a plain user.
+  const email = `e2e-admin-magiclink-${Date.now()}@example.com`
+  const userId = await signUpVerified(page.request, email)
+  const admin = await adminContext(browser, baseURL)
+  try {
+    const adminPage = await admin.newPage()
+    await gotoSettled(adminPage, '/admin')
+    const patched = await adminPage.evaluate(async (id: string) => {
+      const response = await fetch(`/api/users/${id}`, {
+        method: 'PATCH',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ roles: ['admin'] }),
+      })
+      return { status: response.status, body: await response.text() }
+    }, userId)
+    expect(patched.status, `promote PATCH: ${patched.body}`).toBe(200)
+  } finally {
+    await admin.close()
+  }
+
+  // Signed out, then the magic-link form: the section renders because
+  // the engine installs the magic-link plugin; submitting swaps the
+  // form for the sent state (a 200 leaks nothing about the address).
+  await page.context().clearCookies()
+  await gotoSettled(page, '/admin/login')
+  const magicForm = page.locator('form', { hasText: 'Continue' })
+  await expect(magicForm).toBeVisible()
+  await magicForm.getByLabel(/email/i).fill(email)
+  await magicForm.getByRole('button', { name: 'Continue', exact: true }).click()
+  await expect(page.getByText(/check your email/i)).toBeVisible()
+
+  // The emailed link lands back in the admin panel authenticated.
+  let url: string | undefined
+  await expect
+    .poll(
+      async () => {
+        const response = await page.request.get(
+          `/api/dev-mailbox?email=${encodeURIComponent(email)}`
+        )
+        expect(response.ok()).toBe(true)
+        const body = (await response.json()) as { messages: { kind: string; url?: string }[] }
+        url = body.messages.find((entry) => entry.kind === 'magic-link')?.url
+        return url
+      },
+      { timeout: 30_000 }
+    )
+    .not.toBeUndefined()
+  await page.goto(url as string)
+  await expect(page).not.toHaveURL(/\/admin\/login/)
+  await expect(page.locator('a[href*="/admin/collections/users"]').first()).toBeVisible({
+    timeout: 30_000,
+  })
+  const session = await page.request.get('/api/auth-link/session', RETRY_ON_RESET)
+  expect(session.ok()).toBe(true)
+  const body = (await session.json()) as { user: { email: string } }
+  expect(body.user.email).toBe(email)
+
+  const revert = await adminContext(browser, baseURL)
+  try {
+    const revertPage = await revert.newPage()
+    await gotoSettled(revertPage, '/admin')
+    const demoted = await revertPage.evaluate(async (id: string) => {
+      const response = await fetch(`/api/users/${id}`, {
+        method: 'PATCH',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ roles: ['user'] }),
+      })
+      return response.status
+    }, userId)
+    expect(demoted).toBe(200)
+  } finally {
+    await revert.close()
+  }
+})

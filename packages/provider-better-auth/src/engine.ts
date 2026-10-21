@@ -672,7 +672,13 @@ export function createBetterAuthEngine<
   const pluginIds = installed.map((plugin) => plugin.id)
   reportSessionTokenExposure(installed, exposeSessionTokens, input.logger ?? nullLogger())
   const socialProviders: unknown = input.options.socialProviders
-  const hasSocialOauth = isRecord(socialProviders) && Object.keys(socialProviders).length > 0
+  // Issue #157: the CONFIGURED ids (the option's object keys), not just
+  // their presence — the admin login view renders one "Continue with …"
+  // button per id. `oauth` keeps meaning "at least one".
+  const socialProviderIds = isRecord(socialProviders)
+    ? Object.keys(socialProviders).filter((id) => id !== '')
+    : []
+  const hasSocialOauth = socialProviderIds.length > 0
   const provider = createBetterAuthProviderFromUnknown(
     auth,
     sessionCookieNames,
@@ -682,6 +688,11 @@ export function createBetterAuthEngine<
       impersonation: pluginIds.includes('admin'),
       plugins: pluginIds,
       oauth: hasSocialOauth,
+      // Issue #157: the port surfaces what the admin login view's
+      // alternative methods render — the configured social provider
+      // ids and whether the magic-link plugin is installed.
+      ...(socialProviderIds.length > 0 ? { socialProviders: socialProviderIds } : {}),
+      magicLinkEnabled: pluginIds.includes('magic-link'),
       events,
       // Issue #124: in adopt mode with Payload-owned ids, the engine
       // writes user rows under its own user id AS the document id —

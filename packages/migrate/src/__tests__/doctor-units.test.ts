@@ -4,7 +4,11 @@ import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
 import { readableCredentialFields } from '../doctor/adopted-credentials.js'
 import { classifyPlugins, pluginsFromSourceTree } from '../doctor/plugins.js'
-import { legacyInvitationRolesWarning, runDoctor } from '../doctor/run-doctor.js'
+import {
+  legacyInvitationRolesWarning,
+  payloadAuthHookStackingWarning,
+  runDoctor,
+} from '../doctor/run-doctor.js'
 import { scanSource } from '../doctor/source-scan.js'
 import { snakeCaseTableName, sourceMapFromConfig } from '../doctor/source-layout.js'
 import type { DoctorReport } from '../doctor/types.js'
@@ -793,6 +797,87 @@ describe('doctor: readable credential fields on adopted collections (#145)', () 
     })
     expect(issues).toHaveLength(1)
     expect(issues[0]?.detail).toContain("'password'")
+  })
+})
+
+describe('doctor: the payload-auth hook-stacking warning (#156)', () => {
+  const stacking = (
+    payloadAuthDetected: boolean,
+    payloadAuthVersion: string | null,
+    betterAuthVersion: string | null
+  ): ReturnType<typeof payloadAuthHookStackingWarning> =>
+    payloadAuthHookStackingWarning({ payloadAuthDetected, payloadAuthVersion, betterAuthVersion })
+
+  test('the fixture combo (payload-auth 1.9.4 on better-auth 1.6.30) warns with the fingerprint and the fix', () => {
+    const warning = stacking(true, '1.9.4', '1.6.30')
+    expect(warning?.code).toBe('payload-auth-hook-stacking')
+    // The fingerprint: signed-out admins, the strategy TypeError, and
+    // the getSession envelope — plus what clears it.
+    expect(warning?.detail).toContain('signed out')
+    expect(warning?.detail).toContain('res.session.userId')
+    expect(warning?.detail).toContain('{headers,response}')
+    expect(warning?.detail).toContain('A restart clears it until the next rebuild')
+    // The fix and the interim workaround.
+    expect(warning?.detail).toContain('payload-auth-link')
+    expect(warning?.detail).toContain('plugin-level, never stack')
+    expect(warning?.detail).toContain('hooks: { ...opts.hooks }')
+  })
+
+  test('better-auth below 1.6 does not treat the stacked return as an answer: silent', () => {
+    expect(stacking(true, '1.9.4', '1.5.7')).toBeNull()
+    expect(stacking(true, '1.9.4', '1.4.12')).toBeNull()
+  })
+
+  test('no payload-auth in the config (a TARGET config): silent', () => {
+    expect(stacking(false, '1.9.4', '1.6.30')).toBeNull()
+  })
+
+  test('an unreadable better-auth manifest cannot prove the gate: silent', () => {
+    expect(stacking(true, '1.9.4', null)).toBeNull()
+  })
+
+  test('every shipped payload-auth 1.x fires (no fix upstream); a future 2.x is assumed fixed', () => {
+    for (const version of ['1.0.0', '1.9.4', '1.10.0']) {
+      expect(stacking(true, version, '1.7.10')).not.toBeNull()
+    }
+    expect(stacking(true, '2.0.0', '1.7.10')).toBeNull()
+    // An unreadable payload-auth manifest does not silence the
+    // warning — the plugin is demonstrably in the loaded config.
+    expect(stacking(true, null, '1.7.10')).not.toBeNull()
+  })
+
+  test('runDoctor pushes the warning for a payload-auth SOURCE config; a TARGET config stays clean', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'doctor-hook-stack-'))
+    try {
+      const configPath = new URL(
+        '../__fixtures__/doctor-fixture/payload.config.ts',
+        import.meta.url
+      ).pathname
+      const source = await runDoctor({
+        configPath,
+        srcDir: dir,
+        databaseUrl: '',
+        loadModule: () =>
+          Promise.resolve({ custom: { hasBetterAuthPlugin: true }, collections: [] }),
+      })
+      const stackingWarning = source.warnings.find(
+        (issue) => issue.code === 'payload-auth-hook-stacking'
+      )
+      expect(stackingWarning?.detail).toContain('res.session.userId')
+      const target = await runDoctor({
+        configPath,
+        srcDir: dir,
+        databaseUrl: '',
+        loadModule: () =>
+          Promise.resolve({
+            plugins: [Object.assign(() => ({}), { slug: 'payload-auth-link', options: {} })],
+            collections: [],
+          }),
+      })
+      expect(target.warnings.map((issue) => issue.code)).not.toContain('payload-auth-hook-stacking')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

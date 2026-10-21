@@ -1022,6 +1022,20 @@ export type BetterAuthProviderDeps = {
      */
     readonly oauth?: boolean | undefined;
     /**
+     * Ids the instance's `socialProviders` option registers (issue #157,
+     * e.g. `'google'`), surfaced on the port for the admin login view's
+     * "Continue with …" buttons. The engine derives them from the
+     * builder's options; direct users pass the ids they actually
+     * configured.
+     */
+    readonly socialProviders?: readonly string[] | undefined;
+    /**
+     * Whether the magic-link plugin is installed on this instance (issue
+     * #157): surfaces the port's `magicLinkEnabled` fact. The engine
+     * sets this from the plugin list; direct users set it honestly.
+     */
+    readonly magicLinkEnabled?: boolean | undefined;
+    /**
      * Identity lifecycle event bus (CAP-14): when present, the port
      * exposes `onIdentityEvent` subscriptions fed by the engine's
      * `databaseHooks` translation. Direct users who compose their own
@@ -1068,6 +1082,10 @@ export declare function createBetterAuthProviderFromUnknown(auth: unknown, sessi
     readonly impersonation?: boolean | undefined;
     readonly plugins?: readonly string[] | undefined;
     readonly oauth?: boolean | undefined;
+    /** Issue #157: social provider ids configured on the instance. */
+    readonly socialProviders?: readonly string[] | undefined;
+    /** Issue #157: whether the magic-link plugin is installed. */
+    readonly magicLinkEnabled?: boolean | undefined;
     readonly events?: IdentityEventBus | undefined;
     readonly legacySessions?: {
         readonly until: string;

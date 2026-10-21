@@ -204,8 +204,19 @@ export default ProviderForgotPasswordView;
 // ===== admin/views/ProviderLoginView.d.ts =====
 import React from 'react';
 /**
- * The provider-backed admin login view (issue #55): two forms.
+ * The provider-backed admin login view (issue #55): the alternative
+ * methods section (issue #157, when the engine supports them), plus
+ * two forms.
  *
+ * - **Alternative methods** (issue #157): a "Continue with …" button
+ *   per configured social provider — each navigates to Better Auth's
+ *   social sign-in endpoint (`${authBase}/sign-in/social`) with the
+ *   admin route as the `callbackURL` — and, with the magic-link
+ *   plugin installed, an email form posting
+ *   `${authBase}/sign-in/magic-link` (a "check your email" state
+ *   follows). Rendered only when the engine actually supports a
+ *   method: passwordless adopt-mode apps sign their users in here
+ *   without any app-side view.
  * - **Provider sign-in** posts to Better Auth's own email sign-in
  *   endpoint (`${authBase}/sign-in/email`), so provider-LINKED
  *   accounts — whose local password is refused on the Payload side
@@ -246,6 +257,20 @@ export type ProviderLoginViewProps = {
      * plugin (`admin.signInPath`); defaults to `/sign-in`.
      */
     readonly signInPath?: string | undefined;
+    /**
+     * Whether the provider's engine supports magic-link sign-in (issue
+     * #157: its magic-link plugin is installed) — renders the magic-link
+     * email form. Set by the plugin from the provider port's
+     * `magicLinkEnabled` fact; defaults to `false`.
+     */
+    readonly magicLink?: boolean | undefined;
+    /**
+     * Social provider ids the engine registered (issue #157, e.g.
+     * `'google'`) — one "Continue with …" button each. Set by the plugin
+     * from the provider port's `socialProviders` fact; empty renders
+     * none.
+     */
+    readonly socialProviders?: readonly string[] | undefined;
 };
 declare const ProviderLoginView: React.FC<ProviderLoginViewProps>;
 export default ProviderLoginView;

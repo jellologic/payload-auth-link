@@ -169,6 +169,24 @@ export declare function findPayloadAuthPlugin(config: unknown): {
     pluginOptions: Record<string, unknown>;
 } | null;
 /**
+ * Issue #156: payload-auth ≤ 1.9.x rewrites the app's OWN
+ * `betterAuthOptions.hooks` object in place on EVERY config build (its
+ * admin role middlewares wrap `hooks.before`/`hooks.after` without
+ * chaining them properly). With better-auth ≥ 1.6, a SECOND build in
+ * the same process wraps the first build's wrappers, and the stacked
+ * envelope takes over every Better Auth endpoint. Extracted pure so
+ * tests can assert its exact shape against version pairs
+ * (`checkVersions` reads the REAL installed manifests).
+ */
+export declare function payloadAuthHookStackingWarning(input: {
+    /** `findPayloadAuthPlugin` found the legacy plugin in the loaded config. */
+    readonly payloadAuthDetected: boolean;
+    /** The app's installed payload-auth manifest version, or `null`. */
+    readonly payloadAuthVersion: string | null;
+    /** The app's installed better-auth manifest version, or `null`. */
+    readonly betterAuthVersion: string | null;
+}): DoctorIssue | null;
+/**
  * The Better Auth plugin ids the app declared. Reads them off
  * `betterAuthOptions.plugins` when a pluginOptions object is visible;
  * callers otherwise derive them from the built collections and the
@@ -1433,6 +1451,23 @@ export declare function legacyStore(payload: Payload): {
     readonly set: (key: string, value: NonNullable<unknown>) => Promise<void>;
     readonly keys: () => Promise<string[]>;
 } | null;
+/**
+ * The legacy key-value sweep could not run (issue #155): an unbounded
+ * `keys()` refused by a large Redis-backed KV. Final — the message is
+ * the operator-facing text; `storeCall` must not re-wrap it.
+ */
+export declare class LegacySweepError extends Error {
+}
+/**
+ * Skip the legacy key-value sweep entirely (issue #155): the operator
+ * asserts this KV never held payload-auth-link records from 0.13-or-
+ * earlier, so there is nothing to migrate and an unbounded `keys()`
+ * (Upstash refuses them on large KVs) must not fail the command. The
+ * collection remains the only store consulted — with the skip set,
+ * legacy KV records are unreachable, which IS the assertion. Set by
+ * the CLI's `--no-legacy-kv` flag.
+ */
+export declare function setSkipLegacySweep(skip: boolean): void;
 /**
  * The kit's record store: the collection when the config declares it
  * (the plugin ships it), otherwise the app's `payload.kv` directly —
