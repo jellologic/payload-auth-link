@@ -1,5 +1,12 @@
 # @payload-auth-link/web
 
+## 0.7.6
+
+### Patch Changes
+
+- Updated dependencies [[`a98c9d0`](https://github.com/jellologic/payload-auth-link/commit/a98c9d06d2e4c279f98a12b04405a6bebd06eddd)]:
+  - @payload-auth-link/core@0.13.2
+
 ## 0.7.5
 
 ### Patch Changes

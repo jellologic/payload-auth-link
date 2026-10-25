@@ -1,6 +1,6 @@
 {
   "name": "@payload-auth-link/next",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "description": "payload-auth-link Next.js adapter: route handlers, middleware, session and cookie helpers.",
   "license": "MIT",
   "repository": {
