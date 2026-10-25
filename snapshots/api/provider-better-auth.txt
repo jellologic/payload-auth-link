@@ -1036,6 +1036,13 @@ export type BetterAuthProviderDeps = {
      */
     readonly magicLinkEnabled?: boolean | undefined;
     /**
+     * Host collection slugs the instance serves through `schemaMap`
+     * (GHSA-hfm3): surfaces the port's `adoptedCollections` fact so the
+     * plugin hardens those configs. The engine derives it from the
+     * builder's schemaMap; direct users pass the slugs they adopted.
+     */
+    readonly adoptedCollections?: readonly string[] | undefined;
+    /**
      * Identity lifecycle event bus (CAP-14): when present, the port
      * exposes `onIdentityEvent` subscriptions fed by the engine's
      * `databaseHooks` translation. Direct users who compose their own
@@ -1086,6 +1093,8 @@ export declare function createBetterAuthProviderFromUnknown(auth: unknown, sessi
     readonly socialProviders?: readonly string[] | undefined;
     /** Issue #157: whether the magic-link plugin is installed. */
     readonly magicLinkEnabled?: boolean | undefined;
+    /** GHSA-hfm3: host collection slugs the schemaMap adopts. */
+    readonly adoptedCollections?: readonly string[] | undefined;
     readonly events?: IdentityEventBus | undefined;
     readonly legacySessions?: {
         readonly until: string;

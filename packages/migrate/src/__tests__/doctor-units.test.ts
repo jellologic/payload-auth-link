@@ -2,12 +2,16 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
-import { readableCredentialFields } from '../doctor/adopted-credentials.js'
+import {
+  readableCredentialFields,
+  versionedProviderCollections,
+} from '../doctor/adopted-credentials.js'
 import { classifyPlugins, pluginsFromSourceTree } from '../doctor/plugins.js'
 import {
   legacyInvitationRolesWarning,
   payloadAuthHookStackingWarning,
   runDoctor,
+  versionedProviderCollectionsIssue,
 } from '../doctor/run-doctor.js'
 import { scanSource } from '../doctor/source-scan.js'
 import { snakeCaseTableName, sourceMapFromConfig } from '../doctor/source-layout.js'
@@ -950,6 +954,111 @@ describe('doctor: the credential check rides the adopt-target gate (#145)', () =
       expect(report.warnings.map((issue) => issue.code)).not.toContain('readable-credential-field')
     } finally {
       rmSync(srcDir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('versioned adopted provider collections (GHSA-hfm3)', () => {
+  const configWith = (
+    collections: readonly Record<string, unknown>[]
+  ): Record<string, unknown> => ({ collections })
+
+  const stamped = (
+    slug: string,
+    model: string,
+    extra: Record<string, unknown> = {}
+  ): Record<string, unknown> => ({
+    slug,
+    custom: { betterAuthModelKey: model },
+    fields: [],
+    ...extra,
+  })
+
+  test('flags exactly the stamped collections with a truthy versions value', () => {
+    const config = configWith([
+      stamped('ba_sessions', 'session', { versions: { drafts: false } }),
+      stamped('ba_verifications', 'verification', { versions: true }),
+      stamped('ba_accounts', 'account'),
+      stamped('users', 'user', { versions: { drafts: false } }),
+      { slug: 'notes', fields: [], versions: { drafts: false } }, // not a provider collection
+    ])
+    expect(versionedProviderCollections(config)).toEqual([
+      'ba_sessions',
+      'ba_verifications',
+      'users',
+    ])
+  })
+
+  test('a config with no collections (or none stamped) is clean', () => {
+    expect(versionedProviderCollections({})).toEqual([])
+    expect(versionedProviderCollections(configWith([{ slug: 'notes', fields: [] }]))).toEqual([])
+  })
+
+  test('the pure finding: pre-0.19 (or unreadable) blocks; 0.19.0+ warns with the purge', () => {
+    const blocker = versionedProviderCollectionsIssue({
+      slugs: ['sessions'],
+      pluginVersion: '0.18.2',
+    })
+    expect(blocker.severity).toBe('blocker')
+    expect(blocker.detail).toContain('versions: false')
+    expect(versionedProviderCollectionsIssue({ slugs: ['x'], pluginVersion: null }).severity).toBe(
+      'blocker'
+    )
+    const warning = versionedProviderCollectionsIssue({
+      slugs: ['sessions'],
+      pluginVersion: '0.19.0',
+    })
+    expect(warning.severity).toBe('warning')
+    expect(warning.detail).toContain('0.19.0')
+    expect(warning.detail).toContain('Purge them')
+    expect(
+      versionedProviderCollectionsIssue({ slugs: ['x'], pluginVersion: '1.0.0' }).severity
+    ).toBe('warning')
+  })
+
+  test('runDoctor: a versioned stamped collection reports the code (severity follows the installed plugin)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'doctor-versioned-'))
+    try {
+      const configPath = new URL(
+        '../__fixtures__/doctor-fixture/payload.config.ts',
+        import.meta.url
+      ).pathname
+      const report = await runDoctor({
+        configPath,
+        srcDir: dir,
+        databaseUrl: '',
+        loadModule: () =>
+          Promise.resolve({
+            plugins: [Object.assign(() => ({}), { slug: 'payload-auth-link', options: {} })],
+            collections: [
+              {
+                slug: 'sessions',
+                custom: { betterAuthModelKey: 'session' },
+                fields: [],
+                versions: { drafts: false },
+              },
+              { slug: 'users', custom: { betterAuthModelKey: 'user' }, fields: [] },
+            ],
+          }),
+      })
+      // The severity reads the repo's REAL installed plugin version;
+      // both branches assert the same code and detail essentials, so
+      // this holds before and after the 0.19 release itself.
+      const finding = [...report.blockers, ...report.warnings].find(
+        (issue) => issue.code === 'versioned-provider-collections'
+      )
+      expect(finding?.detail).toContain("'sessions'")
+      expect(finding?.detail).toContain('drafts: false')
+      expect(finding?.detail).toContain('_v')
+      const asBlocker = report.blockers.some(
+        (issue) => issue.code === 'versioned-provider-collections'
+      )
+      const asWarning = report.warnings.some(
+        (issue) => issue.code === 'versioned-provider-collections'
+      )
+      expect(asBlocker !== asWarning).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 })

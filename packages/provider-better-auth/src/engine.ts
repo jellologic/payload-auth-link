@@ -679,6 +679,14 @@ export function createBetterAuthEngine<
     ? Object.keys(socialProviders).filter((id) => id !== '')
     : []
   const hasSocialOauth = socialProviderIds.length > 0
+  // GHSA-hfm3: the host slugs the schemaMap adopts — the port reports
+  // them so the plugin can harden their config (versioning off,
+  // readVersions closed). Duplicates are impossible here: the adapter
+  // refused any two models sharing a slug at construction (line 457).
+  const adoptedCollectionSlugs: string[] = []
+  for (const entry of Object.values(input.schemaMap ?? {})) {
+    adoptedCollectionSlugs.push(entry.slug)
+  }
   const provider = createBetterAuthProviderFromUnknown(
     auth,
     sessionCookieNames,
@@ -693,6 +701,10 @@ export function createBetterAuthEngine<
       // ids and whether the magic-link plugin is installed.
       ...(socialProviderIds.length > 0 ? { socialProviders: socialProviderIds } : {}),
       magicLinkEnabled: pluginIds.includes('magic-link'),
+      // GHSA-hfm3: the plugin hardens exactly the host collections the
+      // schemaMap adopts — auth rows must not keep secret-bearing
+      // version copies, whatever shape the host declared.
+      ...(adoptedCollectionSlugs.length > 0 ? { adoptedCollections: adoptedCollectionSlugs } : {}),
       events,
       // Issue #124: in adopt mode with Payload-owned ids, the engine
       // writes user rows under its own user id AS the document id —

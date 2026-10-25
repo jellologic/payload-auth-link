@@ -133,3 +133,36 @@ export function readableCredentialFields(config: unknown): DoctorIssue[] {
   }
   return issues
 }
+
+/**
+ * Versioned adopted provider collections (GHSA-hfm3): every write to a
+ * versioned collection also stores a full copy of the row, and these
+ * rows are secrets — session tokens, verification identifiers
+ * (magic-link and password-reset tokens under Better Auth's default
+ * plain storage), credential hashes. Payload's default `readVersions`
+ * (`Boolean(req.user)`) then lists those copies for any signed-in
+ * principal — a guest too, where `admitAnonymous` is on. Found by the
+ * same payload-auth stamp the credential-field check reads
+ * (`custom.betterAuthModelKey`); the trap the detail calls out is that
+ * `versions: { drafts: false }` still versions the collection (any
+ * truthy value does).
+ */
+export function versionedProviderCollections(config: unknown): string[] {
+  if (!isRecord(config) || !Array.isArray(config['collections'])) {
+    return []
+  }
+  const versioned: string[] = []
+  for (const entry of config['collections']) {
+    if (!isRecord(entry) || typeof entry['slug'] !== 'string') {
+      continue
+    }
+    const custom = entry['custom']
+    if (!isRecord(custom) || typeof custom['betterAuthModelKey'] !== 'string') {
+      continue
+    }
+    if (entry['versions']) {
+      versioned.push(entry['slug'])
+    }
+  }
+  return versioned
+}

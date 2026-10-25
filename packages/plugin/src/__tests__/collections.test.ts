@@ -1,7 +1,7 @@
 import { engineCreateMarker, InvalidConfigError } from '@payload-auth-link/core'
 import type { CollectionConfig } from 'payload'
 import { describe, expect, it } from 'vitest'
-import { applyUsersCollection, fieldName } from '../collections.js'
+import { applyUsersCollection, fieldName, withAdoptedCollectionHardening } from '../collections.js'
 import { wireOptions } from '../options.js'
 import { createAuthLinkStrategy, strategyName } from '../strategy.js'
 import { createStubProvider } from './stub-provider.js'
@@ -681,5 +681,123 @@ describe('adoptIdentityHook — the identity row at creation (issue #132)', () =
       },
     })
     expect(updates).toHaveLength(0)
+  })
+})
+
+describe('withAdoptedCollectionHardening (GHSA-hfm3)', () => {
+  type Logger = { readonly warns: string[] }
+  function wiredWithLogger(): { options: ReturnType<typeof wireOptions>; logger: Logger } {
+    const logger: Logger = { warns: [] }
+    const { provider } = createStubProvider()
+    const port: import('@payload-auth-link/core').LoggerPort = {
+      debug: () => {},
+      info: () => {},
+      warn: (message: string) => {
+        logger.warns.push(message)
+      },
+      error: () => {},
+      child: () => port,
+    }
+    const options = wireOptions({
+      baseUrl: 'http://auth-link.test',
+      roles: ['admin', 'user'],
+      defaultRole: 'user',
+      providers: [provider],
+      logger: port,
+    })
+    return { options, logger }
+  }
+
+  const hostCollections = (): CollectionConfig[] => [
+    {
+      slug: 'ba_sessions',
+      access: { read: () => false },
+      fields: [{ name: 'token', type: 'text' }],
+      versions: { drafts: false },
+    },
+    {
+      slug: 'ba_verifications',
+      access: { read: () => false },
+      fields: [{ name: 'value', type: 'text' }],
+    },
+    {
+      slug: 'users',
+      fields: [],
+      versions: { drafts: false },
+    },
+    { slug: 'notes', fields: [{ name: 'title', type: 'text' }] },
+  ]
+
+  it('forces versions off and fills readVersions on adopted provider collections', () => {
+    const { options } = wiredWithLogger()
+    const hardened = withAdoptedCollectionHardening(
+      hostCollections(),
+      new Set(['ba_sessions', 'ba_verifications']),
+      options
+    )
+    const sessions = hardened.find((collection) => collection.slug === 'ba_sessions')
+    // The `versions: { drafts: false }` trap: still versioning. The fix
+    // removes it outright — no copies are written and the /versions
+    // routes disappear.
+    expect(sessions?.versions).toBe(false)
+    expect(typeof sessions?.access?.readVersions).toBe('function')
+    const verifications = hardened.find((collection) => collection.slug === 'ba_verifications')
+    expect(verifications?.versions).toBeUndefined()
+    expect(typeof verifications?.access?.readVersions).toBe('function')
+  })
+
+  it('leaves the users slug alone — the plugin never passes it in this set', () => {
+    // index.ts builds the adopted set with `slug !== usersCollection`
+    // (withDefaultUserAccess governs users); the hardening itself is
+    // generic over whatever it is given.
+    const { options } = wiredWithLogger()
+    const hardened = withAdoptedCollectionHardening(
+      hostCollections(),
+      new Set(['ba_sessions', 'ba_verifications']),
+      options
+    )
+    const users = hardened.find((collection) => collection.slug === 'users')
+    expect(users?.versions).toEqual({ drafts: false })
+    expect(users?.access?.readVersions).toBeUndefined()
+  })
+
+  it('keeps the host’s own readVersions; untouched collections pass through', () => {
+    const { options } = wiredWithLogger()
+    const ownReadVersions = (): boolean => false
+    const hardened = withAdoptedCollectionHardening(
+      [
+        {
+          slug: 'ba_sessions',
+          access: { read: () => false, readVersions: ownReadVersions },
+          fields: [],
+        },
+        { slug: 'notes', fields: [] },
+      ],
+      new Set(['ba_sessions']),
+      options
+    )
+    expect(hardened[0]?.access?.readVersions).toBe(ownReadVersions)
+    expect(hardened[1]).toMatchObject({ slug: 'notes' })
+  })
+
+  it('no adopted slugs: the collections are returned unchanged', () => {
+    const { options } = wiredWithLogger()
+    const collections = hostCollections()
+    const hardened = withAdoptedCollectionHardening(collections, new Set(), options)
+    expect(hardened).toEqual(collections)
+    expect(hardened).not.toBe(collections)
+  })
+
+  it('warns once naming each versioned slug', () => {
+    const { options, logger } = wiredWithLogger()
+    withAdoptedCollectionHardening(
+      hostCollections(),
+      new Set(['ba_sessions', 'ba_verifications', 'users']),
+      options
+    )
+    expect(logger.warns).toHaveLength(1)
+    expect(logger.warns[0]).toContain('ba_sessions')
+    expect(logger.warns[0]).toContain('GHSA-hfm3')
+    expect(logger.warns[0]).toContain('_v')
   })
 })

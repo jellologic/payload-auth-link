@@ -64,6 +64,20 @@ export declare function isDenyAllRead(read: unknown): boolean;
  * collection-level read is not literally `() => false`.
  */
 export declare function readableCredentialFields(config: unknown): DoctorIssue[];
+/**
+ * Versioned adopted provider collections (GHSA-hfm3): every write to a
+ * versioned collection also stores a full copy of the row, and these
+ * rows are secrets — session tokens, verification identifiers
+ * (magic-link and password-reset tokens under Better Auth's default
+ * plain storage), credential hashes. Payload's default `readVersions`
+ * (`Boolean(req.user)`) then lists those copies for any signed-in
+ * principal — a guest too, where `admitAnonymous` is on. Found by the
+ * same payload-auth stamp the credential-field check reads
+ * (`custom.betterAuthModelKey`); the trap the detail calls out is that
+ * `versions: { drafts: false }` still versions the collection (any
+ * truthy value does).
+ */
+export declare function versionedProviderCollections(config: unknown): string[];
 
 // ===== doctor/bands.d.ts =====
 import { type VersionRange } from '@payload-auth-link/core';
@@ -208,6 +222,24 @@ export declare function collectionSlugs(config: unknown): string[];
  * reference). The engine's own `ba-sessions` declares the field.
  */
 export declare function sessionCollectionsWithoutAuthMethod(config: unknown): string[];
+/**
+ * The versioned-provider-collections finding (GHSA-hfm3), extracted
+ * pure so tests can assert its exact shape against a plugin version
+ * (`checkVersions`-style: `readInstalledVersion` reads the REAL
+ * manifests at run time). `pluginVersion` of the app's installed
+ * payload-auth-link/plugin decides severity: 0.19.0+ disables the
+ * versioning at boot (except the users collection) and closes
+ * readVersions gaps, so only the stale `_v` purge remains — a warning;
+ * anything older (or unreadable) leaves the config itself the fix — a
+ * blocker.
+ */
+export declare function versionedProviderCollectionsIssue(input: {
+    readonly slugs: readonly string[];
+    readonly pluginVersion: string | null;
+}): {
+    readonly severity: 'blocker' | 'warning';
+    readonly detail: string;
+};
 /**
  * The warning for legacy invitation roles (issue #142): payload-auth
  * stored the organization plugin's invitation `role` as a

@@ -2,7 +2,7 @@ import { isRecord, parseVersion, readInstalledVersion } from '@payload-auth-link
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { readableCredentialFields } from './adopted-credentials.js'
+import { readableCredentialFields, versionedProviderCollections } from './adopted-credentials.js'
 import { checkVersions } from './bands.js'
 import { introspectDatabase } from './database.js'
 import {
@@ -284,6 +284,36 @@ export function sessionCollectionsWithoutAuthMethod(config: unknown): string[] {
 }
 
 /**
+ * The versioned-provider-collections finding (GHSA-hfm3), extracted
+ * pure so tests can assert its exact shape against a plugin version
+ * (`checkVersions`-style: `readInstalledVersion` reads the REAL
+ * manifests at run time). `pluginVersion` of the app's installed
+ * payload-auth-link/plugin decides severity: 0.19.0+ disables the
+ * versioning at boot (except the users collection) and closes
+ * readVersions gaps, so only the stale `_v` purge remains — a warning;
+ * anything older (or unreadable) leaves the config itself the fix — a
+ * blocker.
+ */
+export function versionedProviderCollectionsIssue(input: {
+  readonly slugs: readonly string[]
+  readonly pluginVersion: string | null
+}): { readonly severity: 'blocker' | 'warning'; readonly detail: string } {
+  const parsed = input.pluginVersion === null ? null : parseVersion(input.pluginVersion)
+  const autoFixed =
+    parsed !== null && (parsed.major >= 1 || (parsed.major === 0 && parsed.minor >= 19))
+  const slugs = input.slugs.map((slug) => `'${slug}'`).join(', ')
+  return autoFixed
+    ? {
+        severity: 'warning',
+        detail: `the adopted provider collection(s) ${slugs} declare versioning — and every write stored a full copy of the row while it was on: session tokens, verification identifiers (magic-link and password-reset tokens under Better Auth's default plain storage), credential hashes, readable by any signed-in principal while readVersions was open (GHSA-hfm3). payload-auth-link/plugin ${input.pluginVersion} disables this versioning at boot (except on the users collection, whose choice stays yours) and closes readVersions, so no NEW copies are written and none are readable — but the '_v' rows written before the upgrade are still in the database. Purge them (drop the '<slug>_v' tables in a migration, or delete their rows) and set versions: false on the collections so the intent is explicit; note versions: { drafts: false } KEEPS versioning on — any truthy value does`,
+      }
+    : {
+        severity: 'blocker',
+        detail: `the adopted provider collection(s) ${slugs} have versioning on: every write stores a full copy of the row, and these rows hold auth material (session tokens, verification identifiers — magic-link and password-reset tokens under Better Auth's default plain storage — credential hashes), while Payload's default readVersions (Boolean(req.user)) lists the copies for any signed-in principal — a guest too where admitAnonymous is on (GHSA-hfm3). The trap: versions: { drafts: false } KEEPS versioning on — any truthy value does. Fix before the cutover: set versions: false on each collection (payload-auth-link/plugin >= 0.19.0 does this at boot for you) and purge the copies already stored — the '<slug>_v' tables (drop them in a migration, or delete their rows); nothing was changed`,
+      }
+}
+
+/**
  * The warning for legacy invitation roles (issue #142): payload-auth
  * stored the organization plugin's invitation `role` as a
  * JSON-encoded array STRING, and accepting one after the switch copies
@@ -477,6 +507,25 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     // import.
     if (adoptTarget) {
       warnings.push(...readableCredentialFields(config))
+      // Versioned adopted provider collections (GHSA-hfm3): version
+      // copies of auth rows leak their secrets to any signed-in
+      // principal while readVersions is open. From plugin 0.19.0 the
+      // plugin disables this versioning at boot and closes readVersions
+      // gaps, so only the stale _v rows remain — a warning demanding
+      // the purge; on an older (or unreadable) plugin the CONFIG is the
+      // fix and the kit refuses until it is applied.
+      const versioned = versionedProviderCollections(config)
+      if (versioned.length > 0) {
+        const finding = versionedProviderCollectionsIssue({
+          slugs: versioned,
+          pluginVersion: readInstalledVersion('@payload-auth-link/plugin', configUrl),
+        })
+        if (finding.severity === 'blocker') {
+          blockers.push({ code: 'versioned-provider-collections', detail: finding.detail })
+        } else {
+          warnings.push({ code: 'versioned-provider-collections', detail: finding.detail })
+        }
+      }
     }
     for (const issue of userIssues) {
       if (

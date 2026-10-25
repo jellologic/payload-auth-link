@@ -9,6 +9,7 @@ import type { Payload, PayloadRequest } from 'payload'
 import { describe, expect, it, vi } from 'vitest'
 import {
   armLocalCredentialGate,
+  banActive,
   disarmLocalCredentialGate,
   holdsLinkedIdentities,
   LOCAL_CREDENTIAL_GATE_KEY,
@@ -251,5 +252,34 @@ describe('account predicates', () => {
     expect(suspensionActive({ bannedUntil: until }, options)).toBe(true)
     expect(suspensionActive({ suspendedUntil: until }, options)).toBe(false)
     expect(localCredentialRefusal({ bannedUntil: until }, 'api-key', options)).toBe('suspended')
+  })
+})
+
+describe('banActive — the Better Auth ban on the users document (GHSA-6244)', () => {
+  const FUTURE = '2999-01-01T00:00:00.000Z'
+  const PAST = '2021-01-01T00:00:00.000Z'
+
+  it('banned with no expiry is a permanent ban; an expiry in the past has lifted', () => {
+    const options = wired()
+    expect(banActive({ banned: true }, options)).toBe(true)
+    expect(banActive({ banned: true, banExpires: FUTURE }, options)).toBe(true)
+    expect(banActive({ banned: true, banExpires: PAST }, options)).toBe(false)
+    expect(banActive({ banned: false }, options)).toBe(false)
+    expect(banActive({ banned: 'true' }, options)).toBe(false)
+    expect(banActive({}, options)).toBe(false)
+    expect(banActive(null, options)).toBe(false)
+  })
+
+  it('an active ban refuses both local credential shapes; suspension wins the label', () => {
+    const options = wired()
+    const banned = { banned: true }
+    expect(localCredentialRefusal(banned, 'local-jwt', options)).toBe('banned')
+    expect(localCredentialRefusal(banned, 'api-key', options)).toBe('banned')
+    expect(
+      localCredentialRefusal({ banned: true, suspendedUntil: FUTURE }, 'api-key', options)
+    ).toBe('suspended')
+    expect(
+      localCredentialRefusal({ banned: true, banExpires: PAST }, 'api-key', options)
+    ).toBeNull()
   })
 })
