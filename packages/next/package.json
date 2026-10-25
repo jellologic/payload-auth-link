@@ -46,7 +46,7 @@
     "react": "^19.0.0"
   },
   "devDependencies": {
-    "next": "16.4.0"
+    "next": "16.4.1"
   },
   "publishConfig": {
     "access": "public",
