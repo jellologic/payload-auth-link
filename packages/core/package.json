@@ -1,6 +1,6 @@
 {
   "name": "@payload-auth-link/core",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "description": "payload-auth-link core: framework-free auth domain and port interfaces.",
   "license": "MIT",
   "repository": {

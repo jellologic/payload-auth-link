@@ -1,5 +1,0 @@
----
-'@payload-auth-link/plugin': patch
----
-
-The Payload-side account gate now enforces Better Auth bans (GHSA-6244-vvv9-76f5). The gate read `suspendedUntil` but never `banned`/`banExpires` — Better Auth's admin-plugin columns, which adopt mode keeps on the users document — so a banned user kept full access through every credential that does not pass the provider: Payload API keys, local JWTs, and third-party principals a host strategy resolves itself (`_strategy: 'mcp-api-key'`, as `@payloadcms/plugin-mcp` sets). An active ban (`banned: true`, expiry unlifted — the provider's own `activeBanOf` rule) is now refused with suspension parity at every refusal point: the request-time operation gate (every `users` principal, whatever strategy resolved it), the authentication-time credential veto (a banned user's API key or JWT resolves nobody), `beforeLogin` (local sign-in answers 401 "Account banned"), the reset-password pre-write guard (a banned document's password does not rotate), and the users-collection access belt. A ban expiry in the past lifts it everywhere.
