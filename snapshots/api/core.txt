@@ -1325,6 +1325,16 @@ export interface IdentityProviderPort {
      */
     readonly adoptedCollections?: readonly string[] | undefined;
     /**
+     * The SECRET-bearing subset of {@link adoptedCollections} (issue
+     * #164): slugs whose rows carry live credentials — session tokens,
+     * verification identifiers, credential hashes. The plugin forces
+     * `versions: false` on exactly these; every other adopted
+     * collection's versioning stays as the host wrote it (only
+     * `readVersions` is backfilled). Optional: engines without adoption
+     * omit it.
+     */
+    readonly secretCollections?: readonly string[] | undefined;
+    /**
      * Enumerate every session id presented by this request beyond the
      * active session (CAP-13b multi-session logout): the ids are
      * provider-verified handles suitable for {@link revokeSession},

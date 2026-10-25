@@ -23,9 +23,11 @@ describe('direct-deps port facts', () => {
       auth: fakeAuth(),
       sessionCookieNames: cookieNames,
       adoptedCollections: ['users', 'sessions'],
+      secretCollections: ['sessions'],
       magicLinkEnabled: true,
     })
     expect(port.adoptedCollections).toEqual(['users', 'sessions'])
+    expect(port.secretCollections).toEqual(['sessions'])
     expect(port.magicLinkEnabled).toBe(true)
   })
 
@@ -35,6 +37,7 @@ describe('direct-deps port facts', () => {
       sessionCookieNames: cookieNames,
     })
     expect(port.adoptedCollections).toBeUndefined()
+    expect(port.secretCollections).toBeUndefined()
     expect(port.magicLinkEnabled).toBeUndefined()
   })
 
@@ -46,10 +49,12 @@ describe('direct-deps port facts', () => {
       undefined,
       {
         adoptedCollections: ['ba_sessions'],
+        secretCollections: ['ba_sessions', 'ba_verifications'],
         socialProviders: ['google'],
       }
     )
     expect(port.adoptedCollections).toEqual(['ba_sessions'])
+    expect(port.secretCollections).toEqual(['ba_sessions', 'ba_verifications'])
     expect(port.socialProviders).toEqual(['google'])
     expect(port.magicLinkEnabled).toBeUndefined()
   })

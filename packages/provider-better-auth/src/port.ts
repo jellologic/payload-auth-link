@@ -215,6 +215,12 @@ export type BetterAuthProviderDeps = {
    */
   readonly adoptedCollections?: readonly string[] | undefined
   /**
+   * The SECRET-bearing subset of the adopted slugs (issue #164): the
+   * engine derives it from the schemaMap's secret-bearing models;
+   * direct users pass the slugs that carry live credentials.
+   */
+  readonly secretCollections?: readonly string[] | undefined
+  /**
    * Identity lifecycle event bus (CAP-14): when present, the port
    * exposes `onIdentityEvent` subscriptions fed by the engine's
    * `databaseHooks` translation. Direct users who compose their own
@@ -289,6 +295,8 @@ type PortFunctions = {
   readonly magicLinkEnabled?: boolean | undefined
   /** GHSA-hfm3: host slugs the schemaMap adopts, surfaced verbatim. */
   readonly adoptedCollections?: readonly string[] | undefined
+  /** Issue #164: the secret-bearing subset of the adopted slugs. */
+  readonly secretCollections?: readonly string[] | undefined
   readonly sessionCookieClearOptions?: ((name: string) => CookieOptions | undefined) | undefined
   readonly logoutCookieNames?: readonly string[] | undefined
   readonly events?: IdentityEventBus | undefined
@@ -565,6 +573,7 @@ function createPortFromFunctions(deps: PortFunctions): IdentityProviderPort {
   const socialProviders = deps.socialProviders
   const magicLinkEnabled = deps.magicLinkEnabled === true
   const adoptedCollections = deps.adoptedCollections
+  const secretCollections = deps.secretCollections
   return {
     id: providerId,
     capabilities: deps.capabilities,
@@ -741,10 +750,14 @@ function createPortFromFunctions(deps: PortFunctions): IdentityProviderPort {
     ...(socialProviders !== undefined && socialProviders.length > 0
       ? { socialProviders: [...socialProviders] }
       : {}),
-    // GHSA-hfm3: the plugin hardens exactly these host collections —
-    // auth rows must not keep secret-bearing version copies.
+    // GHSA-hfm3: the plugin closes readVersions gaps on exactly these
+    // host collections; the secret subset additionally loses
+    // versioning (issue #164).
     ...(adoptedCollections !== undefined && adoptedCollections.length > 0
       ? { adoptedCollections: [...adoptedCollections] }
+      : {}),
+    ...(secretCollections !== undefined && secretCollections.length > 0
+      ? { secretCollections: [...secretCollections] }
       : {}),
     ...(listDeviceSessions === undefined
       ? {}
@@ -1373,6 +1386,7 @@ export function createBetterAuthProvider(deps: BetterAuthProviderDeps): Identity
     ...(deps.adoptedCollections === undefined
       ? {}
       : { adoptedCollections: deps.adoptedCollections }),
+    ...(deps.secretCollections === undefined ? {} : { secretCollections: deps.secretCollections }),
   })
 }
 
@@ -1399,6 +1413,8 @@ export function createBetterAuthProviderFromUnknown(
     readonly magicLinkEnabled?: boolean | undefined
     /** GHSA-hfm3: host collection slugs the schemaMap adopts. */
     readonly adoptedCollections?: readonly string[] | undefined
+    /** Issue #164: the secret-bearing subset of the adopted slugs. */
+    readonly secretCollections?: readonly string[] | undefined
     readonly events?: IdentityEventBus | undefined
     readonly legacySessions?:
       | {
@@ -1606,5 +1622,8 @@ export function createBetterAuthProviderFromUnknown(
     ...(options?.adoptedCollections === undefined
       ? {}
       : { adoptedCollections: options.adoptedCollections }),
+    ...(options?.secretCollections === undefined
+      ? {}
+      : { secretCollections: options.secretCollections }),
   })
 }

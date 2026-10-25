@@ -85,6 +85,33 @@ export type BetterAuthAdoptedModel = {
  */
 export type BetterAuthSchemaMap = Readonly<Record<string, BetterAuthAdoptedModel>>
 
+/**
+ * Better Auth models whose rows carry LIVE CREDENTIALS (issue #164):
+ * session tokens, verification identifiers (magic-link and
+ * password-reset tokens under Better Auth's default plain storage),
+ * password hashes, API-key hashes, JWKS private keys, TOTP secrets and
+ * backup codes, OAuth client secrets and access tokens. In adopt mode
+ * the plugin forces `versions: false` on exactly these collections —
+ * their version copies would hold all of it. Every OTHER adopted model
+ * (organizations, members, invitations, team models, …) holds ordinary
+ * business data hosts can legitimately version, so its `versions`
+ * stays as the host wrote it; the plugin only closes a missing
+ * `readVersions` there. Unknown plugin models default to this
+ * non-secret set — a missed secret still gets the readVersions backfill,
+ * while a wrongly disabled history would silently break hosts
+ * (issue #164's organizations case).
+ */
+export const secretBearingModels: ReadonlySet<string> = new Set([
+  'session',
+  'verification',
+  'account',
+  'apikey',
+  'jwks',
+  'twoFactor',
+  'oauthApplication',
+  'oauthAccessToken',
+])
+
 /** Slug overrides and access for {@link createBetterAuthCollections}. */
 export type BetterAuthCollectionsOptions = {
   /** Override any default slug. Unmentioned models keep their defaults. */

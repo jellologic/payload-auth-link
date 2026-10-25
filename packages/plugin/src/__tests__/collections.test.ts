@@ -684,7 +684,7 @@ describe('adoptIdentityHook — the identity row at creation (issue #132)', () =
   })
 })
 
-describe('withAdoptedCollectionHardening (GHSA-hfm3)', () => {
+describe('withAdoptedCollectionHardening (GHSA-hfm3, scoped per issue #164)', () => {
   type Logger = { readonly warns: string[] }
   function wiredWithLogger(): { options: ReturnType<typeof wireOptions>; logger: Logger } {
     const logger: Logger = { warns: [] }
@@ -728,11 +728,12 @@ describe('withAdoptedCollectionHardening (GHSA-hfm3)', () => {
     { slug: 'notes', fields: [{ name: 'title', type: 'text' }] },
   ]
 
-  it('forces versions off and fills readVersions on adopted provider collections', () => {
+  it('forces versions off and fills readVersions on SECRET-bearing adopted collections', () => {
     const { options } = wiredWithLogger()
     const hardened = withAdoptedCollectionHardening(
       hostCollections(),
       new Set(['ba_sessions', 'ba_verifications']),
+      new Set(['ba_sessions']),
       options
     )
     const sessions = hardened.find((collection) => collection.slug === 'ba_sessions')
@@ -746,14 +747,51 @@ describe('withAdoptedCollectionHardening (GHSA-hfm3)', () => {
     expect(typeof verifications?.access?.readVersions).toBe('function')
   })
 
-  it('leaves the users slug alone — the plugin never passes it in this set', () => {
-    // index.ts builds the adopted set with `slug !== usersCollection`
+  it('non-secret adopted collections keep the host’s versions (issue #164)', () => {
+    // The 0.19.0 regression: organizations with `versions: { drafts:
+    // true }` (an approval workflow) had its versioning silently
+    // stripped, and migrate:create then generated a destructive
+    // migration dropping `_organizations_v`. Only the SECRET-bearing
+    // subset is force-disabled now.
+    const { options, logger } = wiredWithLogger()
+    const hardened = withAdoptedCollectionHardening(
+      [
+        {
+          slug: 'organizations',
+          fields: [{ name: 'name', type: 'text' }],
+          versions: { drafts: true },
+        },
+        {
+          slug: 'ba_sessions',
+          access: { read: () => false },
+          fields: [],
+          versions: { drafts: false },
+        },
+      ],
+      new Set(['organizations', 'ba_sessions']),
+      new Set(['ba_sessions']),
+      options
+    )
+    const orgs = hardened.find((collection) => collection.slug === 'organizations')
+    expect(orgs?.versions).toEqual({ drafts: true })
+    expect(typeof orgs?.access?.readVersions).toBe('function')
+    const sessions = hardened.find((collection) => collection.slug === 'ba_sessions')
+    expect(sessions?.versions).toBe(false)
+    // The warning names only the secret-bearing slug.
+    expect(logger.warns).toHaveLength(1)
+    expect(logger.warns[0]).toContain('ba_sessions')
+    expect(logger.warns[0]).not.toContain('organizations')
+  })
+
+  it('leaves the users slug alone — the plugin never passes it in either set', () => {
+    // index.ts builds both sets with `slug !== usersCollection`
     // (withDefaultUserAccess governs users); the hardening itself is
     // generic over whatever it is given.
     const { options } = wiredWithLogger()
     const hardened = withAdoptedCollectionHardening(
       hostCollections(),
       new Set(['ba_sessions', 'ba_verifications']),
+      new Set(['ba_sessions']),
       options
     )
     const users = hardened.find((collection) => collection.slug === 'users')
@@ -774,6 +812,7 @@ describe('withAdoptedCollectionHardening (GHSA-hfm3)', () => {
         { slug: 'notes', fields: [] },
       ],
       new Set(['ba_sessions']),
+      new Set(['ba_sessions']),
       options
     )
     expect(hardened[0]?.access?.readVersions).toBe(ownReadVersions)
@@ -783,7 +822,7 @@ describe('withAdoptedCollectionHardening (GHSA-hfm3)', () => {
   it('no adopted slugs: the collections are returned unchanged', () => {
     const { options } = wiredWithLogger()
     const collections = hostCollections()
-    const hardened = withAdoptedCollectionHardening(collections, new Set(), options)
+    const hardened = withAdoptedCollectionHardening(collections, new Set(), new Set(), options)
     expect(hardened).toEqual(collections)
     expect(hardened).not.toBe(collections)
   })
@@ -792,7 +831,8 @@ describe('withAdoptedCollectionHardening (GHSA-hfm3)', () => {
     const { options, logger } = wiredWithLogger()
     withAdoptedCollectionHardening(
       hostCollections(),
-      new Set(['ba_sessions', 'ba_verifications', 'users']),
+      new Set(['ba_sessions', 'ba_verifications']),
+      new Set(['ba_sessions']),
       options
     )
     expect(logger.warns).toHaveLength(1)

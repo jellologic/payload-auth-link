@@ -17,6 +17,7 @@ import { activeBanOf, activeSuspensionOf, createAccountStatePlugin } from './acc
 import {
   createBetterAuthCollections,
   defaultBetterAuthSlugs,
+  secretBearingModels,
   type BetterAuthCollectionsAccess,
   type BetterAuthCollectionSlugs,
   type BetterAuthCustomField,
@@ -680,12 +681,22 @@ export function createBetterAuthEngine<
     : []
   const hasSocialOauth = socialProviderIds.length > 0
   // GHSA-hfm3: the host slugs the schemaMap adopts — the port reports
-  // them so the plugin can harden their config (versioning off,
-  // readVersions closed). Duplicates are impossible here: the adapter
-  // refused any two models sharing a slug at construction (line 457).
+  // them so the plugin can close readVersions gaps on their config.
+  // Duplicates are impossible here: the adapter refused any two models
+  // sharing a slug at construction (line 457).
   const adoptedCollectionSlugs: string[] = []
-  for (const entry of Object.values(input.schemaMap ?? {})) {
+  // Issue #164: the SECRET-bearing subset. Version copies of these
+  // rows carry live credentials (session tokens, verification
+  // identifiers, credential hashes), so the plugin forces
+  // `versions: false` on exactly these and leaves every other adopted
+  // collection's versioning — organizations, members, invitations,
+  // team models — as the host wrote it.
+  const secretCollectionSlugs: string[] = []
+  for (const [model, entry] of Object.entries(input.schemaMap ?? {})) {
     adoptedCollectionSlugs.push(entry.slug)
+    if (secretBearingModels.has(model) && !secretCollectionSlugs.includes(entry.slug)) {
+      secretCollectionSlugs.push(entry.slug)
+    }
   }
   const provider = createBetterAuthProviderFromUnknown(
     auth,
@@ -701,10 +712,11 @@ export function createBetterAuthEngine<
       // ids and whether the magic-link plugin is installed.
       ...(socialProviderIds.length > 0 ? { socialProviders: socialProviderIds } : {}),
       magicLinkEnabled: pluginIds.includes('magic-link'),
-      // GHSA-hfm3: the plugin hardens exactly the host collections the
-      // schemaMap adopts — auth rows must not keep secret-bearing
-      // version copies, whatever shape the host declared.
+      // GHSA-hfm3 + issue #164: the plugin closes readVersions gaps on
+      // every adopted collection and forces `versions: false` ONLY on
+      // the secret-bearing ones the engine names here.
       ...(adoptedCollectionSlugs.length > 0 ? { adoptedCollections: adoptedCollectionSlugs } : {}),
+      ...(secretCollectionSlugs.length > 0 ? { secretCollections: secretCollectionSlugs } : {}),
       events,
       // Issue #124: in adopt mode with Payload-owned ids, the engine
       // writes user rows under its own user id AS the document id —

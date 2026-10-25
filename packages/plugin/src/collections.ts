@@ -1356,36 +1356,39 @@ function adoptRolesField(host: Field, wired: WiredOptions): SelectField {
 }
 
 /**
- * Config hardening for ADOPTED provider collections (GHSA-hfm3): the
- * host collections the engine serves Better Auth models from hold auth
- * material — session tokens, verification identifiers (magic-link and
+ * Config hardening for ADOPTED provider collections (GHSA-hfm3), in
+ * the scope issue #164 corrected: only the SECRET-bearing slugs —
+ * session tokens, verification identifiers (magic-link and
  * password-reset tokens under Better Auth's default plain storage),
- * credential hashes. Their version copies carry all of it, and
- * Payload's default `readVersions` (`Boolean(req.user)`) hands them to
- * every signed-in principal — a guest too, where `admitAnonymous` is
- * on. The users collection is governed by `withDefaultUserAccess`;
- * every OTHER adopted slug gets `versions: false` — these rows are
- * secrets and their history has no audience, so no copies are written
- * and the `/versions` routes disappear (stale `_v` rows stay in the
- * database; the migrate doctor flags them for purging) — plus a
- * role-manager-only `readVersions` as defense in depth. A host's own
- * `readVersions` is left alone; the belt only fills gaps.
+ * credential hashes — lose their versioning outright (`versions:
+ * false`, warned per slug): their version copies would carry all of
+ * it, and Payload's default `readVersions` (`Boolean(req.user)`) hands
+ * those copies to every signed-in principal — a guest too, where
+ * `admitAnonymous` is on. Every OTHER adopted slug keeps the host's
+ * `versions` untouched (organizations, members, invitations hold
+ * business data hosts legitimately version — 0.19.0 stripping that
+ * was the regression) and only gets a missing `readVersions` filled
+ * with the role-manager check as defense in depth. The users
+ * collection is governed by `withDefaultUserAccess` and never enters
+ * either set. A host's own `readVersions` is left alone everywhere;
+ * the belt only fills gaps.
  */
 export function withAdoptedCollectionHardening(
   collections: readonly CollectionConfig[] | undefined,
   adopted: ReadonlySet<string>,
+  secrets: ReadonlySet<string>,
   wired: WiredOptions
 ): CollectionConfig[] {
-  if (adopted.size === 0) {
+  if (adopted.size === 0 && secrets.size === 0) {
     return [...(collections ?? [])]
   }
   const versioned: string[] = []
   const hardened = (collections ?? []).map((collection) => {
-    if (!adopted.has(collection.slug)) {
+    if (!adopted.has(collection.slug) && !secrets.has(collection.slug)) {
       return collection
     }
     let next = collection
-    if (collection.versions) {
+    if (secrets.has(collection.slug) && collection.versions) {
       versioned.push(collection.slug)
       next = { ...next, versions: false }
     }
@@ -1399,8 +1402,8 @@ export function withAdoptedCollectionHardening(
   })
   if (versioned.length > 0) {
     wired.logger.warn(
-      `versioning disabled on adopted provider collection(s) ${versioned.join(', ')} ` +
-        '(GHSA-hfm3): their version copies hold auth material (session tokens, ' +
+      `versioning disabled on secret-bearing adopted collection(s) ${versioned.join(', ')} ` +
+        '(GHSA-hfm3): their version copies hold live credentials (session tokens, ' +
         'verification identifiers, credential hashes). Existing _v rows remain in the ' +
         'database and are now unreachable through the API — purge them; the migrate ' +
         'doctor flags versioned adopted collections.'

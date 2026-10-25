@@ -177,9 +177,13 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
     // cookie-transport one); social ids dedupe in first-seen order.
     let loginMagicLink = false
     const loginSocialProviders: string[] = []
-    // GHSA-hfm3: the adopted provider collections the ports report —
-    // the users slug is excluded, `withDefaultUserAccess` governs it.
+    // GHSA-hfm3 + issue #164: the adopted provider collections the
+    // ports report, and their secret-bearing subset — the users slug
+    // is excluded from both, `withDefaultUserAccess` governs it. The
+    // secret subset loses versioning; the rest only get readVersions
+    // backfilled.
     const adoptedProviderCollections = new Set<string>()
+    const secretProviderCollections = new Set<string>()
     for (const id of wired.registry.ids()) {
       const required = wired.registry.require(id)
       if (!required.isOk()) {
@@ -197,6 +201,11 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
       for (const slug of port.adoptedCollections ?? []) {
         if (slug !== wired.config.map.usersCollection) {
           adoptedProviderCollections.add(slug)
+        }
+      }
+      for (const slug of port.secretCollections ?? []) {
+        if (slug !== wired.config.map.usersCollection) {
+          secretProviderCollections.add(slug)
         }
       }
     }
@@ -261,6 +270,7 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
                 withAdoptedCollectionHardening(
                   config.collections,
                   adoptedProviderCollections,
+                  secretProviderCollections,
                   wired
                 ),
                 wired,
