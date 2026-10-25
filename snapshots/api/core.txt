@@ -1314,6 +1314,17 @@ export interface IdentityProviderPort {
      */
     readonly magicLinkEnabled?: boolean | undefined;
     /**
+     * Host collection slugs the provider's ENGINE serves Better Auth
+     * models from (adopt mode, `schemaMap` — GHSA-hfm3): rows in these
+     * collections are auth material (session tokens, verification
+     * identifiers, credential hashes), so the plugin hardens their
+     * config — versioning off, `readVersions` closed — instead of
+     * trusting the host's shape. Optional: engines without adoption
+     * omit it; their own `ba-*` collections are already unversioned and
+     * access-denied.
+     */
+    readonly adoptedCollections?: readonly string[] | undefined;
+    /**
      * Enumerate every session id presented by this request beyond the
      * active session (CAP-13b multi-session logout): the ids are
      * provider-verified handles suitable for {@link revokeSession},

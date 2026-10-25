@@ -314,6 +314,23 @@ deny the collection's reads outright (`denyAllAccess()` from
 `@payload-auth-link/core` is the engine's own default for fresh
 `ba-*` collections).
 
+**Turn versioning off on the adopted provider collections
+(GHSA-hfm3).** Every write to a versioned collection also stores a
+full copy of the row — and these rows hold auth material: session
+tokens, verification identifiers (Better Auth stores magic-link and
+password-reset tokens in plain text by default), credential hashes.
+Payload's default `readVersions` (`Boolean(req.user)`) lists those
+copies for any signed-in principal — a guest too, where
+`admitAnonymous` is on. The trap: `versions: { drafts: false }` — the
+shape payload-auth apps commonly carry to satisfy the drizzle adapter —
+STILL versions the collection; any truthy `versions` value does.
+payload-auth-link 0.19.0+ disables versioning on the adopted provider
+collections at boot (except the users collection, whose choice stays
+yours — close its `readVersions` there) and the doctor flags the
+combination (`versioned-provider-collections`): purge the copies
+already stored (drop the `<slug>_v` tables in a migration, or delete
+their rows), then set `versions: false` so the intent is explicit.
+
 ### Pre-link the users: `adopt-prelink`
 
 Adopt mode serves the Better Auth side, but the plugin side still has

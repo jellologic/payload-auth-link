@@ -12,7 +12,7 @@
  */
 import { sqliteAdapter } from '@payloadcms/db-sqlite'
 import { buildConfig, getPayload, type Payload } from 'payload'
-import { beforeAll, describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { createBetterAuthEngine } from '../engine.js'
 import { createPayloadRef, PASSWORD } from './engine-harness.js'
 
@@ -225,5 +225,42 @@ describe('suspension is enforced at the engine boundary too (GHSA-xxff)', () => 
       throw new Error('the provider cannot mint sessions')
     }
     expect((await after).isOk()).toBe(true)
+  })
+})
+
+describe('builder session.create.before hooks run inside the engine composition', () => {
+  it('the builder hook runs after the account-state check, preserved verbatim', async () => {
+    // CAP-14's contract for the session phase; this is also the branch
+    // the engine coverage floor points at (a builder-supplied before
+    // hook is present and must run).
+    const builderBefore = vi.fn(() => Promise.resolve())
+    const withBuilderHook = createBetterAuthEngine({
+      getPayload: () => ref.getPayload(),
+      options: {
+        baseURL: ORIGIN,
+        trustedOrigins: [ORIGIN],
+        secret: SECRET,
+        rateLimit: { enabled: false },
+        databaseHooks: { session: { create: { before: builderBefore } } },
+      },
+    })
+    // An unknown user id: the account-state read finds no row and the
+    // composition falls through to the builder hook. The row carries
+    // the fields Better Auth's session model requires.
+    const session = {
+      id: 'sess-builder-hook',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      userId: 'no-such-user',
+      expiresAt: new Date(Date.now() + 3_600_000),
+      token: 'builder-hook-token',
+    }
+    const result = await withBuilderHook.auth.options.databaseHooks?.session?.create?.before?.(
+      session,
+      null
+    )
+    expect(result).toMatchObject({ data: { userId: 'no-such-user' } })
+    expect(builderBefore).toHaveBeenCalledTimes(1)
+    expect(builderBefore).toHaveBeenCalledWith(session, null)
   })
 })

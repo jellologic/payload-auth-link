@@ -32,6 +32,7 @@ import { APIError } from 'payload'
 import { isImpersonating } from './access.js'
 import {
   apiKeyStrategyName,
+  banActive,
   holdsLinkedIdentities,
   localCredentialGateHook,
   localJwtStrategyName,
@@ -606,6 +607,12 @@ function accountControlsLoginHook(
     if (suspensionActive(user, wired)) {
       throw new APIError('Account suspended', 401)
     }
+    // Ban parity (GHSA-6244): a banned account cannot sign in with a
+    // local password either — the provider refuses bans at session
+    // creation, so the local strategy must not become the way back in.
+    if (banActive(user, wired)) {
+      throw new APIError('Account banned', 401)
+    }
     // Provider-owned documents (GHSA-f4hj): once a document holds
     // linked provider identities, the provider owns its credential —
     // a local password would bypass the provider's MFA, bans, rate
@@ -684,6 +691,12 @@ function passwordIssueGuardHook(wired: WiredOptions): CollectionBeforeOperationH
     if (operation === 'resetPassword' && suspensionActive(doc, wired)) {
       throw new APIError('Account suspended', 401)
     }
+    // Ban parity (GHSA-6244), same race as the suspension check: the
+    // reset writes the new password and clears sessions BEFORE
+    // `beforeLogin` runs, so a banned document is refused here too.
+    if (operation === 'resetPassword' && banActive(doc, wired)) {
+      throw new APIError('Account banned', 401)
+    }
     if (optedOut) {
       return args
     }
@@ -723,9 +736,12 @@ type AccountStatus = {
   readonly failed?: boolean
   /** The document holds linked provider identities (provider-owned). */
   readonly linked?: boolean
+  /** An active Better Auth ban (GHSA-6244): `banned` with no unlifted expiry. */
+  readonly banned?: boolean
 }
 
-type AccountDecision = 'ok' | 'suspended' | 'failed' | 'provider-owned' | 'provider-owned-api-key'
+type AccountDecision =
+  'ok' | 'suspended' | 'banned' | 'failed' | 'provider-owned' | 'provider-owned-api-key'
 
 async function requestAccountStatus(
   req: PayloadRequest,
@@ -766,6 +782,7 @@ async function requestAccountStatus(
     })
     status = {
       suspended: suspensionActive(doc, wired),
+      banned: banActive(doc, wired),
       linked: holdsLinkedIdentities(doc, wired),
     }
   } catch (cause) {
@@ -815,6 +832,15 @@ async function applyAccountControls(
   }
   if (status.suspended) {
     return 'suspended'
+  }
+  // Ban parity (GHSA-6244): an active ban refuses EVERY users
+  // principal, whatever `_strategy` resolved it — the provider refuses
+  // banned users on its own endpoints, so the Payload-side credentials
+  // (Payload API keys, local JWTs, third-party principals like MCP API
+  // keys that set `req.user` themselves) must not become the way
+  // around it.
+  if (status.banned === true) {
+    return 'banned'
   }
   // Provider-owned documents hold no local session (GHSA-f4hj
   // default): local sign-in is refused for them, so a local JWT on a
@@ -919,6 +945,8 @@ function throwOnAccountDecision(decision: AccountDecision): void {
       throw new APIError('Account status could not be verified', 503)
     case 'suspended':
       throw new APIError('Account suspended', 401)
+    case 'banned':
+      throw new APIError('Account banned', 401)
     default:
       return assertNever(decision)
   }
@@ -989,6 +1017,7 @@ function withAccountControlledAccess(
       }
       if (
         decision === 'suspended' ||
+        decision === 'banned' ||
         decision === 'provider-owned' ||
         decision === 'provider-owned-api-key'
       ) {
@@ -1324,6 +1353,60 @@ function adoptRolesField(host: Field, wired: WiredOptions): SelectField {
     required: true,
     ...(select.defaultValue === undefined ? { defaultValue: [wired.config.defaultRole] } : {}),
   }
+}
+
+/**
+ * Config hardening for ADOPTED provider collections (GHSA-hfm3): the
+ * host collections the engine serves Better Auth models from hold auth
+ * material — session tokens, verification identifiers (magic-link and
+ * password-reset tokens under Better Auth's default plain storage),
+ * credential hashes. Their version copies carry all of it, and
+ * Payload's default `readVersions` (`Boolean(req.user)`) hands them to
+ * every signed-in principal — a guest too, where `admitAnonymous` is
+ * on. The users collection is governed by `withDefaultUserAccess`;
+ * every OTHER adopted slug gets `versions: false` — these rows are
+ * secrets and their history has no audience, so no copies are written
+ * and the `/versions` routes disappear (stale `_v` rows stay in the
+ * database; the migrate doctor flags them for purging) — plus a
+ * role-manager-only `readVersions` as defense in depth. A host's own
+ * `readVersions` is left alone; the belt only fills gaps.
+ */
+export function withAdoptedCollectionHardening(
+  collections: readonly CollectionConfig[] | undefined,
+  adopted: ReadonlySet<string>,
+  wired: WiredOptions
+): CollectionConfig[] {
+  if (adopted.size === 0) {
+    return [...(collections ?? [])]
+  }
+  const versioned: string[] = []
+  const hardened = (collections ?? []).map((collection) => {
+    if (!adopted.has(collection.slug)) {
+      return collection
+    }
+    let next = collection
+    if (collection.versions) {
+      versioned.push(collection.slug)
+      next = { ...next, versions: false }
+    }
+    if (next.access?.readVersions === undefined) {
+      next = {
+        ...next,
+        access: { ...next.access, readVersions: ({ req }) => isRoleManager(req, wired) },
+      }
+    }
+    return next
+  })
+  if (versioned.length > 0) {
+    wired.logger.warn(
+      `versioning disabled on adopted provider collection(s) ${versioned.join(', ')} ` +
+        '(GHSA-hfm3): their version copies hold auth material (session tokens, ' +
+        'verification identifiers, credential hashes). Existing _v rows remain in the ' +
+        'database and are now unreachable through the API — purge them; the migrate ' +
+        'doctor flags versioned adopted collections.'
+    )
+  }
+  return hardened
 }
 
 export function applyUsersCollection(

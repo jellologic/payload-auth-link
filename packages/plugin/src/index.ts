@@ -17,6 +17,7 @@ import {
   applyUsersCollection,
   accountControlsGateHook,
   accountControlsGlobalGateHook,
+  withAdoptedCollectionHardening,
 } from './collections.js'
 import { createEndpoints } from './endpoints.js'
 import { subscribeIdentityEvents } from './lifecycle.js'
@@ -176,6 +177,9 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
     // cookie-transport one); social ids dedupe in first-seen order.
     let loginMagicLink = false
     const loginSocialProviders: string[] = []
+    // GHSA-hfm3: the adopted provider collections the ports report —
+    // the users slug is excluded, `withDefaultUserAccess` governs it.
+    const adoptedProviderCollections = new Set<string>()
     for (const id of wired.registry.ids()) {
       const required = wired.registry.require(id)
       if (!required.isOk()) {
@@ -188,6 +192,11 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
       for (const providerId of port.socialProviders ?? []) {
         if (!loginSocialProviders.includes(providerId)) {
           loginSocialProviders.push(providerId)
+        }
+      }
+      for (const slug of port.adoptedCollections ?? []) {
+        if (slug !== wired.config.map.usersCollection) {
+          adoptedProviderCollections.add(slug)
         }
       }
     }
@@ -248,7 +257,15 @@ export function authLink(options: AuthLinkPluginOptions): Plugin {
         withAccountControls(
           withMigrationRecords(
             applyOrganizationCollections(
-              applyUsersCollection(config.collections, wired, strategy),
+              applyUsersCollection(
+                withAdoptedCollectionHardening(
+                  config.collections,
+                  adoptedProviderCollections,
+                  wired
+                ),
+                wired,
+                strategy
+              ),
               wired
             ),
             (detail) => {

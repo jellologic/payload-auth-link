@@ -235,6 +235,51 @@ describe('createBetterAuthEngine', () => {
     expect(socialOnly.provider.socialProviders).toEqual(['google'])
   })
 
+  it('surfaces the adopted collection slugs on the port (GHSA-hfm3)', () => {
+    // Without adoption the fact is ABSENT: the engine's own ba-*
+    // collections are already unversioned and access-denied.
+    const plain = createBetterAuthEngine({ getPayload, options: {} })
+    expect(plain.provider.adoptedCollections).toBeUndefined()
+
+    // With a schemaMap, every adopted slug — the plugin hardens
+    // exactly these (versioning off, readVersions closed), minus the
+    // users slug it governs through withDefaultUserAccess.
+    const adopted = createBetterAuthEngine({
+      getPayload,
+      options: {},
+      schemaMap: {
+        user: { slug: 'users' },
+        session: { slug: 'sessions' },
+        verification: { slug: 'verifications' },
+        account: { slug: 'accounts' },
+      },
+    })
+    expect(adopted.provider.adoptedCollections).toEqual([
+      'users',
+      'sessions',
+      'verifications',
+      'accounts',
+    ])
+
+    // Two plugin models cannot share a slug (the adapter refuses that
+    // at construction), so no dedupe happens here — the report is the
+    // schemaMap's order verbatim.
+    const ordered = createBetterAuthEngine({
+      getPayload,
+      options: {},
+      schemaMap: {
+        organization: { slug: 'organizations' },
+        member: { slug: 'members' },
+        session: { slug: 'sessions' },
+      },
+      customModels: [
+        { model: 'organization', fields: [{ name: 'name', type: 'text' }] },
+        { model: 'member', fields: [{ name: 'organizationId', type: 'text' }] },
+      ],
+    })
+    expect(ordered.provider.adoptedCollections).toEqual(['organizations', 'members', 'sessions'])
+  })
+
   it('wires the provider, collections, slugs, and cookie names', () => {
     const engine = createBetterAuthEngine({ getPayload, options: {} })
     expect(engine.provider.id).toBe(wellKnownProviderIds.betterAuth)

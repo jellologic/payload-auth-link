@@ -403,6 +403,23 @@ export declare function accountControlsGateHook(wired: WiredOptions): Collection
 export declare function accountControlsGlobalGateHook(wired: WiredOptions): GlobalBeforeOperationHook;
 /** Field name when the field variant has one (`collapsible` has none). */
 export declare function fieldName(field: Field): string | undefined;
+/**
+ * Config hardening for ADOPTED provider collections (GHSA-hfm3): the
+ * host collections the engine serves Better Auth models from hold auth
+ * material — session tokens, verification identifiers (magic-link and
+ * password-reset tokens under Better Auth's default plain storage),
+ * credential hashes. Their version copies carry all of it, and
+ * Payload's default `readVersions` (`Boolean(req.user)`) hands them to
+ * every signed-in principal — a guest too, where `admitAnonymous` is
+ * on. The users collection is governed by `withDefaultUserAccess`;
+ * every OTHER adopted slug gets `versions: false` — these rows are
+ * secrets and their history has no audience, so no copies are written
+ * and the `/versions` routes disappear (stale `_v` rows stay in the
+ * database; the migrate doctor flags them for purging) — plus a
+ * role-manager-only `readVersions` as defense in depth. A host's own
+ * `readVersions` is left alone; the belt only fills gaps.
+ */
+export declare function withAdoptedCollectionHardening(collections: readonly CollectionConfig[] | undefined, adopted: ReadonlySet<string>, wired: WiredOptions): CollectionConfig[];
 export declare function applyUsersCollection(collections: readonly CollectionConfig[] | undefined, wired: WiredOptions, strategy: AuthStrategy): CollectionConfig[];
 
 // ===== compat-shim.d.ts =====
@@ -465,16 +482,29 @@ type LocalStrategy = typeof localJwtStrategyName | typeof apiKeyStrategyName;
  * enforced like the default.
  */
 export declare function suspensionActive(doc: unknown, wired: WiredOptions): boolean;
+/**
+ * Is the document currently banned (GHSA-6244)? Better Auth's admin
+ * plugin declares `banned` + `banExpires` on the user model — in adopt
+ * mode those are columns of the users document, so the Payload side
+ * can read them directly and refuse a banned account on every
+ * non-provider credential, exactly like a suspension. The rule is the
+ * provider's `activeBanOf`: `banned: true` with no expiry is a
+ * permanent ban; an expiry in the past has lifted. A document without
+ * the fields (a host that never adopted the admin plugin's columns)
+ * reads as not banned.
+ */
+export declare function banActive(doc: unknown, wired: WiredOptions): boolean;
 /** Does the document hold linked provider identities (provider-owned)? */
 export declare function holdsLinkedIdentities(doc: unknown, wired: WiredOptions): boolean;
 /** Why a Payload local credential may not authenticate this document. */
-export type LocalCredentialRefusal = 'suspended' | 'provider-owned' | 'provider-owned-api-key';
+export type LocalCredentialRefusal = 'suspended' | 'banned' | 'provider-owned' | 'provider-owned-api-key';
 /**
  * The account-control decision for a Payload local credential (local
- * JWT or API key) on a users-collection document: suspension refuses
- * every credential; a provider-linked document refuses local ones
- * unless the host opted into `allowLocalCredentialsForLinkedDocs`
- * (GHSA-f4hj / GHSA-x45w). `null` means the credential may stand.
+ * JWT or API key) on a users-collection document: suspension and an
+ * active ban (GHSA-6244) refuse every credential; a provider-linked
+ * document refuses local ones unless the host opted into
+ * `allowLocalCredentialsForLinkedDocs` (GHSA-f4hj / GHSA-x45w). `null`
+ * means the credential may stand.
  */
 export declare function localCredentialRefusal(doc: unknown, strategy: LocalStrategy, wired: WiredOptions): LocalCredentialRefusal | null;
 /**

@@ -77,6 +77,28 @@ export function suspensionActive(doc: unknown, wired: WiredOptions): boolean {
   return isSuspendedAt(suspendedUntil, wired.clock.now())
 }
 
+/**
+ * Is the document currently banned (GHSA-6244)? Better Auth's admin
+ * plugin declares `banned` + `banExpires` on the user model — in adopt
+ * mode those are columns of the users document, so the Payload side
+ * can read them directly and refuse a banned account on every
+ * non-provider credential, exactly like a suspension. The rule is the
+ * provider's `activeBanOf`: `banned: true` with no expiry is a
+ * permanent ban; an expiry in the past has lifted. A document without
+ * the fields (a host that never adopted the admin plugin's columns)
+ * reads as not banned.
+ */
+export function banActive(doc: unknown, wired: WiredOptions): boolean {
+  if (!isRecord(doc) || doc.banned !== true) {
+    return false
+  }
+  const banExpires = toDate(doc.banExpires)
+  if (banExpires === null) {
+    return true
+  }
+  return banExpires.getTime() > wired.clock.now().getTime()
+}
+
 /** Does the document hold linked provider identities (provider-owned)? */
 export function holdsLinkedIdentities(doc: unknown, wired: WiredOptions): boolean {
   const identities: unknown = isRecord(doc) ? doc[wired.config.map.identitiesField] : undefined
@@ -84,14 +106,16 @@ export function holdsLinkedIdentities(doc: unknown, wired: WiredOptions): boolea
 }
 
 /** Why a Payload local credential may not authenticate this document. */
-export type LocalCredentialRefusal = 'suspended' | 'provider-owned' | 'provider-owned-api-key'
+export type LocalCredentialRefusal =
+  'suspended' | 'banned' | 'provider-owned' | 'provider-owned-api-key'
 
 /**
  * The account-control decision for a Payload local credential (local
- * JWT or API key) on a users-collection document: suspension refuses
- * every credential; a provider-linked document refuses local ones
- * unless the host opted into `allowLocalCredentialsForLinkedDocs`
- * (GHSA-f4hj / GHSA-x45w). `null` means the credential may stand.
+ * JWT or API key) on a users-collection document: suspension and an
+ * active ban (GHSA-6244) refuse every credential; a provider-linked
+ * document refuses local ones unless the host opted into
+ * `allowLocalCredentialsForLinkedDocs` (GHSA-f4hj / GHSA-x45w). `null`
+ * means the credential may stand.
  */
 export function localCredentialRefusal(
   doc: unknown,
@@ -100,6 +124,9 @@ export function localCredentialRefusal(
 ): LocalCredentialRefusal | null {
   if (suspensionActive(doc, wired)) {
     return 'suspended'
+  }
+  if (banActive(doc, wired)) {
+    return 'banned'
   }
   if (wired.allowLocalCredentialsForLinkedDocs || !holdsLinkedIdentities(doc, wired)) {
     return null
@@ -232,6 +259,7 @@ function whereMentions(where: unknown, field: string): boolean {
 
 const refusalMessages: Readonly<Record<LocalCredentialRefusal, string>> = {
   suspended: 'Account suspended',
+  banned: 'Account banned',
   'provider-owned':
     'Local sessions are unavailable for provider-linked accounts; sign in with your identity provider',
   'provider-owned-api-key': 'API keys are unavailable for provider-linked accounts',

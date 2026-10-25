@@ -208,6 +208,13 @@ export type BetterAuthProviderDeps = {
    */
   readonly magicLinkEnabled?: boolean | undefined
   /**
+   * Host collection slugs the instance serves through `schemaMap`
+   * (GHSA-hfm3): surfaces the port's `adoptedCollections` fact so the
+   * plugin hardens those configs. The engine derives it from the
+   * builder's schemaMap; direct users pass the slugs they adopted.
+   */
+  readonly adoptedCollections?: readonly string[] | undefined
+  /**
    * Identity lifecycle event bus (CAP-14): when present, the port
    * exposes `onIdentityEvent` subscriptions fed by the engine's
    * `databaseHooks` translation. Direct users who compose their own
@@ -280,6 +287,8 @@ type PortFunctions = {
   readonly socialProviders?: readonly string[] | undefined
   /** Issue #157: whether the magic-link plugin is installed. */
   readonly magicLinkEnabled?: boolean | undefined
+  /** GHSA-hfm3: host slugs the schemaMap adopts, surfaced verbatim. */
+  readonly adoptedCollections?: readonly string[] | undefined
   readonly sessionCookieClearOptions?: ((name: string) => CookieOptions | undefined) | undefined
   readonly logoutCookieNames?: readonly string[] | undefined
   readonly events?: IdentityEventBus | undefined
@@ -555,6 +564,7 @@ function createPortFromFunctions(deps: PortFunctions): IdentityProviderPort {
   const legacySessions = deps.legacySessions
   const socialProviders = deps.socialProviders
   const magicLinkEnabled = deps.magicLinkEnabled === true
+  const adoptedCollections = deps.adoptedCollections
   return {
     id: providerId,
     capabilities: deps.capabilities,
@@ -730,6 +740,11 @@ function createPortFromFunctions(deps: PortFunctions): IdentityProviderPort {
     ...(magicLinkEnabled ? { magicLinkEnabled: true as const } : {}),
     ...(socialProviders !== undefined && socialProviders.length > 0
       ? { socialProviders: [...socialProviders] }
+      : {}),
+    // GHSA-hfm3: the plugin hardens exactly these host collections —
+    // auth rows must not keep secret-bearing version copies.
+    ...(adoptedCollections !== undefined && adoptedCollections.length > 0
+      ? { adoptedCollections: [...adoptedCollections] }
       : {}),
     ...(listDeviceSessions === undefined
       ? {}
@@ -1355,6 +1370,9 @@ export function createBetterAuthProvider(deps: BetterAuthProviderDeps): Identity
     ...(deps.events === undefined ? {} : { events: deps.events }),
     ...(deps.socialProviders === undefined ? {} : { socialProviders: deps.socialProviders }),
     magicLinkEnabled: deps.magicLinkEnabled === true,
+    ...(deps.adoptedCollections === undefined
+      ? {}
+      : { adoptedCollections: deps.adoptedCollections }),
   })
 }
 
@@ -1379,6 +1397,8 @@ export function createBetterAuthProviderFromUnknown(
     readonly socialProviders?: readonly string[] | undefined
     /** Issue #157: whether the magic-link plugin is installed. */
     readonly magicLinkEnabled?: boolean | undefined
+    /** GHSA-hfm3: host collection slugs the schemaMap adopts. */
+    readonly adoptedCollections?: readonly string[] | undefined
     readonly events?: IdentityEventBus | undefined
     readonly legacySessions?:
       | {
@@ -1583,5 +1603,8 @@ export function createBetterAuthProviderFromUnknown(
     ...(options?.legacySessions === undefined ? {} : { legacySessions: options.legacySessions }),
     ...(options?.socialProviders === undefined ? {} : { socialProviders: options.socialProviders }),
     magicLinkEnabled: options?.magicLinkEnabled === true,
+    ...(options?.adoptedCollections === undefined
+      ? {}
+      : { adoptedCollections: options.adoptedCollections }),
   })
 }
