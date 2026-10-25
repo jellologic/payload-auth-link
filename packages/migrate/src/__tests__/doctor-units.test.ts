@@ -974,19 +974,20 @@ describe('versioned adopted provider collections (GHSA-hfm3)', () => {
     ...extra,
   })
 
-  test('flags exactly the stamped collections with a truthy versions value', () => {
+  test('flags exactly the SECRET-bearing stamped collections with a truthy versions value', () => {
     const config = configWith([
       stamped('ba_sessions', 'session', { versions: { drafts: false } }),
       stamped('ba_verifications', 'verification', { versions: true }),
       stamped('ba_accounts', 'account'),
       stamped('users', 'user', { versions: { drafts: false } }),
+      // Issue #164: business tables a host legitimately versions are
+      // NOT leaks — the doctor stays silent on them, matching the
+      // plugin's 0.19.1 scope.
+      stamped('organizations', 'organization', { versions: { drafts: true } }),
+      stamped('invitations', 'invitation', { versions: true }),
       { slug: 'notes', fields: [], versions: { drafts: false } }, // not a provider collection
     ])
-    expect(versionedProviderCollections(config)).toEqual([
-      'ba_sessions',
-      'ba_verifications',
-      'users',
-    ])
+    expect(versionedProviderCollections(config)).toEqual(['ba_sessions', 'ba_verifications'])
   })
 
   test('a config with no collections (or none stamped) is clean', () => {

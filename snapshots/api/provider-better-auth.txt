@@ -195,6 +195,23 @@ export type BetterAuthAdoptedModel = {
  * (`organization`, `member`, `invitation`, `apikey`, `jwks`, …) alike.
  */
 export type BetterAuthSchemaMap = Readonly<Record<string, BetterAuthAdoptedModel>>;
+/**
+ * Better Auth models whose rows carry LIVE CREDENTIALS (issue #164):
+ * session tokens, verification identifiers (magic-link and
+ * password-reset tokens under Better Auth's default plain storage),
+ * password hashes, API-key hashes, JWKS private keys, TOTP secrets and
+ * backup codes, OAuth client secrets and access tokens. In adopt mode
+ * the plugin forces `versions: false` on exactly these collections —
+ * their version copies would hold all of it. Every OTHER adopted model
+ * (organizations, members, invitations, team models, …) holds ordinary
+ * business data hosts can legitimately version, so its `versions`
+ * stays as the host wrote it; the plugin only closes a missing
+ * `readVersions` there. Unknown plugin models default to this
+ * non-secret set — a missed secret still gets the readVersions backfill,
+ * while a wrongly disabled history would silently break hosts
+ * (issue #164's organizations case).
+ */
+export declare const secretBearingModels: ReadonlySet<string>;
 /** Slug overrides and access for {@link createBetterAuthCollections}. */
 export type BetterAuthCollectionsOptions = {
     /** Override any default slug. Unmentioned models keep their defaults. */
@@ -1043,6 +1060,12 @@ export type BetterAuthProviderDeps = {
      */
     readonly adoptedCollections?: readonly string[] | undefined;
     /**
+     * The SECRET-bearing subset of the adopted slugs (issue #164): the
+     * engine derives it from the schemaMap's secret-bearing models;
+     * direct users pass the slugs that carry live credentials.
+     */
+    readonly secretCollections?: readonly string[] | undefined;
+    /**
      * Identity lifecycle event bus (CAP-14): when present, the port
      * exposes `onIdentityEvent` subscriptions fed by the engine's
      * `databaseHooks` translation. Direct users who compose their own
@@ -1095,6 +1118,8 @@ export declare function createBetterAuthProviderFromUnknown(auth: unknown, sessi
     readonly magicLinkEnabled?: boolean | undefined;
     /** GHSA-hfm3: host collection slugs the schemaMap adopts. */
     readonly adoptedCollections?: readonly string[] | undefined;
+    /** Issue #164: the secret-bearing subset of the adopted slugs. */
+    readonly secretCollections?: readonly string[] | undefined;
     readonly events?: IdentityEventBus | undefined;
     readonly legacySessions?: {
         readonly until: string;

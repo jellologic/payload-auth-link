@@ -235,15 +235,18 @@ describe('createBetterAuthEngine', () => {
     expect(socialOnly.provider.socialProviders).toEqual(['google'])
   })
 
-  it('surfaces the adopted collection slugs on the port (GHSA-hfm3)', () => {
-    // Without adoption the fact is ABSENT: the engine's own ba-*
+  it('surfaces the adopted collection slugs and their secret subset on the port (GHSA-hfm3, issue #164)', () => {
+    // Without adoption the facts are ABSENT: the engine's own ba-*
     // collections are already unversioned and access-denied.
     const plain = createBetterAuthEngine({ getPayload, options: {} })
     expect(plain.provider.adoptedCollections).toBeUndefined()
+    expect(plain.provider.secretCollections).toBeUndefined()
 
-    // With a schemaMap, every adopted slug — the plugin hardens
-    // exactly these (versioning off, readVersions closed), minus the
-    // users slug it governs through withDefaultUserAccess.
+    // With a schemaMap, every adopted slug — the plugin closes
+    // readVersions gaps on these — and the SECRET-bearing subset — the
+    // only ones whose versioning the plugin force-disables (issue
+    // #164: organizations-style business tables keep the host's
+    // versioning, as does users).
     const adopted = createBetterAuthEngine({
       getPayload,
       options: {},
@@ -252,14 +255,33 @@ describe('createBetterAuthEngine', () => {
         session: { slug: 'sessions' },
         verification: { slug: 'verifications' },
         account: { slug: 'accounts' },
+        organization: { slug: 'organizations' },
       },
+      customModels: [{ model: 'organization', fields: [{ name: 'name', type: 'text' }] }],
     })
     expect(adopted.provider.adoptedCollections).toEqual([
       'users',
       'sessions',
       'verifications',
       'accounts',
+      'organizations',
     ])
+    expect(adopted.provider.secretCollections).toEqual(['sessions', 'verifications', 'accounts'])
+
+    // An all-business schemaMap declares NO secret collections.
+    const businessOnly = createBetterAuthEngine({
+      getPayload,
+      options: {},
+      schemaMap: {
+        organization: { slug: 'organizations' },
+        invitation: { slug: 'invitations' },
+      },
+      customModels: [
+        { model: 'organization', fields: [{ name: 'name', type: 'text' }] },
+        { model: 'invitation', fields: [{ name: 'email', type: 'text' }] },
+      ],
+    })
+    expect(businessOnly.provider.secretCollections).toBeUndefined()
 
     // Two plugin models cannot share a slug (the adapter refuses that
     // at construction), so no dedupe happens here — the report is the
@@ -278,6 +300,7 @@ describe('createBetterAuthEngine', () => {
       ],
     })
     expect(ordered.provider.adoptedCollections).toEqual(['organizations', 'members', 'sessions'])
+    expect(ordered.provider.secretCollections).toEqual(['sessions'])
   })
 
   it('wires the provider, collections, slugs, and cookie names', () => {

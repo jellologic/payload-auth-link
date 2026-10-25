@@ -135,17 +135,38 @@ export function readableCredentialFields(config: unknown): DoctorIssue[] {
 }
 
 /**
- * Versioned adopted provider collections (GHSA-hfm3): every write to a
- * versioned collection also stores a full copy of the row, and these
- * rows are secrets — session tokens, verification identifiers
- * (magic-link and password-reset tokens under Better Auth's default
- * plain storage), credential hashes. Payload's default `readVersions`
- * (`Boolean(req.user)`) then lists those copies for any signed-in
- * principal — a guest too, where `admitAnonymous` is on. Found by the
- * same payload-auth stamp the credential-field check reads
- * (`custom.betterAuthModelKey`); the trap the detail calls out is that
- * `versions: { drafts: false }` still versions the collection (any
- * truthy value does).
+ * The secret-bearing Better Auth model keys (issue #164), mirrored
+ * from `secretBearingModels` in @payload-auth-link/provider-better-auth
+ * (the migrate package sits beside the provider, never above it).
+ * Only these collections' version copies carry live credentials; an
+ * adopted organizations/invitations table versioned by its host is
+ * the host's own choice, not a leak.
+ */
+const secretModelKeys: ReadonlySet<string> = new Set([
+  'session',
+  'verification',
+  'account',
+  'apikey',
+  'jwks',
+  'twoFactor',
+  'oauthApplication',
+  'oauthAccessToken',
+])
+
+/**
+ * Versioned adopted provider collections carrying SECRETS
+ * (GHSA-hfm3): every write to a versioned collection also stores a
+ * full copy of the row, and these rows are secrets — session tokens,
+ * verification identifiers (magic-link and password-reset tokens
+ * under Better Auth's default plain storage), credential hashes.
+ * Payload's default `readVersions` (`Boolean(req.user)`) then lists
+ * those copies for any signed-in principal — a guest too, where
+ * `admitAnonymous` is on. Found by the same payload-auth stamp the
+ * credential-field check reads (`custom.betterAuthModelKey`),
+ * restricted to the secret-bearing models (issue #164 — non-secret
+ * models keep the host's versioning, plugin and doctor alike); the
+ * trap the detail calls out is that `versions: { drafts: false }`
+ * still versions the collection (any truthy value does).
  */
 export function versionedProviderCollections(config: unknown): string[] {
   if (!isRecord(config) || !Array.isArray(config['collections'])) {
@@ -157,7 +178,11 @@ export function versionedProviderCollections(config: unknown): string[] {
       continue
     }
     const custom = entry['custom']
-    if (!isRecord(custom) || typeof custom['betterAuthModelKey'] !== 'string') {
+    if (
+      !isRecord(custom) ||
+      typeof custom['betterAuthModelKey'] !== 'string' ||
+      !secretModelKeys.has(custom['betterAuthModelKey'])
+    ) {
       continue
     }
     if (entry['versions']) {

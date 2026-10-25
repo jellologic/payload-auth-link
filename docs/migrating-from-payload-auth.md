@@ -314,22 +314,30 @@ deny the collection's reads outright (`denyAllAccess()` from
 `@payload-auth-link/core` is the engine's own default for fresh
 `ba-*` collections).
 
-**Turn versioning off on the adopted provider collections
-(GHSA-hfm3).** Every write to a versioned collection also stores a
-full copy of the row — and these rows hold auth material: session
-tokens, verification identifiers (Better Auth stores magic-link and
-password-reset tokens in plain text by default), credential hashes.
-Payload's default `readVersions` (`Boolean(req.user)`) lists those
-copies for any signed-in principal — a guest too, where
-`admitAnonymous` is on. The trap: `versions: { drafts: false }` — the
-shape payload-auth apps commonly carry to satisfy the drizzle adapter —
-STILL versions the collection; any truthy `versions` value does.
-payload-auth-link 0.19.0+ disables versioning on the adopted provider
-collections at boot (except the users collection, whose choice stays
-yours — close its `readVersions` there) and the doctor flags the
-combination (`versioned-provider-collections`): purge the copies
-already stored (drop the `<slug>_v` tables in a migration, or delete
-their rows), then set `versions: false` so the intent is explicit.
+**Turn versioning off on the SECRET-bearing adopted collections
+(GHSA-hfm3, scoped per issue #164).** Every write to a versioned
+collection also stores a full copy of the row — and the rows of the
+session, verification, account, API-key, jwks, two-factor and OAuth
+token tables hold auth material: session tokens, verification
+identifiers (Better Auth stores magic-link and password-reset tokens
+in plain text by default), credential hashes. Payload's default
+`readVersions` (`Boolean(req.user)`) lists those copies for any
+signed-in principal — a guest too, where `admitAnonymous` is on. The
+trap: `versions: { drafts: false }` — the shape payload-auth apps
+commonly carry to satisfy the drizzle adapter — STILL versions the
+collection; any truthy `versions` value does. payload-auth-link
+0.19.1+ disables versioning at boot on exactly those secret-bearing
+collections (0.19.0 over-reached onto every adopted collection,
+breaking hosts that legitimately version `organizations` and friends —
+the regression issue #164 fixed that scope). Non-secret adopted
+tables — organizations, members, invitations, team models, and the
+users collection — keep the host's `versions` untouched; the plugin
+only backfills a missing `readVersions` there, so close it yourself
+where the history is sensitive. The doctor flags versioned
+secret-bearing collections (`versioned-provider-collections`): purge
+the copies already stored (drop the `<slug>_v` tables in a migration,
+or delete their rows), then set `versions: false` so the intent is
+explicit.
 
 ### Pre-link the users: `adopt-prelink`
 
