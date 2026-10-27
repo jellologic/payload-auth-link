@@ -53,10 +53,10 @@
     "@better-auth/passkey": "^1.7.10",
     "@payload-auth-link/plugin": "workspace:*",
     "@payload-auth-link/web": "workspace:*",
-    "@payloadcms/db-postgres": "3.91.0",
-    "@payloadcms/db-sqlite": "3.91.0",
+    "@payloadcms/db-postgres": "3.92.0",
+    "@payloadcms/db-sqlite": "3.92.0",
     "better-auth": "1.7.10",
-    "payload": "3.91.0"
+    "payload": "3.92.0"
   },
   "publishConfig": {
     "access": "public",
