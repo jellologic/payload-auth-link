@@ -49,13 +49,13 @@
     "payload": "^3.83.0 || 4.0.0-beta.0"
   },
   "devDependencies": {
-    "@better-auth/api-key": "1.7.10",
-    "@better-auth/passkey": "^1.7.10",
+    "@better-auth/api-key": "1.7.12",
+    "@better-auth/passkey": "^1.7.12",
     "@payload-auth-link/plugin": "workspace:*",
     "@payload-auth-link/web": "workspace:*",
     "@payloadcms/db-postgres": "3.91.0",
     "@payloadcms/db-sqlite": "3.91.0",
-    "better-auth": "1.7.10",
+    "better-auth": "1.7.12",
     "payload": "3.91.0"
   },
   "publishConfig": {
