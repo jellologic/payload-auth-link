@@ -57,9 +57,9 @@
   "devDependencies": {
     "@payloadcms/db-postgres": "3.91.0",
     "@payloadcms/db-sqlite": "3.91.0",
-    "@payloadcms/graphql": "3.91.0",
+    "@payloadcms/graphql": "3.93.0",
     "@payloadcms/ui": "3.91.0",
-    "graphql": "16.14.2",
+    "graphql": "16.15.0",
     "payload": "3.91.0",
     "react": "19.3.1"
   },
