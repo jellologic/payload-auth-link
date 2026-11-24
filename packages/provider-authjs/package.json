@@ -54,7 +54,7 @@
     "@payloadcms/db-mongodb": "3.91.0",
     "@payloadcms/db-postgres": "3.91.0",
     "@payloadcms/db-sqlite": "3.91.0",
-    "mongodb": "^6.21.0",
+    "mongodb": "^6.22.0",
     "mongodb-memory-server": "^11.3.0",
     "payload": "3.91.0"
   },
